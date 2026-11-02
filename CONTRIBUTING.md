@@ -37,4 +37,4 @@ Be respectful and constructive. A formal code of conduct will be added before th
 
 ## Security
 
-Please do not report security vulnerabilities in public issues. Use GitHub's private vulnerability reporting for this repository.
+Please do not report security vulnerabilities in issues, discussions or pull requests. While the repository is private, report them directly to the maintainers through a private channel (a private message to a member of the `@orglane/maintainers` team). Once it is public, use GitHub's private vulnerability reporting. See [SECURITY.md](SECURITY.md) for details.

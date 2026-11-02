@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Go modules, npm and Docker ecosystems are added in #2 once their manifests exist.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: ["type/chore", "area/ci"]

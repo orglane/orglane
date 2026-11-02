@@ -1,0 +1,44 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["type/bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Orglane version
+      placeholder: e.g. 0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Self-hosted (Docker Compose)
+        - Demo mode
+        - Cloud
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and environment
+      description: Relevant logs, OS, architecture (amd64/arm64), browser or mobile device. Remove secrets.
+      render: shell

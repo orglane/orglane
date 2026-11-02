@@ -1,0 +1,49 @@
+name: Provider request
+description: Request an integration with a service (managed or external)
+labels: ["type/feature", "area/providers"]
+body:
+  - type: input
+    id: service
+    attributes:
+      label: Service
+      placeholder: e.g. GitLab, Slack, Vikunja
+    validations:
+      required: true
+  - type: dropdown
+    id: capability
+    attributes:
+      label: Capability
+      description: Which capability would this provider implement? (see ADR 0002)
+      multiple: true
+      options:
+        - code
+        - tasks
+        - files
+        - calendar
+        - contacts
+        - chat
+        - mail
+        - other
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Provider mode
+      options:
+        - Managed (Orglane deploys and operates it)
+        - External (connect an existing SaaS account)
+        - Either
+    validations:
+      required: true
+  - type: textarea
+    id: apis
+    attributes:
+      label: Integration surface
+      description: What you know about its SSO (OIDC/SAML), admin/provisioning API, webhooks or events, and license.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to help build or test this provider

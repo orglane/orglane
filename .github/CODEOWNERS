@@ -1,0 +1,23 @@
+# Code owners — high-risk paths require a maintainer review (ADR 0017).
+# Enforced once branch protection is enabled (see the publication checklist issue).
+
+# Process, CI and licensing
+/.github/                     @orglane/maintainers
+/LICENSE                      @orglane/maintainers
+/**/LICENSE                   @orglane/maintainers
+/TRADEMARK.md                 @orglane/maintainers
+/docs/adr/                    @orglane/maintainers
+
+# Identity, permissions, cryptography
+/core/internal/identity/      @orglane/maintainers
+/core/internal/permissions/   @orglane/maintainers
+/core/internal/crypto/        @orglane/maintainers
+
+# Database schema migrations
+/core/migrations/             @orglane/maintainers
+
+# Privileged agent
+/core/internal/agent/         @orglane/maintainers
+
+# Public API contracts
+/core/api/                    @orglane/maintainers
