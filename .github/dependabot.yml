@@ -1,8 +1,22 @@
 version: 2
 updates:
-  # Go modules, npm and Docker ecosystems are added in #2 once their manifests exist.
+  # The docker ecosystem is added once the repository has Dockerfiles or Compose files.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     labels: ["type/chore", "area/ci"]
+
+  # Root Go module: core/ and providers/.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    labels: ["type/chore", "area/core"]
+
+  # Root pnpm workspace: web/ and packages/*.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    labels: ["type/chore", "area/packages"]

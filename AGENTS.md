@@ -4,7 +4,35 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project status
 
-Pre-alpha. The repository currently contains **documentation only**. Build, test and run commands will be added here in milestone M0 (see [ROADMAP.md](ROADMAP.md)).
+Pre-alpha. The monorepo tooling is in place; the core, web app and API are still skeletons (see [ROADMAP.md](ROADMAP.md)).
+
+## Toolchain
+
+| Tool | Version | Pinned in |
+|---|---|---|
+| Go | 1.27.3 | `go.mod` (`go` + `toolchain`; `GOTOOLCHAIN=auto` downloads it) |
+| Node.js | 26.13.0 (LTS) | `.nvmrc`, `package.json` `engines` |
+| pnpm | 12.16.1 | `package.json` `packageManager` (via corepack) |
+| golangci-lint | v2.15.0 | `Makefile` (`GOLANGCI_LINT_VERSION`), installed into `.bin/` |
+| Biome, TypeScript, Vitest | see `package.json` files | `pnpm-lock.yaml` |
+
+Prerequisites: Go, Node.js, corepack (`npm install -g corepack` on Node 25+) and Docker (for integration tests).
+
+## Commands
+
+Run everything from the repository root. Each target covers both Go and TypeScript.
+
+```sh
+make bootstrap   # check toolchain, install golangci-lint, download Go modules, pnpm install
+make dev         # development setup (placeholder until the core and web skeletons land)
+make build       # go build -> bin/orglane; build all workspace packages
+make test        # go test -race ./...; vitest in every workspace package
+make lint        # go mod tidy check, golangci-lint (lint + format check), Biome, tsc --noEmit
+make fmt         # go mod tidy, golangci-lint fmt (gofmt + goimports), biome check --write
+make help        # list targets
+```
+
+Run `make fmt && make lint && make test` before committing. Language-specific sub-targets exist too (`lint-go`, `test-ts`, ...).
 
 ## Read first
 
@@ -31,6 +59,28 @@ Pre-alpha. The repository currently contains **documentation only**. Build, test
 
 High-risk paths (identity, permissions, crypto, DB migrations, the agent, public API contracts, CI config, licenses) always require a maintainer review. See [ADR 0017](docs/adr/0017-development-process.md).
 
-## Repository layout (planned)
+## Repository layout
 
-See the "Repository layout" section in [docs/architecture.md](docs/architecture.md).
+```
+orglane/
+├── go.mod                # the single Go module: github.com/orglane/orglane
+├── core/                 # Go: cmd/orglane (server | agent | cli), internal/...
+├── providers/            # provider adapters (Go, compiled into core) + managed packages
+├── package.json          # pnpm workspace root (private, AGPL-3.0-or-later)
+├── pnpm-workspace.yaml   # workspace members: web/, packages/*
+├── web/                  # React + Vite, embedded into the core binary (AGPL-3.0-or-later)
+├── packages/             # shared TypeScript packages (Apache-2.0, see packages/LICENSE)
+│   └── ui-tokens/        # design tokens
+├── deploy/               # Compose files, install script
+├── demo/                 # "Acme" demo dataset
+├── tests/                # integration and end-to-end tests
+└── docs/                 # brief, architecture, ADRs, specs
+```
+
+Conventions:
+
+- Go: one module at the root; unit tests next to the code (`*_test.go`). Lint config in `.golangci.yml`.
+- TypeScript: strict mode via `tsconfig.base.json`; every package extends it and defines `build`, `test` and `typecheck` scripts. Lint and format config in `biome.json`. Unit tests next to the code (`*.test.ts`, Vitest).
+- New dependencies: pnpm only installs versions published at least a day ago (`minimumReleaseAge` in `pnpm-workspace.yaml`).
+
+The target layout (including `mobile/` and `services/push-relay/`) is described in the "Repository layout" section of [docs/architecture.md](docs/architecture.md).

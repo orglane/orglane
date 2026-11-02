@@ -1,0 +1,7 @@
+packages:
+  - web
+  - packages/*
+
+# Supply-chain safety: only install package versions published at least one
+# day ago (value in minutes).
+minimumReleaseAge: 1440

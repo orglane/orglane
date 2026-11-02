@@ -1,0 +1,33 @@
+# golangci-lint v2 configuration. The linter version is pinned in the Makefile
+# (GOLANGCI_LINT_VERSION) and installed into .bin/ by `make bootstrap`.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+  settings:
+    misspell:
+      locale: US
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/orglane/orglane
