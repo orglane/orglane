@@ -23,5 +23,6 @@ Each ADR records one significant decision: the context, the decision and its con
 | [0015](0015-people-directory-and-import.md) | People directory, profile fields, import pipeline | Accepted |
 | [0016](0016-licensing.md) | Licensing: AGPL core, Apache clients and SDKs, no CLA | Accepted |
 | [0017](0017-development-process.md) | Agent-driven development process, risk tiers, auto-merge | Accepted |
+| [0018](0018-domain-model.md) | Domain model: project domain, customer domain, company domains | Accepted |
 
 Template: [`0000-template.md`](0000-template.md)

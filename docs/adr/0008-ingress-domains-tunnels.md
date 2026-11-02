@@ -15,7 +15,7 @@ Services need routing and TLS. Many homelab servers sit behind NAT. The mobile a
 - **Production self-hosting requires a domain.** The setup wizard shows the DNS records to create and checks propagation and reachability.
 - **Reachability is the `ingress.tunnel` capability**, offered in the wizard: "I have a public IP" / **Cloudflare Tunnel** (paste a token; Orglane runs `cloudflared` itself) / **Orglane Link**.
 - There is no heavy manual networking documentation (for example VPS + WireGuard).
-- **Customer subdomains** (Link tunnels, cloud instances) live on a **separate registrable domain**, never under `orglane.app`, so customer instances can't share cookies with the project's own sites (landing, dashboard, billing). The domain will be acquired together with Link.
+- **Customer subdomains** (Link tunnels, cloud instances) live on a **separate registrable domain**, never under `orglane.app`, so customer instances can't share cookies with the project's own sites (landing, dashboard, billing). The domain will be acquired together with Link. See [ADR 0018](0018-domain-model.md).
 
 ## Consequences
 
