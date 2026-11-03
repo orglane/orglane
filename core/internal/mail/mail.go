@@ -162,6 +162,21 @@ func (s *Service) Configured(ctx context.Context) (bool, error) {
 	return ok, err
 }
 
+// SettingsSource reports channel authority without decrypting credentials.
+func (s *Service) SettingsSource(ctx context.Context) (Source, error) {
+	if s.cfg.Configured() {
+		return SourceConfig, nil
+	}
+	_, ok, err := s.loadStored(ctx, store.New(s.pool))
+	if err != nil {
+		return SourceNone, err
+	}
+	if ok {
+		return SourceSettings, nil
+	}
+	return SourceNone, nil
+}
+
 func (s *Service) loadStored(ctx context.Context, q *store.Queries) (storedSettings, bool, error) {
 	raw, err := q.GetInstanceSetting(ctx, settingsKey)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -457,7 +472,36 @@ func (s *Service) Deliver(ctx context.Context, id uuid.UUID, attempt int) error 
 	if Status(row.Status) != StatusQueued {
 		return nil
 	}
+	var settings Settings
 	sendErr := func() error {
+		// Resolve once, validate this exact authority snapshot, and send
+		// using it. A second lookup would reintroduce a settings race.
+		var err error
+		settings, err = s.Settings(ctx)
+		if err != nil {
+			return err
+		}
+		if settings.Source == SourceNone {
+			return ErrNotConfigured
+		}
+		if row.Kind == KindInvitation {
+			inv, err := q.GetInvitationByEmail(ctx, &id)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrUnsafeGrant
+			}
+			if err != nil {
+				return err
+			}
+			permissions, err := q.ListPersonPermissions(ctx, inv.PersonID)
+			if err != nil {
+				return err
+			}
+			if inv.AcceptedAt != nil || inv.RevokedAt != nil || !time.Now().Before(inv.ExpiresAt) ||
+				!InvitationChannel(inv.Channel).AllowsGrant(inv.GrantPermissions, permissions) ||
+				(settings.Source != SourceConfig && !EditableSMTPAllowsGrant(permissions)) {
+				return ErrUnsafeGrant
+			}
+		}
 		raw, err := s.outbox.Open(row.SealedMessage, id[:])
 		if err != nil {
 			return fmt.Errorf("decrypt the queued message (was identity.master_secret changed?): %w", err)
@@ -465,13 +509,6 @@ func (s *Service) Deliver(ctx context.Context, id uuid.UUID, attempt int) error 
 		var m Message
 		if err := json.Unmarshal(raw, &m); err != nil {
 			return err
-		}
-		settings, err := s.Settings(ctx)
-		if err != nil {
-			return err
-		}
-		if settings.Source == SourceNone {
-			return errors.New("system email is not configured")
 		}
 		return send(ctx, settings.SMTP, s.helo, row.Recipient, m)
 	}()
@@ -483,7 +520,8 @@ func (s *Service) Deliver(ctx context.Context, id uuid.UUID, attempt int) error 
 		s.logger.InfoContext(ctx, "email sent", "email_id", id, "kind", row.Kind, "attempt", attempt)
 		return nil
 	}
-	final := attempt >= int(row.MaxAttempts)
+	final := attempt >= int(row.MaxAttempts) || errors.Is(sendErr, ErrUnsafeGrant)
+	sendErr = safeDeliveryFailure(sendErr, settings.SMTP)
 	msg := truncate(sendErr.Error())
 	if err := q.RecordOutboxEmailFailure(ctx, store.RecordOutboxEmailFailureParams{ID: id, Attempts: attempts, LastError: &msg, Final: final}); err != nil {
 		return fmt.Errorf("mail: record failure: %w", err)

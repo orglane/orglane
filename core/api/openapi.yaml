@@ -1251,8 +1251,12 @@ paths:
         issues a single-use invitation link that expires
         (`identity.invitation_lifetime`, 7 days by default). With system
         email configured the link is emailed to the contact email in the
-        background; otherwise it is returned as `link` for the admin to
-        share. Granting a role requires holding every permission in it.
+        background when the channel is trusted for that permission grant;
+        otherwise it is returned as `link` for the admin to share. Editable
+        SMTP can carry only permissions guaranteed to every SMTP editor
+        (`instance.manage`); additional grants require a copy-link. Immutable
+        server-configured SMTP can carry all grants. Granting a role requires
+        holding every permission in it.
         The language of the email follows `Accept-Language`.
       tags: [invitations]
       x-orglane-permission: people.manage
@@ -1452,8 +1456,8 @@ paths:
       summary: Send a test email
       description: |
         Queues a test email in the outbox and waits for its first delivery
-        result. An SMTP failure answers 502 with the server's error in
-        `detail`; the worker continues its configured retries.
+        result. An SMTP failure answers 502 with a bounded safe error
+        category in `detail`; the worker continues its configured retries.
       tags: [settings]
       x-orglane-permission: instance.manage
       security:
@@ -2472,7 +2476,7 @@ components:
     InvitationDelivery:
       type: string
       enum: [email, link]
-      description: "`email`: sent to the contact email; `link`: no email is configured, share the link yourself."
+      description: "`email`: sent through a trusted channel to the contact email; `link`: email is absent or cannot safely carry this permission grant, share the link yourself."
     IssuedInvitation:
       type: object
       required: [invitation]
@@ -2554,7 +2558,7 @@ components:
           type: integer
         lastError:
           type: string
-          description: The error of the last failed attempt, as reported by the SMTP server.
+          description: A bounded safe category for the last failure. Untrusted relay text, bearer tokens and credentials are never exposed.
         sentAt:
           type: string
           format: date-time
@@ -2568,7 +2572,7 @@ components:
             $ref: "#/components/schemas/Invitation"
     InvitationOptions:
       type: object
-      required: [delivery, workEmailPattern, lifetimeHours, roles]
+      required: [delivery, workEmailPattern, lifetimeHours, roles, roleDeliveries]
       properties:
         delivery:
           $ref: "#/components/schemas/InvitationDelivery"
@@ -2585,6 +2589,11 @@ components:
           description: Role keys that this caller has permission to grant.
           items:
             type: string
+        roleDeliveries:
+          type: object
+          description: Delivery for each grantable role. Editable SMTP uses a link for permissions outside the guaranteed SMTP-editor envelope.
+          additionalProperties:
+            $ref: "#/components/schemas/InvitationDelivery"
     EmailTLSMode:
       type: string
       enum: [starttls, tls, none]

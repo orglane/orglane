@@ -49,6 +49,11 @@ const messages = defineMessages({
     defaultMessage:
       "Invitations are emailed to the contact address. Delivery status appears below.",
   },
+  restrictedLink: {
+    id: "invitations.restrictedLink",
+    defaultMessage:
+      "Share this invitation link directly. Email settings editable by workspace admins cannot safely carry this role's additional permissions.",
+  },
   link: { id: "invitations.link", defaultMessage: "Invitation link" },
   copy: { id: "invitations.copy", defaultMessage: "Copy link" },
   copied: { id: "invitations.copied", defaultMessage: "Copied" },
@@ -313,7 +318,11 @@ function Invitations() {
       {options.data && (
         <p className="text-muted-foreground text-sm">
           <FormattedMessage
-            {...(options.data.delivery === "link" ? messages.linkMode : messages.emailMode)}
+            {...(options.data.delivery === "link"
+              ? messages.linkMode
+              : options.data.roleDeliveries?.[values.role] === "link"
+                ? messages.restrictedLink
+                : messages.emailMode)}
           />
         </p>
       )}

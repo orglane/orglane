@@ -799,8 +799,12 @@ export interface paths {
          *     issues a single-use invitation link that expires
          *     (`identity.invitation_lifetime`, 7 days by default). With system
          *     email configured the link is emailed to the contact email in the
-         *     background; otherwise it is returned as `link` for the admin to
-         *     share. Granting a role requires holding every permission in it.
+         *     background when the channel is trusted for that permission grant;
+         *     otherwise it is returned as `link` for the admin to share. Editable
+         *     SMTP can carry only permissions guaranteed to every SMTP editor
+         *     (`instance.manage`); additional grants require a copy-link. Immutable
+         *     server-configured SMTP can carry all grants. Granting a role requires
+         *     holding every permission in it.
          *     The language of the email follows `Accept-Language`.
          */
         post: operations["createInvitation"];
@@ -918,8 +922,8 @@ export interface paths {
         /**
          * Send a test email
          * @description Queues a test email in the outbox and waits for its first delivery
-         *     result. An SMTP failure answers 502 with the server's error in
-         *     `detail`; the worker continues its configured retries.
+         *     result. An SMTP failure answers 502 with a bounded safe error
+         *     category in `detail`; the worker continues its configured retries.
          */
         post: operations["sendTestEmail"];
         delete?: never;
@@ -1532,7 +1536,7 @@ export interface components {
             teamIds?: string[];
         };
         /**
-         * @description `email`: sent to the contact email; `link`: no email is configured, share the link yourself.
+         * @description `email`: sent through a trusted channel to the contact email; `link`: email is absent or cannot safely carry this permission grant, share the link yourself.
          * @enum {string}
          */
         InvitationDelivery: "email" | "link";
@@ -1579,7 +1583,7 @@ export interface components {
             status: "queued" | "retrying" | "sent" | "failed" | "canceled";
             attempts: number;
             maxAttempts: number;
-            /** @description The error of the last failed attempt, as reported by the SMTP server. */
+            /** @description A bounded safe category for the last failure. Untrusted relay text, bearer tokens and credentials are never exposed. */
             lastError?: string;
             /** Format: date-time */
             sentAt?: string;
@@ -1601,6 +1605,10 @@ export interface components {
             lifetimeHours: number;
             /** @description Role keys that this caller has permission to grant. */
             roles: string[];
+            /** @description Delivery for each grantable role. Editable SMTP uses a link for permissions outside the guaranteed SMTP-editor envelope. */
+            roleDeliveries: {
+                [key: string]: components["schemas"]["InvitationDelivery"];
+            };
         };
         /**
          * @description `starttls` (port 587) upgrades the connection and refuses to continue without TLS; `tls` (port 465) connects with TLS; `none` sends in the clear (a relay on the same host or trusted network only).

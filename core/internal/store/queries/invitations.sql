@@ -1,6 +1,6 @@
 -- name: CreateInvitation :one
-INSERT INTO invitations (person_id, token_hash, locale, invited_by, email_id, expires_at)
-VALUES (@person_id, @token_hash, @locale, sqlc.narg(invited_by), sqlc.narg(email_id), now() + make_interval(secs => @ttl_seconds::float8))
+INSERT INTO invitations (person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, expires_at)
+VALUES (@person_id, @token_hash, @locale, sqlc.narg(invited_by), sqlc.narg(email_id), @channel, @grant_permissions::text[], now() + make_interval(secs => @ttl_seconds::float8))
 RETURNING *;
 
 -- name: GetInvitation :one
@@ -12,11 +12,15 @@ SELECT * FROM invitations WHERE id = @id FOR UPDATE;
 -- name: GetInvitationByTokenHash :one
 SELECT * FROM invitations WHERE token_hash = @token_hash;
 
+-- name: GetInvitationByEmail :one
+SELECT * FROM invitations WHERE email_id = @email_id;
+
 -- name: ReissueInvitation :one
 -- A new token and expiry, e.g. when the invitation is resent; a revoked
 -- invitation becomes valid again.
 UPDATE invitations
 SET token_hash = @token_hash, locale = @locale, email_id = sqlc.narg(email_id), issued_at = now(),
+    channel = @channel, grant_permissions = @grant_permissions::text[],
     expires_at = now() + make_interval(secs => @ttl_seconds::float8),
     revoked_at = NULL, expiry_recorded_at = NULL
 WHERE id = @id

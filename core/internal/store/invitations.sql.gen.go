@@ -13,7 +13,7 @@ import (
 )
 
 const acceptInvitation = `-- name: AcceptInvitation :one
-UPDATE invitations SET accepted_at = now() WHERE id = $1 RETURNING id, person_id, token_hash, locale, invited_by, email_id, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at
+UPDATE invitations SET accepted_at = now() WHERE id = $1 RETURNING id, person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at
 `
 
 func (q *Queries) AcceptInvitation(ctx context.Context, id uuid.UUID) (Invitation, error) {
@@ -26,6 +26,8 @@ func (q *Queries) AcceptInvitation(ctx context.Context, id uuid.UUID) (Invitatio
 		&i.Locale,
 		&i.InvitedBy,
 		&i.EmailID,
+		&i.Channel,
+		&i.GrantPermissions,
 		&i.CreatedAt,
 		&i.IssuedAt,
 		&i.ExpiresAt,
@@ -37,18 +39,20 @@ func (q *Queries) AcceptInvitation(ctx context.Context, id uuid.UUID) (Invitatio
 }
 
 const createInvitation = `-- name: CreateInvitation :one
-INSERT INTO invitations (person_id, token_hash, locale, invited_by, email_id, expires_at)
-VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6::float8))
-RETURNING id, person_id, token_hash, locale, invited_by, email_id, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at
+INSERT INTO invitations (person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7::text[], now() + make_interval(secs => $8::float8))
+RETURNING id, person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at
 `
 
 type CreateInvitationParams struct {
-	PersonID   uuid.UUID
-	TokenHash  []byte
-	Locale     string
-	InvitedBy  *uuid.UUID
-	EmailID    *uuid.UUID
-	TtlSeconds float64
+	PersonID         uuid.UUID
+	TokenHash        []byte
+	Locale           string
+	InvitedBy        *uuid.UUID
+	EmailID          *uuid.UUID
+	Channel          string
+	GrantPermissions []string
+	TtlSeconds       float64
 }
 
 func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationParams) (Invitation, error) {
@@ -58,6 +62,8 @@ func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationPara
 		arg.Locale,
 		arg.InvitedBy,
 		arg.EmailID,
+		arg.Channel,
+		arg.GrantPermissions,
 		arg.TtlSeconds,
 	)
 	var i Invitation
@@ -68,6 +74,8 @@ func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationPara
 		&i.Locale,
 		&i.InvitedBy,
 		&i.EmailID,
+		&i.Channel,
+		&i.GrantPermissions,
 		&i.CreatedAt,
 		&i.IssuedAt,
 		&i.ExpiresAt,
@@ -79,7 +87,7 @@ func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationPara
 }
 
 const getInvitation = `-- name: GetInvitation :one
-SELECT id, person_id, token_hash, locale, invited_by, email_id, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at FROM invitations WHERE id = $1
+SELECT id, person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at FROM invitations WHERE id = $1
 `
 
 func (q *Queries) GetInvitation(ctx context.Context, id uuid.UUID) (Invitation, error) {
@@ -92,6 +100,34 @@ func (q *Queries) GetInvitation(ctx context.Context, id uuid.UUID) (Invitation, 
 		&i.Locale,
 		&i.InvitedBy,
 		&i.EmailID,
+		&i.Channel,
+		&i.GrantPermissions,
+		&i.CreatedAt,
+		&i.IssuedAt,
+		&i.ExpiresAt,
+		&i.AcceptedAt,
+		&i.RevokedAt,
+		&i.ExpiryRecordedAt,
+	)
+	return i, err
+}
+
+const getInvitationByEmail = `-- name: GetInvitationByEmail :one
+SELECT id, person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at FROM invitations WHERE email_id = $1
+`
+
+func (q *Queries) GetInvitationByEmail(ctx context.Context, emailID *uuid.UUID) (Invitation, error) {
+	row := q.db.QueryRow(ctx, getInvitationByEmail, emailID)
+	var i Invitation
+	err := row.Scan(
+		&i.ID,
+		&i.PersonID,
+		&i.TokenHash,
+		&i.Locale,
+		&i.InvitedBy,
+		&i.EmailID,
+		&i.Channel,
+		&i.GrantPermissions,
 		&i.CreatedAt,
 		&i.IssuedAt,
 		&i.ExpiresAt,
@@ -103,7 +139,7 @@ func (q *Queries) GetInvitation(ctx context.Context, id uuid.UUID) (Invitation, 
 }
 
 const getInvitationByTokenHash = `-- name: GetInvitationByTokenHash :one
-SELECT id, person_id, token_hash, locale, invited_by, email_id, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at FROM invitations WHERE token_hash = $1
+SELECT id, person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at FROM invitations WHERE token_hash = $1
 `
 
 func (q *Queries) GetInvitationByTokenHash(ctx context.Context, tokenHash []byte) (Invitation, error) {
@@ -116,6 +152,8 @@ func (q *Queries) GetInvitationByTokenHash(ctx context.Context, tokenHash []byte
 		&i.Locale,
 		&i.InvitedBy,
 		&i.EmailID,
+		&i.Channel,
+		&i.GrantPermissions,
 		&i.CreatedAt,
 		&i.IssuedAt,
 		&i.ExpiresAt,
@@ -193,7 +231,7 @@ func (q *Queries) GetInvitationDetails(ctx context.Context, id uuid.UUID) (GetIn
 }
 
 const getInvitationForUpdate = `-- name: GetInvitationForUpdate :one
-SELECT id, person_id, token_hash, locale, invited_by, email_id, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at FROM invitations WHERE id = $1 FOR UPDATE
+SELECT id, person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at FROM invitations WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetInvitationForUpdate(ctx context.Context, id uuid.UUID) (Invitation, error) {
@@ -206,6 +244,8 @@ func (q *Queries) GetInvitationForUpdate(ctx context.Context, id uuid.UUID) (Inv
 		&i.Locale,
 		&i.InvitedBy,
 		&i.EmailID,
+		&i.Channel,
+		&i.GrantPermissions,
 		&i.CreatedAt,
 		&i.IssuedAt,
 		&i.ExpiresAt,
@@ -298,7 +338,7 @@ func (q *Queries) ListInvitations(ctx context.Context) ([]ListInvitationsRow, er
 }
 
 const listUnrecordedExpiredInvitations = `-- name: ListUnrecordedExpiredInvitations :many
-SELECT id, person_id, token_hash, locale, invited_by, email_id, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at FROM invitations
+SELECT id, person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at FROM invitations
 WHERE expires_at <= now() AND accepted_at IS NULL AND revoked_at IS NULL AND expiry_recorded_at IS NULL
 ORDER BY expires_at
 LIMIT 500
@@ -322,6 +362,8 @@ func (q *Queries) ListUnrecordedExpiredInvitations(ctx context.Context) ([]Invit
 			&i.Locale,
 			&i.InvitedBy,
 			&i.EmailID,
+			&i.Channel,
+			&i.GrantPermissions,
 			&i.CreatedAt,
 			&i.IssuedAt,
 			&i.ExpiresAt,
@@ -351,18 +393,21 @@ func (q *Queries) MarkInvitationExpiryRecorded(ctx context.Context, id uuid.UUID
 const reissueInvitation = `-- name: ReissueInvitation :one
 UPDATE invitations
 SET token_hash = $1, locale = $2, email_id = $3, issued_at = now(),
-    expires_at = now() + make_interval(secs => $4::float8),
+    channel = $4, grant_permissions = $5::text[],
+    expires_at = now() + make_interval(secs => $6::float8),
     revoked_at = NULL, expiry_recorded_at = NULL
-WHERE id = $5
-RETURNING id, person_id, token_hash, locale, invited_by, email_id, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at
+WHERE id = $7
+RETURNING id, person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at
 `
 
 type ReissueInvitationParams struct {
-	TokenHash  []byte
-	Locale     string
-	EmailID    *uuid.UUID
-	TtlSeconds float64
-	ID         uuid.UUID
+	TokenHash        []byte
+	Locale           string
+	EmailID          *uuid.UUID
+	Channel          string
+	GrantPermissions []string
+	TtlSeconds       float64
+	ID               uuid.UUID
 }
 
 // A new token and expiry, e.g. when the invitation is resent; a revoked
@@ -372,6 +417,8 @@ func (q *Queries) ReissueInvitation(ctx context.Context, arg ReissueInvitationPa
 		arg.TokenHash,
 		arg.Locale,
 		arg.EmailID,
+		arg.Channel,
+		arg.GrantPermissions,
 		arg.TtlSeconds,
 		arg.ID,
 	)
@@ -383,6 +430,8 @@ func (q *Queries) ReissueInvitation(ctx context.Context, arg ReissueInvitationPa
 		&i.Locale,
 		&i.InvitedBy,
 		&i.EmailID,
+		&i.Channel,
+		&i.GrantPermissions,
 		&i.CreatedAt,
 		&i.IssuedAt,
 		&i.ExpiresAt,
@@ -394,7 +443,7 @@ func (q *Queries) ReissueInvitation(ctx context.Context, arg ReissueInvitationPa
 }
 
 const revokeInvitation = `-- name: RevokeInvitation :one
-UPDATE invitations SET revoked_at = now() WHERE id = $1 RETURNING id, person_id, token_hash, locale, invited_by, email_id, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at
+UPDATE invitations SET revoked_at = now() WHERE id = $1 RETURNING id, person_id, token_hash, locale, invited_by, email_id, channel, grant_permissions, created_at, issued_at, expires_at, accepted_at, revoked_at, expiry_recorded_at
 `
 
 func (q *Queries) RevokeInvitation(ctx context.Context, id uuid.UUID) (Invitation, error) {
@@ -407,6 +456,8 @@ func (q *Queries) RevokeInvitation(ctx context.Context, id uuid.UUID) (Invitatio
 		&i.Locale,
 		&i.InvitedBy,
 		&i.EmailID,
+		&i.Channel,
+		&i.GrantPermissions,
 		&i.CreatedAt,
 		&i.IssuedAt,
 		&i.ExpiresAt,

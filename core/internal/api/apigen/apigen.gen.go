@@ -493,7 +493,7 @@ type DevicePlatform string
 type EmailDelivery struct {
 	Attempts int `json:"attempts"`
 
-	// LastError The error of the last failed attempt, as reported by the SMTP server.
+	// LastError A bounded safe category for the last failure. Untrusted relay text, bearer tokens and credentials are never exposed.
 	LastError   *string    `json:"lastError,omitempty"`
 	MaxAttempts int        `json:"maxAttempts"`
 	SentAt      *time.Time `json:"sentAt,omitempty"`
@@ -596,7 +596,7 @@ type Invitation struct {
 	ContactEmail string    `json:"contactEmail"`
 	CreatedAt    time.Time `json:"createdAt"`
 
-	// Delivery `email`: sent to the contact email; `link`: no email is configured, share the link yourself.
+	// Delivery `email`: sent through a trusted channel to the contact email; `link`: email is absent or cannot safely carry this permission grant, share the link yourself.
 	Delivery    InvitationDelivery `json:"delivery"`
 	DisplayName string             `json:"displayName"`
 
@@ -618,7 +618,7 @@ type Invitation struct {
 // InvitationStatus defines model for Invitation.Status.
 type InvitationStatus string
 
-// InvitationDelivery `email`: sent to the contact email; `link`: no email is configured, share the link yourself.
+// InvitationDelivery `email`: sent through a trusted channel to the contact email; `link`: email is absent or cannot safely carry this permission grant, share the link yourself.
 type InvitationDelivery string
 
 // InvitationList defines model for InvitationList.
@@ -628,13 +628,16 @@ type InvitationList struct {
 
 // InvitationOptions defines model for InvitationOptions.
 type InvitationOptions struct {
-	// Delivery `email`: sent to the contact email; `link`: no email is configured, share the link yourself.
+	// Delivery `email`: sent through a trusted channel to the contact email; `link`: email is absent or cannot safely carry this permission grant, share the link yourself.
 	Delivery InvitationDelivery `json:"delivery"`
 
 	// LifetimeHours How long a new link stays valid.
 	//
 	// Example: 168
 	LifetimeHours int `json:"lifetimeHours"`
+
+	// RoleDeliveries Delivery for each grantable role. Editable SMTP uses a link for permissions outside the guaranteed SMTP-editor envelope.
+	RoleDeliveries map[string]InvitationDelivery `json:"roleDeliveries"`
 
 	// Roles Role keys that this caller has permission to grant.
 	Roles []string `json:"roles"`

@@ -55,6 +55,12 @@ CREATE TABLE invitations (
     -- The email carrying the current token; NULL when it was issued as a
     -- link to share (no email configured).
     email_id           uuid REFERENCES email_outbox (id) ON DELETE SET NULL,
+    -- Provenance of the token's delivery channel. Legacy email capabilities
+    -- have no trusted grant envelope and are treated conservatively.
+    channel            text NOT NULL DEFAULT 'legacy' CHECK (channel IN ('legacy', 'link', 'settings_email', 'config_email')),
+    -- The permission ceiling captured when this token was issued. A later
+    -- role/permission promotion requires issuing a new token.
+    grant_permissions  text[],
     created_at         timestamptz NOT NULL DEFAULT now(),
     -- When the current token was issued.
     issued_at          timestamptz NOT NULL DEFAULT now(),
@@ -64,7 +70,8 @@ CREATE TABLE invitations (
     -- Set once the expiry has been audited (by identity maintenance).
     expiry_recorded_at timestamptz,
     CHECK (expires_at > issued_at),
-    CHECK (accepted_at IS NULL OR revoked_at IS NULL)
+    CHECK (accepted_at IS NULL OR revoked_at IS NULL),
+    CHECK (channel = 'legacy' OR grant_permissions IS NOT NULL)
 );
 
 CREATE UNIQUE INDEX invitations_token_hash_key ON invitations (token_hash);

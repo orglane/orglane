@@ -46,6 +46,7 @@ func (s *server) GetInvitationOptions(ctx context.Context, _ apigen.GetInvitatio
 		return nil, err
 	}
 	roles := make([]string, 0, 3)
+	roleDeliveries := make(map[string]apigen.InvitationDelivery)
 	for _, role := range authz.BuiltinRoles() {
 		allowed := true
 		for _, permission := range role.Permissions {
@@ -56,10 +57,16 @@ func (s *server) GetInvitationOptions(ctx context.Context, _ apigen.GetInvitatio
 		}
 		if allowed {
 			roles = append(roles, string(role.Key))
+			roleDelivery, err := a.Identity().InvitationRoleDelivery(ctx, role.Key)
+			if err != nil {
+				return nil, err
+			}
+			roleDeliveries[string(role.Key)] = apigen.InvitationDelivery(roleDelivery)
 		}
 	}
 	return apigen.GetInvitationOptions200JSONResponse{
 		Roles:            roles,
+		RoleDeliveries:   roleDeliveries,
 		Delivery:         apigen.InvitationDelivery(delivery),
 		WorkEmailPattern: s.workEmail(usernamePlaceholder),
 		LifetimeHours:    int(a.Identity().InvitationLifetime().Hours()),

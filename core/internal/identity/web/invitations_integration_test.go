@@ -459,6 +459,31 @@ func TestInvitationRevokeResendExpiry(t *testing.T) {
 	}
 }
 
+// Reissuing an expired token before maintenance must preserve the expiry
+// event; revoking it before maintenance must record both lifecycle events.
+func TestInvitationMutationRecordsPriorExpiry(t *testing.T) {
+	e := newEnv(t)
+	admin := e.browser()
+	e.setupOwner(admin)
+	for i, mutation := range []string{"resend", "revoke"} {
+		issued := admin.invite("Expired Invite", mutation+"@example.test", mutation)
+		id := issued.Invitation.ID
+		e.exec("UPDATE invitations SET issued_at = now() - interval '3 hours', expires_at = now() - interval '1 hour' WHERE id = $1", id)
+		path := "/api/v1/invitations/" + id.String()
+		if mutation == "resend" {
+			expectStatus(t, admin.req("POST", path+"/resend", nil), http.StatusOK)
+		} else {
+			expectStatus(t, admin.req("DELETE", path, nil), http.StatusNoContent)
+		}
+		if got := e.auditCount(audit.InvitationExpired); got != i+1 {
+			t.Fatalf("%s erased an expiry event: got %d, want %d", mutation, got, i+1)
+		}
+	}
+	if n, err := e.stack.Identity.RecordExpiredInvitations(t.Context()); err != nil || n != 0 || e.auditCount(audit.InvitationExpired) != 2 {
+		t.Fatalf("maintenance duplicated prior expiry events: n=%d, err=%v", n, err)
+	}
+}
+
 // An unreachable SMTP server: the email is retried, every failure shows up
 // with its error, and it is given up after the last attempt. Fixing the
 // settings and resending delivers it.

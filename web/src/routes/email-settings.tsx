@@ -36,7 +36,7 @@ const messages = defineMessages({
   from: { id: "emailSettings.from", defaultMessage: "From address" },
   fromHint: {
     id: "emailSettings.fromHint",
-    defaultMessage: "A sender address, optionally with a name: Company (no-reply@company.com).",
+    defaultMessage: "A sender address such as no-reply@company.com, optionally with a sender name.",
   },
   save: { id: "emailSettings.save", defaultMessage: "Save email settings" },
   saved: { id: "emailSettings.saved", defaultMessage: "Email settings saved." },

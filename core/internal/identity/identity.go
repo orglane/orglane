@@ -122,7 +122,7 @@ func WithWebAuthn(w *webauthn.WebAuthn) Option {
 	return func(s *Service) { s.webAuthn = w }
 }
 
-// WithMailer sends invitations by email when the mailer is configured;
+// WithMailer uses the mail channel authority to choose invitation delivery;
 // without it they are always issued as links to share.
 func WithMailer(m Mailer) Option {
 	return func(s *Service) { s.mailer = m }

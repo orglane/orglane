@@ -97,4 +97,49 @@ in `invited` status. Resending a revoked or expired invitation makes it usable
 again. Accepted invitations cannot be resent or revoked. Creation, resend,
 revoke and acceptance are audited in the transaction; hourly identity
 maintenance audits each unused expiry once. A message already being delivered
-may still arrive after revoke, but its token cannot be used.
+may still arrive after revoke, but its token cannot be used. Resend and revoke
+also record a prior unrecorded expiry in their transaction, so changing an
+expired invitation before maintenance cannot lose that event.
+
+## SMTP authority and invitation grants
+
+SMTP settings remain editable with `instance.manage`, as required for both
+Owner and Admin workflows. An activation token grants the invited identity's
+permissions, so an SMTP editor must not be able to intercept a token granting
+permissions they lack. This includes custom bundles: holding `instance.manage`
+does not imply the rest of the built-in Admin permissions.
+
+Editable, database-managed SMTP therefore carries only grants contained in the
+minimum permission envelope guaranteed to every SMTP editor: `instance.manage`
+itself (or no administrative permission). Ordinary Member invitations continue
+to use email. Grants with any additional permission use an explicit copy-link,
+including Admin, Owner and custom privileged bundles. Server-configured SMTP
+is immutable through the API and can carry all grants. The invitation options
+API describes delivery separately for each grantable role; the UI explains
+when a configured email service requires a direct link for the selected grant.
+
+Each token persists distinguishable link/settings-email/config-email channel
+provenance and its issued permission ceiling. Acceptance rechecks that current
+permissions fit that ceiling; promoting an invited person or enlarging a role
+requires resend. A privileged copy-link stays usable even while editable SMTP
+is active. Legacy tokens without a trusted envelope are limited to the SMTP-editor
+envelope, including old direct links; additional current permissions require
+resend because the original ceiling is unknown. New explicit privileged
+copy-links remain usable independently of current SMTP settings.
+
+Every queued delivery attempt resolves one effective SMTP settings snapshot,
+checks the current grant against both its issued envelope and that snapshot's
+authority, and sends using the same snapshot. A settings-source transition,
+legacy queued privileged email or later role promotion cannot redirect an
+additional permission grant to a lower-trust relay. Unsafe attempts fail
+terminally, clear encrypted content and tell the inviter to resend via a safe
+link. Resending cancels the old message and chooses a new channel/envelope.
+
+Relay diagnostics are untrusted and may echo message bodies, credentials or
+activation URLs. They are discarded in favor of locally selected, bounded
+failure categories; unknown preparation errors are also reduced to a safe
+category. Configured credentials/authentication encodings and token patterns
+are redacted before persisting, logging, returning API diagnostics or returning
+worker errors to River. Raw SMTP rejection text is never retained as a wrapped
+cause. This trades some relay troubleshooting detail for protecting bearer
+capabilities and credentials.

@@ -26,7 +26,7 @@ import (
 // Inviting a person adds them to the directory in the invited state, with
 // their role, and issues a single-use, expiring token. The token is only in
 // the invitation link (the database keeps its SHA-256 hash): it is emailed
-// to the person's contact email when system email is configured, or handed
+// to the person's contact email when the channel can safely carry its grant, or handed
 // to the inviting admin as a link to share otherwise. Accepting the
 // invitation sets the person's password and makes them active. Resending
 // issues a new token (the old link stops working); revoking invalidates the
@@ -42,8 +42,8 @@ const InvitationPath = "/invite"
 
 // Mailer queues system email in a transaction (package mail).
 type Mailer interface {
-	// Configured reports whether system email can be sent.
-	Configured(ctx context.Context) (bool, error)
+	// SettingsSource reports who controls the effective email channel.
+	SettingsSource(ctx context.Context) (mail.Source, error)
 	// EnqueueTx queues a message in tx and returns its outbox ID.
 	EnqueueTx(ctx context.Context, tx pgx.Tx, kind, to string, m mail.Message) (uuid.UUID, error)
 }
@@ -112,7 +112,7 @@ type InvitationPreview struct {
 }
 
 // Invite adds a person in the invited state with a role and issues their
-// invitation, by email when configured, otherwise as a link.
+// invitation, by email when trusted for the grant, otherwise as a link.
 func (s *Service) Invite(ctx context.Context, actor audit.Actor, in NewInvitation) (IssuedInvitation, error) {
 	params := store.CreatePersonParams{Status: string(StatusInvited)}
 	var err error
@@ -149,7 +149,7 @@ func (s *Service) Invite(ctx context.Context, actor audit.Actor, in NewInvitatio
 		}
 	}
 	locale := mail.Negotiate(in.Locale)
-	delivery, err := s.delivery(ctx)
+	source, err := s.invitationMailSource(ctx)
 	if err != nil {
 		return IssuedInvitation{}, err
 	}
@@ -172,6 +172,15 @@ func (s *Service) Invite(ctx context.Context, actor audit.Actor, in NewInvitatio
 			}
 			return notFound(err, "role")
 		}
+		permissions, err := q.ListRolePermissions(ctx, role.ID)
+		if err != nil {
+			return fmt.Errorf("identity: invitation role permissions: %w", err)
+		}
+		if permissions == nil {
+			permissions = []string{}
+		}
+		channel := mail.InvitationChannelFor(source, permissions)
+		delivery := invitationDelivery(channel)
 		person, err := q.CreatePerson(ctx, params)
 		if err != nil {
 			return uniqueViolation(err)
@@ -206,7 +215,7 @@ func (s *Service) Invite(ctx context.Context, actor audit.Actor, in NewInvitatio
 		}
 		inv, err := q.CreateInvitation(ctx, store.CreateInvitationParams{
 			PersonID: person.ID, TokenHash: crypto.HashToken(token), Locale: locale,
-			InvitedBy: actorPerson(actor), EmailID: emailID, TtlSeconds: s.invites.Lifetime.Seconds(),
+			InvitedBy: actorPerson(actor), EmailID: emailID, Channel: string(channel), GrantPermissions: permissions, TtlSeconds: s.invites.Lifetime.Seconds(),
 		})
 		if err != nil {
 			return fmt.Errorf("identity: create invitation: %w", err)
@@ -233,7 +242,7 @@ func (s *Service) Invite(ctx context.Context, actor audit.Actor, in NewInvitatio
 // becomes valid again) and sends it like Invite. The previous link stops
 // working and a previous email still in the queue is canceled.
 func (s *Service) ResendInvitation(ctx context.Context, actor audit.Actor, id uuid.UUID) (IssuedInvitation, error) {
-	delivery, err := s.delivery(ctx)
+	source, err := s.invitationMailSource(ctx)
 	if err != nil {
 		return IssuedInvitation{}, err
 	}
@@ -246,6 +255,19 @@ func (s *Service) ResendInvitation(ctx context.Context, actor audit.Actor, id uu
 		if inv.AcceptedAt != nil || Status(person.Status) != StatusInvited {
 			return ErrInvitationUsed
 		}
+		permissions, err := invitationPermissions(ctx, q, person.ID)
+		if err != nil {
+			return err
+		}
+		channel := mail.InvitationChannelFor(source, permissions)
+		delivery := invitationDelivery(channel)
+		// Reissuing replaces the expiry timestamp. Preserve the old token's
+		// expiry event even when hourly maintenance has not run yet.
+		if inv.RevokedAt == nil && inv.ExpiryRecordedAt == nil && !time.Now().Before(inv.ExpiresAt) {
+			if err := recordInvitationExpiry(ctx, q, inv); err != nil {
+				return err
+			}
+		}
 		if inv.EmailID != nil {
 			if err := mail.CancelTx(ctx, q, *inv.EmailID); err != nil {
 				return err
@@ -257,7 +279,7 @@ func (s *Service) ResendInvitation(ctx context.Context, actor audit.Actor, id uu
 			return err
 		}
 		if inv, err = q.ReissueInvitation(ctx, store.ReissueInvitationParams{
-			ID: id, TokenHash: crypto.HashToken(token), Locale: inv.Locale, EmailID: emailID, TtlSeconds: s.invites.Lifetime.Seconds(),
+			ID: id, TokenHash: crypto.HashToken(token), Locale: inv.Locale, EmailID: emailID, Channel: string(channel), GrantPermissions: permissions, TtlSeconds: s.invites.Lifetime.Seconds(),
 		}); err != nil {
 			return fmt.Errorf("identity: reissue invitation: %w", err)
 		}
@@ -294,6 +316,11 @@ func (s *Service) RevokeInvitation(ctx context.Context, actor audit.Actor, id uu
 		if inv.RevokedAt != nil {
 			return nil
 		}
+		if inv.ExpiryRecordedAt == nil && !time.Now().Before(inv.ExpiresAt) {
+			if err := recordInvitationExpiry(ctx, q, inv); err != nil {
+				return err
+			}
+		}
 		if inv.EmailID != nil {
 			if err := mail.CancelTx(ctx, q, *inv.EmailID); err != nil {
 				return err
@@ -323,6 +350,9 @@ func (s *Service) PreviewInvitation(ctx context.Context, token string) (Invitati
 		return InvitationPreview{}, notFound(err, "person")
 	}
 	if err := checkInvitation(inv, person); err != nil {
+		return InvitationPreview{}, err
+	}
+	if err := checkInvitationGrant(ctx, q, inv); err != nil {
 		return InvitationPreview{}, err
 	}
 	return InvitationPreview{Person: person, ExpiresAt: inv.ExpiresAt}, nil
@@ -360,6 +390,9 @@ func (s *Service) AcceptInvitation(ctx context.Context, actor audit.Actor, token
 			return ErrInvitationInvalid // reissued meanwhile
 		}
 		if err := checkInvitation(inv, p); err != nil {
+			return err
+		}
+		if err := checkInvitationGrant(ctx, q, inv); err != nil {
 			return err
 		}
 		// The person acts for themselves from here on.
@@ -421,13 +454,7 @@ func (s *Service) RecordExpiredInvitations(ctx context.Context) (int, error) {
 			return fmt.Errorf("identity: list expired invitations: %w", err)
 		}
 		for _, inv := range rows {
-			if err := q.MarkInvitationExpiryRecorded(ctx, inv.ID); err != nil {
-				return fmt.Errorf("identity: record expiry: %w", err)
-			}
-			if _, err := audit.Record(ctx, q, audit.Entry{
-				Actor: audit.System, Action: audit.InvitationExpired, Target: invitationTarget(inv.ID),
-				Metadata: map[string]any{"person_id": inv.PersonID, "expires_at": inv.ExpiresAt},
-			}); err != nil {
+			if err := recordInvitationExpiry(ctx, q, inv); err != nil {
 				return err
 			}
 		}
@@ -435,6 +462,17 @@ func (s *Service) RecordExpiredInvitations(ctx context.Context) (int, error) {
 		return nil
 	})
 	return n, err
+}
+
+func recordInvitationExpiry(ctx context.Context, q *store.Queries, inv store.Invitation) error {
+	if err := q.MarkInvitationExpiryRecorded(ctx, inv.ID); err != nil {
+		return fmt.Errorf("identity: record expiry: %w", err)
+	}
+	_, err := audit.Record(ctx, q, audit.Entry{
+		Actor: audit.System, Action: audit.InvitationExpired, Target: invitationTarget(inv.ID),
+		Metadata: map[string]any{"person_id": inv.PersonID, "expires_at": inv.ExpiresAt},
+	})
+	return err
 }
 
 // RolePermissions returns the permissions of a role, for checking that
@@ -456,18 +494,68 @@ func (s *Service) RolePermissions(ctx context.Context, key authz.RoleKey) ([]aut
 	return perms, nil
 }
 
-func (s *Service) delivery(ctx context.Context) (Delivery, error) {
+func (s *Service) invitationMailSource(ctx context.Context) (mail.Source, error) {
 	if s.mailer == nil {
-		return DeliveryLink, nil
+		return mail.SourceNone, nil
 	}
-	ok, err := s.mailer.Configured(ctx)
+	return s.mailer.SettingsSource(ctx)
+}
+
+func (s *Service) delivery(ctx context.Context) (Delivery, error) {
+	source, err := s.invitationMailSource(ctx)
 	if err != nil {
 		return "", err
 	}
-	if ok {
-		return DeliveryEmail, nil
+	if source == mail.SourceNone {
+		return DeliveryLink, nil
 	}
-	return DeliveryLink, nil
+	return DeliveryEmail, nil
+}
+
+// InvitationRoleDelivery describes the channel for a particular role grant.
+func (s *Service) InvitationRoleDelivery(ctx context.Context, role authz.RoleKey) (Delivery, error) {
+	permissions, err := s.RolePermissions(ctx, role)
+	if err != nil {
+		return "", err
+	}
+	source, err := s.invitationMailSource(ctx)
+	if err != nil {
+		return "", err
+	}
+	names := make([]string, 0, len(permissions))
+	for _, p := range permissions {
+		names = append(names, string(p))
+	}
+	return invitationDelivery(mail.InvitationChannelFor(source, names)), nil
+}
+
+func invitationDelivery(channel mail.InvitationChannel) Delivery {
+	if channel == mail.ChannelLink {
+		return DeliveryLink
+	}
+	return DeliveryEmail
+}
+
+func invitationPermissions(ctx context.Context, q *store.Queries, personID uuid.UUID) ([]string, error) {
+	permissions, err := q.ListPersonPermissions(ctx, personID)
+	if err != nil {
+		return nil, fmt.Errorf("identity: invitation permissions: %w", err)
+	}
+	if permissions == nil {
+		permissions = []string{}
+	}
+	return permissions, nil
+}
+
+func checkInvitationGrant(ctx context.Context, q *store.Queries, inv store.Invitation) error {
+	permissions, err := invitationPermissions(ctx, q, inv.PersonID)
+	if err != nil {
+		return err
+	}
+	if !mail.InvitationChannel(inv.Channel).AllowsGrant(inv.GrantPermissions, permissions) {
+		return ErrInvitationInvalid
+	}
+	return nil
 }
 
 // sendInvitation queues the invitation email for DeliveryEmail and returns

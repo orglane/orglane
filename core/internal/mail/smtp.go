@@ -35,7 +35,7 @@ const sendTimeout = 30 * time.Second
 func send(ctx context.Context, s SMTP, helo, to string, m Message) error {
 	from, err := ParseAddress(s.From)
 	if err != nil {
-		return fmt.Errorf("the sender %q is not a valid address", s.From)
+		return errors.New("the sender address is invalid")
 	}
 	body, err := encode(from, to, m, time.Now())
 	if err != nil {
@@ -54,7 +54,7 @@ func send(ctx context.Context, s SMTP, helo, to string, m Message) error {
 		conn, err = d.DialContext(ctx, "tcp", addr)
 	}
 	if err != nil {
-		return fmt.Errorf("connect to %s: %w", addr, err)
+		return &smtpFailure{stage: "connection", address: addr}
 	}
 	defer func() { _ = conn.Close() }()
 	if deadline, ok := ctx.Deadline(); ok {
@@ -67,44 +67,44 @@ func send(ctx context.Context, s SMTP, helo, to string, m Message) error {
 
 	c, err := smtp.NewClient(conn, s.Host)
 	if err != nil {
-		return fmt.Errorf("greeting from %s: %w", addr, err)
+		return &smtpFailure{stage: "greeting", address: addr}
 	}
 	defer func() { _ = c.Close() }()
 	if err := c.Hello(helo); err != nil {
-		return fmt.Errorf("EHLO: %w", err)
+		return &smtpFailure{stage: "greeting", address: addr}
 	}
 	if s.TLS == config.SMTPStartTLS {
 		if ok, _ := c.Extension("STARTTLS"); !ok {
-			return errors.New("the server does not offer STARTTLS; choose TLS mode \"tls\" or \"none\"")
+			return &smtpFailure{stage: "TLS negotiation", address: addr}
 		}
 		if err := c.StartTLS(tlsConfig); err != nil {
-			return fmt.Errorf("STARTTLS: %w", err)
+			return &smtpFailure{stage: "TLS negotiation", address: addr}
 		}
 	}
 	if s.Username != "" {
 		auth, err := chooseAuth(c, s)
 		if err != nil {
-			return err
+			return &smtpFailure{stage: "authentication", address: addr}
 		}
 		if err := c.Auth(auth); err != nil {
-			return fmt.Errorf("authentication failed: %w", err)
+			return &smtpFailure{stage: "authentication", address: addr}
 		}
 	}
 	if err := c.Mail(from.Address); err != nil {
-		return fmt.Errorf("MAIL FROM: %w", err)
+		return &smtpFailure{stage: "sender", address: addr}
 	}
 	if err := c.Rcpt(to); err != nil {
-		return fmt.Errorf("RCPT TO: %w", err)
+		return &smtpFailure{stage: "recipient", address: addr}
 	}
 	w, err := c.Data()
 	if err != nil {
-		return fmt.Errorf("DATA: %w", err)
+		return &smtpFailure{stage: "message transfer", address: addr}
 	}
 	if _, err := w.Write(body); err != nil {
-		return fmt.Errorf("DATA: %w", err)
+		return &smtpFailure{stage: "message transfer", address: addr}
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("the server rejected the message: %w", err)
+		return &smtpFailure{stage: "message rejection", address: addr}
 	}
 	// The message is accepted; a failing QUIT does not change that.
 	_ = c.Quit()

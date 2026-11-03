@@ -61,6 +61,8 @@ type Invitation struct {
 	Locale           string
 	InvitedBy        *uuid.UUID
 	EmailID          *uuid.UUID
+	Channel          string
+	GrantPermissions []string
 	CreatedAt        time.Time
 	IssuedAt         time.Time
 	ExpiresAt        time.Time

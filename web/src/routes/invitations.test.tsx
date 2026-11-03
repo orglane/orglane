@@ -20,6 +20,28 @@ const invitation = {
 const admin = { ...me, permissions: ["people.manage", "instance.manage"] };
 
 describe("invitations", () => {
+  it("explains the copy-link channel when selecting an additional permission grant", async () => {
+    const { user } = renderApp("/people/invitations", {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/invitations/options": {
+        status: 200,
+        body: {
+          delivery: "email",
+          workEmailPattern: "{username}@acme.com",
+          lifetimeHours: 168,
+          roles: ["member", "admin"],
+          roleDeliveries: { member: "email", admin: "link" },
+        },
+      },
+      "GET /api/v1/teams": { status: 200, body: { items: [] } },
+      "GET /api/v1/invitations": { status: 200, body: { items: [] } },
+    });
+    await screen.findByRole("option", { name: "Admin" });
+    await user.selectOptions(screen.getByLabelText("Role"), "admin");
+    expect(await screen.findByText(/Share this invitation link directly/)).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("Role"), "member");
+    expect(await screen.findByText(/Invitations are emailed to the contact address/)).toBeVisible();
+  });
   it("includes selected initial teams in the invitation request", async () => {
     const teamID = "0190a1b2-0000-7000-8000-000000000099";
     const { user, called } = renderApp("/people/invitations", {
@@ -31,6 +53,7 @@ describe("invitations", () => {
           workEmailPattern: "{username}@acme.com",
           lifetimeHours: 168,
           roles: ["member", "admin"],
+          roleDeliveries: { member: "email", admin: "link" },
         },
       },
       "GET /api/v1/teams": {
@@ -75,6 +98,7 @@ describe("invitations", () => {
           workEmailPattern: "{username}@acme.com",
           lifetimeHours: 168,
           roles: ["member", "admin"],
+          roleDeliveries: { member: "email", admin: "link" },
         },
       },
       "GET /api/v1/invitations": {
