@@ -34,13 +34,26 @@ version, viewport sizes, themes, commands/results, and verification limits
 capture must name its source SHA and must not claim to verify the current design.
 Inspect captures for secrets and private real user data before uploading.
 
-Use the GitHub UI or attachment-capable `gh pr comment` / `gh pr edit` with
-`--body-file` and repeated `--attach ./safe-name.png` from a staging directory.
-Reference each file as `![description](./safe-name.png)` in the body, then verify
-the published Markdown contains hosted GitHub asset URLs and that every asset
-loads. After a partial failure, inspect the published comment and retry only
-missing files. Reuse hosted URLs when linking the evidence from other PRs;
-keep source hashes and provenance in the PR, not image binaries in git.
+Prefer a dedicated evidence comment using attachment-capable `gh pr comment`
+with `--body-file` (the complete comment) and repeated `--attach ./safe-name.png`
+from a staging directory. Reference each file as
+`![description](./safe-name.png)` in that body. To append attachments to an
+existing PR description while preserving its summary and checklist, use
+`gh pr edit --attach ./safe-name.png` without a body flag. If explicitly editing
+the description with `--body-file`, supply the complete intended description,
+including the existing summary and checklist, rather than an evidence-only file.
+The GitHub UI is also supported.
+
+Verify the published Markdown contains hosted GitHub asset URLs, every asset
+loads, and uploaded files match the recorded source hashes. After a partial
+failure, inspect the exact published comment or description and retry only
+missing files, retaining successful hosted URLs. Use `gh pr comment --edit-last`
+only after verifying the intended evidence comment is still the latest comment
+by the caller; multiple agents may share the account. Otherwise target the
+correct comment explicitly or through the GitHub UI. When replacing a comment
+body, preserve its existing evidence and successful hosted URLs. Reuse hosted
+URLs when linking evidence from other PRs; keep source hashes and provenance in
+the PR, not image binaries in git.
 
 ### Review and risk tiers
 
