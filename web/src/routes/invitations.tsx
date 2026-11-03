@@ -16,6 +16,7 @@ import { teamsKey, teamsQuery } from "@/lib/teams";
 
 export const invitationsKey = ["invitations"] as const;
 const messages = defineMessages({
+  import: { id: "invitations.import", defaultMessage: "Import people" },
   title: { id: "invitations.title", defaultMessage: "Invitations" },
   description: {
     id: "invitations.description",
@@ -255,11 +256,18 @@ export function InvitationsPage() {
       title={intl.formatMessage(messages.title)}
       description={intl.formatMessage(messages.description)}
       actions={
-        me.permissions.includes("instance.manage") ? (
-          <Link to="/settings/email" className="text-sm underline">
-            <FormattedMessage {...messages.settings} />
-          </Link>
-        ) : undefined
+        <div className="flex gap-4">
+          {allowed && (
+            <Link to="/people/import" className="text-sm underline">
+              <FormattedMessage {...messages.import} />
+            </Link>
+          )}
+          {me.permissions.includes("instance.manage") && (
+            <Link to="/settings/email" className="text-sm underline">
+              <FormattedMessage {...messages.settings} />
+            </Link>
+          )}
+        </div>
       }
     >
       {allowed ? (

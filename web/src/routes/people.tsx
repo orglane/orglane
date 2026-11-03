@@ -68,11 +68,18 @@ export function PeoplePage() {
       description={<FormattedMessage {...m.description} />}
       actions={
         me.permissions.includes("people.manage") ? (
-          <Button asChild variant="outline">
-            <Link to="/people/invitations">
-              <FormattedMessage {...m.invite} />
-            </Link>
-          </Button>
+          <div className="flex flex-wrap gap-3">
+            <Button asChild variant="outline">
+              <Link to="/people/import">
+                <FormattedMessage {...m.import} />
+              </Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link to="/people/invitations">
+                <FormattedMessage {...m.invite} />
+              </Link>
+            </Button>
+          </div>
         ) : undefined
       }
     >

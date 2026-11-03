@@ -115,7 +115,7 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 	}
 	handler, err := api.NewHandler(api.Options{
 		Version: "test", BaseDomain: cfg.Domain.Base, WorkspaceHost: workspaceHost, WorkspaceURL: cfg.WorkspaceURL(),
-		Auth: stack.Auth, Profile: stack.Profile, Mail: stack.Mail, WorkEmail: cfg.WorkEmail, Logger: logger,
+		Auth: stack.Auth, Profile: stack.Profile, Imports: stack.Imports, Mail: stack.Mail, WorkEmail: cfg.WorkEmail, Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -196,6 +196,8 @@ func (b *browser) req(method, target string, body any, headers ...string) respon
 	case nil:
 	case []byte:
 		rd = bytes.NewReader(v)
+	case io.Reader:
+		rd, contentType = v, "application/octet-stream"
 	case url.Values:
 		rd, contentType = strings.NewReader(v.Encode()), "application/x-www-form-urlencoded"
 	default:

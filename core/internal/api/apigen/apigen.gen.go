@@ -42,25 +42,25 @@ func (e DevicePlatform) Valid() bool {
 
 // Defines values for EmailDeliveryStatus.
 const (
-	Canceled EmailDeliveryStatus = "canceled"
-	Failed   EmailDeliveryStatus = "failed"
-	Queued   EmailDeliveryStatus = "queued"
-	Retrying EmailDeliveryStatus = "retrying"
-	Sent     EmailDeliveryStatus = "sent"
+	EmailDeliveryStatusCanceled EmailDeliveryStatus = "canceled"
+	EmailDeliveryStatusFailed   EmailDeliveryStatus = "failed"
+	EmailDeliveryStatusQueued   EmailDeliveryStatus = "queued"
+	EmailDeliveryStatusRetrying EmailDeliveryStatus = "retrying"
+	EmailDeliveryStatusSent     EmailDeliveryStatus = "sent"
 )
 
 // Valid indicates whether the value is a known member of the EmailDeliveryStatus enum.
 func (e EmailDeliveryStatus) Valid() bool {
 	switch e {
-	case Canceled:
+	case EmailDeliveryStatusCanceled:
 		return true
-	case Failed:
+	case EmailDeliveryStatusFailed:
 		return true
-	case Queued:
+	case EmailDeliveryStatusQueued:
 		return true
-	case Retrying:
+	case EmailDeliveryStatusRetrying:
 		return true
-	case Sent:
+	case EmailDeliveryStatusSent:
 		return true
 	default:
 		return false
@@ -147,19 +147,19 @@ func (e HealthCheckStatus) Valid() bool {
 
 // Defines values for InvitationStatus.
 const (
-	Expired InvitationStatus = "expired"
-	Pending InvitationStatus = "pending"
-	Revoked InvitationStatus = "revoked"
+	InvitationStatusExpired InvitationStatus = "expired"
+	InvitationStatusPending InvitationStatus = "pending"
+	InvitationStatusRevoked InvitationStatus = "revoked"
 )
 
 // Valid indicates whether the value is a known member of the InvitationStatus enum.
 func (e InvitationStatus) Valid() bool {
 	switch e {
-	case Expired:
+	case InvitationStatusExpired:
 		return true
-	case Pending:
+	case InvitationStatusPending:
 		return true
-	case Revoked:
+	case InvitationStatusRevoked:
 		return true
 	default:
 		return false
@@ -178,6 +178,78 @@ func (e InvitationDelivery) Valid() bool {
 	case Email:
 		return true
 	case Link:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PeopleImportState.
+const (
+	Applied   PeopleImportState = "applied"
+	Previewed PeopleImportState = "previewed"
+	Staged    PeopleImportState = "staged"
+)
+
+// Valid indicates whether the value is a known member of the PeopleImportState enum.
+func (e PeopleImportState) Valid() bool {
+	switch e {
+	case Applied:
+		return true
+	case Previewed:
+		return true
+	case Staged:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PeopleImportRowDecision.
+const (
+	PeopleImportRowDecisionConflict PeopleImportRowDecision = "conflict"
+	PeopleImportRowDecisionCreate   PeopleImportRowDecision = "create"
+	PeopleImportRowDecisionSkip     PeopleImportRowDecision = "skip"
+	PeopleImportRowDecisionUpdate   PeopleImportRowDecision = "update"
+)
+
+// Valid indicates whether the value is a known member of the PeopleImportRowDecision enum.
+func (e PeopleImportRowDecision) Valid() bool {
+	switch e {
+	case PeopleImportRowDecisionConflict:
+		return true
+	case PeopleImportRowDecisionCreate:
+		return true
+	case PeopleImportRowDecisionSkip:
+		return true
+	case PeopleImportRowDecisionUpdate:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PeopleImportRowResult.
+const (
+	PeopleImportRowResultCreated PeopleImportRowResult = "created"
+	PeopleImportRowResultFailed  PeopleImportRowResult = "failed"
+	PeopleImportRowResultPending PeopleImportRowResult = "pending"
+	PeopleImportRowResultSkipped PeopleImportRowResult = "skipped"
+	PeopleImportRowResultUpdated PeopleImportRowResult = "updated"
+)
+
+// Valid indicates whether the value is a known member of the PeopleImportRowResult enum.
+func (e PeopleImportRowResult) Valid() bool {
+	switch e {
+	case PeopleImportRowResultCreated:
+		return true
+	case PeopleImportRowResultFailed:
+		return true
+	case PeopleImportRowResultPending:
+		return true
+	case PeopleImportRowResultSkipped:
+		return true
+	case PeopleImportRowResultUpdated:
 		return true
 	default:
 		return false
@@ -837,6 +909,49 @@ type PasswordSignInRequest struct {
 	Password string `json:"password"`
 }
 
+// PeopleImport defines model for PeopleImport.
+type PeopleImport struct {
+	CreatedAt time.Time           `json:"createdAt"`
+	Delimiter string              `json:"delimiter"`
+	Encoding  string              `json:"encoding"`
+	Headers   []string            `json:"headers"`
+	Id        openapi_types.UUID  `json:"id"`
+	Mapping   PeopleImportMapping `json:"mapping"`
+	Rows      []PeopleImportRow   `json:"rows"`
+	Source    string              `json:"source"`
+	State     PeopleImportState   `json:"state"`
+}
+
+// PeopleImportState defines model for PeopleImport.State.
+type PeopleImportState string
+
+// PeopleImportMapping defines model for PeopleImportMapping.
+type PeopleImportMapping struct {
+	Columns []struct {
+		Column int    `json:"column"`
+		Target string `json:"target"`
+	} `json:"columns"`
+	CreateTeams     bool  `json:"createTeams"`
+	SendInvitations bool  `json:"sendInvitations"`
+	SkipRows        []int `json:"skipRows"`
+}
+
+// PeopleImportRow defines model for PeopleImportRow.
+type PeopleImportRow struct {
+	Decision PeopleImportRowDecision `json:"decision"`
+
+	// Error Fixed error code; never contains a source value.
+	Error  string                `json:"error"`
+	Result PeopleImportRowResult `json:"result"`
+	Row    int                   `json:"row"`
+}
+
+// PeopleImportRowDecision defines model for PeopleImportRow.Decision.
+type PeopleImportRowDecision string
+
+// PeopleImportRowResult defines model for PeopleImportRow.Result.
+type PeopleImportRowResult string
+
 // Person defines model for Person.
 type Person struct {
 	// AvatarUrl Path of the avatar image (`GET /api/v1/people/{personId}/avatar`), if the person has one.
@@ -1405,6 +1520,9 @@ type CreateInvitationJSONRequestBody = CreateInvitationRequest
 // AddMyPasskeyJSONRequestBody defines body for AddMyPasskey for application/json ContentType.
 type AddMyPasskeyJSONRequestBody = AddPasskeyRequest
 
+// PreviewPeopleImportJSONRequestBody defines body for PreviewPeopleImport for application/json ContentType.
+type PreviewPeopleImportJSONRequestBody = PeopleImportMapping
+
 // UpdatePersonJSONRequestBody defines body for UpdatePerson for application/json ContentType.
 type UpdatePersonJSONRequestBody = PersonUpdate
 
@@ -1518,6 +1636,24 @@ type ServerInterface interface {
 	// ListPeople List people
 	// (GET /api/v1/people)
 	ListPeople(w http.ResponseWriter, r *http.Request, params ListPeopleParams)
+	// UploadPeopleImport Upload CSV or XLSX into encrypted staging
+	// (POST /api/v1/people-imports)
+	UploadPeopleImport(w http.ResponseWriter, r *http.Request)
+	// GetPeopleImportTemplate Download a CSV import template
+	// (GET /api/v1/people-imports/template)
+	GetPeopleImportTemplate(w http.ResponseWriter, r *http.Request)
+	// GetPeopleImport Read an import and its persisted decisions and results
+	// (GET /api/v1/people-imports/{runId})
+	GetPeopleImport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
+	// ApplyPeopleImport Apply a persisted preview with isolated row transactions
+	// (POST /api/v1/people-imports/{runId}/apply)
+	ApplyPeopleImport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
+	// ExportPeopleImportErrors Download value-free row errors as safe CSV
+	// (GET /api/v1/people-imports/{runId}/errors)
+	ExportPeopleImportErrors(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
+	// PreviewPeopleImport Map columns and persist a preview before applying
+	// (POST /api/v1/people-imports/{runId}/preview)
+	PreviewPeopleImport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
 	// GetPerson Public directory details of a person
 	// (GET /api/v1/people/{personId})
 	GetPerson(w http.ResponseWriter, r *http.Request, personId PersonId)
@@ -2149,6 +2285,138 @@ func (siw *ServerInterfaceWrapper) ListPeople(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListPeople(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UploadPeopleImport operation middleware
+func (siw *ServerInterfaceWrapper) UploadPeopleImport(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UploadPeopleImport(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPeopleImportTemplate operation middleware
+func (siw *ServerInterfaceWrapper) GetPeopleImportTemplate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPeopleImportTemplate(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPeopleImport operation middleware
+func (siw *ServerInterfaceWrapper) GetPeopleImport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "runId" -------------
+	var runId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "runId", r.PathValue("runId"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPeopleImport(w, r, runId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ApplyPeopleImport operation middleware
+func (siw *ServerInterfaceWrapper) ApplyPeopleImport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "runId" -------------
+	var runId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "runId", r.PathValue("runId"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ApplyPeopleImport(w, r, runId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ExportPeopleImportErrors operation middleware
+func (siw *ServerInterfaceWrapper) ExportPeopleImportErrors(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "runId" -------------
+	var runId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "runId", r.PathValue("runId"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ExportPeopleImportErrors(w, r, runId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PreviewPeopleImport operation middleware
+func (siw *ServerInterfaceWrapper) PreviewPeopleImport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "runId" -------------
+	var runId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "runId", r.PathValue("runId"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewPeopleImport(w, r, runId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2974,6 +3242,12 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/settings/email", wrapper.GetEmailSettings)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/v1/settings/email", wrapper.PutEmailSettings)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/settings/email/test", wrapper.SendTestEmail)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people-imports/template", wrapper.GetPeopleImportTemplate)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports", wrapper.UploadPeopleImport)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people-imports/{runId}", wrapper.GetPeopleImport)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports/{runId}/preview", wrapper.PreviewPeopleImport)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports/{runId}/apply", wrapper.ApplyPeopleImport)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people-imports/{runId}/errors", wrapper.ExportPeopleImportErrors)
 
 	return m
 }
@@ -5124,6 +5398,582 @@ type ListPeople500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response ListPeople500ApplicationProblemPlusJSONResponse) VisitListPeopleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPeopleImportRequestObject struct {
+	Body io.Reader
+}
+
+type UploadPeopleImportResponseObject interface {
+	VisitUploadPeopleImportResponse(w http.ResponseWriter) error
+}
+
+type UploadPeopleImport201JSONResponse PeopleImport
+
+func (response UploadPeopleImport201JSONResponse) VisitUploadPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPeopleImport400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response UploadPeopleImport400ApplicationProblemPlusJSONResponse) VisitUploadPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPeopleImport401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response UploadPeopleImport401ApplicationProblemPlusJSONResponse) VisitUploadPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPeopleImport403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response UploadPeopleImport403ApplicationProblemPlusJSONResponse) VisitUploadPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPeopleImport500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response UploadPeopleImport500ApplicationProblemPlusJSONResponse) VisitUploadPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPeopleImportTemplateRequestObject struct {
+}
+
+type GetPeopleImportTemplateResponseObject interface {
+	VisitGetPeopleImportTemplateResponse(w http.ResponseWriter) error
+}
+
+type GetPeopleImportTemplate200TextcsvResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response GetPeopleImportTemplate200TextcsvResponse) VisitGetPeopleImportTemplateResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/csv")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type GetPeopleImportTemplate401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetPeopleImportTemplate401ApplicationProblemPlusJSONResponse) VisitGetPeopleImportTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPeopleImportTemplate403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response GetPeopleImportTemplate403ApplicationProblemPlusJSONResponse) VisitGetPeopleImportTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPeopleImportTemplate500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetPeopleImportTemplate500ApplicationProblemPlusJSONResponse) VisitGetPeopleImportTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPeopleImportRequestObject struct {
+	RunId openapi_types.UUID `json:"runId"`
+}
+
+type GetPeopleImportResponseObject interface {
+	VisitGetPeopleImportResponse(w http.ResponseWriter) error
+}
+
+type GetPeopleImport200JSONResponse PeopleImport
+
+func (response GetPeopleImport200JSONResponse) VisitGetPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPeopleImport401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetPeopleImport401ApplicationProblemPlusJSONResponse) VisitGetPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPeopleImport403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response GetPeopleImport403ApplicationProblemPlusJSONResponse) VisitGetPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPeopleImport404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetPeopleImport404ApplicationProblemPlusJSONResponse) VisitGetPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPeopleImport500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetPeopleImport500ApplicationProblemPlusJSONResponse) VisitGetPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyPeopleImportRequestObject struct {
+	RunId openapi_types.UUID `json:"runId"`
+}
+
+type ApplyPeopleImportResponseObject interface {
+	VisitApplyPeopleImportResponse(w http.ResponseWriter) error
+}
+
+type ApplyPeopleImport200JSONResponse PeopleImport
+
+func (response ApplyPeopleImport200JSONResponse) VisitApplyPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyPeopleImport400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyPeopleImport400ApplicationProblemPlusJSONResponse) VisitApplyPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyPeopleImport401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyPeopleImport401ApplicationProblemPlusJSONResponse) VisitApplyPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyPeopleImport403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyPeopleImport403ApplicationProblemPlusJSONResponse) VisitApplyPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyPeopleImport404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyPeopleImport404ApplicationProblemPlusJSONResponse) VisitApplyPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyPeopleImport409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyPeopleImport409ApplicationProblemPlusJSONResponse) VisitApplyPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyPeopleImport500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyPeopleImport500ApplicationProblemPlusJSONResponse) VisitApplyPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExportPeopleImportErrorsRequestObject struct {
+	RunId openapi_types.UUID `json:"runId"`
+}
+
+type ExportPeopleImportErrorsResponseObject interface {
+	VisitExportPeopleImportErrorsResponse(w http.ResponseWriter) error
+}
+
+type ExportPeopleImportErrors200TextcsvResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response ExportPeopleImportErrors200TextcsvResponse) VisitExportPeopleImportErrorsResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/csv")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type ExportPeopleImportErrors401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ExportPeopleImportErrors401ApplicationProblemPlusJSONResponse) VisitExportPeopleImportErrorsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExportPeopleImportErrors403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ExportPeopleImportErrors403ApplicationProblemPlusJSONResponse) VisitExportPeopleImportErrorsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExportPeopleImportErrors404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ExportPeopleImportErrors404ApplicationProblemPlusJSONResponse) VisitExportPeopleImportErrorsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExportPeopleImportErrors500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ExportPeopleImportErrors500ApplicationProblemPlusJSONResponse) VisitExportPeopleImportErrorsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewPeopleImportRequestObject struct {
+	RunId openapi_types.UUID `json:"runId"`
+	Body  *PreviewPeopleImportJSONRequestBody
+}
+
+type PreviewPeopleImportResponseObject interface {
+	VisitPreviewPeopleImportResponse(w http.ResponseWriter) error
+}
+
+type PreviewPeopleImport200JSONResponse PeopleImport
+
+func (response PreviewPeopleImport200JSONResponse) VisitPreviewPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewPeopleImport400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewPeopleImport400ApplicationProblemPlusJSONResponse) VisitPreviewPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewPeopleImport401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewPeopleImport401ApplicationProblemPlusJSONResponse) VisitPreviewPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewPeopleImport403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewPeopleImport403ApplicationProblemPlusJSONResponse) VisitPreviewPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewPeopleImport404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewPeopleImport404ApplicationProblemPlusJSONResponse) VisitPreviewPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewPeopleImport409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewPeopleImport409ApplicationProblemPlusJSONResponse) VisitPreviewPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewPeopleImport500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewPeopleImport500ApplicationProblemPlusJSONResponse) VisitPreviewPeopleImportResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -7678,6 +8528,24 @@ type StrictServerInterface interface {
 	// ListPeople List people
 	// (GET /api/v1/people)
 	ListPeople(ctx context.Context, request ListPeopleRequestObject) (ListPeopleResponseObject, error)
+	// UploadPeopleImport Upload CSV or XLSX into encrypted staging
+	// (POST /api/v1/people-imports)
+	UploadPeopleImport(ctx context.Context, request UploadPeopleImportRequestObject) (UploadPeopleImportResponseObject, error)
+	// GetPeopleImportTemplate Download a CSV import template
+	// (GET /api/v1/people-imports/template)
+	GetPeopleImportTemplate(ctx context.Context, request GetPeopleImportTemplateRequestObject) (GetPeopleImportTemplateResponseObject, error)
+	// GetPeopleImport Read an import and its persisted decisions and results
+	// (GET /api/v1/people-imports/{runId})
+	GetPeopleImport(ctx context.Context, request GetPeopleImportRequestObject) (GetPeopleImportResponseObject, error)
+	// ApplyPeopleImport Apply a persisted preview with isolated row transactions
+	// (POST /api/v1/people-imports/{runId}/apply)
+	ApplyPeopleImport(ctx context.Context, request ApplyPeopleImportRequestObject) (ApplyPeopleImportResponseObject, error)
+	// ExportPeopleImportErrors Download value-free row errors as safe CSV
+	// (GET /api/v1/people-imports/{runId}/errors)
+	ExportPeopleImportErrors(ctx context.Context, request ExportPeopleImportErrorsRequestObject) (ExportPeopleImportErrorsResponseObject, error)
+	// PreviewPeopleImport Map columns and persist a preview before applying
+	// (POST /api/v1/people-imports/{runId}/preview)
+	PreviewPeopleImport(ctx context.Context, request PreviewPeopleImportRequestObject) (PreviewPeopleImportResponseObject, error)
 	// GetPerson Public directory details of a person
 	// (GET /api/v1/people/{personId})
 	GetPerson(ctx context.Context, request GetPersonRequestObject) (GetPersonResponseObject, error)
@@ -8537,6 +9405,167 @@ func (sh *strictHandler) ListPeople(w http.ResponseWriter, r *http.Request, para
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListPeopleResponseObject); ok {
 		if err := validResponse.VisitListPeopleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UploadPeopleImport operation middleware
+func (sh *strictHandler) UploadPeopleImport(w http.ResponseWriter, r *http.Request) {
+	var request UploadPeopleImportRequestObject
+
+	request.Body = r.Body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UploadPeopleImport(ctx, request.(UploadPeopleImportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UploadPeopleImport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UploadPeopleImportResponseObject); ok {
+		if err := validResponse.VisitUploadPeopleImportResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetPeopleImportTemplate operation middleware
+func (sh *strictHandler) GetPeopleImportTemplate(w http.ResponseWriter, r *http.Request) {
+	var request GetPeopleImportTemplateRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPeopleImportTemplate(ctx, request.(GetPeopleImportTemplateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPeopleImportTemplate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetPeopleImportTemplateResponseObject); ok {
+		if err := validResponse.VisitGetPeopleImportTemplateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetPeopleImport operation middleware
+func (sh *strictHandler) GetPeopleImport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID) {
+	var request GetPeopleImportRequestObject
+
+	request.RunId = runId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPeopleImport(ctx, request.(GetPeopleImportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPeopleImport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetPeopleImportResponseObject); ok {
+		if err := validResponse.VisitGetPeopleImportResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ApplyPeopleImport operation middleware
+func (sh *strictHandler) ApplyPeopleImport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID) {
+	var request ApplyPeopleImportRequestObject
+
+	request.RunId = runId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ApplyPeopleImport(ctx, request.(ApplyPeopleImportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ApplyPeopleImport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ApplyPeopleImportResponseObject); ok {
+		if err := validResponse.VisitApplyPeopleImportResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ExportPeopleImportErrors operation middleware
+func (sh *strictHandler) ExportPeopleImportErrors(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID) {
+	var request ExportPeopleImportErrorsRequestObject
+
+	request.RunId = runId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ExportPeopleImportErrors(ctx, request.(ExportPeopleImportErrorsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ExportPeopleImportErrors")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ExportPeopleImportErrorsResponseObject); ok {
+		if err := validResponse.VisitExportPeopleImportErrorsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PreviewPeopleImport operation middleware
+func (sh *strictHandler) PreviewPeopleImport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID) {
+	var request PreviewPeopleImportRequestObject
+
+	request.RunId = runId
+
+	var body PreviewPeopleImportJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PreviewPeopleImport(ctx, request.(PreviewPeopleImportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PreviewPeopleImport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PreviewPeopleImportResponseObject); ok {
+		if err := validResponse.VisitPreviewPeopleImportResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

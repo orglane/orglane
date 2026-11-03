@@ -33,6 +33,7 @@ export async function allPeople(api: Api): Promise<{ items: Schema<"Person">[] }
 }
 
 export const peopleMessages = defineMessages({
+  import: { id: "people.import", defaultMessage: "Import people" },
   title: { id: "nav.people", defaultMessage: "People" },
   invite: { id: "people.invite", defaultMessage: "Invite people" },
   description: { id: "people.description", defaultMessage: "Find anyone in your company." },

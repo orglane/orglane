@@ -1024,6 +1024,141 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/people-imports/template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download a CSV import template */
+        get: operations["getPeopleImportTemplate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/people-imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload CSV or XLSX into encrypted staging
+         * @description Maximum 5 MiB, 1000 data rows, 100 columns, 4096 bytes per cell.
+         *     XLSX expands to at most 32 MiB and 100 ZIP entries; formulas are rejected
+         *     per row and never evaluated. UTF-8, BOM-marked UTF-16 and Windows-1252
+         *     CSV are detected. Only the first XLSX sheet is imported.
+         *     Runs belong to their uploader; source values never appear in responses.
+         */
+        post: operations["uploadPeopleImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/people-imports/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        /** Read an import and its persisted decisions and results */
+        get: operations["getPeopleImport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/people-imports/{runId}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Map columns and persist a preview before applying
+         * @description Mapping JSON is limited to 64 KiB and rejects unknown fields and trailing data.
+         *     Targets are username, work_email, contact_email, display_name, title,
+         *     manager_email, teams, role, external_id, and profile.<enabled field key>.
+         *     Empty cells leave existing values unchanged. Role assigns an additional
+         *     bundle and requires every target and requested permission; it never
+         *     replaces existing roles. Unknown teams require createTeams. Matching
+         *     prioritizes work email, contact email, external ID; disagreeing identities
+         *     and duplicate input identifiers are conflicts. Preview must be repeated
+         *     after a stale-row conflict. Skipped row numbers are explicit decisions.
+         */
+        post: operations["previewPeopleImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/people-imports/{runId}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a persisted preview with isolated row transactions
+         * @description Current permissions, identities, definitions and preview versions are
+         *     revalidated. Failed rows roll back while other rows continue. Repeating
+         *     apply returns the stored result. Invitations use the existing secure
+         *     channel and grant ceilings; links and tokens are never staged/exported.
+         *     Optional email delivery fails the row if the grant requires a link.
+         */
+        post: operations["applyPeopleImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/people-imports/{runId}/errors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        /** Download value-free row errors as safe CSV */
+        get: operations["exportPeopleImportErrors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1046,6 +1181,38 @@ export interface components {
             /** @description Only disclosed for self. True after an accepted invitation until welcome is finished. */
             welcomePending: boolean;
             steps: components["schemas"]["OnboardingStep"][];
+        };
+        PeopleImportMapping: {
+            columns: {
+                column: number;
+                target: string;
+            }[];
+            createTeams: boolean;
+            sendInvitations: boolean;
+            skipRows: number[];
+        };
+        PeopleImportRow: {
+            row: number;
+            /** @enum {string} */
+            decision: "create" | "update" | "skip" | "conflict";
+            /** @description Fixed error code; never contains a source value. */
+            error: string;
+            /** @enum {string} */
+            result: "pending" | "created" | "updated" | "skipped" | "failed";
+        };
+        PeopleImport: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            state: "staged" | "previewed" | "applied";
+            source: string;
+            encoding: string;
+            delimiter: string;
+            headers: string[];
+            mapping: components["schemas"]["PeopleImportMapping"];
+            rows: components["schemas"]["PeopleImportRow"][];
+            /** Format: date-time */
+            createdAt: string;
         };
         /** @description RFC 9457 problem details. */
         Problem: {
@@ -3377,6 +3544,169 @@ export interface operations {
             409: components["responses"]["Conflict"];
             500: components["responses"]["InternalError"];
             502: components["responses"]["BadGateway"];
+        };
+    };
+    getPeopleImportTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description UTF-8 CSV template. Teams are separated by semicolons. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    uploadPeopleImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Staged import, with column headers and detection metadata. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PeopleImport"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getPeopleImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Import metadata and value-free row decisions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PeopleImport"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    previewPeopleImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PeopleImportMapping"];
+            };
+        };
+        responses: {
+            /** @description Persisted create, update, skip or conflict decisions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PeopleImport"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    applyPeopleImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Applied import results. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PeopleImport"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    exportPeopleImportErrors: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Row numbers, decisions and fixed error codes only. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
 }

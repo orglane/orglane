@@ -21,6 +21,7 @@ import (
 	"github.com/orglane/orglane/core/internal/identity/web"
 	"github.com/orglane/orglane/core/internal/mail"
 	"github.com/orglane/orglane/core/internal/onboarding"
+	"github.com/orglane/orglane/core/internal/peopleimport"
 	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/demo"
 )
@@ -58,6 +59,8 @@ type Options struct {
 	Profile *profile.Service
 	// EmployeeSteps extends the built-in checklist with future authorized sources.
 	EmployeeSteps onboarding.Registry
+	// Imports serves encrypted people import runs.
+	Imports *peopleimport.Service
 	// Mail serves the system email settings. Without it those operations
 	// fail with 500.
 	Mail *mail.Service

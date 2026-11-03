@@ -36,7 +36,10 @@ test("invite without email, copy a link, accept and skip the passkey offer", asy
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Maya");
   await page.goto(`${instance.url}/teams`);
   await page.getByRole("link", { name: /Platform/ }).click();
-  await expect(page.getByText("Maya Okafor", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Account menu for Maya Okafor", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("main").getByText("Maya Okafor", { exact: true })).toBeVisible();
   await page.goto(link);
   await expect(page.getByRole("alert")).toContainText("already accepted");
 });

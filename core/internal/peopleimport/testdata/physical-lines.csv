@@ -1,0 +1,8 @@
+username,work_email,display_name
+
+alpha,alpha@acme.test,"Alpha
+Example"
+
+bad,bad@acme.test,Bad,extra
+
+omega,omega@acme.test,Omega

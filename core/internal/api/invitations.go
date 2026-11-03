@@ -306,6 +306,8 @@ func invitation(row store.ListInvitationsRow, now time.Time) apigen.Invitation {
 // invitationError maps invitation failures to responses.
 func invitationError(err error) error {
 	switch {
+	case errors.Is(err, identity.ErrForbidden):
+		return problemErr(http.StatusForbidden, "Insufficient grant authority.")
 	case errors.Is(err, identity.ErrInvitationInvalid):
 		return problemErr(http.StatusNotFound, "This invitation link is not valid. It may have been revoked or replaced by a newer one.")
 	case errors.Is(err, identity.ErrInvitationExpired):

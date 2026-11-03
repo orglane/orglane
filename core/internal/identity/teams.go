@@ -46,9 +46,9 @@ const (
 var slugPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // teamHierarchyLockID is the transaction-scoped advisory lock taken first by
-// every change that can affect the team hierarchy (setting a parent,
-// archiving), so concurrent changes cannot form a cycle or leave an active
-// team under an archived parent.
+// every change that can affect the team hierarchy or set of teams (creating,
+// setting a parent, archiving). Besides preventing cycles, it freezes the set
+// of teams while an import takes its ordered team locks.
 const teamHierarchyLockID int64 = 0x6f72676c7465616d // "orglteam"
 
 // NewTeam describes a team to create.
@@ -91,10 +91,10 @@ func (s *Service) CreateTeam(ctx context.Context, actor audit.Actor, in NewTeam)
 	}
 	var team store.Team
 	err = s.inTx(ctx, func(q *store.Queries) error {
+		if err := q.AcquireXactLock(ctx, teamHierarchyLockID); err != nil {
+			return fmt.Errorf("identity: lock team hierarchy: %w", err)
+		}
 		if params.ParentID != nil {
-			if err := q.AcquireXactLock(ctx, teamHierarchyLockID); err != nil {
-				return fmt.Errorf("identity: lock team hierarchy: %w", err)
-			}
 			if err := checkParent(ctx, q, uuid.Nil, *params.ParentID); err != nil {
 				return err
 			}

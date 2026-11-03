@@ -136,12 +136,28 @@ func (s *Service) profileView(ctx context.Context, q *store.Queries, actor audit
 // change are ErrForbidden. The mutation, its sensitive reads and the
 // authorized response are committed in one transaction.
 func (s *Service) UpdateProfile(ctx context.Context, actor audit.Actor, viewer Viewer, personID uuid.UUID, changes []Change) ([]Entry, error) {
-	rel := relation{self: viewer.PersonID == personID}
-	if !rel.self && !viewer.ManagePeople {
-		return nil, fmt.Errorf("%w: only the person and admins change a profile", ErrForbidden)
-	}
 	var entries []Entry
 	err := s.inTx(ctx, func(q *store.Queries) error {
+		var err error
+		entries, err = s.UpdateProfileTx(ctx, q, actor, viewer, personID, changes)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// UpdateProfileTx applies the central edit, visibility, encryption and sensitive
+// read audit policy inside the caller's transaction. The caller must commit
+// before disclosing entries, and must roll back on any error.
+func (s *Service) UpdateProfileTx(ctx context.Context, q *store.Queries, actor audit.Actor, viewer Viewer, personID uuid.UUID, changes []Change) ([]Entry, error) {
+	rel := relation{self: viewer.PersonID == personID}
+	if !rel.self && !viewer.ManagePeople {
+		return nil, ErrForbidden
+	}
+	var entries []Entry
+	err := func() error {
 		person, err := q.GetPersonForUpdate(ctx, personID)
 		if err != nil {
 			return notFound(err, "person")
@@ -262,7 +278,7 @@ func (s *Service) UpdateProfile(ctx context.Context, actor audit.Actor, viewer V
 		// A failure auditing the response must roll back the mutation too.
 		entries, err = s.profileView(ctx, q, actor, viewer, personID, rel)
 		return err
-	})
+	}()
 	if err != nil {
 		return nil, err
 	}
