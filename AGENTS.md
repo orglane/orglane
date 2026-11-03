@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project status
 
-Pre-alpha. The monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the M0 data model (people, roles, devices, sessions, audit log), identity (embedded OpenID Provider, password and passkey sign-in, sessions) and the web skeleton (React SPA embedded into the binary, design tokens, i18n) are in place (see [ROADMAP.md](ROADMAP.md)).
+Pre-alpha. The monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the M0 data model (people, roles, devices, sessions, audit log), identity (embedded OpenID Provider, password and passkey sign-in, sessions), the web skeleton (React SPA embedded into the binary, design tokens, i18n), the Compose bundle with Traefik and the one-command installer (`deploy/install.sh`) are in place (see [ROADMAP.md](ROADMAP.md)).
 
 ## Toolchain
 
@@ -17,6 +17,7 @@ Pre-alpha. The monorepo tooling, the core skeleton (server/agent/cli modes, Post
 | oapi-codegen | v2.8.2 | `Makefile` (`OAPI_CODEGEN_VERSION`), installed into `.bin/` |
 | sqlc | v1.31.1 | `Makefile` (`SQLC_VERSION`), installed into `.bin/` (needs cgo) |
 | govulncheck, go-licenses | see `Makefile` | `Makefile` (`GOVULNCHECK_VERSION`, `GO_LICENSES_VERSION`), installed into `.bin/` |
+| shellcheck | 0.11.0 | `Makefile` (`SHELLCHECK_VERSION`, `SHELLCHECK_IMAGE`); from `PATH` if that version, else its pinned Docker image |
 | PostgreSQL | 18 | `deploy/dev/compose.yaml`, `tests/pgtest` (integration tests) |
 | Biome, TypeScript, Vitest | see `package.json` files | `pnpm-lock.yaml` |
 
@@ -39,10 +40,11 @@ make test              # Go unit + integration tests (integration only when Dock
 make test-unit         # Go unit tests only
 make test-integration  # Go unit + integration tests, including the Compose bundle tests (needs Docker)
 make test-compose      # only the Compose bundle tests: local mode and domain mode against Pebble (needs Docker)
+make test-install      # the installer (deploy/install.sh) end to end: local, demo, domain mode with Pebble (needs Docker)
 make test-e2e          # Playwright end-to-end tests of the web UI against a real server (needs Docker and Playwright's Chromium)
 make measure-memory    # idle RSS of the server against Postgres (warning only, needs Docker)
 make conformance       # OpenID Conformance Suite against a local server (Docker)
-make lint              # stale generated code check (Go and TypeScript), go mod tidy check, golangci-lint, Biome, tsc --noEmit
+make lint              # stale generated code check (Go and TypeScript), go mod tidy check, golangci-lint, Biome, tsc --noEmit, shellcheck
 make fmt               # go mod tidy, golangci-lint fmt (gofmt + goimports), biome check --write
 make security          # govulncheck; dependency license check (ADR 0016)
 make help              # list targets
@@ -67,6 +69,10 @@ Configuration is a YAML file (`-config` or `ORGLANE_CONFIG`) plus `ORGLANE_*` en
 ### Compose bundle and Traefik
 
 The production bundle is `deploy/compose/compose.yaml` (Traefik, the core image from the root `Dockerfile`, PostgreSQL); usage is in [deploy/README.md](deploy/README.md). Traefik has no Docker socket: it polls its routes from the core's internal listener (`server.internal_listen`, `GET /traefik/config`), which is never published or routed (ADR 0008). The routes are generated in `core/internal/ingress` from the domain settings and `ingress.mode` (`domain`: HTTPS via Let's Encrypt, HSTS, HTTP→HTTPS redirect, production; `local`: plain HTTP for `--demo`, development). In the bundle, `ORGLANE_INGRESS_MODE` selects `deploy/compose/modes/<mode>.env`. Traefik has a fixed address and is the only entry in `server.trusted_proxies`. Pin every image in the bundle and the `Dockerfile` by version and digest. Changes to routing or the bundle need `make test-compose` to pass.
+
+### Installer
+
+`deploy/install.sh` is the one-command installer (`curl -fsSL https://orglane.app/install.sh | sh`): modes `demo`, `local` and `domain`; `status` and `uninstall` subcommands. It writes the bundle and a `.env` (mode 600, secrets included) into the data directory and runs `docker compose` there. It must stay POSIX sh and shellcheck-clean (`make lint-sh`). It never installs Docker without explicit confirmation, and it never requests a certificate before the DNS and reachability checks pass. Changes to it, or to the bundle it installs, need `make test-install` to pass (it runs the installer from `--source` against an image built from the checkout). Usage and behavior are in [deploy/README.md](deploy/README.md#the-installer).
 
 ### API changes
 

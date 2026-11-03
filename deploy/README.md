@@ -1,12 +1,97 @@
 # deploy
 
-Docker Compose files and, later, the one-command install script (#11).
+The one-command installer and the Docker Compose files.
 
 | Path | Contents |
 |---|---|
+| `install.sh` | The installer: checks the machine, writes the bundle and its settings, starts Orglane and prints the URL |
 | `compose/` | The production bundle: Traefik, the Orglane core and PostgreSQL |
 | `compose/pebble/` | **Testing only:** an overlay that runs domain mode against Pebble, Let's Encrypt's ACME test server |
 | `dev/` | Local development only: a PostgreSQL for `make dev` and the matching `orglane.yaml` |
+
+## The installer
+
+```sh
+curl -fsSL https://orglane.app/install.sh | sh                        # asks: demo, domain or local
+curl -fsSL https://orglane.app/install.sh | sh -s -- --mode demo --yes  # the demo on a laptop, no questions
+curl -fsSL https://orglane.app/install.sh | sudo sh -s -- --mode domain \
+    --domain acme.com --workspace-host work.acme.com --acme-email admin@acme.com --yes
+```
+
+`install.sh` is POSIX sh (dash, busybox and bash). When it is piped into `sh`, it reads answers from the terminal (`/dev/tty`). With `--yes` it asks nothing and uses the options and defaults. `install.sh --help` lists every option.
+
+| Mode | For | Result |
+|---|---|---|
+| `demo` | Trying Orglane on a laptop (Linux or macOS with Docker Desktop) | `http://localhost` with the "Acme Robotics" sample company and one-click sign-in as any of its people (local ingress mode, `ORGLANE_DEMO_ENABLED=true`) |
+| `local` | An empty instance on this computer | `http://localhost` and a one-time setup token for creating the owner |
+| `domain` | Production on a Linux server with a public IP | `https://<workspace host>` with a Let's Encrypt certificate and a one-time setup token |
+
+What it does, in order:
+
+1. Checks the OS and CPU architecture (Linux and macOS; amd64 and arm64), Docker Engine 25+ and Compose 2.24+. If Docker is missing on Linux, it offers the official convenience script (`https://get.docker.com`). It installs Docker only after you confirm, or with `--install-docker`, never because of `--yes` alone.
+2. Checks CPUs, the memory Docker can use and the free disk space, and warns below the recommended size (domain mode: 2 CPUs, 4 GB, 10 GB disk).
+3. Fetches the Compose bundle (`compose.yaml`, `modes/`, `pebble/`) of the requested release (`--version`, default: the latest GitHub release) from the source archive of its tag, and uses the image `ghcr.io/orglane/orglane:<version>`. `--source <checkout>` takes the bundle from a checkout instead, together with `--image` (for example `orglane:dev` from `make image`) or `--version`.
+4. Domain mode only: checks DNS and reachability **before** anything requests a certificate (see below).
+5. Generates the database password and the master secret with a CSPRNG (`openssl rand`, else `/dev/urandom`). It writes them with every other setting to `<data dir>/.env` (mode 600, data directory mode 700) and sizes PostgreSQL from the memory Docker reports (see [PostgreSQL sizing](#postgresql-sizing)).
+6. Runs `docker compose up --detach --wait`, waits until the workspace answers `/readyz` through Traefik (in domain mode also until the certificate is issued), and prints the URL with a one-time setup token (`orglane cli setup-token`) or, in demo mode, the URL to open for one-click sign-in. The last line of output is the URL alone, for scripts.
+
+The data directory (`--data-dir`, default `/var/lib/orglane` on Linux, which needs root, and `~/.orglane` on macOS) holds everything: the bundle, `.env` and the data (`postgres/`, `traefik/`). `docker compose` commands work from there, for example `cd /var/lib/orglane && docker compose logs -f`.
+
+**Re-runs** detect the existing install and upgrade or repair it. The bundle and the image are replaced, while the secrets, the mode, the domain settings and the data are kept. Settings you add under `# --- Your settings` at the end of `.env` are kept too, and they override the ones above them. Changing the mode of an install is refused. Automatic rollback of a failed upgrade comes with the upgrade flow of [ADR 0007](../docs/adr/0007-distribution-upgrades-rollback.md).
+
+```sh
+sh install.sh status      # mode, version, URL, containers, readiness (exit 1 if not ready)
+sh install.sh uninstall   # removes the containers and networks, keeps the data directory
+sh install.sh uninstall --purge   # also deletes the data directory (asks you to type "delete"; --yes skips that)
+```
+
+Add `--data-dir` when the install is not in the default place. Without a local copy, run them as `curl -fsSL https://orglane.app/install.sh | sh -s -- status`.
+
+### Domain mode: DNS and reachability first
+
+Let's Encrypt limits failed validations, so the installer requests no certificate until DNS is right. It shows the records to create for this server's public address (asked from `ipv4.icanhazip.com` and `ipv6.icanhazip.com`, or `--public-ip`):
+
+```
+    work.acme.com                    A     203.0.113.10
+    *.acme.com                       A     203.0.113.10
+```
+
+(AAAA records too when the server has a public IPv6 address.) The wildcard is for company services such as `git.acme.com`. It is recommended now and needed once a service is added. Then the installer:
+
+- **refuses** when the workspace host has no A record, resolves to another address, or has an AAAA record that doesn't point at this server (Let's Encrypt prefers IPv6, so a stale AAAA record fails validation). It also refuses when DNS can't be queried at all;
+- starts a throwaway Traefik on ports 80 and 443 and fetches it through the workspace host's name. It **refuses** if the ports are taken or the name doesn't lead back to this server;
+- only warns about a missing wildcard record, and about `ufw` when it is active and doesn't mention ports 80 and 443.
+
+The reachability check runs from the server itself, so it can't see a hosting provider's firewall: open ports 80 and 443 (TCP) there as well. Behind NAT without hairpin routing, or with split-horizon DNS, the check fails even when everything is right. Then pass `--skip-checks`. On re-runs the DNS check only warns.
+
+### Certificate authority
+
+`--acme-ca` chooses where certificates come from:
+
+- `production`: Let's Encrypt, the default;
+- `staging` (or `--acme-staging`): Let's Encrypt staging, whose test certificates browsers don't trust, but without production's rate limits;
+- an `https://` ACME directory URL.
+
+The choice is stored in `.env` (`ORGLANE_ACME_CA_SERVER`), and re-runs and upgrades keep it. Only an explicit `--acme-ca` changes it. Traefik keeps the account and certificates of the old CA in `traefik/acme.json` and doesn't replace them when the CA changes. So on a change the installer stops Traefik, deletes `acme.json` (after asking, unless `--yes`) and starts Traefik with the new CA, which issues the certificate again. To move a staging install to production:
+
+```sh
+curl -fsSL https://orglane.app/install.sh | sudo sh -s -- --acme-ca production
+```
+
+### Advanced settings
+
+These environment variables are read on the first install and kept in `.env`: `ORGLANE_HTTP_PUBLISH` and `ORGLANE_HTTPS_PUBLISH` (where Traefik is published), `ORGLANE_EDGE_NETWORK_PREFIX` (see [Configuration](#configuration)), `COMPOSE_PROJECT_NAME` (to run several installs on one machine) and `COMPOSE_FILE` (extra Compose files; the installer tests use it for the Pebble overlay). `--http-port` moves local and demo mode to another port, for example `--http-port 8080` for `http://localhost:8080`.
+
+### Testing the installer
+
+`make test-install` (also part of `make test-integration`) builds the core image from the checkout. It then runs `install.sh` non-interactively from `--source`, in four ways:
+
+- **local mode:** the web UI and `/readyz` through Traefik; `.env` mode 600; the printed setup token creates the owner; a re-run keeps the secrets and the owner; `status`; and `uninstall` with and without `--purge`;
+- **demo mode:** one-click sign-in as the demo owner;
+- **domain mode against Pebble:** a certificate is issued and HTTPS works; a re-run keeps the CA stored in `.env` (`--acme-ca staging`) and `acme.json`; `--acme-ca production` switches the CA, resets `acme.json` and gets a new certificate;
+- **domain mode without DNS:** the install is refused before anything is written or started.
+
+Each test logs `install-time:`, the time from start to a ready workspace. `make lint` runs shellcheck on every shell script (`lint-sh`). Verification on a real VPS with a real domain is part of the M0 exit check.
 
 ## Reverse proxy and client addresses
 
@@ -43,7 +128,7 @@ Managed services will add `instances/<id>/` ([ADR 0006](../docs/adr/0006-agent-a
 
 ### Configuration
 
-Settings are environment variables, usually in `deploy/compose/.env` (copy [`compose/.env.example`](compose/.env.example)). `ORGLANE_POSTGRES_PASSWORD` and `ORGLANE_IDENTITY_MASTER_SECRET` are always required. The main switch is `ORGLANE_INGRESS_MODE`. It loads `compose/modes/<mode>.env`, which sets the core's ingress mode, `environment` and `domain.scheme` together:
+Settings are environment variables, usually in a `.env` file next to `compose.yaml`: the installer writes it, or copy [`compose/.env.example`](compose/.env.example). `ORGLANE_POSTGRES_PASSWORD` and `ORGLANE_IDENTITY_MASTER_SECRET` are always required. The main switch is `ORGLANE_INGRESS_MODE`. It loads `compose/modes/<mode>.env`, which sets the core's ingress mode, `environment` and `domain.scheme` together:
 
 | Mode | For | What the core tells Traefik |
 |---|---|---|
@@ -56,6 +141,7 @@ Other variables (all optional; see `.env.example`):
 |---|---|---|
 | `ORGLANE_DOMAIN_BASE` | `localhost` | Company base domain (`domain.base`) |
 | `ORGLANE_DOMAIN_WORKSPACE_HOST` | the base domain | Workspace host (`domain.workspace_host`) |
+| `ORGLANE_DEMO_ENABLED` | `false` | Demo mode: loads the "Acme Robotics" dataset into an empty database and allows one-click sign-in. Local mode only |
 | `ORGLANE_ACME_EMAIL` | empty | Contact for the Let's Encrypt account (domain mode) |
 | `ORGLANE_ACME_CA_SERVER` | Let's Encrypt production | ACME directory, e.g. Let's Encrypt staging |
 | `ORGLANE_HTTP_PUBLISH`, `ORGLANE_HTTPS_PUBLISH` | `127.0.0.1:80`, `127.0.0.1:443` | Where Traefik is published. Set `80` and `443` to listen on every interface in domain mode |
@@ -71,21 +157,21 @@ Security headers sent on every response: `X-Content-Type-Options: nosniff`, `X-F
 
 ### PostgreSQL sizing
 
-The defaults are light, for a small host ([ADR 0009](../docs/adr/0009-resource-philosophy.md)). The installer (#11) will scale them with the host's memory using these rules; set them by hand until then:
+The defaults are light, for a small host ([ADR 0009](../docs/adr/0009-resource-philosophy.md)). The installer scales them with the memory Docker reports (`docker info`) using these rules. In local and demo mode it counts at most 2 GB, so a trial doesn't claim a laptop's memory; below 1 GB it keeps the defaults. Without the installer, set them by hand:
 
 | Variable | Default | Rule of thumb |
 |---|---|---|
-| `ORGLANE_POSTGRES_SHARED_BUFFERS` | `128MB` | 15–25 % of RAM |
+| `ORGLANE_POSTGRES_SHARED_BUFFERS` | `128MB` | 15–25 % of RAM (installer: 25 %, at most 8 GB) |
 | `ORGLANE_POSTGRES_EFFECTIVE_CACHE_SIZE` | `512MB` | 50 % of RAM |
-| `ORGLANE_POSTGRES_WORK_MEM` | `4MB` | 4–16 MB |
-| `ORGLANE_POSTGRES_MAINTENANCE_WORK_MEM` | `64MB` | 5 % of RAM, at most 1 GB |
-| `ORGLANE_POSTGRES_MAX_CONNECTIONS` | `50` | Raise when managed services share the instance |
+| `ORGLANE_POSTGRES_WORK_MEM` | `4MB` | 4–16 MB (installer: 4 MB below 3.5 GB, 8 MB below 16 GB, else 16 MB) |
+| `ORGLANE_POSTGRES_MAINTENANCE_WORK_MEM` | `64MB` | 5 % of RAM, at least 64 MB, at most 1 GB |
+| `ORGLANE_POSTGRES_MAX_CONNECTIONS` | `50` | Raise when managed services share the instance (installer: 100 from 3.5 GB) |
 
 For example, a 4 GB VPS: `1GB`, `2GB`, `8MB`, `256MB`, `100`.
 
 ### Running it
 
-Releases publish the image (`ghcr.io/orglane/orglane`, see [docs/releasing.md](../docs/releasing.md)). To run the code of a checkout, build it locally:
+The installer does all of this. By hand: releases publish the image (`ghcr.io/orglane/orglane`, see [docs/releasing.md](../docs/releasing.md)); to run the code of a checkout, build it locally (or use `sh deploy/install.sh --source . --image orglane:dev`):
 
 ```sh
 make image                                    # builds orglane:dev
@@ -101,7 +187,7 @@ For a domain, set the domain-mode variables in `.env`, point DNS for the workspa
 
 #### From Let's Encrypt staging to production
 
-To avoid production rate limits on a first try, set `ORGLANE_ACME_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory` in `.env`. Browsers don't trust staging certificates. Once a staging certificate is issued, switch to production as follows. `docker compose restart` is not enough: it keeps the container's old environment and therefore the staging CA. Also, Traefik keeps the staging account and certificate in `traefik/acme.json` and doesn't replace them when the CA changes.
+The installer does this with `--acme-ca` (see [Certificate authority](#certificate-authority)). By hand: to avoid production rate limits on a first try, set `ORGLANE_ACME_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory` in `.env`. Browsers don't trust staging certificates. Once a staging certificate is issued, switch to production as follows. `docker compose restart` is not enough: it keeps the container's old environment and therefore the staging CA. Also, Traefik keeps the staging account and certificate in `traefik/acme.json` and doesn't replace them when the CA changes.
 
 ```sh
 cd deploy/compose

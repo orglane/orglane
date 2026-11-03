@@ -10,12 +10,17 @@
 #   sqlc           SQLC_VERSION below
 #   govulncheck    GOVULNCHECK_VERSION below
 #   go-licenses    GO_LICENSES_VERSION below
+#   shellcheck     SHELLCHECK_VERSION and SHELLCHECK_IMAGE below
 
 GOLANGCI_LINT_VERSION := v2.15.0
 OAPI_CODEGEN_VERSION  := v2.8.2
 SQLC_VERSION          := v1.31.1
 GOVULNCHECK_VERSION   := v1.9.0
 GO_LICENSES_VERSION   := v2.0.1
+# shellcheck runs from PATH when it is this version, otherwise from the image
+# (pinned by digest).
+SHELLCHECK_VERSION    := 0.11.0
+SHELLCHECK_IMAGE      := koalaman/shellcheck:v$(SHELLCHECK_VERSION)@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -euo pipefail -c
@@ -57,8 +62,8 @@ DEMO_DB_URL := postgres://orglane:orglane@127.0.0.1:5432/$(DEMO_DB)?sslmode=disa
 IMAGE ?= orglane:dev
 
 .PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image generate check-generate check-generate-go check-generate-ts \
-	test test-go test-unit test-integration test-compose measure-memory conformance test-ts test-e2e test-e2e-if-available \
-	lint lint-go lint-ts fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
+	test test-go test-unit test-integration test-compose test-install measure-memory conformance test-ts test-e2e test-e2e-if-available \
+	lint lint-go lint-ts lint-sh fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -189,11 +194,23 @@ test-go:
 test-unit: ## Run Go unit tests only
 	go test -race -count=1 ./...
 
+# The installer tests run on their own afterwards: on Docker Desktop (macOS),
+# PostgreSQL containers initializing bind-mounted data directories next to
+# those of tests/compose sometimes fail with "wrong ownership". The package
+# list is built in separate, checked steps: a failing `go list` inside the
+# `go test` arguments would not stop it.
 test-integration: ## Run Go unit and integration tests (needs Docker)
-	go test -race -count=1 -tags integration ./...
+	pkgs="$$(go list -tags integration ./...)"; \
+	pkgs="$$(printf '%s\n' "$$pkgs" | grep -v '/tests/install$$')"; \
+	if [ -z "$$pkgs" ]; then echo "error: go list found no packages to test"; exit 1; fi; \
+	go test -race -count=1 -tags integration $$pkgs
+	$(MAKE) --no-print-directory test-install
 
 test-compose: ## Start the Compose bundle (local mode, domain mode with Pebble) and test it (needs Docker)
 	go test -count=1 -tags integration -v ./tests/compose/
+
+test-install: ## Run the installer end to end: local, demo and domain mode with Pebble (needs Docker)
+	go test -count=1 -tags integration -v ./tests/install/
 
 measure-memory: ## Report idle RSS of the server against Postgres (needs Docker; warning only)
 	go test -count=1 -tags integration -run '^TestIdleMemory$$' -v ./tests/integration/ | grep -E '^(orglane-memory:|--- FAIL|FAIL)'
@@ -220,7 +237,7 @@ test-e2e-if-available:
 		$(MAKE) --no-print-directory test-e2e; \
 	fi
 
-lint: lint-go lint-ts ## Run all linters and type checks
+lint: lint-go lint-ts lint-sh ## Run all linters and type checks
 
 lint-go: $(GOLANGCI_LINT) check-generate-go
 	go mod tidy -diff
@@ -229,6 +246,18 @@ lint-go: $(GOLANGCI_LINT) check-generate-go
 
 lint-ts: check-generate-ts
 	$(PNPM) run lint
+
+# Every tracked shell script, including the installer (deploy/install.sh,
+# POSIX sh).
+lint-sh:
+	@scripts="$$(git ls-files '*.sh')"; \
+	if command -v shellcheck >/dev/null && [ "$$(shellcheck --version | sed -n 's/^version: //p')" = "$(SHELLCHECK_VERSION)" ]; then \
+		shellcheck $$scripts; \
+	elif docker info >/dev/null 2>&1; then \
+		docker run --rm -v "$(ROOT):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) $$scripts; \
+	else \
+		echo "error: shellcheck $(SHELLCHECK_VERSION) or Docker is needed for lint-sh"; exit 1; \
+	fi
 
 security: vulncheck licenses ## Scan for known vulnerabilities and check dependency licenses
 

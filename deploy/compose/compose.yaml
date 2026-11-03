@@ -105,6 +105,10 @@ services:
       # not routed by Traefik.
       ORGLANE_SERVER_INTERNAL_LISTEN: ":9090"
       ORGLANE_INGRESS_UPSTREAM_URL: http://orglane:8080
+      # Demo mode (install.sh --mode demo): loads the "Acme Robotics" dataset
+      # into an empty database and allows one-click sign-in as any demo
+      # person. Local mode only: anyone who reaches the workspace can sign in.
+      ORGLANE_DEMO_ENABLED: ${ORGLANE_DEMO_ENABLED:-false}
     networks:
       edge: {}
       database: {}
