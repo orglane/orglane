@@ -32,3 +32,7 @@ coverage/
 
 # OpenID Conformance Suite runs (make conformance)
 /.conformance/
+
+# PR review evidence is uploaded to GitHub, never committed.
+/.github/pr-assets/
+/docs/screenshots/

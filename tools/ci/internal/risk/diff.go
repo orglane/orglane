@@ -277,3 +277,17 @@ func hunkStart(r string) (int, error) {
 	}
 	return n, nil
 }
+
+// CheckReviewAssets rejects reserved review paths in the requested commit tree.
+// Checking the head tree allows cleanup deletions and catches unchanged assets,
+// even in documentation-only pull requests that skip the full lint job.
+func CheckReviewAssets(ctx context.Context, dir, head string) error {
+	out, err := git(ctx, dir, "ls-tree", "-r", "--name-only", "-z", head, "--", ".github/pr-assets", "docs/screenshots")
+	if err != nil {
+		return err
+	}
+	if len(out) != 0 {
+		return fmt.Errorf("PR review assets must be uploaded to GitHub, not committed: %q", strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00"))
+	}
+	return nil
+}

@@ -12,7 +12,16 @@
 
 ## Test evidence
 
-<!-- How was this verified? Tests added, commands run, screenshots (use demo data). -->
+<!-- Commands/results and limits. For visible changes upload demo-data before/after
+views or a relevant screen × viewport × theme matrix as GitHub attachments.
+Keep local captures in ignored .github/pr-assets/; never commit PR-only images/videos.
+Record exact reviewed SHA, browser/version, viewport, theme and unverified scenarios.
+Check the published body has hosted URLs and assets load. See CONTRIBUTING.md. -->
+
+- Reviewed SHA:
+- Browser/version, viewport(s), theme(s):
+- Commands/results and verification limits:
+- Uploaded evidence:
 
 ## Checklist
 

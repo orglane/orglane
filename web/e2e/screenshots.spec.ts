@@ -4,7 +4,7 @@ import { expect, owner, setUp, signOut, test } from "./fixtures";
 
 // Captures every screen in light and dark for UI review:
 //   ORGLANE_SCREENSHOTS=1 pnpm --filter @orglane/web test:e2e screenshots
-// writes docs/screenshots/<screen>-<theme>.png. Skipped otherwise.
+// writes .github/pr-assets/web/<screen>-<theme>.png. Skipped otherwise.
 test.skip(!process.env.ORGLANE_SCREENSHOTS, "set ORGLANE_SCREENSHOTS=1 to capture screenshots");
 
 const themes = ["light", "dark"] as const;
@@ -14,7 +14,7 @@ async function shoot(page: Page, name: string) {
     await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
     await expect(page.locator("html")).toHaveClass(new RegExp(`\\b${theme}\\b`));
     await page.screenshot({
-      path: `${repo}docs/screenshots/${name}-${theme}.png`,
+      path: `${repo}.github/pr-assets/web/${name}-${theme}.png`,
       animations: "disabled",
     });
   }
