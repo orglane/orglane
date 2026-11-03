@@ -18,8 +18,9 @@ const PermissionExtension = "x-orglane-permission"
 // VersionPrefix is the path prefix of every product endpoint.
 const VersionPrefix = "/api/v1/"
 
-// unversionedPaths are the only paths allowed outside VersionPrefix.
-var unversionedPaths = []string{"/healthz", "/readyz"}
+// unversionedPaths are the only paths allowed outside VersionPrefix: the
+// health probes and the instance discovery document (ADR 0012, 0018).
+var unversionedPaths = []string{"/healthz", "/readyz", "/.well-known/orglane"}
 
 var httpMethods = []string{"get", "put", "post", "delete", "options", "head", "patch", "trace"}
 
@@ -39,8 +40,9 @@ func (o Operation) Pattern() string {
 
 // ParseOperations reads the operations of an OpenAPI document and validates
 // the repository conventions: every operation has an operationId and a known
-// permission (or "public"), and every path is versioned under /api/v1 unless
-// it is a health probe. All violations are reported together.
+// permission (or "public" or "authenticated"), and every path is versioned
+// under /api/v1 unless it is a health probe or discovery. All violations are
+// reported together.
 func ParseOperations(spec []byte) ([]Operation, error) {
 	var doc struct {
 		Paths map[string]map[string]yaml.Node `yaml:"paths"`
@@ -74,7 +76,8 @@ func ParseOperations(spec []byte) ([]Operation, error) {
 			switch {
 			case raw.Permission == nil:
 				errs = append(errs, fmt.Errorf("%s: missing %s (use %q for unauthenticated operations)", op.Pattern(), PermissionExtension, authz.Public))
-			case authz.Permission(*raw.Permission) != authz.Public && !authz.Known(authz.Permission(*raw.Permission)):
+			case authz.Permission(*raw.Permission) != authz.Public && authz.Permission(*raw.Permission) != authz.Authenticated &&
+				!authz.Known(authz.Permission(*raw.Permission)):
 				errs = append(errs, fmt.Errorf("%s: unknown permission %q in %s (add it to package authz first)", op.Pattern(), *raw.Permission, PermissionExtension))
 			default:
 				op.Permission = authz.Permission(*raw.Permission)

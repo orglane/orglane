@@ -1,0 +1,122 @@
+# OpenID Conformance Suite against a local Orglane (`make conformance`, see
+# README.md). Not for production: fixed credentials, throwaway certificates.
+#
+# Network names:
+#   op.orglane.test         Orglane behind a TLS proxy (the OpenID Provider)
+#   localhost.emobix.co.uk  the suite's nginx (its public name in dev mode)
+name: orglane-conformance
+
+x-suite-version: &suite-version release-v5.3.4
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: orglane
+      POSTGRES_PASSWORD: orglane
+      POSTGRES_DB: orglane
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "orglane", "-d", "orglane"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  orglane:
+    image: alpine:3.22
+    command: ["/orglane", "server"]
+    volumes:
+      - ${CONFORMANCE_WORK:?}/orglane:/orglane:ro
+    environment:
+      ORGLANE_DATABASE_URL: postgres://orglane:orglane@postgres:5432/orglane?sslmode=disable
+      ORGLANE_DOMAIN_BASE: orglane.test
+      ORGLANE_DOMAIN_WORKSPACE_HOST: op.orglane.test
+      ORGLANE_SERVER_LISTEN: ":8080"
+      ORGLANE_LOG_FORMAT: json
+      ORGLANE_IDENTITY_MASTER_SECRET: conformance-only-master-secret-0123456789
+      # Every sign-in comes from the suite's browser.
+      ORGLANE_IDENTITY_SIGN_IN_IP_LIMIT: "10000"
+      # Only the TLS proxy may name the client in X-Forwarded-For.
+      ORGLANE_SERVER_TRUSTED_PROXIES: 172.31.250.10/32
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  proxy:
+    image: caddy:2-alpine
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${CONFORMANCE_WORK:?}/certs:/certs:ro
+    depends_on:
+      orglane:
+        condition: service_healthy
+    networks:
+      default:
+        ipv4_address: 172.31.250.10
+        aliases: [op.orglane.test]
+
+  mongodb:
+    image: mongo:6.0.13
+
+  server:
+    image: registry.gitlab.com/openid/conformance-suite:release-v5.3.4
+    environment:
+      BASE_URL: https://localhost.emobix.co.uk:8443
+      BASE_MTLS_URL: https://localhost.emobix.co.uk:8444
+      MONGODB_HOST: mongodb
+      SPRING_PROFILES_ACTIVE: dev
+      # Trust the throwaway CA of op.orglane.test (Temurin's CA entrypoint).
+      USE_SYSTEM_CA_CERTS: "1"
+    volumes:
+      - ${CONFORMANCE_WORK:?}/certs/ca.crt:/certificates/orglane-conformance-ca.crt:ro
+    entrypoint: ["/__cacert_entrypoint.sh"]
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        exec java
+        -D"fintechlabs.base_url=$${BASE_URL}"
+        -D"fintechlabs.base_mtls_url=$${BASE_MTLS_URL}"
+        -D"spring.mongodb.uri=mongodb://$${MONGODB_HOST}:27017/test_suite"
+        -D"oidc.google.clientid=google-client" -D"oidc.google.secret=google-secret"
+        -D"oidc.gitlab.clientid=gitlab-client" -D"oidc.gitlab.secret=gitlab-secret"
+        -jar /server/fapi-test-suite.jar -Djdk.tls.maxHandshakeMessageSize=65536
+    depends_on:
+      - mongodb
+
+  nginx:
+    image: registry.gitlab.com/openid/conformance-suite/nginx:release-v5.3.4
+    depends_on:
+      - server
+    networks:
+      default:
+        # The suite's own requests to its public name must reach nginx.
+        aliases: [localhost.emobix.co.uk]
+
+  runner:
+    build:
+      dockerfile_inline: |
+        FROM python:3.13-alpine
+        RUN pip install --no-cache-dir httpx==0.28.1 pyparsing==3.2.3
+    profiles: [run]
+    working_dir: /suite
+    volumes:
+      - ${CONFORMANCE_WORK:?}/suite:/suite:ro
+      - ${CONFORMANCE_WORK:?}:/work
+      - .:/conformance:ro
+    environment:
+      CONFORMANCE_SERVER: https://localhost.emobix.co.uk:8443/
+      CONFORMANCE_SERVER_MTLS: https://localhost.emobix.co.uk:8444/
+      CONFORMANCE_DEV_MODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+networks:
+  default:
+    ipam:
+      config:
+        # Fixed, so the proxy has a known address to trust.
+        - subnet: 172.31.250.0/24

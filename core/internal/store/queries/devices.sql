@@ -16,3 +16,7 @@ SELECT * FROM devices WHERE person_id = @person_id ORDER BY id;
 UPDATE devices SET revoked_at = now()
 WHERE id = @id AND revoked_at IS NULL
 RETURNING *;
+
+-- name: TouchDevice :exec
+UPDATE devices SET last_seen_at = now()
+WHERE id = @id AND last_seen_at < now() - interval '1 minute';

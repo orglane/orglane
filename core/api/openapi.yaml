@@ -8,12 +8,29 @@ info:
 
     Conventions:
     - Product endpoints live under `/api/v1`. Only the health probes
-      (`/healthz`, `/readyz`) live outside the versioned prefix.
+      (`/healthz`, `/readyz`) and instance discovery (`/.well-known/orglane`)
+      live outside the versioned prefix.
     - Every operation declares the permission it requires with the
       `x-orglane-permission` vendor extension (ADR 0004). The value `public`
-      marks an operation that needs no authentication. The server refuses to
-      start, and the tests fail, if an operation has no permission.
+      marks an operation that needs no authentication; `authenticated` marks
+      self-service operations any signed-in caller may use on their own
+      account. The server refuses to start, and the tests fail, if an
+      operation has no permission.
     - Errors use RFC 9457 problem details (`application/problem+json`).
+
+    Authentication (ADR 0003):
+    - Browsers use the session cookie set by the sign-in operations
+      (`__Host-orglane_session`; `orglane_session` in the local plain-HTTP
+      demo mode). It is host-only, HttpOnly and SameSite=Lax. Every
+      state-changing request authenticated with it must come from the
+      workspace origin (`Origin` header) and carry the session's CSRF token
+      in the `X-CSRF-Token` header (returned by sign-in and `GET /api/v1/me`).
+    - Other clients use an OAuth 2.0 access token issued by the embedded
+      OpenID Provider: `Authorization: Bearer <token>`.
+    - The OpenID Provider endpoints (authorization code flow with PKCE,
+      token, userinfo, revocation, introspection, end session, JWKS) are
+      standard OpenID Connect and described by the discovery document at
+      `/.well-known/openid-configuration`, not by this contract.
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
@@ -94,12 +111,400 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
+  /.well-known/orglane:
+    get:
+      operationId: getOrglaneDiscovery
+      summary: Instance discovery
+      description: |
+        How clients (the mobile app, ADR 0012) find this instance's
+        workspace, API and OpenID Provider from a work email domain
+        (ADR 0018). Contains nothing sensitive.
+      tags: [meta]
+      x-orglane-permission: public
+      responses:
+        "200":
+          description: The discovery document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrglaneDiscovery"
+  /api/v1/auth/setup:
+    get:
+      operationId: getSetupStatus
+      summary: First-run setup status
+      description: Reports whether the instance still needs its first owner.
+      tags: [auth]
+      x-orglane-permission: public
+      responses:
+        "200":
+          description: The setup status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetupStatus"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: completeSetup
+      summary: Create the first owner
+      description: |
+        Creates the first owner with a password and signs them in. Requires
+        the one-time setup token printed in the server log on first start
+        (or generated with `orglane cli setup-token`). Possible only while no
+        owner exists. Sets the session cookie.
+      tags: [auth]
+      x-orglane-permission: public
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetupRequest"
+      responses:
+        "201":
+          description: The owner was created and signed in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignInResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/auth/sign-in:
+    post:
+      operationId: signInWithPassword
+      summary: Sign in with a password
+      description: |
+        Signs in with a work email and password and sets the session cookie.
+        Failures are rate limited per client address and per account; a
+        locked account answers 429 even for the right password.
+      tags: [auth]
+      x-orglane-permission: public
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordSignInRequest"
+      responses:
+        "200":
+          description: Signed in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignInResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/auth/passkey/options:
+    post:
+      operationId: beginPasskeySignIn
+      summary: Start a passkey sign-in
+      description: |
+        Returns WebAuthn request options for `navigator.credentials.get`
+        (discoverable credentials, no username needed) and the ceremony ID to
+        finish with. The ceremony expires after 5 minutes and can be used
+        once.
+      tags: [auth]
+      x-orglane-permission: public
+      responses:
+        "200":
+          description: The WebAuthn options.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremony"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/auth/passkey:
+    post:
+      operationId: signInWithPasskey
+      summary: Sign in with a passkey
+      description: Verifies the WebAuthn assertion and sets the session cookie.
+      tags: [auth]
+      x-orglane-permission: public
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeySignInRequest"
+      responses:
+        "200":
+          description: Signed in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignInResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/auth/sign-out:
+    post:
+      operationId: signOut
+      summary: Sign out
+      description: Revokes the current browser session and clears the session cookie.
+      tags: [auth]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+      responses:
+        "204":
+          description: Signed out.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/me:
+    get:
+      operationId: getMe
+      summary: The signed-in person
+      description: |
+        Returns the caller, their permissions and, for browser sessions, the
+        session, its CSRF token and whether to offer adding a passkey.
+      tags: [me]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/me/sessions:
+    get:
+      operationId: listMySessions
+      summary: List my sessions
+      description: The caller's valid sessions, oldest first.
+      tags: [me]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/me/sessions/{sessionId}:
+    delete:
+      operationId: revokeMySession
+      summary: Revoke one of my sessions
+      description: Revokes the session immediately; its next request is unauthenticated.
+      tags: [me]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/me/passkeys:
+    get:
+      operationId: listMyPasskeys
+      summary: List my passkeys
+      tags: [me]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The passkeys.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: addMyPasskey
+      summary: Add a passkey
+      description: Verifies the WebAuthn attestation from `navigator.credentials.create` and stores the passkey.
+      tags: [me]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddPasskeyRequest"
+      responses:
+        "201":
+          description: The passkey was added.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Passkey"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/me/passkeys/options:
+    post:
+      operationId: beginPasskeyRegistration
+      summary: Start adding a passkey
+      description: |
+        Returns WebAuthn creation options for `navigator.credentials.create`
+        and the ceremony ID to finish with (`POST /api/v1/me/passkeys`).
+      tags: [me]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The WebAuthn options.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremony"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/me/passkeys/{passkeyId}:
+    delete:
+      operationId: removeMyPasskey
+      summary: Remove a passkey
+      tags: [me]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: passkeyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/me/passkey-offer/dismiss:
+    post:
+      operationId: dismissPasskeyOffer
+      summary: Skip the passkey offer
+      description: Remembers that the caller skipped adding a passkey; the offer returns after 30 days.
+      tags: [me]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+      responses:
+        "204":
+          description: Dismissed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-orglane_session
   responses:
+    BadRequest:
+      description: The request is invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: The resource does not exist (or belongs to someone else).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Conflict:
+      description: The request conflicts with the current state.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    TooManyRequests:
+      description: Too many attempts; retry after the given number of seconds.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     Unauthorized:
       description: The request has no valid credentials.
       content:
@@ -107,7 +512,9 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
     Forbidden:
-      description: The caller lacks the permission this operation requires.
+      description: |
+        The caller lacks the permission this operation requires, or a
+        cookie-authenticated request failed the CSRF checks.
       content:
         application/problem+json:
           schema:
@@ -185,3 +592,219 @@ components:
           type: string
           description: The host the workspace is served on.
           example: work.acme.com
+    OrglaneDiscovery:
+      type: object
+      required: [workspaceUrl, apiBaseUrl, issuer, version]
+      properties:
+        workspaceUrl:
+          type: string
+          description: The workspace URL.
+          example: https://work.acme.com
+        apiBaseUrl:
+          type: string
+          description: The base URL of this API.
+          example: https://work.acme.com/api/v1
+        issuer:
+          type: string
+          description: The OpenID Connect issuer (append `/.well-known/openid-configuration` for its metadata).
+          example: https://work.acme.com
+        version:
+          type: string
+          example: v0.1.0
+    SetupStatus:
+      type: object
+      required: [required]
+      properties:
+        required:
+          type: boolean
+          description: True while no owner exists and setup can be completed with the setup token.
+    SetupRequest:
+      type: object
+      required: [setupToken, workEmail, username, displayName, password]
+      properties:
+        setupToken:
+          type: string
+          description: The one-time setup token from the server log or `orglane cli setup-token`.
+        workEmail:
+          type: string
+          example: alex@acme.com
+        username:
+          type: string
+          example: alex
+        displayName:
+          type: string
+          example: Alex Morgan
+        password:
+          type: string
+          format: password
+          minLength: 12
+          description: At least 12 characters.
+    PasswordSignInRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          example: alex@acme.com
+        password:
+          type: string
+          format: password
+    PasskeyCeremony:
+      type: object
+      required: [ceremonyId, publicKey]
+      properties:
+        ceremonyId:
+          type: string
+          format: uuid
+          description: Identifies the ceremony when finishing it.
+        publicKey:
+          type: object
+          additionalProperties: true
+          description: |
+            WebAuthn options (PublicKeyCredentialCreationOptions or
+            PublicKeyCredentialRequestOptions) with binary values in
+            base64url, as accepted by `PublicKeyCredential.parse*OptionsFromJSON`.
+    PasskeySignInRequest:
+      type: object
+      required: [ceremonyId, credential]
+      properties:
+        ceremonyId:
+          type: string
+          format: uuid
+        credential:
+          type: object
+          additionalProperties: true
+          description: The PublicKeyCredential from `navigator.credentials.get`, serialized with `toJSON()`.
+    AddPasskeyRequest:
+      type: object
+      required: [ceremonyId, credential]
+      properties:
+        ceremonyId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 100
+          description: A name for the passkey, e.g. "MacBook". Defaults to "Passkey".
+        credential:
+          type: object
+          additionalProperties: true
+          description: The PublicKeyCredential from `navigator.credentials.create`, serialized with `toJSON()`.
+    PersonSummary:
+      type: object
+      required: [id, username, workEmail, displayName]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        workEmail:
+          type: string
+        displayName:
+          type: string
+    SignInResult:
+      type: object
+      required: [person, csrfToken, passkeyOffer, sessionExpiresAt]
+      properties:
+        person:
+          $ref: "#/components/schemas/PersonSummary"
+        csrfToken:
+          type: string
+          description: Send it in the `X-CSRF-Token` header of state-changing requests.
+        passkeyOffer:
+          type: boolean
+          description: True when the person has no passkey and has not skipped the offer recently; offer to add one, with a "Skip" option.
+        sessionExpiresAt:
+          type: string
+          format: date-time
+    Me:
+      type: object
+      required: [person, permissions, passkeyOffer]
+      properties:
+        person:
+          $ref: "#/components/schemas/PersonSummary"
+        permissions:
+          type: array
+          items:
+            type: string
+          description: The permissions the caller holds (ADR 0004).
+        passkeyOffer:
+          type: boolean
+        session:
+          $ref: "#/components/schemas/Session"
+        csrfToken:
+          type: string
+          description: Present for browser sessions.
+    Device:
+      type: object
+      required: [id, name, platform]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Firefox on macOS
+        platform:
+          type: string
+          enum: [web, ios, android]
+    Session:
+      type: object
+      required: [id, device, createdAt, lastSeenAt, expiresAt, authMethods, current]
+      properties:
+        id:
+          type: string
+          format: uuid
+        device:
+          $ref: "#/components/schemas/Device"
+        createdAt:
+          type: string
+          format: date-time
+          description: When the person signed in.
+        lastSeenAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: The absolute expiry; the session also ends after a period of inactivity.
+        authMethods:
+          type: array
+          items:
+            type: string
+            enum: [password, passkey]
+        current:
+          type: boolean
+          description: True for the session making the request.
+    SessionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+    Passkey:
+      type: object
+      required: [id, name, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+    PasskeyList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Passkey"

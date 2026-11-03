@@ -32,6 +32,15 @@ func TestPrincipalHas(t *testing.T) {
 	if nilPrincipal.Has(InstanceRead) {
 		t.Error("nil principal Has() = true, want false")
 	}
+	if !p.Has(Authenticated) || !(&Principal{Subject: "bob"}).Has(Authenticated) {
+		t.Error("a principal without permissions must hold Authenticated")
+	}
+	if nilPrincipal.Has(Authenticated) {
+		t.Error("nil principal Has(Authenticated) = true, want false")
+	}
+	if Known(Authenticated) || permissionName.MatchString(string(Authenticated)) {
+		t.Errorf("%q must not be a grantable permission", Authenticated)
+	}
 }
 
 func TestDenyAll(t *testing.T) {

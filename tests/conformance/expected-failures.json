@@ -1,0 +1,38 @@
+[
+  {
+    "test-name": "oidcc-server",
+    "variant": "*",
+    "configuration-filename": "*",
+    "current-block": "",
+    "condition": "EnsureIdTokenDoesNotContainNonRequestedClaims",
+    "expected-result": "warning",
+    "comment": "zitadel/oidc adds a client_id claim to every ID token (equal to azp/aud); harmless, not configurable without forking the library."
+  },
+  {
+    "test-name": "oidcc-scope-profile",
+    "variant": "*",
+    "configuration-filename": "*",
+    "current-block": "",
+    "condition": "VerifyScopesReturnedInUserInfoClaims",
+    "expected-result": "warning",
+    "comment": "The directory has a display name, username and update time; it has no given/family/middle name, nickname, picture, gender, birthdate, zoneinfo or locale yet (profile fields arrive with M1). OIDC Core allows omitting unavailable claims."
+  },
+  {
+    "test-name": "oidcc-claims-essential",
+    "variant": "*",
+    "configuration-filename": "*",
+    "current-block": "",
+    "condition": "EnsureUserInfoContainsName",
+    "expected-result": "warning",
+    "comment": "The claims request parameter is optional and not supported; name is returned for the profile scope."
+  },
+  {
+    "test-name": "oidcc-ensure-request-with-acr-values-succeeds",
+    "variant": "*",
+    "configuration-filename": "*",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "ValidateIdTokenACRClaimAgainstAcrValuesRequest",
+    "expected-result": "warning",
+    "comment": "No authentication context classes are defined, so no acr claim is issued (acr_values is a voluntary request)."
+  }
+]

@@ -42,7 +42,7 @@ SQLC_CFG := core/internal/store/sqlc.yaml
 DEV_COMPOSE := docker compose -f deploy/dev/compose.yaml
 
 .PHONY: help bootstrap check-toolchain dev dev-down build build-go build-ts generate check-generate check-generate-go check-generate-ts \
-	test test-go test-unit test-integration measure-memory test-ts \
+	test test-go test-unit test-integration measure-memory conformance test-ts \
 	lint lint-go lint-ts fmt fmt-go fmt-ts clean
 
 help: ## Show available targets
@@ -147,6 +147,9 @@ test-integration: ## Run Go unit and integration tests (needs Docker)
 
 measure-memory: ## Report idle RSS of the server against Postgres (needs Docker; warning only)
 	go test -count=1 -tags integration -run '^TestIdleMemory$$' -v ./tests/integration/ | grep -E '^(orglane-memory:|--- FAIL|FAIL)'
+
+conformance: ## Run the OpenID Conformance Suite against a local server (needs Docker)
+	tests/conformance/run.sh
 
 test-ts:
 	$(PNPM) run test

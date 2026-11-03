@@ -76,6 +76,9 @@ func (g *routeGuard) enforce(op Operation, next http.Handler) http.Handler {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeProblem(w, r, http.StatusUnauthorized, "This operation requires authentication.")
 			return
+		case errors.Is(err, authz.ErrCrossSite):
+			writeProblem(w, r, http.StatusForbidden, "Cross-site request rejected: send the X-CSRF-Token header from the same origin.")
+			return
 		case err != nil:
 			g.logger.ErrorContext(r.Context(), "authentication failed", "operation", op.OperationID, "error", err)
 			writeProblem(w, r, http.StatusInternalServerError, "")

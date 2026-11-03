@@ -10,7 +10,8 @@ import (
 
 // TestContractDeclaresPermissions is the build gate from ADR 0004: every
 // operation in core/api/openapi.yaml must declare x-orglane-permission with a
-// permission from the registry in package authz, or "public".
+// permission from the registry in package authz, "public" or
+// "authenticated".
 func TestContractDeclaresPermissions(t *testing.T) {
 	ops, err := ParseOperations(specpkg.Spec)
 	if err != nil {
@@ -20,7 +21,7 @@ func TestContractDeclaresPermissions(t *testing.T) {
 		t.Fatal("no operations found in core/api/openapi.yaml")
 	}
 	for _, op := range ops {
-		if op.Permission != authz.Public && !authz.Known(op.Permission) {
+		if op.Permission != authz.Public && op.Permission != authz.Authenticated && !authz.Known(op.Permission) {
 			t.Errorf("%s: permission %q is not in the authz registry", op.Pattern(), op.Permission)
 		}
 	}
@@ -36,10 +37,30 @@ func TestContractPermissions(t *testing.T) {
 		"GET /readyz":          authz.Public,
 		"GET /api/v1/version":  authz.Public,
 		"GET /api/v1/instance": authz.InstanceRead,
+		// Instance discovery and sign-in are public; self-service needs a
+		// signed-in caller.
+		"GET /.well-known/orglane":               authz.Public,
+		"GET /api/v1/auth/setup":                 authz.Public,
+		"POST /api/v1/auth/setup":                authz.Public,
+		"POST /api/v1/auth/sign-in":              authz.Public,
+		"POST /api/v1/auth/passkey/options":      authz.Public,
+		"POST /api/v1/auth/passkey":              authz.Public,
+		"POST /api/v1/auth/sign-out":             authz.Authenticated,
+		"GET /api/v1/me":                         authz.Authenticated,
+		"GET /api/v1/me/sessions":                authz.Authenticated,
+		"DELETE /api/v1/me/sessions/{sessionId}": authz.Authenticated,
+		"GET /api/v1/me/passkeys":                authz.Authenticated,
+		"POST /api/v1/me/passkeys":               authz.Authenticated,
+		"POST /api/v1/me/passkeys/options":       authz.Authenticated,
+		"DELETE /api/v1/me/passkeys/{passkeyId}": authz.Authenticated,
+		"POST /api/v1/me/passkey-offer/dismiss":  authz.Authenticated,
 	}
 	got := map[string]authz.Permission{}
 	for _, op := range ops {
 		got[op.Pattern()] = op.Permission
+	}
+	if len(got) != len(want) {
+		t.Errorf("the contract has %d operations, this test knows %d: add the new ones here", len(got), len(want))
 	}
 	for pattern, perm := range want {
 		if got[pattern] != perm {
@@ -131,6 +152,21 @@ paths:
       x-orglane-permission: public
 `,
 			wantErr: "path /things: must be under /api/v1/",
+		},
+		{
+			name: "authenticated outside the registry is fine, unversioned paths are not",
+			spec: `
+paths:
+  /api/v1/me:
+    get:
+      operationId: getMe
+      x-orglane-permission: authenticated
+  /me:
+    get:
+      operationId: getMeUnversioned
+      x-orglane-permission: authenticated
+`,
+			wantErr: "path /me: must be under /api/v1/",
 		},
 		{
 			name:    "invalid YAML",

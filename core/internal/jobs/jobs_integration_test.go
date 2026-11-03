@@ -36,7 +36,7 @@ func startClient(t *testing.T, cfg config.Jobs) *jobs.Client {
 	if err := m.Up(ctx); err != nil {
 		t.Fatal(err)
 	}
-	client, err := jobs.NewClient(pool, cfg, logger)
+	client, err := jobs.NewClient(pool, cfg, logger, jobs.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,8 +15,16 @@ database:
 domain:
   base: localhost
   workspace_host: localhost:8080
+  # Plain HTTP for local development only: the session cookie is named
+  # orglane_session instead of __Host-orglane_session.
+  scheme: http
   # Service hosts become e.g. git.localhost.
   service_host_template: "{service}.{base}"
+
+# identity.master_secret is not needed in development: a public development
+# secret is used (with a warning). Production requires one:
+# identity:
+#   master_secret: <output of `openssl rand -base64 32`>
 
 # Project endpoints default to orglane.app (ADR 0018):
 # endpoints:

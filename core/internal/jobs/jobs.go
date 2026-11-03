@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,18 +39,58 @@ func (w *NoopWorker) Work(ctx context.Context, job *river.Job[NoopArgs]) error {
 	return nil
 }
 
+// IdentityMaintenanceArgs are the arguments of the hourly identity
+// maintenance job: signing key rotation and cleanup of expired sign-in and
+// OIDC state.
+type IdentityMaintenanceArgs struct{}
+
+// Kind implements river.JobArgs.
+func (IdentityMaintenanceArgs) Kind() string { return "orglane.identity_maintenance" }
+
+// IdentityMaintenanceInterval is how often identity maintenance runs. Key
+// rotation is also checked whenever a token is signed, so this only bounds
+// how late a rotation can be when no tokens are issued.
+const IdentityMaintenanceInterval = time.Hour
+
+// IdentityMaintenanceWorker runs Maintain.
+type IdentityMaintenanceWorker struct {
+	river.WorkerDefaults[IdentityMaintenanceArgs]
+	Maintain func(ctx context.Context) error
+}
+
+// Work implements river.Worker.
+func (w *IdentityMaintenanceWorker) Work(ctx context.Context, _ *river.Job[IdentityMaintenanceArgs]) error {
+	return w.Maintain(ctx)
+}
+
 // Client is the job queue client.
 type Client = river.Client[pgx.Tx]
 
+// Options add optional jobs to the client.
+type Options struct {
+	// IdentityMaintenance, when set, runs hourly and on start.
+	IdentityMaintenance func(ctx context.Context) error
+}
+
 // NewClient builds the job queue client. Start it with Start and stop it with
 // Stop (or StopAndCancel when the shutdown deadline is near).
-func NewClient(pool *pgxpool.Pool, cfg config.Jobs, logger *slog.Logger) (*Client, error) {
+func NewClient(pool *pgxpool.Pool, cfg config.Jobs, logger *slog.Logger, opts Options) (*Client, error) {
 	workers := river.NewWorkers()
 	if err := river.AddWorkerSafely(workers, &NoopWorker{Logger: logger}); err != nil {
 		return nil, fmt.Errorf("register noop worker: %w", err)
 	}
 
 	var periodic []*river.PeriodicJob
+	if opts.IdentityMaintenance != nil {
+		if err := river.AddWorkerSafely(workers, &IdentityMaintenanceWorker{Maintain: opts.IdentityMaintenance}); err != nil {
+			return nil, fmt.Errorf("register identity maintenance worker: %w", err)
+		}
+		periodic = append(periodic, river.NewPeriodicJob(
+			river.PeriodicInterval(IdentityMaintenanceInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return IdentityMaintenanceArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
 	if cfg.Noop.Enabled {
 		periodic = append(periodic, river.NewPeriodicJob(
 			river.PeriodicInterval(cfg.Noop.Interval),

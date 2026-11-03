@@ -11,12 +11,17 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	specpkg "github.com/orglane/orglane/core/api"
 	"github.com/orglane/orglane/core/internal/api/apigen"
 	"github.com/orglane/orglane/core/internal/authz"
+	"github.com/orglane/orglane/core/internal/identity/web"
 )
+
+func itoa(n int) string { return strconv.Itoa(n) }
 
 // ReadinessCheck is one dependency checked by /readyz.
 type ReadinessCheck struct {
@@ -36,9 +41,14 @@ type Options struct {
 	ReadinessChecks []ReadinessCheck
 	// ReadinessTimeout bounds all readiness checks together. Defaults to 3s.
 	ReadinessTimeout time.Duration
+	// WorkspaceURL is the workspace URL, e.g. https://work.acme.com.
+	WorkspaceURL string
 	// Authenticator resolves callers of non-public operations. Defaults to
-	// authz.DenyAll.
+	// Auth when set, otherwise to authz.DenyAll.
 	Authenticator authz.Authenticator
+	// Auth serves sign-in, sessions and passkeys. Without it those
+	// operations fail with 500 and every non-public operation is denied.
+	Auth *web.Auth
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
 }
@@ -52,7 +62,11 @@ func NewHandler(opts Options) (http.Handler, error) {
 
 func newHandler(spec []byte, opts Options) (http.Handler, error) {
 	if opts.Authenticator == nil {
-		opts.Authenticator = authz.DenyAll{}
+		if opts.Auth != nil {
+			opts.Authenticator = opts.Auth
+		} else {
+			opts.Authenticator = authz.DenyAll{}
+		}
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
@@ -71,9 +85,17 @@ func newHandler(spec []byte, opts Options) (http.Handler, error) {
 	badRequest := func(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, r, http.StatusBadRequest, err.Error())
 	}
-	strict := apigen.NewStrictHandlerWithOptions(&server{opts: opts}, nil, apigen.StrictHTTPServerOptions{
+	strict := apigen.NewStrictHandlerWithOptions(&server{opts: opts}, []apigen.StrictMiddlewareFunc{withHTTP}, apigen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: badRequest,
 		ResponseErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
+			var apiErr *apiError
+			if errors.As(err, &apiErr) {
+				if apiErr.retryAfter != "" {
+					w.Header().Set("Retry-After", apiErr.retryAfter)
+				}
+				writeProblem(w, r, apiErr.status, apiErr.detail)
+				return
+			}
 			opts.Logger.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 			writeProblem(w, r, http.StatusInternalServerError, "")
 		},
@@ -91,7 +113,29 @@ func newHandler(spec []byte, opts Options) (http.Handler, error) {
 		writeProblem(w, r, http.StatusNotFound, "")
 	})
 
-	return recoverer(mux, opts.Logger), nil
+	var handler http.Handler = mux
+	if opts.Auth != nil {
+		// The OpenID Provider and its login page share the server.
+		oidc := opts.Auth.OIDCHandler()
+		mux.Handle("/oidc/", oidc)
+		mux.Handle("/.well-known/openid-configuration", oidc)
+		// Login CSRF: unauthenticated state-changing API requests must not
+		// come from another origin (authenticated ones are checked by the
+		// authenticator).
+		handler = rejectCrossOriginAPI(opts.Auth, mux)
+	}
+	return recoverer(handler, opts.Logger), nil
+}
+
+func rejectCrossOriginAPI(a *web.Auth, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != http.MethodGet && r.Method != http.MethodHead &&
+			r.Method != http.MethodOptions && a.CrossOrigin(r) {
+			writeProblem(w, r, http.StatusForbidden, "Cross-origin request rejected.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // recoverer turns a handler panic into a logged 500 problem response.

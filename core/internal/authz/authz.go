@@ -20,6 +20,11 @@ type Permission string
 // version endpoint). It is not a grantable permission.
 const Public Permission = "public"
 
+// Authenticated marks an operation any signed-in caller may use, without a
+// granted permission: self-service on the caller's own account (their
+// sessions, passkeys, sign-out). It is not a grantable permission either.
+const Authenticated Permission = "authenticated"
+
 // The permission registry: the single source of truth for permission names.
 // Add a permission here (constant and registry entry) before using it in the
 // OpenAPI contract, in a role bundle or in a module scope; the contract tests
@@ -69,31 +74,46 @@ func All() []Permission {
 
 // Principal is an authenticated caller: a person, a module or an agent.
 type Principal struct {
-	// Subject identifies the caller.
+	// Subject identifies the caller (a person ID for people).
 	Subject string
 	// Permissions are the permissions granted to the caller, already resolved
 	// from roles and scopes.
 	Permissions []Permission
+	// SessionID is the browser session the caller authenticated with; empty
+	// for bearer tokens.
+	SessionID string
+	// ClientID is the OIDC client a bearer token was issued to; empty for
+	// sessions.
+	ClientID string
 }
 
-// Has reports whether the principal holds permission p.
+// Has reports whether the principal holds permission p. Every principal
+// holds Authenticated.
 func (p *Principal) Has(perm Permission) bool {
-	return p != nil && slices.Contains(p.Permissions, perm)
+	if p == nil {
+		return false
+	}
+	return perm == Authenticated || slices.Contains(p.Permissions, perm)
 }
 
 // ErrUnauthenticated means the request carries no valid credentials.
 var ErrUnauthenticated = errors.New("authz: unauthenticated")
 
+// ErrCrossSite means a cookie-authenticated, state-changing request failed
+// the CSRF checks (Origin and CSRF token). It is answered with 403.
+var ErrCrossSite = errors.New("authz: cross-site request rejected")
+
 // Authenticator resolves the caller of a request. It returns
-// ErrUnauthenticated (possibly wrapped) when the request has no valid
-// credentials; any other error is treated as a server error.
+// ErrUnauthenticated or ErrCrossSite (possibly wrapped) when the request has
+// no valid credentials or fails the CSRF checks; any other error is treated
+// as a server error.
 type Authenticator interface {
 	Authenticate(r *http.Request) (*Principal, error)
 }
 
-// DenyAll rejects every request as unauthenticated. It is the authenticator
-// until the embedded identity provider lands (#6), so every non-public
-// operation is closed by default.
+// DenyAll rejects every request as unauthenticated. It is the default when
+// no authenticator is configured, so non-public operations fail closed; the
+// server uses the identity authenticator (package identity/web).
 type DenyAll struct{}
 
 // Authenticate implements Authenticator.

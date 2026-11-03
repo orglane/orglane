@@ -64,6 +64,22 @@ func (q *Queries) CountActiveHoldersExcept(ctx context.Context, arg CountActiveH
 	return count, err
 }
 
+const countActiveRoleHolders = `-- name: CountActiveRoleHolders :one
+SELECT count(*)
+FROM person_roles pr
+JOIN roles r ON r.id = pr.role_id
+JOIN people p ON p.id = pr.person_id
+WHERE r.key = $1 AND p.status = 'active'
+`
+
+// Counts active people holding the role with the given key.
+func (q *Queries) CountActiveRoleHolders(ctx context.Context, key string) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveRoleHolders, key)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getRoleByKey = `-- name: GetRoleByKey :one
 SELECT id, key, name, builtin, created_at, updated_at FROM roles WHERE key = $1
 `

@@ -72,6 +72,32 @@ const (
 
 	SessionCreated Action = "session.created"
 	SessionRevoked Action = "session.revoked"
+
+	// InstanceSetupCompleted: the first owner was created with the setup
+	// token.
+	InstanceSetupCompleted Action = "instance.setup_completed"
+	// SetupTokenCreated: a first-run setup token was generated (on first
+	// start or with `orglane cli setup-token`).
+	SetupTokenCreated Action = "setup_token.created" //nolint:gosec // an action name, not a credential
+
+	PersonPasswordChanged Action = "person.password_changed" //nolint:gosec // an action name, not a credential
+
+	SignInSucceeded   Action = "sign_in.succeeded"
+	SignInFailed      Action = "sign_in.failed"
+	SignInLocked      Action = "sign_in.locked"
+	SignInRateLimited Action = "sign_in.rate_limited"
+
+	PasskeyAdded          Action = "passkey.added"
+	PasskeyRemoved        Action = "passkey.removed"
+	PasskeyOfferDismissed Action = "passkey.offer_dismissed"
+
+	SigningKeyCreated Action = "signing_key.created"
+	SigningKeyRetired Action = "signing_key.retired"
+
+	OIDCClientCreated Action = "oidc_client.created"
+	// OIDCGrantRevoked: every token of an OIDC grant was revoked, for
+	// example because a used refresh token or code was presented again.
+	OIDCGrantRevoked Action = "oidc_grant.revoked"
 )
 
 // TargetKind is the kind of object an action applies to.
@@ -79,10 +105,14 @@ type TargetKind string
 
 // Target kinds.
 const (
-	TargetPerson  TargetKind = "person"
-	TargetRole    TargetKind = "role"
-	TargetDevice  TargetKind = "device"
-	TargetSession TargetKind = "session"
+	TargetPerson     TargetKind = "person"
+	TargetRole       TargetKind = "role"
+	TargetDevice     TargetKind = "device"
+	TargetSession    TargetKind = "session"
+	TargetPasskey    TargetKind = "passkey"
+	TargetSigningKey TargetKind = "signing_key"
+	TargetOIDCClient TargetKind = "oidc_client"
+	TargetOIDCGrant  TargetKind = "oidc_grant"
 )
 
 // Target is the object an action applies to. The zero Target means the

@@ -59,3 +59,11 @@ WHERE pr.role_id = @role_id AND p.status = 'active' AND p.id <> @person_id;
 
 -- name: PersonHasRole :one
 SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = @person_id AND role_id = @role_id);
+
+-- name: CountActiveRoleHolders :one
+-- Counts active people holding the role with the given key.
+SELECT count(*)
+FROM person_roles pr
+JOIN roles r ON r.id = pr.role_id
+JOIN people p ON p.id = pr.person_id
+WHERE r.key = @key AND p.status = 'active';

@@ -14,7 +14,7 @@ import (
 	"github.com/orglane/orglane/core/internal/api"
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/database"
-	"github.com/orglane/orglane/core/internal/identity"
+	"github.com/orglane/orglane/core/internal/identity/web"
 	"github.com/orglane/orglane/core/internal/jobs"
 )
 
@@ -38,11 +38,17 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	if err := migrator.Up(ctx); err != nil {
 		return err
 	}
-	if err := identity.NewService(pool).SeedBuiltinRoles(ctx); err != nil {
+	stack, err := web.NewStack(pool, cfg, logger, web.StackOptions{})
+	if err != nil {
+		return err
+	}
+	if err := prepareIdentity(ctx, cfg, stack, logger); err != nil {
 		return err
 	}
 
-	jobClient, err := jobs.NewClient(pool, cfg.Jobs, logger)
+	jobClient, err := jobs.NewClient(pool, cfg.Jobs, logger, jobs.Options{
+		IdentityMaintenance: func(ctx context.Context) error { return stack.Maintain(ctx, pool) },
+	})
 	if err != nil {
 		return err
 	}
@@ -55,6 +61,8 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		Version:       version,
 		BaseDomain:    cfg.Domain.Base,
 		WorkspaceHost: cfg.Domain.WorkspaceHost,
+		WorkspaceURL:  cfg.WorkspaceURL(),
+		Auth:          stack.Auth,
 		ReadinessChecks: []api.ReadinessCheck{
 			{Name: "database", Check: pool.Ping},
 			{Name: "migrations", Check: migrator.Check},
@@ -93,6 +101,35 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.Server.ShutdownTimeout)
 	defer cancel()
 	return errors.Join(err, shutdown(shutdownCtx, srv, jobClient, logger))
+}
+
+// prepareIdentity seeds the built-in roles, makes sure a signing key exists
+// and, on a fresh instance, creates the first-run setup token and logs it
+// once.
+func prepareIdentity(ctx context.Context, cfg *config.Config, stack *web.Stack, logger *slog.Logger) error {
+	if cfg.Identity.MasterSecret == config.DevMasterSecret {
+		logger.WarnContext(ctx, "using the public development master secret; set identity.master_secret (ORGLANE_IDENTITY_MASTER_SECRET) outside local development")
+	}
+	if cfg.Domain.Scheme == "http" {
+		logger.WarnContext(ctx, "serving the workspace over plain HTTP (domain.scheme: http): local demo mode only")
+	}
+	if err := stack.Identity.SeedBuiltinRoles(ctx); err != nil {
+		return err
+	}
+	if _, err := stack.Keys.Ensure(ctx); err != nil {
+		return fmt.Errorf("signing keys: %w", err)
+	}
+	token, err := stack.Identity.EnsureSetupToken(ctx)
+	if err != nil {
+		return fmt.Errorf("setup token: %w", err)
+	}
+	if token != "" {
+		// Printed once: only its hash is stored. `orglane cli setup-token`
+		// creates a new one.
+		logger.WarnContext(ctx, "first-run setup: no owner exists yet. Open the workspace and create the owner account with this one-time setup token",
+			"setup_token", token, "workspace_url", cfg.WorkspaceURL())
+	}
+	return nil
 }
 
 func shutdown(ctx context.Context, srv *http.Server, jobClient *jobs.Client, logger *slog.Logger) error {

@@ -28,6 +28,9 @@ func (s stubAuthenticator) Authenticate(r *http.Request) (*authz.Principal, erro
 	if token == "broken" {
 		return nil, errors.New("identity store unavailable")
 	}
+	if token == "cross-site" {
+		return nil, authz.ErrCrossSite
+	}
 	p, ok := s[token]
 	if !ok {
 		return nil, authz.ErrUnauthenticated
@@ -99,6 +102,9 @@ func TestPermissionEnforcement(t *testing.T) {
 		{"denied with unknown token", "/api/v1/instance", "nope", http.StatusUnauthorized},
 		{"denied without permission", "/api/v1/instance", "member", http.StatusForbidden},
 		{"authenticator failure", "/api/v1/instance", "broken", http.StatusInternalServerError},
+		{"failed CSRF checks", "/api/v1/instance", "cross-site", http.StatusForbidden},
+		{"self-service without credentials", "/api/v1/me", "", http.StatusUnauthorized},
+		{"discovery is public", "/.well-known/orglane", "", http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

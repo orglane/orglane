@@ -1,8 +1,8 @@
 -- name: CreateSession :one
 -- The expiry is computed from the database clock, like every other
 -- timestamp, so application clock skew cannot produce an expired session.
-INSERT INTO sessions (person_id, device_id, token_hash, expires_at)
-VALUES (@person_id, @device_id, @token_hash, now() + make_interval(secs => @ttl_seconds::float8))
+INSERT INTO sessions (person_id, device_id, token_hash, expires_at, auth_methods)
+VALUES (@person_id, @device_id, @token_hash, now() + make_interval(secs => @ttl_seconds::float8), @auth_methods::text[])
 RETURNING *;
 
 -- name: GetSession :one
@@ -41,3 +41,35 @@ RETURNING *;
 
 -- name: GetSessionForUpdate :one
 SELECT * FROM sessions WHERE id = @id FOR UPDATE;
+
+-- name: GetValidSessionByTokenHash :one
+-- Like GetActiveSessionByTokenHash, and the session has been used within
+-- the idle timeout.
+SELECT s.*
+FROM sessions s
+JOIN devices d ON d.id = s.device_id
+JOIN people p ON p.id = s.person_id
+WHERE s.token_hash = @token_hash
+  AND s.revoked_at IS NULL
+  AND s.expires_at > now()
+  AND s.last_seen_at > now() - make_interval(secs => @idle_seconds::float8)
+  AND d.revoked_at IS NULL
+  AND p.status = 'active';
+
+-- name: TouchSession :exec
+-- Records activity at most once a minute, so validating a session does not
+-- write on every request.
+UPDATE sessions SET last_seen_at = now()
+WHERE id = @id AND last_seen_at < now() - interval '1 minute';
+
+-- name: ListValidPersonSessions :many
+SELECT s.id, s.device_id, s.created_at, s.last_seen_at, s.expires_at, s.auth_methods,
+       d.name AS device_name, d.platform AS device_platform
+FROM sessions s
+JOIN devices d ON d.id = s.device_id
+WHERE s.person_id = @person_id
+  AND s.revoked_at IS NULL
+  AND s.expires_at > now()
+  AND s.last_seen_at > now() - make_interval(secs => @idle_seconds::float8)
+  AND d.revoked_at IS NULL
+ORDER BY s.id;

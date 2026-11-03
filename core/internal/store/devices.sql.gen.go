@@ -128,3 +128,13 @@ func (q *Queries) RevokeDevice(ctx context.Context, id uuid.UUID) (Device, error
 	)
 	return i, err
 }
+
+const touchDevice = `-- name: TouchDevice :exec
+UPDATE devices SET last_seen_at = now()
+WHERE id = $1 AND last_seen_at < now() - interval '1 minute'
+`
+
+func (q *Queries) TouchDevice(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, touchDevice, id)
+	return err
+}

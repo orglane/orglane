@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project status
 
-Pre-alpha. The monorepo tooling and the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API) and the M0 data model (people, roles, devices, sessions, audit log) are in place; identity flows and the web app are next (see [ROADMAP.md](ROADMAP.md)).
+Pre-alpha. The monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the M0 data model (people, roles, devices, sessions, audit log) and identity (embedded OpenID Provider, password and passkey sign-in, sessions) are in place; the web app is next (see [ROADMAP.md](ROADMAP.md)).
 
 ## Toolchain
 
@@ -35,6 +35,7 @@ make test              # Go unit + integration tests (integration only when Dock
 make test-unit         # Go unit tests only
 make test-integration  # Go unit + integration tests (needs Docker)
 make measure-memory    # idle RSS of the server against Postgres (warning only, needs Docker)
+make conformance       # OpenID Conformance Suite against a local server (Docker)
 make lint              # stale generated code check (Go and TypeScript), go mod tidy check, golangci-lint, Biome, tsc --noEmit
 make fmt               # go mod tidy, golangci-lint fmt (gofmt + goimports), biome check --write
 make help              # list targets
@@ -50,7 +51,7 @@ Integration tests carry the `integration` build tag (`//go:build integration`) a
 
 `make dev` starts Postgres from `deploy/dev/compose.yaml` and runs `orglane server -config deploy/dev/orglane.yaml`. Other modes: `go run ./core/cmd/orglane cli migrate -config deploy/dev/orglane.yaml`, `... cli version`, `... agent` (stub).
 
-Configuration is a YAML file (`-config` or `ORGLANE_CONFIG`) plus `ORGLANE_*` environment variables, which override the file. The variable name is the YAML path in upper case joined with `_` (`domain.workspace_host` → `ORGLANE_DOMAIN_WORKSPACE_HOST`). Required: `database.url` and `domain.base`. See `core/internal/config/config.go` for every setting and its default. Hosts are never hard-coded outside that package (ADR 0018).
+Configuration is a YAML file (`-config` or `ORGLANE_CONFIG`) plus `ORGLANE_*` environment variables, which override the file. The variable name is the YAML path in upper case joined with `_` (`domain.workspace_host` → `ORGLANE_DOMAIN_WORKSPACE_HOST`). Required: `database.url`, `domain.base` and, in production, `identity.master_secret` (at least 32 characters; never change it on a running instance). On first start the server logs a one-time setup token for creating the owner (`go run ./core/cmd/orglane cli setup-token -config deploy/dev/orglane.yaml` makes a new one). See `core/internal/config/config.go` for every setting and its default. Hosts are never hard-coded outside that package (ADR 0018).
 
 ### API changes
 
@@ -60,7 +61,7 @@ Permission names live in one place: the registry in `core/internal/authz` (`auth
 
 ### Database changes
 
-Add a new goose migration in `core/migrations` (never edit an applied one) with a working `-- +goose Down`; `core/internal/database` tests apply and roll back every migration. IDs are UUIDv7 (`DEFAULT uuidv7()`, PostgreSQL 18), timestamps are `timestamptz` and read in UTC. Queries are SQL files in `core/internal/store/queries`; run `make generate` to regenerate the typed sqlc code in `core/internal/store` (`make lint` fails when it is stale). People, roles, devices and sessions are changed only through `core/internal/identity`, which writes an audit entry (`core/internal/audit`) in the same transaction; `audit_entries` is append-only at the database level.
+Add a new goose migration in `core/migrations` (never edit an applied one) with a working `-- +goose Down`; `core/internal/database` tests apply and roll back every migration. IDs are UUIDv7 (`DEFAULT uuidv7()`, PostgreSQL 18), timestamps are `timestamptz` and read in UTC. Queries are SQL files in `core/internal/store/queries`; run `make generate` to regenerate the typed sqlc code in `core/internal/store` (`make lint` fails when it is stale). People, roles, devices, sessions and sign-in state are changed only through `core/internal/identity` (OIDC protocol state through `core/internal/identity/oidcop`), which writes an audit entry (`core/internal/audit`) in the same transaction; `audit_entries` is append-only at the database level.
 
 ## Read first
 

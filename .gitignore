@@ -22,3 +22,6 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# OpenID Conformance Suite runs (make conformance)
+/.conformance/

@@ -7,19 +7,29 @@
 // the change. Methods that would not change anything (assigning a role a
 // person already holds, revoking a revoked session) succeed without writing.
 //
-// HTTP handlers and the sign-in flows (#6) build on this package; they never
-// write these tables through package store directly.
+// The same holds for sign-in state: passwords, passkeys, WebAuthn ceremonies,
+// sign-in throttling, the first-run setup token and OIDC clients (sign-in.go,
+// setup.go, passkeys.go, oidc_clients.go). HTTP handlers and the OIDC
+// provider (subpackages web and oidcop) build on this package; they never
+// write these tables through package store directly, except for the OIDC
+// protocol state (authorization requests, tokens, signing keys), which
+// package oidcop owns.
 package identity
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
+	"sync"
+	"time"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/orglane/orglane/core/internal/crypto"
 	"github.com/orglane/orglane/core/internal/store"
 )
 
@@ -34,7 +44,24 @@ var (
 	ErrLastOwner         = errors.New("identity: the last active owner cannot lose the owner role")
 	ErrInactive          = errors.New("identity: person is not active")
 	ErrRevoked           = errors.New("identity: device is revoked")
+	// ErrInvalidCredentials: wrong email, password or passkey. Callers must
+	// not tell these cases apart in responses.
+	ErrInvalidCredentials = errors.New("identity: invalid credentials")
+	ErrSetupDone          = errors.New("identity: setup is already complete")
+	ErrInvalidSetupToken  = errors.New("identity: invalid setup token")
+	ErrWeakPassword       = errors.New("identity: password does not meet the policy")
+	ErrPasskeysDisabled   = errors.New("identity: passkeys are not configured")
 )
+
+// LockedError is returned when an account is locked after too many failed
+// sign-ins.
+type LockedError struct {
+	RetryAfter time.Duration
+}
+
+func (e *LockedError) Error() string {
+	return fmt.Sprintf("identity: account is locked, retry after %s", e.RetryAfter)
+}
 
 // Service changes and reads people, roles, devices and sessions.
 //
@@ -44,12 +71,59 @@ var (
 // avoids deadlocks between, for example, suspending a person and revoking
 // one of their devices.
 type Service struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	hasher   *crypto.PasswordHasher
+	limits   SignInLimits
+	webAuthn *webauthn.WebAuthn
+	// dummyHash is verified for unknown accounts, so a sign-in takes as long
+	// whether or not the account exists.
+	dummyHash func() (string, error)
+}
+
+// SignInLimits configure the per-account lockout of password sign-in.
+type SignInLimits struct {
+	// Failures is how many failed attempts in a row lock the account.
+	Failures int
+	// Lockout is how long a locked account stays locked. It is also the
+	// window after which a failure no longer counts.
+	Lockout time.Duration
+}
+
+// DefaultSignInLimits lock an account for 15 minutes after 5 failures.
+var DefaultSignInLimits = SignInLimits{Failures: 5, Lockout: 15 * time.Minute}
+
+// Option configures a Service.
+type Option func(*Service)
+
+// WithPasswordHasher sets the password hasher. The default uses
+// crypto.DefaultPasswordParams.
+func WithPasswordHasher(h *crypto.PasswordHasher) Option {
+	return func(s *Service) { s.hasher = h }
+}
+
+// WithSignInLimits sets the account lockout limits.
+func WithSignInLimits(l SignInLimits) Option {
+	return func(s *Service) { s.limits = l }
+}
+
+// WithWebAuthn enables passkeys with the given relying party.
+func WithWebAuthn(w *webauthn.WebAuthn) Option {
+	return func(s *Service) { s.webAuthn = w }
 }
 
 // NewService returns a Service using pool.
-func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{pool: pool}
+func NewService(pool *pgxpool.Pool, opts ...Option) *Service {
+	s := &Service{pool: pool, limits: DefaultSignInLimits}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.hasher == nil {
+		s.hasher = crypto.NewPasswordHasher(crypto.DefaultPasswordParams, runtime.GOMAXPROCS(0))
+	}
+	s.dummyHash = sync.OnceValues(func() (string, error) {
+		return s.hasher.Hash(context.Background(), "orglane-dummy-password")
+	})
+	return s
 }
 
 // inTx runs fn in a transaction. fn's changes and audit entries commit
@@ -90,4 +164,9 @@ func uniqueViolation(err error) error {
 		return ErrEmailTaken
 	}
 	return err
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

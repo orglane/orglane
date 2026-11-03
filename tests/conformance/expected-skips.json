@@ -1,0 +1,26 @@
+[
+  {
+    "test-name": "oidcc-scope-address",
+    "variant": "*",
+    "configuration-filename": "*",
+    "comment": "The address scope is not supported (no address in the directory); discovery does not list it."
+  },
+  {
+    "test-name": "oidcc-scope-phone",
+    "variant": "*",
+    "configuration-filename": "*",
+    "comment": "The phone scope is not supported yet (phone is a profile field from M1); discovery does not list it."
+  },
+  {
+    "test-name": "oidcc-scope-all",
+    "variant": "*",
+    "configuration-filename": "*",
+    "comment": "Needs the address and phone scopes, see above."
+  },
+  {
+    "test-name": "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported",
+    "variant": "*",
+    "configuration-filename": "*",
+    "comment": "Request objects are not supported (request_parameter_supported: false); the suite's own CI expects the same skip for providers without them."
+  }
+]

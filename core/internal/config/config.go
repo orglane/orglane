@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"reflect"
@@ -56,6 +57,7 @@ type Config struct {
 	Domain      Domain    `yaml:"domain"`
 	Endpoints   Endpoints `yaml:"endpoints"`
 	Jobs        Jobs      `yaml:"jobs"`
+	Identity    Identity  `yaml:"identity"`
 }
 
 // Log configures logging.
@@ -73,6 +75,31 @@ type Server struct {
 	Listen string `yaml:"listen"`
 	// ShutdownTimeout bounds graceful shutdown. Defaults to 15s.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	// TrustedProxies is a comma-separated list of the addresses (CIDRs) of
+	// the reverse proxies in front of the core, e.g. the Traefik container,
+	// "172.30.0.2/32". Only requests from these peers may name the client IP
+	// in X-Forwarded-For, which sign-in rate limiting and the audit log use.
+	// Empty (the default) or "none" trusts no proxy: the peer address is the
+	// client. List exactly the proxies; anything listed can spoof client
+	// addresses.
+	TrustedProxies string `yaml:"trusted_proxies"`
+}
+
+// TrustedProxyPrefixes parses Server.TrustedProxies.
+func (s Server) TrustedProxyPrefixes() ([]netip.Prefix, error) {
+	raw := strings.TrimSpace(s.TrustedProxies)
+	if raw == "" || strings.EqualFold(raw, "none") {
+		return nil, nil
+	}
+	var out []netip.Prefix
+	for part := range strings.SplitSeq(raw, ",") {
+		p, err := netip.ParsePrefix(strings.TrimSpace(part))
+		if err != nil {
+			return nil, fmt.Errorf("%q is not a CIDR", strings.TrimSpace(part))
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
 }
 
 // Database configures PostgreSQL.
@@ -96,6 +123,12 @@ type Domain struct {
 	// ServiceHostTemplate builds company service hosts from {service} and
 	// {base}. Defaults to "{service}.{base}".
 	ServiceHostTemplate string `yaml:"service_host_template"`
+	// Scheme is the scheme the workspace is reached with by browsers and
+	// clients: https (default) or http. TLS is usually terminated in front of
+	// the core (Traefik). http is only allowed in development, for local
+	// plain-HTTP demos; it changes the session cookie name (see package
+	// identity/web) and allows a non-https OIDC issuer.
+	Scheme string `yaml:"scheme"`
 }
 
 // Endpoints are the project service endpoints (ADR 0018).
@@ -117,6 +150,55 @@ type Jobs struct {
 	Noop PeriodicJob `yaml:"noop"`
 }
 
+// Identity configures the embedded identity provider: sign-in, sessions and
+// OIDC (ADR 0003).
+type Identity struct {
+	// MasterSecret is the instance master secret. Keys for encrypting data at
+	// rest (OIDC signing keys), opaque OIDC access tokens and CSRF tokens are
+	// derived from it. At least 32 characters, e.g. the output of
+	// `openssl rand -base64 32`. Required in production; development falls
+	// back to a fixed, publicly known secret with a warning. Never change it
+	// on a running instance: encrypted keys become unreadable.
+	MasterSecret string `yaml:"master_secret"`
+	// SessionIdleTimeout ends a browser session after this long without a
+	// request. Defaults to 7 days.
+	SessionIdleTimeout time.Duration `yaml:"session_idle_timeout"`
+	// SessionAbsoluteTimeout ends a browser session this long after sign-in,
+	// active or not. Defaults to 30 days.
+	SessionAbsoluteTimeout time.Duration `yaml:"session_absolute_timeout"`
+	// AccessTokenLifetime is the lifetime of OIDC access tokens. Defaults to
+	// 15 minutes.
+	AccessTokenLifetime time.Duration `yaml:"access_token_lifetime"`
+	// IDTokenLifetime is the lifetime of OIDC ID tokens. Defaults to 1 hour.
+	IDTokenLifetime time.Duration `yaml:"id_token_lifetime"`
+	// RefreshTokenLifetime is the absolute lifetime of an OIDC refresh token
+	// chain; every refresh rotates the token. Defaults to 30 days.
+	RefreshTokenLifetime time.Duration `yaml:"refresh_token_lifetime"`
+	// SigningKeyRotation is how long a signing key signs tokens before a new
+	// one replaces it. Defaults to 90 days.
+	SigningKeyRotation time.Duration `yaml:"signing_key_rotation"`
+	// SigningKeyGrace is how long a replaced signing key stays in the JWKS so
+	// tokens it signed can still be verified. Must exceed the ID token
+	// lifetime. Defaults to 7 days.
+	SigningKeyGrace time.Duration `yaml:"signing_key_grace"`
+	// SignInIPLimit is how many sign-in attempts one client IP may make per
+	// SignInIPWindow. Defaults to 20 per 5 minutes.
+	SignInIPLimit  int           `yaml:"sign_in_ip_limit"`
+	SignInIPWindow time.Duration `yaml:"sign_in_ip_window"`
+	// SignInAccountLimit is how many failed password sign-ins one account
+	// (work email) may have in a row before it is locked for
+	// SignInLockout. Defaults to 5 and 15 minutes.
+	SignInAccountLimit int           `yaml:"sign_in_account_limit"`
+	SignInLockout      time.Duration `yaml:"sign_in_lockout"`
+}
+
+// DevMasterSecret is the master secret used in development when none is
+// configured. It is public, so it protects nothing.
+const DevMasterSecret = "orglane-development-master-secret-do-not-use-in-production"
+
+// MinMasterSecretLength is the minimum length of identity.master_secret.
+const MinMasterSecretLength = 32
+
 // PeriodicJob configures a periodic job.
 type PeriodicJob struct {
 	Enabled  bool          `yaml:"enabled"`
@@ -131,12 +213,25 @@ func Default() Config {
 		Log:         Log{Level: "info"},
 		Server:      Server{Listen: ":8080", ShutdownTimeout: 15 * time.Second},
 		Database:    Database{MaxConns: 10, ConnectTimeout: 30 * time.Second},
-		Domain:      Domain{ServiceHostTemplate: DefaultServiceHostTemplate},
+		Domain:      Domain{ServiceHostTemplate: DefaultServiceHostTemplate, Scheme: "https"},
 		Endpoints:   Endpoints{PushRelayURL: DefaultPushRelayURL, DiscoveryURL: DefaultDiscoveryURL},
 		Jobs: Jobs{
 			MaxWorkers:        5,
 			FetchPollInterval: 5 * time.Second,
 			Noop:              PeriodicJob{Interval: time.Hour},
+		},
+		Identity: Identity{
+			SessionIdleTimeout:     7 * 24 * time.Hour,
+			SessionAbsoluteTimeout: 30 * 24 * time.Hour,
+			AccessTokenLifetime:    15 * time.Minute,
+			IDTokenLifetime:        time.Hour,
+			RefreshTokenLifetime:   30 * 24 * time.Hour,
+			SigningKeyRotation:     90 * 24 * time.Hour,
+			SigningKeyGrace:        7 * 24 * time.Hour,
+			SignInIPLimit:          20,
+			SignInIPWindow:         5 * time.Minute,
+			SignInAccountLimit:     5,
+			SignInLockout:          15 * time.Minute,
 		},
 	}
 }
@@ -243,6 +338,10 @@ func (c *Config) normalize() {
 		c.Domain.WorkspaceHost = c.Domain.Base
 	}
 	c.Domain.ServiceHostTemplate = strings.ToLower(strings.TrimSpace(c.Domain.ServiceHostTemplate))
+	c.Domain.Scheme = strings.ToLower(strings.TrimSpace(c.Domain.Scheme))
+	if c.Identity.MasterSecret == "" && c.Environment == Development {
+		c.Identity.MasterSecret = DevMasterSecret
+	}
 }
 
 func normalizeHost(h string) string {
@@ -274,6 +373,9 @@ func (c *Config) Validate() error {
 	if c.Server.ShutdownTimeout <= 0 {
 		fail("server.shutdown_timeout", "must be positive")
 	}
+	if _, err := c.Server.TrustedProxyPrefixes(); err != nil {
+		fail("server.trusted_proxies", "%v (a comma-separated list of CIDRs, or none)", err)
+	}
 
 	switch {
 	case strings.TrimSpace(c.Database.URL) == "":
@@ -303,6 +405,12 @@ func (c *Config) Validate() error {
 	if err := c.validateServiceTemplate(); err != nil {
 		fail("domain.service_host_template", "%v", err)
 	}
+	switch {
+	case c.Domain.Scheme == "https":
+	case c.Domain.Scheme == "http" && c.Environment == Development:
+	default:
+		fail("domain.scheme", "must be https (http is allowed in development), got %q", c.Domain.Scheme)
+	}
 
 	c.validateEndpoint("endpoints.push_relay_url", c.Endpoints.PushRelayURL, fail)
 	c.validateEndpoint("endpoints.discovery_url", c.Endpoints.DiscoveryURL, fail)
@@ -316,7 +424,51 @@ func (c *Config) Validate() error {
 	if c.Jobs.Noop.Enabled && c.Jobs.Noop.Interval < time.Second {
 		fail("jobs.noop.interval", "must be at least 1s")
 	}
+	c.validateIdentity(fail)
 	return errors.Join(errs...)
+}
+
+func (c *Config) validateIdentity(fail func(string, string, ...any)) {
+	id := c.Identity
+	switch {
+	case id.MasterSecret == "":
+		fail("identity.master_secret", "required in production: at least %d random characters, e.g. the output of `openssl rand -base64 32`", MinMasterSecretLength)
+	case len(id.MasterSecret) < MinMasterSecretLength:
+		// Never echo the value.
+		fail("identity.master_secret", "must be at least %d characters", MinMasterSecretLength)
+	case id.MasterSecret == DevMasterSecret && c.Environment != Development:
+		fail("identity.master_secret", "the public development secret cannot be used in production")
+	}
+	positive := func(setting string, d time.Duration) {
+		if d <= 0 {
+			fail(setting, "must be positive")
+		}
+	}
+	positive("identity.session_idle_timeout", id.SessionIdleTimeout)
+	positive("identity.session_absolute_timeout", id.SessionAbsoluteTimeout)
+	positive("identity.access_token_lifetime", id.AccessTokenLifetime)
+	positive("identity.id_token_lifetime", id.IDTokenLifetime)
+	positive("identity.refresh_token_lifetime", id.RefreshTokenLifetime)
+	positive("identity.sign_in_ip_window", id.SignInIPWindow)
+	positive("identity.sign_in_lockout", id.SignInLockout)
+	if id.SigningKeyRotation < time.Hour {
+		fail("identity.signing_key_rotation", "must be at least 1h")
+	}
+	if id.SigningKeyGrace <= id.IDTokenLifetime || id.SigningKeyGrace <= id.AccessTokenLifetime {
+		fail("identity.signing_key_grace", "must be longer than the ID and access token lifetimes")
+	}
+	if id.SignInIPLimit < 1 {
+		fail("identity.sign_in_ip_limit", "must be at least 1")
+	}
+	if id.SignInAccountLimit < 1 {
+		fail("identity.sign_in_account_limit", "must be at least 1")
+	}
+}
+
+// WorkspaceURL returns the URL of the workspace, e.g. https://work.acme.com.
+// It is the OIDC issuer and the WebAuthn origin.
+func (c *Config) WorkspaceURL() string {
+	return c.Domain.Scheme + "://" + c.Domain.WorkspaceHost
 }
 
 func (c *Config) validateServiceTemplate() error {

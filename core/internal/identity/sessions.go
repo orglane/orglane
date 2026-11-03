@@ -57,10 +57,11 @@ func (s *Service) CreateSession(ctx context.Context, actor audit.Actor, deviceID
 			return ErrRevoked
 		}
 		session, err = q.CreateSession(ctx, store.CreateSessionParams{
-			PersonID:   device.PersonID,
-			DeviceID:   deviceID,
-			TokenHash:  hashSessionToken(token),
-			TtlSeconds: ttl.Seconds(),
+			PersonID:    device.PersonID,
+			DeviceID:    deviceID,
+			TokenHash:   hashSessionToken(token),
+			TtlSeconds:  ttl.Seconds(),
+			AuthMethods: []string{},
 		})
 		if err != nil {
 			return fmt.Errorf("identity: create session: %w", err)

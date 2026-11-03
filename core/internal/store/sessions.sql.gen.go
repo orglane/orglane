@@ -7,21 +7,23 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 const createSession = `-- name: CreateSession :one
-INSERT INTO sessions (person_id, device_id, token_hash, expires_at)
-VALUES ($1, $2, $3, now() + make_interval(secs => $4::float8))
-RETURNING id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at
+INSERT INTO sessions (person_id, device_id, token_hash, expires_at, auth_methods)
+VALUES ($1, $2, $3, now() + make_interval(secs => $4::float8), $5::text[])
+RETURNING id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at, auth_methods
 `
 
 type CreateSessionParams struct {
-	PersonID   uuid.UUID
-	DeviceID   uuid.UUID
-	TokenHash  []byte
-	TtlSeconds float64
+	PersonID    uuid.UUID
+	DeviceID    uuid.UUID
+	TokenHash   []byte
+	TtlSeconds  float64
+	AuthMethods []string
 }
 
 // The expiry is computed from the database clock, like every other
@@ -32,6 +34,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		arg.DeviceID,
 		arg.TokenHash,
 		arg.TtlSeconds,
+		arg.AuthMethods,
 	)
 	var i Session
 	err := row.Scan(
@@ -43,12 +46,13 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.LastSeenAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.AuthMethods,
 	)
 	return i, err
 }
 
 const getActiveSessionByTokenHash = `-- name: GetActiveSessionByTokenHash :one
-SELECT s.id, s.person_id, s.device_id, s.token_hash, s.created_at, s.last_seen_at, s.expires_at, s.revoked_at
+SELECT s.id, s.person_id, s.device_id, s.token_hash, s.created_at, s.last_seen_at, s.expires_at, s.revoked_at, s.auth_methods
 FROM sessions s
 JOIN devices d ON d.id = s.device_id
 JOIN people p ON p.id = s.person_id
@@ -73,12 +77,13 @@ func (q *Queries) GetActiveSessionByTokenHash(ctx context.Context, tokenHash []b
 		&i.LastSeenAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.AuthMethods,
 	)
 	return i, err
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at FROM sessions WHERE id = $1
+SELECT id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at, auth_methods FROM sessions WHERE id = $1
 `
 
 func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -93,12 +98,13 @@ func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 		&i.LastSeenAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.AuthMethods,
 	)
 	return i, err
 }
 
 const getSessionForUpdate = `-- name: GetSessionForUpdate :one
-SELECT id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at FROM sessions WHERE id = $1 FOR UPDATE
+SELECT id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at, auth_methods FROM sessions WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetSessionForUpdate(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -113,12 +119,50 @@ func (q *Queries) GetSessionForUpdate(ctx context.Context, id uuid.UUID) (Sessio
 		&i.LastSeenAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.AuthMethods,
+	)
+	return i, err
+}
+
+const getValidSessionByTokenHash = `-- name: GetValidSessionByTokenHash :one
+SELECT s.id, s.person_id, s.device_id, s.token_hash, s.created_at, s.last_seen_at, s.expires_at, s.revoked_at, s.auth_methods
+FROM sessions s
+JOIN devices d ON d.id = s.device_id
+JOIN people p ON p.id = s.person_id
+WHERE s.token_hash = $1
+  AND s.revoked_at IS NULL
+  AND s.expires_at > now()
+  AND s.last_seen_at > now() - make_interval(secs => $2::float8)
+  AND d.revoked_at IS NULL
+  AND p.status = 'active'
+`
+
+type GetValidSessionByTokenHashParams struct {
+	TokenHash   []byte
+	IdleSeconds float64
+}
+
+// Like GetActiveSessionByTokenHash, and the session has been used within
+// the idle timeout.
+func (q *Queries) GetValidSessionByTokenHash(ctx context.Context, arg GetValidSessionByTokenHashParams) (Session, error) {
+	row := q.db.QueryRow(ctx, getValidSessionByTokenHash, arg.TokenHash, arg.IdleSeconds)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.PersonID,
+		&i.DeviceID,
+		&i.TokenHash,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+		&i.AuthMethods,
 	)
 	return i, err
 }
 
 const listPersonSessions = `-- name: ListPersonSessions :many
-SELECT id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at FROM sessions WHERE person_id = $1 ORDER BY id
+SELECT id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at, auth_methods FROM sessions WHERE person_id = $1 ORDER BY id
 `
 
 func (q *Queries) ListPersonSessions(ctx context.Context, personID uuid.UUID) ([]Session, error) {
@@ -139,6 +183,65 @@ func (q *Queries) ListPersonSessions(ctx context.Context, personID uuid.UUID) ([
 			&i.LastSeenAt,
 			&i.ExpiresAt,
 			&i.RevokedAt,
+			&i.AuthMethods,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listValidPersonSessions = `-- name: ListValidPersonSessions :many
+SELECT s.id, s.device_id, s.created_at, s.last_seen_at, s.expires_at, s.auth_methods,
+       d.name AS device_name, d.platform AS device_platform
+FROM sessions s
+JOIN devices d ON d.id = s.device_id
+WHERE s.person_id = $1
+  AND s.revoked_at IS NULL
+  AND s.expires_at > now()
+  AND s.last_seen_at > now() - make_interval(secs => $2::float8)
+  AND d.revoked_at IS NULL
+ORDER BY s.id
+`
+
+type ListValidPersonSessionsParams struct {
+	PersonID    uuid.UUID
+	IdleSeconds float64
+}
+
+type ListValidPersonSessionsRow struct {
+	ID             uuid.UUID
+	DeviceID       uuid.UUID
+	CreatedAt      time.Time
+	LastSeenAt     time.Time
+	ExpiresAt      time.Time
+	AuthMethods    []string
+	DeviceName     string
+	DevicePlatform string
+}
+
+func (q *Queries) ListValidPersonSessions(ctx context.Context, arg ListValidPersonSessionsParams) ([]ListValidPersonSessionsRow, error) {
+	rows, err := q.db.Query(ctx, listValidPersonSessions, arg.PersonID, arg.IdleSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListValidPersonSessionsRow{}
+	for rows.Next() {
+		var i ListValidPersonSessionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeviceID,
+			&i.CreatedAt,
+			&i.LastSeenAt,
+			&i.ExpiresAt,
+			&i.AuthMethods,
+			&i.DeviceName,
+			&i.DevicePlatform,
 		); err != nil {
 			return nil, err
 		}
@@ -153,7 +256,7 @@ func (q *Queries) ListPersonSessions(ctx context.Context, personID uuid.UUID) ([
 const revokeDeviceSessions = `-- name: RevokeDeviceSessions :many
 UPDATE sessions SET revoked_at = now()
 WHERE device_id = $1 AND revoked_at IS NULL
-RETURNING id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at
+RETURNING id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at, auth_methods
 `
 
 func (q *Queries) RevokeDeviceSessions(ctx context.Context, deviceID uuid.UUID) ([]Session, error) {
@@ -174,6 +277,7 @@ func (q *Queries) RevokeDeviceSessions(ctx context.Context, deviceID uuid.UUID) 
 			&i.LastSeenAt,
 			&i.ExpiresAt,
 			&i.RevokedAt,
+			&i.AuthMethods,
 		); err != nil {
 			return nil, err
 		}
@@ -188,7 +292,7 @@ func (q *Queries) RevokeDeviceSessions(ctx context.Context, deviceID uuid.UUID) 
 const revokePersonSessions = `-- name: RevokePersonSessions :many
 UPDATE sessions SET revoked_at = now()
 WHERE person_id = $1 AND revoked_at IS NULL
-RETURNING id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at
+RETURNING id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at, auth_methods
 `
 
 func (q *Queries) RevokePersonSessions(ctx context.Context, personID uuid.UUID) ([]Session, error) {
@@ -209,6 +313,7 @@ func (q *Queries) RevokePersonSessions(ctx context.Context, personID uuid.UUID) 
 			&i.LastSeenAt,
 			&i.ExpiresAt,
 			&i.RevokedAt,
+			&i.AuthMethods,
 		); err != nil {
 			return nil, err
 		}
@@ -223,7 +328,7 @@ func (q *Queries) RevokePersonSessions(ctx context.Context, personID uuid.UUID) 
 const revokeSession = `-- name: RevokeSession :one
 UPDATE sessions SET revoked_at = now()
 WHERE id = $1 AND revoked_at IS NULL
-RETURNING id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at
+RETURNING id, person_id, device_id, token_hash, created_at, last_seen_at, expires_at, revoked_at, auth_methods
 `
 
 func (q *Queries) RevokeSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -238,6 +343,19 @@ func (q *Queries) RevokeSession(ctx context.Context, id uuid.UUID) (Session, err
 		&i.LastSeenAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.AuthMethods,
 	)
 	return i, err
+}
+
+const touchSession = `-- name: TouchSession :exec
+UPDATE sessions SET last_seen_at = now()
+WHERE id = $1 AND last_seen_at < now() - interval '1 minute'
+`
+
+// Records activity at most once a minute, so validating a session does not
+// write on every request.
+func (q *Queries) TouchSession(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, touchSession, id)
+	return err
 }

@@ -1,0 +1,382 @@
+package web
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
+	"html/template"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/zitadel/oidc/v3/pkg/op"
+
+	"github.com/orglane/orglane/core/internal/identity"
+	"github.com/orglane/orglane/core/internal/identity/oidcop"
+	"github.com/orglane/orglane/core/internal/store"
+)
+
+// OIDC sign-in in the browser.
+//
+// /oidc/authorize sends the browser to /oidc/login?authRequest=<id>. With a
+// valid session that satisfies the request (no prompt=login, within
+// max_age) the request completes at once and the browser continues to the
+// client. Otherwise the person signs in: with prompt=none the client gets
+// login_required instead.
+//
+// The sign-in form here is a minimal server-rendered fallback until the web
+// UI (#8) takes over the page; it is what automated OIDC tests (the OpenID
+// Conformance Suite) drive. It supports password sign-in only, and its text
+// is English until the web UI's i18n catalogs exist.
+
+// OIDCHandler serves the OIDC protocol endpoints, the login page and the
+// session-ending wrapper around the end_session endpoint.
+func (a *Auth) OIDCHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle(oidcop.PathDiscovery, a.provider)
+	mux.Handle(oidcop.PathPrefix, a.provider)
+	// Authorization errors that cannot go back to the client (an unknown
+	// client or redirect URI) are shown to the person as a page.
+	mux.Handle(oidcop.PathAuthorize, htmlErrors(a.provider))
+	mux.Handle(oidcop.PathCallback, htmlErrors(a.provider))
+	// Responses carrying tokens or personal data must not be cached
+	// (RFC 6749, section 5.1).
+	for _, p := range []string{oidcop.PathToken, oidcop.PathUserinfo, oidcop.PathIntrospect} {
+		mux.Handle(p, noStore(a.provider))
+	}
+	mux.Handle("GET "+oidcop.PathLogin, http.HandlerFunc(a.loginPage))
+	mux.Handle("POST "+oidcop.PathLogin, a.RejectCrossOrigin(http.HandlerFunc(a.loginSubmit)))
+	mux.Handle(oidcop.PathEndSession, http.HandlerFunc(a.endSession))
+	mux.Handle("GET "+oidcop.PathLogout, http.HandlerFunc(a.logoutPage))
+	mux.Handle("POST "+oidcop.PathLogout, http.HandlerFunc(a.logoutSubmit))
+	return securityHeaders(mux)
+}
+
+// securityHeaders keeps protocol and login responses out of frames and
+// caches.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *Auth) loginPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.URL.Query().Get("authRequest")
+	req, err := a.provider.AuthRequest(ctx, id)
+	if err != nil {
+		a.renderError(w, http.StatusBadRequest, "This sign-in link has expired. Go back to the application and try again.")
+		return
+	}
+	session, ok, err := a.Session(r)
+	if err != nil {
+		a.logger.ErrorContext(ctx, "validate session", "error", err)
+		a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
+		return
+	}
+	if ok && sessionSatisfies(session, req) {
+		a.complete(w, r, req, session)
+		return
+	}
+	if req.PromptNone() {
+		a.provider.AuthRequestError(w, r, req, oidcop.ErrLoginRequired())
+		return
+	}
+	a.renderForm(w, http.StatusOK, loginForm{AuthRequest: id, Email: req.LoginHint()})
+}
+
+// sessionSatisfies reports whether an existing session may answer the
+// request without a new sign-in.
+func sessionSatisfies(s store.Session, req *oidcop.AuthRequest) bool {
+	if req.PromptLogin() {
+		return false
+	}
+	if maxAge, ok := req.MaxAge(); ok && time.Since(s.CreatedAt) > maxAge {
+		return false
+	}
+	return true
+}
+
+func (a *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	if err := r.ParseForm(); err != nil {
+		a.renderError(w, http.StatusBadRequest, "The form could not be read.")
+		return
+	}
+	id := r.PostForm.Get("authRequest")
+	form := loginForm{AuthRequest: id, Email: r.PostForm.Get("email")}
+	req, err := a.provider.AuthRequest(ctx, id)
+	if err != nil {
+		a.renderError(w, http.StatusBadRequest, "This sign-in link has expired. Go back to the application and try again.")
+		return
+	}
+	if err := a.AllowSignIn(ctx, r, identity.AuthPassword); err != nil {
+		var limited *ErrRateLimited
+		if errors.As(err, &limited) {
+			w.Header().Set("Retry-After", retryAfterSeconds(limited.RetryAfter))
+		}
+		form.Error = "Too many sign-in attempts. Wait a few minutes and try again."
+		a.renderForm(w, http.StatusTooManyRequests, form)
+		return
+	}
+	person, err := a.identity.VerifyPassword(ctx, a.Actor(r, uuid.Nil), form.Email, r.PostForm.Get("password"))
+	var locked *identity.LockedError
+	switch {
+	case errors.As(err, &locked):
+		w.Header().Set("Retry-After", retryAfterSeconds(locked.RetryAfter))
+		form.Error = "Too many failed attempts for this account. Wait a few minutes and try again."
+		a.renderForm(w, http.StatusTooManyRequests, form)
+		return
+	case errors.Is(err, identity.ErrInvalidCredentials):
+		form.Error = "The email or password is incorrect."
+		a.renderForm(w, http.StatusUnauthorized, form)
+		return
+	case err != nil:
+		a.logger.ErrorContext(ctx, "password sign-in", "error", err)
+		a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
+		return
+	}
+	signedIn, err := a.SignIn(w, r, person, identity.AuthPassword)
+	if err != nil {
+		a.logger.ErrorContext(ctx, "start session", "error", err)
+		a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
+		return
+	}
+	a.complete(w, r, req, signedIn.Session)
+}
+
+// complete records the person for the request and continues the flow.
+func (a *Auth) complete(w http.ResponseWriter, r *http.Request, req *oidcop.AuthRequest, session store.Session) {
+	if err := a.provider.CompleteAuthRequest(r.Context(), req.GetID(), session); err != nil {
+		a.renderError(w, http.StatusBadRequest, "This sign-in link has expired. Go back to the application and try again.")
+		return
+	}
+	// The callback is on the issuer; the request ID is query-escaped.
+	http.Redirect(w, r, a.provider.CallbackURL(req.GetID()), http.StatusSeeOther) //nolint:gosec // not an open redirect
+}
+
+// RP-initiated logout.
+//
+// The provider validates the end_session request first (id_token_hint
+// signature, client, post_logout_redirect_uri) and only then calls logout.
+// An id_token_hint for the signed-in person proves the request comes from
+// a client that person signed in to, so the session ends at once. Any other
+// request (no hint, or a hint for someone else) could be a cross-site link,
+// so the person confirms on /oidc/logout with a same-origin POST; the
+// validated redirect target travels signed.
+
+func (a *Auth) endSession(w http.ResponseWriter, r *http.Request) {
+	a.provider.ServeHTTP(w, r.WithContext(oidcop.WithLogout(r.Context(), func(ctx context.Context, req *op.EndSessionRequest) (string, error) {
+		session, ok, err := a.Session(r)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return req.RedirectURI, nil // nothing to end
+		}
+		if req.IDTokenHintClaims != nil && req.IDTokenHintClaims.GetSubject() == session.PersonID.String() {
+			if err := a.identity.RevokeOwnSession(ctx, a.Actor(r, session.PersonID), session.PersonID, session.ID, "oidc_logout"); err != nil {
+				return "", err
+			}
+			a.ClearSessionCookie(w)
+			return req.RedirectURI, nil
+		}
+		v := url.Values{"next": {req.RedirectURI}, "sig": {a.logoutSig(req.RedirectURI)}}
+		return a.Origin() + oidcop.PathLogout + "?" + v.Encode(), nil
+	})))
+}
+
+// logoutSig binds a validated post-logout redirect target to this
+// instance, so /oidc/logout cannot be turned into an open redirect.
+func (a *Auth) logoutSig(next string) string {
+	mac := hmac.New(sha256.New, a.csrfKey[:])
+	mac.Write([]byte("logout:"))
+	mac.Write([]byte(next))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// logoutTarget returns the signed redirect target of a logout
+// confirmation, or the workspace.
+func (a *Auth) logoutTarget(v url.Values) string {
+	next := v.Get("next")
+	if next != "" && hmac.Equal([]byte(v.Get("sig")), []byte(a.logoutSig(next))) {
+		return next
+	}
+	return a.Origin() + "/"
+}
+
+func (a *Auth) logoutPage(w http.ResponseWriter, r *http.Request) {
+	_, ok, err := a.Session(r)
+	if err != nil {
+		a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
+		return
+	}
+	if !ok {
+		http.Redirect(w, r, a.logoutTarget(r.URL.Query()), http.StatusFound) //nolint:gosec // signed target
+		return
+	}
+	render(w, http.StatusOK, logoutTemplate, logoutForm{Next: r.URL.Query().Get("next"), Sig: r.URL.Query().Get("sig")})
+}
+
+func (a *Auth) logoutSubmit(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	if err := r.ParseForm(); err != nil {
+		a.renderError(w, http.StatusBadRequest, "The form could not be read.")
+		return
+	}
+	// The session cookie authenticates this request: it must come from the
+	// workspace itself.
+	if !a.SameOrigin(r) {
+		a.renderError(w, http.StatusForbidden, "Cross-origin request rejected.")
+		return
+	}
+	session, ok, err := a.Session(r)
+	if err != nil {
+		a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
+		return
+	}
+	if ok {
+		if err := a.identity.RevokeOwnSession(r.Context(), a.Actor(r, session.PersonID), session.PersonID, session.ID, "oidc_logout"); err != nil {
+			a.logger.ErrorContext(r.Context(), "end session", "error", err)
+			a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
+			return
+		}
+		a.ClearSessionCookie(w)
+	}
+	http.Redirect(w, r, a.logoutTarget(r.PostForm), http.StatusSeeOther) //nolint:gosec // signed target
+}
+
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// htmlErrors renders plain-text error responses of next (zitadel's answer
+// when it must not redirect to the client) as the HTML error page.
+func htmlErrors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cw := &errorCapture{ResponseWriter: w}
+		next.ServeHTTP(cw, r)
+		if cw.status != 0 {
+			msg := strings.TrimSpace(cw.body.String())
+			if msg == "" {
+				msg = "unknown error"
+			}
+			render(w, cw.status, errorTemplate, "The application sent an invalid sign-in request: "+msg)
+		}
+	})
+}
+
+// errorCapture holds back plain-text error responses.
+type errorCapture struct {
+	http.ResponseWriter
+	status int // set when a plain-text error is captured
+	body   bytes.Buffer
+}
+
+func (c *errorCapture) WriteHeader(code int) {
+	if code >= 400 && strings.HasPrefix(c.Header().Get("Content-Type"), "text/plain") {
+		c.status = code
+		c.Header().Del("Content-Type")
+		c.Header().Del("X-Content-Type-Options")
+		return
+	}
+	c.ResponseWriter.WriteHeader(code)
+}
+
+func (c *errorCapture) Write(b []byte) (int, error) {
+	if c.status != 0 {
+		if c.body.Len() < 4096 {
+			c.body.Write(b)
+		}
+		return len(b), nil
+	}
+	return c.ResponseWriter.Write(b)
+}
+
+func retryAfterSeconds(d time.Duration) string {
+	return strconv.Itoa(int(max(d.Round(time.Second), time.Second) / time.Second))
+}
+
+type logoutForm struct {
+	Next string
+	Sig  string
+}
+
+type loginForm struct {
+	AuthRequest string
+	Email       string
+	Error       string
+}
+
+func (a *Auth) renderForm(w http.ResponseWriter, status int, f loginForm) {
+	render(w, status, loginTemplate, f)
+}
+
+func (a *Auth) renderError(w http.ResponseWriter, status int, message string) {
+	render(w, status, errorTemplate, message)
+}
+
+func render(w http.ResponseWriter, status int, t *template.Template, data any) {
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = t.Execute(w, data)
+}
+
+const pageStyle = `body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem;color:#1a1a1a}
+label{display:block;margin:1rem 0 .25rem}input{width:100%;padding:.5rem;box-sizing:border-box}
+button{margin-top:1.5rem;padding:.6rem 1.2rem}.error{color:#b00020}`
+
+var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Orglane</title><style>` + pageStyle + `</style></head>
+<body><main>
+<h1>Sign in</h1>
+{{if .Error}}<p class="error" id="error" role="alert">{{.Error}}</p>{{end}}
+<form method="post" action="/oidc/login">
+<input type="hidden" name="authRequest" value="{{.AuthRequest}}">
+<label for="email">Work email</label>
+<input id="email" name="email" type="email" autocomplete="username" required value="{{.Email}}">
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="current-password" required>
+<button id="submit" type="submit">Sign in</button>
+</form>
+</main></body></html>
+`))
+
+var logoutTemplate = template.Must(template.New("logout").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign out · Orglane</title><style>` + pageStyle + `</style></head>
+<body><main>
+<h1>Sign out?</h1>
+<p>An application asked to sign you out of Orglane in this browser.</p>
+<form method="post" action="/oidc/logout">
+<input type="hidden" name="next" value="{{.Next}}">
+<input type="hidden" name="sig" value="{{.Sig}}">
+<button id="confirm" type="submit">Sign out</button>
+</form>
+</main></body></html>
+`))
+
+var errorTemplate = template.Must(template.New("error").Parse(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Orglane</title><style>` + pageStyle + `</style></head>
+<body><main><h1>Sign in</h1><p class="error" role="alert">{{.}}</p></main></body></html>
+`))

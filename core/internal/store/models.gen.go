@@ -40,6 +40,89 @@ type InstanceSetting struct {
 	UpdatedAt time.Time
 }
 
+type OidcAccessToken struct {
+	ID        uuid.UUID
+	ClientID  string
+	PersonID  uuid.UUID
+	GrantID   uuid.UUID
+	Scopes    []string
+	Audience  []string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	RevokedAt *time.Time
+}
+
+type OidcAuthRequest struct {
+	ID                  uuid.UUID
+	ClientID            string
+	RedirectUri         string
+	Scopes              []string
+	State               string
+	Nonce               string
+	ResponseType        string
+	ResponseMode        string
+	CodeChallenge       string
+	CodeChallengeMethod string
+	Prompt              []string
+	MaxAgeSeconds       *int64
+	LoginHint           string
+	PersonID            *uuid.UUID
+	SessionID           *uuid.UUID
+	AuthTime            *time.Time
+	AuthMethods         []string
+	CodeHash            []byte
+	CodeUsedAt          *time.Time
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+}
+
+type OidcClient struct {
+	ID                     string
+	Name                   string
+	SecretHash             []byte
+	ApplicationType        string
+	AuthMethod             string
+	RedirectUris           []string
+	PostLogoutRedirectUris []string
+	GrantTypes             []string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+type OidcGrant struct {
+	ID        uuid.UUID
+	ClientID  string
+	PersonID  uuid.UUID
+	CreatedAt time.Time
+	RevokedAt *time.Time
+}
+
+type OidcRefreshToken struct {
+	ID          uuid.UUID
+	TokenHash   []byte
+	GrantID     uuid.UUID
+	ClientID    string
+	PersonID    uuid.UUID
+	Scopes      []string
+	Audience    []string
+	AuthTime    time.Time
+	AuthMethods []string
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+	UsedAt      *time.Time
+	RevokedAt   *time.Time
+}
+
+type Passkey struct {
+	ID           uuid.UUID
+	PersonID     uuid.UUID
+	CredentialID []byte
+	Name         string
+	Credential   []byte
+	CreatedAt    time.Time
+	LastUsedAt   *time.Time
+}
+
 type Person struct {
 	ID          uuid.UUID
 	Username    string
@@ -48,6 +131,14 @@ type Person struct {
 	Status      string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+type PersonCredential struct {
+	PersonID                uuid.UUID
+	PasswordHash            *string
+	PasswordUpdatedAt       *time.Time
+	PasskeyOfferDismissedAt *time.Time
+	UpdatedAt               time.Time
 }
 
 type PersonRole struct {
@@ -71,12 +162,39 @@ type RolePermission struct {
 }
 
 type Session struct {
+	ID          uuid.UUID
+	PersonID    uuid.UUID
+	DeviceID    uuid.UUID
+	TokenHash   []byte
+	CreatedAt   time.Time
+	LastSeenAt  time.Time
+	ExpiresAt   time.Time
+	RevokedAt   *time.Time
+	AuthMethods []string
+}
+
+type SignInThrottle struct {
+	Account       string
+	Failures      int32
+	LastFailureAt time.Time
+	LockedUntil   *time.Time
+}
+
+type SigningKey struct {
 	ID         uuid.UUID
-	PersonID   uuid.UUID
-	DeviceID   uuid.UUID
-	TokenHash  []byte
+	Algorithm  string
+	PublicKey  []byte
+	PrivateKey []byte
 	CreatedAt  time.Time
-	LastSeenAt time.Time
-	ExpiresAt  time.Time
-	RevokedAt  *time.Time
+	RetiredAt  *time.Time
+	ExpiresAt  *time.Time
+}
+
+type WebauthnCeremony struct {
+	ID          uuid.UUID
+	Kind        string
+	PersonID    *uuid.UUID
+	SessionData []byte
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
 }

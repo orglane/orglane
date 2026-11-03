@@ -106,6 +106,9 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
+// testMasterSecret is the instance master secret of the test servers.
+const testMasterSecret = "integration-test-master-secret-0123456789" //nolint:gosec // test-only value
+
 func serverEnv(dbURL, addr string) []string {
 	return append(os.Environ(),
 		"ORGLANE_DATABASE_URL="+dbURL,
@@ -113,6 +116,7 @@ func serverEnv(dbURL, addr string) []string {
 		"ORGLANE_DOMAIN_WORKSPACE_HOST=work.acme.test",
 		"ORGLANE_SERVER_LISTEN="+addr,
 		"ORGLANE_LOG_FORMAT=json",
+		"ORGLANE_IDENTITY_MASTER_SECRET="+testMasterSecret,
 	)
 }
 
@@ -221,7 +225,7 @@ func TestServerLifecycle(t *testing.T) {
 	if err := json.Unmarshal(body, &version); code != 200 || err != nil || version.Version != "integration-test" {
 		t.Errorf("/api/v1/version = %d %s", code, body)
 	}
-	// Identity arrives in #6: until then every non-public operation is closed.
+	// Non-public operations need credentials.
 	code, header, body := get(t, p.baseURL+"/api/v1/instance")
 	if code != 401 || header.Get("Content-Type") != "application/problem+json" {
 		t.Errorf("/api/v1/instance = %d %s %s, want 401 problem", code, header.Get("Content-Type"), body)
@@ -309,6 +313,16 @@ func TestCLIMigrate(t *testing.T) {
 	}
 	if roles != 3 || created != 3 {
 		t.Fatalf("after two migrate runs: %d built-in roles, %d role.created entries; want 3 and 3", roles, created)
+	}
+}
+
+func TestServerRequiresMasterSecretInProduction(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), binary(t), "server") //nolint:gosec // the binary built by binary()
+	cmd.Env = append(serverEnv("postgres://localhost/x", "127.0.0.1:0"), "ORGLANE_IDENTITY_MASTER_SECRET=")
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || !strings.Contains(string(out), "identity.master_secret") {
+		t.Fatalf("server without a master secret: %v\n%s", err, out)
 	}
 }
 

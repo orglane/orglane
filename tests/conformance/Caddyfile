@@ -1,0 +1,10 @@
+# TLS in front of Orglane, as Traefik does in production.
+{
+	auto_https off
+	admin off
+}
+
+https://op.orglane.test {
+	tls /certs/op.crt /certs/op.key
+	reverse_proxy orglane:8080
+}

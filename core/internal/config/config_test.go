@@ -18,8 +18,9 @@ func env(vars map[string]string) func(string) (string, bool) {
 }
 
 var minimalEnv = map[string]string{
-	"ORGLANE_DATABASE_URL": "postgres://orglane@localhost:5432/orglane",
-	"ORGLANE_DOMAIN_BASE":  "acme.com",
+	"ORGLANE_DATABASE_URL":           "postgres://orglane@localhost:5432/orglane",
+	"ORGLANE_DOMAIN_BASE":            "acme.com",
+	"ORGLANE_IDENTITY_MASTER_SECRET": "test-master-secret-0123456789abcdef",
 }
 
 func writeFile(t *testing.T, content string) string {
@@ -50,6 +51,95 @@ func TestDefaults(t *testing.T) {
 	}
 	if cfg.Jobs.Noop.Enabled {
 		t.Error("the example periodic job must be disabled by default (ADR 0009)")
+	}
+	if cfg.Domain.Scheme != "https" || cfg.WorkspaceURL() != "https://acme.com" {
+		t.Errorf("scheme = %q, workspace URL = %q", cfg.Domain.Scheme, cfg.WorkspaceURL())
+	}
+	id := cfg.Identity
+	if id.SigningKeyRotation != 90*24*time.Hour || id.SigningKeyGrace <= id.IDTokenLifetime ||
+		id.SessionIdleTimeout >= id.SessionAbsoluteTimeout || id.SignInAccountLimit != 5 {
+		t.Errorf("identity defaults = %+v", id)
+	}
+	// No proxy is trusted unless configured: X-Forwarded-For is ignored.
+	proxies, err := cfg.Server.TrustedProxyPrefixes()
+	if err != nil || len(proxies) != 0 {
+		t.Errorf("default trusted proxies = %v, %v; want none", proxies, err)
+	}
+}
+
+func TestMasterSecret(t *testing.T) {
+	without := maps.Clone(minimalEnv)
+	delete(without, "ORGLANE_IDENTITY_MASTER_SECRET")
+	if _, err := Load("", env(without)); err == nil || !strings.Contains(err.Error(), "identity.master_secret (ORGLANE_IDENTITY_MASTER_SECRET): required in production") {
+		t.Errorf("production without a master secret: %v", err)
+	}
+
+	short := maps.Clone(minimalEnv)
+	short["ORGLANE_IDENTITY_MASTER_SECRET"] = "too-short-secret"
+	if _, err := Load("", env(short)); err == nil || strings.Contains(err.Error(), "too-short-secret") || !strings.Contains(err.Error(), "at least 32") {
+		t.Errorf("short master secret: %v (must fail without echoing the value)", err)
+	}
+
+	public := maps.Clone(minimalEnv)
+	public["ORGLANE_IDENTITY_MASTER_SECRET"] = DevMasterSecret
+	if _, err := Load("", env(public)); err == nil || !strings.Contains(err.Error(), "development secret") {
+		t.Errorf("production with the development secret: %v", err)
+	}
+
+	dev := maps.Clone(without)
+	dev["ORGLANE_ENVIRONMENT"] = "development"
+	cfg, err := Load("", env(dev))
+	if err != nil || cfg.Identity.MasterSecret != DevMasterSecret {
+		t.Errorf("development without a master secret: %v", err)
+	}
+}
+
+func TestSchemeAndIdentitySettings(t *testing.T) {
+	plain := maps.Clone(minimalEnv)
+	plain["ORGLANE_DOMAIN_SCHEME"] = "http"
+	if _, err := Load("", env(plain)); err == nil || !strings.Contains(err.Error(), "domain.scheme") {
+		t.Errorf("http in production: %v", err)
+	}
+	plain["ORGLANE_ENVIRONMENT"] = "development"
+	plain["ORGLANE_DOMAIN_WORKSPACE_HOST"] = "localhost:8080"
+	cfg, err := Load("", env(plain))
+	if err != nil || cfg.WorkspaceURL() != "http://localhost:8080" {
+		t.Errorf("http in development: %v, %v", cfg, err)
+	}
+
+	bad := maps.Clone(minimalEnv)
+	maps.Copy(bad, map[string]string{
+		"ORGLANE_IDENTITY_SIGNING_KEY_ROTATION": "1m",
+		"ORGLANE_IDENTITY_SIGNING_KEY_GRACE":    "30m",
+		"ORGLANE_IDENTITY_SIGN_IN_IP_LIMIT":     "0",
+		"ORGLANE_IDENTITY_SESSION_IDLE_TIMEOUT": "0s",
+		"ORGLANE_SERVER_TRUSTED_PROXIES":        "10.0.0.0/8,nope",
+	})
+	_, err = Load("", env(bad))
+	for _, want := range []string{"identity.signing_key_rotation", "identity.signing_key_grace", "identity.sign_in_ip_limit", "identity.session_idle_timeout", "server.trusted_proxies"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %s: %v", want, err)
+		}
+	}
+
+	traefik := maps.Clone(minimalEnv)
+	traefik["ORGLANE_SERVER_TRUSTED_PROXIES"] = " 172.30.0.2/32, fd00::2/128 "
+	cfg, err = Load("", env(traefik))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := cfg.Server.TrustedProxyPrefixes(); err != nil || len(p) != 2 || p[0].String() != "172.30.0.2/32" {
+		t.Errorf("trusted proxies = %v, %v", p, err)
+	}
+
+	none := maps.Clone(minimalEnv)
+	none["ORGLANE_SERVER_TRUSTED_PROXIES"] = "none"
+	cfg, err = Load("", env(none))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := cfg.Server.TrustedProxyPrefixes(); err != nil || len(p) != 0 {
+		t.Errorf("trusted proxies none = %v, %v", p, err)
 	}
 }
 
@@ -231,6 +321,12 @@ func TestEveryFieldHasEnvVar(t *testing.T) {
 		"ORGLANE_DATABASE_CONNECT_TIMEOUT", "ORGLANE_DOMAIN_BASE", "ORGLANE_DOMAIN_WORKSPACE_HOST",
 		"ORGLANE_DOMAIN_SERVICE_HOST_TEMPLATE", "ORGLANE_ENDPOINTS_PUSH_RELAY_URL", "ORGLANE_ENDPOINTS_DISCOVERY_URL",
 		"ORGLANE_JOBS_MAX_WORKERS", "ORGLANE_JOBS_FETCH_POLL_INTERVAL", "ORGLANE_JOBS_NOOP_ENABLED", "ORGLANE_JOBS_NOOP_INTERVAL",
+		"ORGLANE_DOMAIN_SCHEME", "ORGLANE_SERVER_TRUSTED_PROXIES", "ORGLANE_IDENTITY_MASTER_SECRET",
+		"ORGLANE_IDENTITY_SESSION_IDLE_TIMEOUT", "ORGLANE_IDENTITY_SESSION_ABSOLUTE_TIMEOUT",
+		"ORGLANE_IDENTITY_ACCESS_TOKEN_LIFETIME", "ORGLANE_IDENTITY_ID_TOKEN_LIFETIME", "ORGLANE_IDENTITY_REFRESH_TOKEN_LIFETIME",
+		"ORGLANE_IDENTITY_SIGNING_KEY_ROTATION", "ORGLANE_IDENTITY_SIGNING_KEY_GRACE",
+		"ORGLANE_IDENTITY_SIGN_IN_IP_LIMIT", "ORGLANE_IDENTITY_SIGN_IN_IP_WINDOW",
+		"ORGLANE_IDENTITY_SIGN_IN_ACCOUNT_LIMIT", "ORGLANE_IDENTITY_SIGN_IN_LOCKOUT",
 	} {
 		found := false
 		for _, s := range seen {
