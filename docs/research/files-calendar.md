@@ -1,6 +1,6 @@
 # Files, calendar and contacts provider research
 
-Research for [#31](https://github.com/orglane/orglane/issues/31), observed on 2026-11-03. Recommendations are provisional; the maintainer chooses providers.
+Research for [#31](https://github.com/orglane/orglane/issues/31), observed on 2026-11-03 with a bounded Radicale follow-up on 2026-11-04. Recommendations are provisional; the maintainer chooses providers.
 
 **Draft: incomplete experiments.** Runtime coverage is partial and the issue remains open. Research containers are stopped with volumes preserved while feature verification uses the shared host. Remaining measurements, repository checks and final removal of task-owned containers/volumes are pending.
 
@@ -30,7 +30,7 @@ Same shared host/method as [tasks](tasks.md#measurements-and-reproducibility): L
 |---|---:|---:|---:|---|
 | Nextcloud + PostgreSQL | Unverified | Unverified | 2 / 1796.2 | 35.0.2 readiness, OCS provisioning/membership/sharing and file round trip verified; benchmarks/DAV object tests deferred on host pressure |
 | OpenCloud standalone | Unverified | Unverified | Unverified | Container started; Graph request did not reach readiness before suspension |
-| Radicale standalone | 27.9 / 29.4 / 30.8 | Unverified | 1 / 128.1 | Six quiet samples two seconds apart; calendar creation/read metadata passed |
+| Radicale standalone | 32.4 / 32.4 / 32.4 (3 pre-batch samples) | Unverified | 1 / 128.1 | 20 events + 20 contacts verified; configured 20-second sampler maximum 37.5 MiB is not an active-batch peak |
 | Baikal image | Unverified | Unverified | Unverified | Pull/extraction interrupted before deployment |
 | Seafile CE + MariaDB + Redis | Unverified | Unverified | Unverified | Pull interrupted before deployment |
 
@@ -90,19 +90,79 @@ docker compose -p rs-nextcloud -f docs/research/env/nextcloud/compose.yaml \
   -f docs/research/env/nextcloud/bounded.yaml stop
 ```
 
-### Radicale partial follow-up
+### Radicale bounded follow-up (2026-11-04)
 
-Radicale local protocol evidence: `MKCOL /alice/` returned 405 because the principal already existed, `MKCALENDAR /alice/calendar/` returned **201**, and `PROPFIND` with `Depth: 1` returned **207**. The subsequent combined events/contacts seed stopped at the existing-principal response; it was corrected to permit that response but has not yet been rerun. No successful CardDAV object or loaded run is claimed.
+The existing `rs-radicale` project and its data volume were preserved. Only that project was resumed, with the **cached** arm64 image pinned to `tomsquest/docker-radicale:3.9.0.0@sha256:2f215d0e6a78ff68c280975af6ce580b05976f70c62b51640397e3eb5a7aa0e9`, **0.5 CPU / 256 MiB** limits, `--pull never --no-build`, and loopback port 18105. The image's uncompressed size was **128,107,228 bytes** (1 image / 128.1 MB). `/.web/` returned **200** as a liveness probe. The initial `docker exec rs-radicale-app-1 radicale --version` failed because the executable was absent from `PATH`; inspection identified `/venv/bin/radicale`, which returned **3.9.0**.
+
+A separate disposable principal, `research-20261104-b1`, avoided overwriting earlier `alice` data. `PROPFIND` of the principal returned **207**, then `MKCOL` returned **405**. The existing `dav-smoke.py` correction was exercised: it accepted 405 only for an existing principal, then required successful creation of the calendar/address-book collections. The helper exited **0**; an independent loop verified every object UID and collection count.
+
+| Operation | Actual statuses/counts |
+|---|---|
+| Helper principal `MKCOL` | 1 × 405 (existing principal) |
+| Helper `MKCALENDAR` and address-book `MKCOL` | 1 × 201 each |
+| Helper object uploads | 40 × PUT 201: 20 events + 20 contacts |
+| Helper first-object reads | 2 × GET 200, with event/card markers asserted |
+| Independent UID-checked readback | 40 × GET 200: every event and contact |
+| Independent collection listings | 2 × PROPFIND 207; exactly 20 objects per collection (21 DAV responses including the collection itself) |
+
+The helper plus independent verification took **0.918 seconds**. Execution was bounded by a **30-second helper deadline**, **45-second overall work deadline**, one request at a time, and host-load abort limit **7.04** (the lower of 10 and initial one-minute load + 3). Host load stayed at **4.04** during the active batch. With `auth=none`, the Basic header selected a test principal; no password authentication, OIDC, revocation, invitation, notification, native-client, upgrade or UI behavior was established.
+
+Three pre-batch `docker stats` samples with two-second sleeps between samples were **32.4 / 32.4 / 32.4 MiB min/median/max**. The earlier six-sample median of 29.4 MiB remains historical evidence from another state. A sampler configured for **20 seconds**, started alongside the batch with two-second sleeps between Docker-stat samples, observed **37.5 MiB maximum**. Because the active batch lasted under a second, the sample timing **cannot establish its active or instantaneous peak**; the window included the quiet tail. Sampler wall-clock duration was not separately instrumented, and no sustained/concurrent load benchmark was run.
+
+Before startup, host one-minute load was **3.52**, with **39% free host memory**. The 10-CPU VM had 8,214,851,584 bytes RAM and reported **6,560,316 KiB available** after startup, with memory PSI `some/full avg10=0.00`. After the sampling tail, host load was **17.11**, VM available memory **6,573,880 KiB**, and memory PSI still zero; the load increase is not attributed to Radicale. No further workload was started. Limits remained intact, with **zero restarts / OOMKilled=false**. The owned container was stopped; volume `rs-radicale_data` was preserved. No other candidate, image pull, build or unrelated resource was touched.
+
+Recorded startup/principal/helper commands (choose a new disposable principal for another run):
 
 ```sh
-curl -u alice:research -X MKCALENDAR -H 'Content-Type: application/xml' \
-  --data '<C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop><D:displayname>Research</D:displayname></D:prop></D:set></C:mkcalendar>' \
-  -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18105/alice/calendar/
-curl -u alice:research -X PROPFIND -H 'Depth: 1' \
-  -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18105/alice/calendar/
+docker compose -p rs-radicale -f docs/research/env/radicale/compose.yaml \
+  -f docs/research/env/radicale/bounded.yaml up -d --pull never --no-build
+curl -sS --max-time 5 -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18105/.web/
+docker exec rs-radicale-app-1 /venv/bin/radicale --version
+sh docs/research/env/measure.sh mem rs-radicale 3 2
+curl -u research-20261104-b1:research -X PROPFIND -H 'Depth: 0' \
+  -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18105/research-20261104-b1/
+curl -u research-20261104-b1:research -X MKCOL \
+  -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18105/research-20261104-b1/
+# Actual helper ran under the deadlines/pressure watcher described above.
+sh docs/research/env/measure.sh peak rs-radicale 20 > /tmp/radicale-window.txt &
+meter=$!
+python3 docs/research/env/dav-smoke.py http://127.0.0.1:18105 \
+  --user research-20261104-b1 --password research
 ```
 
-The checked-in `dav-smoke.py` is a follow-up reproducibility aid for 20 events and 20 contacts; it has not completed for Radicale or Nextcloud in this research. Baikal's mutable `apache-php8.2` tag was resolved to a digest in the fixture; application version must be checked after installation, rather than inferred from its 2026-11-01 image timestamp.
+Independent readback logic used in the same bounded driver:
+
+```sh
+python3 - <<'PY'
+import base64, collections, urllib.request, xml.etree.ElementTree as ET
+principal = 'research-20261104-b1'
+base = 'http://127.0.0.1:18105/' + principal
+headers = {'Authorization': 'Basic ' + base64.b64encode((principal + ':research').encode()).decode()}
+counts = collections.Counter()
+for index in range(20):
+    for collection, extension, uid in [('calendar', 'ics', f'UID:research-{index}@example.com'),
+                                       ('contacts', 'vcf', f'UID:research-{index}')]:
+        req = urllib.request.Request(f'{base}/{collection}/{index}.{extension}', headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as response:
+            assert response.status == 200
+            assert uid.encode() in response.read().splitlines()
+            counts['GET 200'] += 1
+for collection in ['calendar', 'contacts']:
+    req = urllib.request.Request(f'{base}/{collection}/', method='PROPFIND',
+                                 headers={**headers, 'Depth': '1'})
+    with urllib.request.urlopen(req, timeout=5) as response:
+        assert response.status == 207
+        assert len(ET.fromstring(response.read()).findall('{DAV:}response')) == 21
+        counts['PROPFIND 207'] += 1
+print(dict(counts))
+PY
+wait "$meter"
+cat /tmp/radicale-window.txt
+docker compose -p rs-radicale -f docs/research/env/radicale/compose.yaml \
+  -f docs/research/env/radicale/bounded.yaml stop
+```
+
+The first Radicale run's principal 405, calendar creation 201 and metadata 207 are retained as earlier observations; its combined-helper failure is now followed by the successful bounded rerun. `dav-smoke.py` has still **not** completed for Nextcloud. Baikal's mutable `apache-php8.2` tag was resolved to a digest in its fixture; application version remains unverified rather than inferred from the 2026-11-01 image timestamp.
 
 ## Upgrade and licensing implications
 
