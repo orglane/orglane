@@ -163,6 +163,59 @@ func TestImportedPromotionPreservesExistingInvitationCeiling(t *testing.T) {
 	}
 }
 
+func TestImportedInvitationStartsWelcomeWithImportedProfile(t *testing.T) {
+	e := newEnv(t)
+	owner := e.browser()
+	e.setupOwner(owner)
+	expectStatus(t, owner.req(http.MethodPost, "/api/v1/profile-fields", map[string]any{
+		"key": "office", "label": "Office", "type": "text", "requiredAtOnboarding": true,
+	}), http.StatusCreated)
+	run := stageImport(t, owner, "username,work_email,display_name,office\njoiner,joiner@acme.test,Imported Joiner,Lisbon\n")
+	mapping := importMapping("username", "work_email", "display_name", "profile.office")
+	run = applyImport(t, owner, previewImport(t, owner, run, mapping))
+	if run.Rows[0].Result != "created" {
+		t.Fatalf("apply=%+v", run.Rows)
+	}
+	person, err := e.stack.Identity.GetPersonByWorkEmail(t.Context(), "joiner@acme.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := e.stack.Identity.WelcomePending(t.Context(), person.ID)
+	if err != nil || pending {
+		t.Fatalf("unaccepted import welcome pending=%v err=%v", pending, err)
+	}
+	invitations, err := e.stack.Identity.Invitations(t.Context())
+	if err != nil || len(invitations) != 1 {
+		t.Fatalf("invitations=%v err=%v", len(invitations), err)
+	}
+	r := owner.req(http.MethodPost, "/api/v1/invitations/"+invitations[0].ID.String()+"/resend", nil)
+	expectStatus(t, r, http.StatusOK)
+	var issued issuedJSON
+	r.json(t, &issued)
+	if issued.Link == nil {
+		t.Fatal("manual import invitation has no link")
+	}
+	member := e.browser()
+	r = member.req(http.MethodPost, "/api/v1/auth/invitation/accept", map[string]string{
+		"token": tokenOf(t, *issued.Link), "password": ownerPassword,
+	})
+	expectStatus(t, r, http.StatusOK)
+	var signed signInResult
+	r.json(t, &signed)
+	member.csrf = signed.CsrfToken
+	progress := onboarding(t, member, "/api/v1/me/onboarding")
+	if !progress.WelcomePending || !onboardingStep(t, progress, "profile").Complete {
+		t.Fatalf("imported required profile not reflected in welcome: %+v", progress)
+	}
+	expectStatus(t, member.req(http.MethodPost, "/api/v1/me/onboarding/finish", nil), http.StatusNoContent)
+	// Reimport must preserve both completed welcome and the accepted invitation.
+	run = stageImport(t, owner, "username,work_email,display_name,office\njoiner,joiner@acme.test,Imported Joiner,Lisbon\n")
+	run = applyImport(t, owner, previewImport(t, owner, run, mapping))
+	if run.Rows[0].Result != "skipped" || onboarding(t, member, "/api/v1/me/onboarding").WelcomePending {
+		t.Fatalf("reimport restarted completed welcome: %+v", run.Rows)
+	}
+}
+
 func TestPeopleImportMappingRequestBoundary(t *testing.T) {
 	e := newEnv(t)
 	owner := e.browser()
