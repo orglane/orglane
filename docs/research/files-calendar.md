@@ -6,7 +6,7 @@ Research for [#31](https://github.com/orglane/orglane/issues/31), observed on 20
 
 ## Recommendation
 
-Prioritize **Nextcloud** for an integrated files/calendar/contacts proof of concept. Its documented provisioning, sharing and DAV interfaces cover more of the v0.2 employee scenario in one service; this recommendation is not yet supported by a completed local Nextcloud run. Keep **OpenCloud + Radicale** as the modular alternative, conditional on proving account lifecycle, invitation scheduling and notifications end to end. OpenCloud documents a [Radicale integration](https://docs.opencloud.eu/docs/admin/configuration/radicale-integration/) that forwards authenticated DAV requests and offers app tokens for native clients; it is described as best-effort support. Its combined memory footprint and revocation behavior remain unverified.
+Prioritize **Nextcloud** for an integrated files/calendar/contacts proof of concept. Its documented provisioning, sharing and DAV interfaces cover more of the v0.2 employee scenario in one service. A bounded local run verified provisioning and file/share basics; the calendar/contacts workflow and identity integration remain unverified. Keep **OpenCloud + Radicale** as the modular alternative, conditional on proving account lifecycle, invitation scheduling and notifications end to end. OpenCloud documents a [Radicale integration](https://docs.opencloud.eu/docs/admin/configuration/radicale-integration/) that forwards authenticated DAV requests and offers app tokens for native clients; it is described as best-effort support. Its combined memory footprint and revocation behavior remain unverified.
 
 Seafile is a files-specific alternative, not a calendar or contacts service. Baikal offers a DAV administration UI but needs additional identity/event integration. An external Google Calendar binding is independent of the managed files choice (ADR 0002).
 
@@ -28,18 +28,19 @@ Same shared host/method as [tasks](tasks.md#measurements-and-reproducibility): L
 
 | Candidate | Idle min / median / max MiB | Loaded peak MiB | Images / MB | Local result |
 |---|---:|---:|---:|---|
-| Nextcloud + PostgreSQL | Unverified | Unverified | Unverified | Pull/extraction interrupted before deployment |
+| Nextcloud + PostgreSQL | Unverified | Unverified | 2 / 1796.2 | 35.0.2 readiness, OCS provisioning/membership/sharing and file round trip verified; benchmarks/DAV object tests deferred on host pressure |
 | OpenCloud standalone | Unverified | Unverified | Unverified | Container started; Graph request did not reach readiness before suspension |
 | Radicale standalone | 27.9 / 29.4 / 30.8 | Unverified | 1 / 128.1 | Six quiet samples two seconds apart; calendar creation/read metadata passed |
 | Baikal image | Unverified | Unverified | Unverified | Pull/extraction interrupted before deployment |
 | Seafile CE + MariaDB + Redis | Unverified | Unverified | Unverified | Pull interrupted before deployment |
 
-The shared host became saturated during concurrent work and experiments were suspended by the coordinator. No application steady-state result is inferred from an image download or a started container. **The issue's full local measurement coverage is not yet complete.**
+The shared host became saturated during concurrent work and experiments were suspended by the coordinator. Nextcloud was subsequently released alone for a bounded follow-up, described below. No application steady-state result is inferred from an image download, started container or single memory snapshot. **The issue's full local measurement coverage is not yet complete.**
 
 Run from the repository root. Fixtures use unique project names, disposable example credentials, named volumes and loopback ports. They are experiments, not production Orglane packages. Use a fresh project name/port for another run.
 
 ```sh
-docker compose -p rs-nextcloud -f docs/research/env/nextcloud/compose.yaml up -d
+docker compose -p rs-nextcloud -f docs/research/env/nextcloud/compose.yaml \
+  -f docs/research/env/nextcloud/bounded.yaml up -d --pull never --no-build
 docker compose -p rs-opencloud -f docs/research/env/opencloud/compose.yaml up -d
 docker compose -p rs-radicale -f docs/research/env/radicale/compose.yaml up -d
 docker compose -p rs-baikal -f docs/research/env/baikal/compose.yaml up -d
@@ -48,6 +49,48 @@ docker compose -p rs-seafile -f docs/research/env/seafile/compose.yaml up -d
 sh docs/research/env/measure.sh mem rs-nextcloud 6 2
 sh docs/research/env/measure.sh images rs-nextcloud
 ```
+
+### Nextcloud bounded follow-up
+
+Only the recorded `rs-nextcloud` project was resumed; its incomplete app image pull was completed without other candidates/downloads. The arm64 image was `nextcloud:35.0.2-apache`, resolved to `nextcloud@sha256:e0b1a2af52c82c07b7a0e8e59878bd8769e704447734d5d238a836982f51b9c8` (1,498,215,290 uncompressed bytes). With the cached PostgreSQL image, the sum was **2 images / 1796.2 MB**.
+
+The override limited the app to **2 CPUs / 1 GiB**, PostgreSQL to **1 CPU / 512 MiB**. Inspection confirmed both limits, zero restarts and `OOMKilled=false` at the time checked. `/status.php` reported **installed=true, maintenance=false, needsDbUpgrade=false, versionstring=35.0.2, internal version=35.0.2.2**. A readiness poll completed in 32.598 seconds after polling began; that is not installation time from image pull or a cold-start benchmark.
+
+Local observations (disposable users and content):
+
+| Operation | Observed result |
+|---|---|
+| Create user and group via OCS | HTTP 200 with successful OCS metadata |
+| Add membership and read it back | HTTP 200 with successful OCS metadata; expected group present |
+| Upload file via WebDAV | HTTP 201 |
+| Read the file | HTTP 200; all **1,048,576 bytes** matched the generated payload |
+| Create/read a file share to the admin | HTTP 200 with successful OCS metadata; expected recipient verified |
+| Disable the user via OCS | HTTP 200 with successful OCS metadata |
+| Immediate Basic-auth file GET while disabled | **HTTP 503**, not successful file access; response body/error semantics were not retained |
+| Reenable in the script's cleanup block | HTTP 200 with successful OCS metadata; post-enable file read was not reached |
+
+The original research script expected only 401/403 for the disabled-account read and stopped on its assertion. The expected-status assumption was corrected, but the helper has **not been rerun**. Pinned source provides context: [`Session::completeLogin`](https://github.com/nextcloud/server/blob/v35.0.2/lib/private/User/Session.php) rejects disabled users, and the [DAV auth adapter](https://github.com/nextcloud/server/blob/v35.0.2/apps/dav/lib/Connector/Sabre/Auth.php) maps other authentication exceptions to `ServiceUnavailable`. This can explain a 503, but the status alone does not identify the observed exception, demonstrate an access bypass or establish credential/session revocation. App passwords, browser sessions and OIDC remain untested.
+
+The app list showed enabled **dav 2.0.0** and **files_sharing 2.0.0**; **Calendar, Contacts and user_oidc were absent**. No Calendar/Contacts app provisioning, calendar/contact object round trip, scheduling, invitation email, native-client sync or OIDC was verified. Bundled DAV being enabled does not establish a complete calendar/contacts product workflow.
+
+Host one-minute load increased from **5.47** before the resume to **18.57** during the sequential checks and **20.78** by the end. No synthetic load or DAV seed was started, and idle/loaded measurements were deferred. One post-check `docker stats` snapshot showed app **348.3 MiB** and database **44.71 MiB** (about **393.0 MiB** total), with CPU readings 0.01%/0.14%; it is **not an idle series or a load peak**, and the host pressure is not attributed to this candidate. The task-owned stack was stopped and its volumes preserved.
+
+Actual functional-check commands, after readiness:
+
+```sh
+curl -fsS http://127.0.0.1:18103/status.php \
+  | jq '{installed,maintenance,needsDbUpgrade,versionstring,version}'
+# Fresh disposable database only: creates a user/group/file/share.
+python3 docs/research/env/nextcloud/basic-smoke.py
+# Original run stopped at the disabled-read status assertion; see observations above.
+docker exec --user www-data rs-nextcloud-app-1 php occ app:list --output=json \
+  | jq '{dav:.enabled.dav,files_sharing:.enabled.files_sharing,calendar:.enabled.calendar,contacts:.enabled.contacts,user_oidc:.enabled.user_oidc}'
+sh docs/research/env/measure.sh images rs-nextcloud
+docker compose -p rs-nextcloud -f docs/research/env/nextcloud/compose.yaml \
+  -f docs/research/env/nextcloud/bounded.yaml stop
+```
+
+### Radicale partial follow-up
 
 Radicale local protocol evidence: `MKCOL /alice/` returned 405 because the principal already existed, `MKCALENDAR /alice/calendar/` returned **201**, and `PROPFIND` with `Depth: 1` returned **207**. The subsequent combined events/contacts seed stopped at the existing-principal response; it was corrected to permit that response but has not yet been rerun. No successful CardDAV object or loaded run is claimed.
 
@@ -59,7 +102,7 @@ curl -u alice:research -X PROPFIND -H 'Depth: 1' \
   -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18105/alice/calendar/
 ```
 
-The checked-in `dav-smoke.py` is a follow-up reproducibility aid for 20 events and 20 contacts; it is not evidence that those objects were successfully tested in this run. Baikal's mutable `apache-php8.2` tag was resolved to a digest in the fixture; application version must be checked after installation, rather than inferred from its 2026-11-01 image timestamp.
+The checked-in `dav-smoke.py` is a follow-up reproducibility aid for 20 events and 20 contacts; it has not completed for Radicale or Nextcloud in this research. Baikal's mutable `apache-php8.2` tag was resolved to a digest in the fixture; application version must be checked after installation, rather than inferred from its 2026-11-01 image timestamp.
 
 ## Upgrade and licensing implications
 
