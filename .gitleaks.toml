@@ -1,0 +1,16 @@
+# Gitleaks configuration: the default rules plus one allowlist entry for a
+# known false positive. Keep this list minimal; never allowlist real secrets.
+title = "Orglane gitleaks configuration"
+
+[extend]
+useDefault = true
+
+# testSecret in the keyring unit test is a fixed, public test value, not a
+# credential (generic-api-key false positive). The entry matches only that
+# exact value in that file: any other key there is still reported.
+[[allowlists]]
+description = "Keyring test fixture"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^core/internal/crypto/crypto_test\.go$''']
+regexes = ['''^0123456789abcdef0123456789abcdef$''']

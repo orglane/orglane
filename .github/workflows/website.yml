@@ -2,10 +2,10 @@
 # (issue #13, ADR 0018). The site serves deploy/install.sh at /install.sh, so
 # it is redeployed whenever the installer changes.
 #
-# Deployment needs GitHub Pages, which a private repository on GitHub Free
-# does not have: until the repository is public, only the build runs, unless
-# the repository variable WEBSITE_DEPLOY is "true" (a paid plan). One-time
-# setup and DNS: website/README.md.
+# Deployment needs GitHub Pages. The repository is public, so the deploy job
+# runs; in a private copy on GitHub Free, which has no Pages, only the build
+# runs, unless the repository variable WEBSITE_DEPLOY is "true" (a paid
+# plan). One-time setup and DNS: website/README.md.
 #
 # Security: runs only for pushes to main and by hand, never for pull
 # requests (CI builds and tests the site there). Every job declares its own

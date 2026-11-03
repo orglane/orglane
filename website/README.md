@@ -40,7 +40,7 @@ The site uses directory-style URLs (`/docs/` → `docs/index.html`). ADR 0018 re
 
 `.github/workflows/website.yml` runs on pushes to `main` that change `website/`, `deploy/install.sh`, `packages/ui-tokens/`, `pnpm-lock.yaml` or the workflow, and by hand (`gh workflow run website.yml`). It builds with `make website`, uploads `website/dist` as the Pages artifact and deploys it with `actions/deploy-pages`, then checks `/install.sh` on the deployed site.
 
-GitHub Pages is not available for private repositories on GitHub Free. Until the repository is public, the workflow only builds; the deploy job runs once the repository is public, or earlier when the repository variable `WEBSITE_DEPLOY` is `true` (on a paid plan).
+The deploy job runs because the repository is public. GitHub Free has no Pages for private repositories, so in a private copy the workflow only builds, unless the repository variable `WEBSITE_DEPLOY` is `true` (on a paid plan).
 
 ### One-time setup (maintainer)
 

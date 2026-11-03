@@ -25,7 +25,6 @@ export const en = {
     leadSecondary: "Run it on your own server, free and open source.",
     install: "Install",
     github: "View on GitHub",
-    privateNote: "The repository is private until the public pre-alpha.",
   },
   stack: {
     label: "How Orglane fits together",
@@ -101,7 +100,6 @@ export const en = {
     roadmap: "Roadmap",
     security: "Security policy",
     trademark: "Trademark policy",
-    privateNote: "The repository is private until the public pre-alpha.",
     license:
       "The server and web UI are licensed under AGPL-3.0-or-later; the apps, SDKs and shared packages under Apache-2.0.",
     trademarkNote:

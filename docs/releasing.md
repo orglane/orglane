@@ -33,7 +33,7 @@ Images are published to `ghcr.io/orglane/orglane` for `linux/amd64` and `linux/a
 
 `tools/ci/internal/release` tests this against every order of builds and promotions of overlapping releases, including canceled promotions.
 
-There is no `edge` image of `main` yet, because building one on every merge would cost too many Actions minutes while the repository is private.
+There is no `edge` image of `main` yet: only releases publish images.
 
 Each image:
 
@@ -47,7 +47,7 @@ Each image:
 
 - takes about 4 minutes to build and publish (both platforms, cold cache);
 - is checked before any tag points at it (`.github/scripts/verify-image.sh`): both platforms, both attestations, and `cli version` on each platform;
-- is **signed with cosign** (keyless, GitHub OIDC) once the repository is public. Keyless signatures are recorded in Sigstore's public transparency log, which would disclose the private repository's name and workflow, so the signing step is skipped while the repository is private. Once it is public, verify with:
+- is **signed with cosign** (keyless, GitHub OIDC). Keyless signatures are recorded in Sigstore's public transparency log together with the repository's name and workflow, so the signing step is skipped if the repository is private (for example a private mirror). Verify with:
 
   ```sh
   cosign verify ghcr.io/orglane/orglane:0.1.0 \
