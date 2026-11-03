@@ -68,6 +68,15 @@ func TestContractPermissions(t *testing.T) {
 		"POST /api/v1/teams/{teamId}/archive":              authz.PeopleManage,
 		"PUT /api/v1/teams/{teamId}/members/{personId}":    authz.PeopleManage,
 		"DELETE /api/v1/teams/{teamId}/members/{personId}": authz.PeopleManage,
+		// Profiles: package profile applies the self, team and admin rules
+		// to every caller; definitions are managed with people.manage.
+		"GET /api/v1/people/{personId}/profile":           authz.Authenticated,
+		"PATCH /api/v1/people/{personId}/profile":         authz.Authenticated,
+		"GET /api/v1/profile-fields":                      authz.PeopleManage,
+		"POST /api/v1/profile-fields":                     authz.PeopleManage,
+		"PATCH /api/v1/profile-fields/{fieldId}":          authz.PeopleManage,
+		"GET /api/v1/profile-field-library":               authz.PeopleManage,
+		"POST /api/v1/profile-field-library/{libraryKey}": authz.PeopleManage,
 		// Demo mode only: not served at all otherwise.
 		"GET /api/v1/demo":          authz.Demo,
 		"POST /api/v1/demo/sign-in": authz.Demo,

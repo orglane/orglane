@@ -822,6 +822,272 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/people/{personId}/profile:
+    parameters:
+      - name: personId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getPersonProfile
+      summary: A person's profile fields
+      description: |
+        The person's profile fields as the caller may see them (ADR 0015), by
+        section and position: every field the caller may see, with its value
+        when set and visible to the caller. The rules are applied by the
+        server for every response; clients never filter.
+
+        - Visibility `everyone`: every signed-in person; `team`: people who
+          share a team with the person; `admins`: only holders of
+          `people.manage`. The person always sees their own fields.
+        - Sensitive fields are listed only for the person and holders of
+          `people.sensitive.read`; every response containing a sensitive
+          value is recorded in the audit log.
+        - Values the person hid are shown only to them and holders of
+          `people.manage`.
+        - Birthdays show day and month (`--MM-DD`) to everyone except the
+          person and holders of `people.sensitive.read`.
+
+        Offboarded people are not found, except by holders of
+        `people.manage`.
+      tags: [people]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonProfile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      operationId: updatePersonProfile
+      summary: Change a person's profile fields
+      description: |
+        Sets, clears, hides or shows values of the person's profile fields,
+        all or nothing, and returns the profile as `GET` does. Only the
+        person and holders of `people.manage` change a profile: the person
+        changes fields editable by `self` and hides fields that allow it;
+        holders of `people.manage` change every field they can see. Values
+        are validated by type (see `ProfileFieldValueChange`). The audit log
+        records which fields changed, never the values.
+      tags: [people]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PersonProfileUpdate"
+      responses:
+        "200":
+          description: The changed profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonProfile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/profile-fields:
+    get:
+      operationId: listProfileFields
+      summary: List profile field definitions
+      description: |
+        The profile field definitions by section and position. Archived
+        fields only with `includeArchived=true`.
+      tags: [profile-fields]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: includeArchived
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: The fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileFieldList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createProfileField
+      summary: Create a custom profile field
+      tags: [profile-fields]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewProfileField"
+      responses:
+        "201":
+          description: The field was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileField"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/profile-fields/{fieldId}:
+    patch:
+      operationId: updateProfileField
+      summary: Change a profile field definition
+      description: |
+        Changes the given settings; the key and type never change, and
+        library fields also keep their label and options. Making a field
+        sensitive encrypts its existing values (and back). Archiving hides
+        the field and its values everywhere; restoring brings them back.
+        Removing a select option that is someone's value answers 409.
+      tags: [profile-fields]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: fieldId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProfileFieldUpdate"
+      responses:
+        "200":
+          description: The changed field.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileField"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/profile-field-library:
+    get:
+      operationId: listProfileFieldLibrary
+      summary: The library of ready-made profile fields
+      description: |
+        Ready-made fields (Telegram, phone, birthday, T-shirt size, ...) with
+        their default settings and, when turned on before, the field.
+      tags: [profile-fields]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The library.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileFieldLibrary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/profile-field-library/{libraryKey}:
+    post:
+      operationId: enableLibraryProfileField
+      summary: Turn on a library field
+      description: |
+        Creates the field from the library entry with its defaults (201), or
+        restores it when it was archived (200). Turn it off by archiving the
+        field (`PATCH /api/v1/profile-fields/{fieldId}`).
+      tags: [profile-fields]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: libraryKey
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The field existed and is turned on.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileField"
+        "201":
+          description: The field was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileField"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /api/v1/demo:
     get:
       operationId: getDemo
@@ -1448,6 +1714,274 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PersonTeam"
+    ProfileFieldType:
+      type: string
+      enum: [text, long_text, date, select, phone, url, handle]
+      description: |
+        How values are validated and stored: `text` (one line, at most 200
+        characters), `long_text` (at most 2000 characters), `date`
+        (`YYYY-MM-DD`), `select` (an option key), `phone` (E.164, such as
+        `+442079460958`), `url` (http or https), `handle` (an account name
+        on the service of `handleKind`, without `@`; Mastodon:
+        `user@instance`).
+    ProfileFieldHandleKind:
+      type: string
+      enum: [telegram, github, gitlab, x, mastodon]
+    ProfileFieldSection:
+      type: string
+      enum: [contacts, personal, hr, custom]
+    ProfileFieldVisibility:
+      type: string
+      enum: [everyone, team, admins]
+      description: |
+        Who sees the values besides the person and holders of
+        `people.manage`: every signed-in person, people sharing a team with
+        the person, or nobody else.
+    ProfileFieldEditor:
+      type: string
+      enum: [self, admins]
+      description: "`self`: the person and holders of `people.manage`; `admins`: holders of `people.manage` only."
+    ProfileFieldOption:
+      type: object
+      required: [key, label]
+      properties:
+        key:
+          type: string
+          description: Stored as the value. Derived from the label when omitted on create.
+          example: berlin
+        label:
+          type: string
+          maxLength: 100
+          example: Berlin
+    ProfileField:
+      type: object
+      required: [id, key, library, label, type, options, section, visibility, requiredAtOnboarding, editableBy, userCanHide, sensitive, position, archived]
+      properties:
+        id:
+          type: string
+          format: uuid
+        key:
+          type: string
+          example: telegram
+        library:
+          type: boolean
+          description: True for fields from the library. Their key is the library key; clients translate the label by it.
+        label:
+          type: string
+          description: The English label (library fields) or the admin's label (custom fields).
+          example: Telegram
+        type:
+          $ref: "#/components/schemas/ProfileFieldType"
+        handleKind:
+          $ref: "#/components/schemas/ProfileFieldHandleKind"
+        options:
+          type: array
+          description: The choices of a select field; empty for other types.
+          items:
+            $ref: "#/components/schemas/ProfileFieldOption"
+        section:
+          $ref: "#/components/schemas/ProfileFieldSection"
+        visibility:
+          $ref: "#/components/schemas/ProfileFieldVisibility"
+        requiredAtOnboarding:
+          type: boolean
+        editableBy:
+          $ref: "#/components/schemas/ProfileFieldEditor"
+        userCanHide:
+          type: boolean
+          description: The person may hide their value from everyone except holders of `people.manage`.
+        sensitive:
+          type: boolean
+          description: Values are encrypted at rest, readable only by the person and holders of `people.sensitive.read`, and every read is audited.
+        position:
+          type: integer
+          description: Order within the section, ascending.
+        archived:
+          type: boolean
+    ProfileFieldList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProfileField"
+    NewProfileField:
+      type: object
+      required: [label, type]
+      properties:
+        key:
+          type: string
+          description: Lower case a-z, 0-9 and `_`, starting with a letter. Derived from the label when omitted. Library keys are reserved.
+          example: office
+        label:
+          type: string
+          maxLength: 100
+          example: Office
+        type:
+          $ref: "#/components/schemas/ProfileFieldType"
+        handleKind:
+          $ref: "#/components/schemas/ProfileFieldHandleKind"
+        options:
+          type: array
+          description: Required for select fields.
+          items:
+            $ref: "#/components/schemas/NewProfileFieldOption"
+        section:
+          $ref: "#/components/schemas/ProfileFieldSection"
+        visibility:
+          $ref: "#/components/schemas/ProfileFieldVisibility"
+        requiredAtOnboarding:
+          type: boolean
+        editableBy:
+          $ref: "#/components/schemas/ProfileFieldEditor"
+        userCanHide:
+          type: boolean
+        sensitive:
+          type: boolean
+    NewProfileFieldOption:
+      type: object
+      required: [label]
+      properties:
+        key:
+          type: string
+          description: Derived from the label when omitted.
+        label:
+          type: string
+          maxLength: 100
+    ProfileFieldUpdate:
+      type: object
+      description: The settings to change; omitted ones stay.
+      properties:
+        label:
+          type: string
+          maxLength: 100
+        options:
+          type: array
+          description: Replaces the options of a select field. Keep an option's key to keep its values.
+          items:
+            $ref: "#/components/schemas/NewProfileFieldOption"
+        section:
+          $ref: "#/components/schemas/ProfileFieldSection"
+        visibility:
+          $ref: "#/components/schemas/ProfileFieldVisibility"
+        requiredAtOnboarding:
+          type: boolean
+        editableBy:
+          $ref: "#/components/schemas/ProfileFieldEditor"
+        userCanHide:
+          type: boolean
+        sensitive:
+          type: boolean
+        position:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+        archived:
+          type: boolean
+    ProfileFieldLibraryEntry:
+      type: object
+      required: [key, label, type, options, section, visibility, editableBy, userCanHide, sensitive]
+      properties:
+        key:
+          type: string
+          example: birthday
+        label:
+          type: string
+          description: The English label; clients translate it by key.
+          example: Birthday
+        type:
+          $ref: "#/components/schemas/ProfileFieldType"
+        handleKind:
+          $ref: "#/components/schemas/ProfileFieldHandleKind"
+        options:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProfileFieldOption"
+        section:
+          $ref: "#/components/schemas/ProfileFieldSection"
+        visibility:
+          $ref: "#/components/schemas/ProfileFieldVisibility"
+        editableBy:
+          $ref: "#/components/schemas/ProfileFieldEditor"
+        userCanHide:
+          type: boolean
+        sensitive:
+          type: boolean
+        field:
+          $ref: "#/components/schemas/ProfileField"
+    ProfileFieldLibrary:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProfileFieldLibraryEntry"
+    ProfileFieldValue:
+      type: object
+      required: [field, hidden, yearHidden, editable, hideable]
+      properties:
+        field:
+          $ref: "#/components/schemas/ProfileField"
+        value:
+          type: string
+          description: |
+            The value, absent when unset or hidden from the caller. Dates are
+            `YYYY-MM-DD`; a birthday without its year is `--MM-DD`. Select
+            fields hold an option key.
+          example: "--03-14"
+        hidden:
+          type: boolean
+          description: The person hid the value from others (reported only to those who still see it).
+        yearHidden:
+          type: boolean
+          description: The value is a birthday shown without its year.
+        editable:
+          type: boolean
+          description: The caller may set or clear the value.
+        hideable:
+          type: boolean
+          description: The caller (the person) may hide the value.
+    PersonProfile:
+      type: object
+      required: [personId, fields]
+      properties:
+        personId:
+          type: string
+          format: uuid
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProfileFieldValue"
+    ProfileFieldValueChange:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+          description: The field key.
+          example: telegram
+        value:
+          type: string
+          description: |
+            The new value; an empty string clears it; omit to leave it.
+            Validated by the field type (see `ProfileFieldType`) and stored
+            normalized (for example a phone number in E.164, a handle
+            without `@`).
+          example: maya_okafor
+        hidden:
+          type: boolean
+          description: Hide (true) or show (false) the value; only the person, and hiding only when the field allows it.
+    PersonProfileUpdate:
+      type: object
+      required: [values]
+      properties:
+        values:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/ProfileFieldValueChange"
     DemoInfo:
       type: object
       required: [dataset, company, defaultUsername, people]

@@ -155,6 +155,35 @@ type PersonRole struct {
 	GrantedAt time.Time
 }
 
+type ProfileField struct {
+	ID                   uuid.UUID
+	Key                  string
+	Library              bool
+	Label                string
+	Type                 string
+	HandleKind           *string
+	Options              []byte
+	Section              string
+	Visibility           string
+	RequiredAtOnboarding bool
+	EditableBy           string
+	UserCanHide          bool
+	Sensitive            bool
+	Position             int32
+	ArchivedAt           *time.Time
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type ProfileFieldValue struct {
+	PersonID    uuid.UUID
+	FieldID     uuid.UUID
+	Value       *string
+	ValueSealed []byte
+	Hidden      bool
+	UpdatedAt   time.Time
+}
+
 type Role struct {
 	ID        uuid.UUID
 	Key       string
