@@ -2,6 +2,7 @@ package demo_test
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -144,5 +145,43 @@ func TestLoadRejectsInvalidDatasets(t *testing.T) {
 	}
 	if _, err := demo.Load("nope"); err == nil {
 		t.Error("Load accepted an unknown dataset")
+	}
+}
+
+func TestTeamSlugValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		slugs []string
+		want  string
+	}{
+		{"valid boundaries", []string{"a", "0", "platform-2", strings.Repeat("a", 63)}, ""},
+		{"leading whitespace", []string{" platform"}, "slug must be"},
+		{"trailing whitespace", []string{"platform "}, "slug must be"},
+		{"underscore", []string{"foo_bar"}, "slug must be"},
+		{"inner space", []string{"foo bar"}, "slug must be"},
+		{"leading hyphen", []string{"-platform"}, "slug must be"},
+		{"trailing hyphen", []string{"platform-"}, "slug must be"},
+		{"too long", []string{strings.Repeat("a", 64)}, "slug must be"},
+		{"whitespace duplicate", []string{"platform", "platform "}, "duplicate slug"},
+		{"case duplicate", []string{"Platform", "platform"}, "duplicate slug"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			teams := "teams:\n"
+			for _, slug := range tc.slugs {
+				teams += fmt.Sprintf("  - {slug: %q, name: Team}\n", slug)
+			}
+			_, err := demo.LoadFS("test", fstest.MapFS{
+				"dataset.yaml": {Data: []byte("version: 1\ncompany: {name: Acme, email_domain: acme.example}\ndefault_username: ann\n")},
+				"people.yaml":  {Data: []byte("people:\n  - {username: ann, display_name: Ann, work_email: ann@acme.example, role: owner}\n")},
+				"teams.yaml":   {Data: []byte(teams)},
+			})
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("valid team slugs: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadFS() error = %v, want it to contain %q", err, tc.want)
+			}
+		})
 	}
 }

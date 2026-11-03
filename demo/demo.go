@@ -16,6 +16,7 @@ import (
 	"io"
 	"io/fs"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -229,19 +230,23 @@ func (d *Dataset) check() error {
 	return errors.Join(errs...)
 }
 
-// checkTeams validates the teams against the dataset's usernames.
+// teamSlugPattern matches the identity service and teams table constraints.
+var teamSlugPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// checkTeams validates canonical team slugs and the dataset's usernames.
 func (d *Dataset) checkTeams(usernames map[string]bool) []error {
 	var errs []error
 	slugs := map[string]bool{}
 	for i, t := range d.Teams {
 		at := fmt.Sprintf("teams[%d] (%s)", i, t.Slug)
-		switch {
-		case t.Slug == "" || t.Slug != strings.ToLower(t.Slug):
-			errs = append(errs, fmt.Errorf("%s: slug must be set and lower case", at))
-		case slugs[t.Slug]:
+		if !teamSlugPattern.MatchString(t.Slug) {
+			errs = append(errs, fmt.Errorf("%s: slug must be set to 1-63 lower case letters or digits with optional inner hyphens", at))
+		}
+		canonical := strings.ToLower(strings.TrimSpace(t.Slug))
+		if slugs[canonical] {
 			errs = append(errs, fmt.Errorf("%s: duplicate slug", at))
 		}
-		slugs[t.Slug] = true
+		slugs[canonical] = true
 		if strings.TrimSpace(t.Name) == "" {
 			errs = append(errs, fmt.Errorf("%s: name is required", at))
 		}

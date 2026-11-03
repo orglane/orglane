@@ -4,15 +4,13 @@
 -- teams and groups).
 --
 -- Rules:
---   * The slug identifies a team in URLs and, later, in provider mappings.
---     It is unique across all teams, archived ones included, so a slug is
---     never reused for a different team.
+--   * Slugs are unique across all teams, archived ones included. Renaming
+--     a team frees its previous slug for reuse.
 --   * Teams are archived, never deleted: an archived team keeps its row,
 --     its memberships and its audit history, and is read-only.
 --   * parent_id prepares a team hierarchy; package identity rejects cycles.
 --   * A membership has a role in the team: member or lead. A team may have
---     any number of leads, including none (co-leads are common, and a lead
---     maps to "maintainer" style roles in providers).
+--     any number of leads, including none (co-leadership is allowed).
 --
 -- Rows are changed only through package identity, which writes an audit
 -- entry in the same transaction.
