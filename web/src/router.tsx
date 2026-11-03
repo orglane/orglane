@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { AppShell } from "./components/app-shell";
 import { type Api, meQuery, setupStatusQuery } from "./lib/api";
-import { safeRedirect } from "./lib/utils";
+import { safeRedirect, welcomeDestination } from "./lib/utils";
 import { AcceptInvitationPage } from "./routes/accept-invitation";
 import { EmailSettingsPage } from "./routes/email-settings";
 import { HomePage } from "./routes/home";
@@ -137,8 +137,8 @@ const welcomeRoute = createRoute({
   getParentRoute: () => authedRoute,
   path: "/welcome",
   validateSearch: (search: Record<string, unknown>): { redirect?: string } => {
-    const target = safeRedirect(str(search.redirect));
-    return target === "/" || target.startsWith("/welcome") ? {} : { redirect: target };
+    const target = welcomeDestination(search.redirect);
+    return target === "/" ? {} : { redirect: target };
   },
   component: function Welcome() {
     return <WelcomePage redirect={welcomeRoute.useSearch().redirect} />;

@@ -30,6 +30,22 @@ export function safeRedirect(target: unknown, fallback = "/"): string {
   }
 }
 
+/**
+ * Unwraps local welcome continuation links to the final workspace page. Each
+ * level is validated separately; bounded nesting cannot create welcome loops.
+ */
+export function welcomeDestination(target: unknown): string {
+  let destination = safeRedirect(target);
+  for (let depth = 0; depth < 5; depth++) {
+    const url = new URL(destination, "https://orglane.invalid");
+    if (url.pathname !== "/welcome" && !url.pathname.startsWith("/welcome/")) {
+      return destination;
+    }
+    destination = safeRedirect(url.searchParams.get("redirect"));
+  }
+  return "/";
+}
+
 /** Initials for an avatar: "Alex Morgan" → "AM". */
 export function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);

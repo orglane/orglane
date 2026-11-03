@@ -6,7 +6,7 @@ import { call, hasStatus, type Me, meKey, meQuery, type SignInResult } from "./a
 import { useApi } from "./api-context";
 import { browserNavigation } from "./navigation";
 import { useEndSession } from "./session-guard";
-import { safeRedirect } from "./utils";
+import { safeRedirect, welcomeDestination } from "./utils";
 import { passkeysSupported } from "./webauthn";
 
 /** The OIDC endpoint that finishes an authorization request once signed in. */
@@ -58,10 +58,11 @@ export function useAfterSignIn() {
     }
     const me = await queryClient.fetchQuery({ ...meQuery(api), staleTime: 0 });
     const destination = safeRedirect(redirect);
+    const returnTo = welcomeDestination(destination);
     const target = me?.welcomePending
-      ? destination === "/" || destination.startsWith("/welcome")
+      ? returnTo === "/"
         ? "/welcome"
-        : `/welcome?redirect=${encodeURIComponent(destination)}`
+        : `/welcome?redirect=${encodeURIComponent(returnTo)}`
       : destination;
     if (result.passkeyOffer && passkeysSupported()) {
       await navigate({
