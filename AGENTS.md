@@ -30,6 +30,8 @@ Run everything from the repository root. Each target covers both Go and TypeScri
 make bootstrap         # check toolchain, install golangci-lint, oapi-codegen and sqlc, download Go modules, pnpm install
 make dev               # start a local Postgres (Docker) and run `orglane server` on http://localhost:8080
 make dev-down          # stop the local Postgres
+make demo              # demo mode: local Postgres + `orglane server --demo` with the "Acme Robotics" dataset (own database)
+make demo-reset        # drop the demo database
 make generate          # regenerate the Go server code and the TypeScript client from core/api/openapi.yaml, and the sqlc query layer
 make build             # go build -> bin/orglane; build all workspace packages
 make test              # Go unit + integration tests (integration only when Docker is available); vitest
@@ -53,7 +55,7 @@ Integration tests carry the `integration` build tag (`//go:build integration`) a
 
 ### Running the server locally
 
-`make dev` starts Postgres from `deploy/dev/compose.yaml` and runs `orglane server -config deploy/dev/orglane.yaml`. Other modes: `go run ./core/cmd/orglane cli migrate -config deploy/dev/orglane.yaml`, `... cli version`, `... agent` (stub).
+`make dev` starts Postgres from `deploy/dev/compose.yaml` and runs `orglane server -config deploy/dev/orglane.yaml`. Other modes: `go run ./core/cmd/orglane cli migrate -config deploy/dev/orglane.yaml`, `... cli version`, `... agent` (stub). `make demo` runs demo mode (`orglane server --demo`): on an empty database it loads the "Acme Robotics" dataset from `demo/` and allows one-click sign-in as any demo person; see [demo/README.md](demo/README.md). Tests and scripts that need realistic data use that dataset (`tests/demotest`).
 
 Configuration is a YAML file (`-config` or `ORGLANE_CONFIG`) plus `ORGLANE_*` environment variables, which override the file. The variable name is the YAML path in upper case joined with `_` (`domain.workspace_host` → `ORGLANE_DOMAIN_WORKSPACE_HOST`). Required: `database.url`, `domain.base` and, in production, `identity.master_secret` (at least 32 characters; never change it on a running instance). On first start the server logs a one-time setup token for creating the owner (`go run ./core/cmd/orglane cli setup-token -config deploy/dev/orglane.yaml` makes a new one). See `core/internal/config/config.go` for every setting and its default. Hosts are never hard-coded outside that package (ADR 0018).
 

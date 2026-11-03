@@ -58,6 +58,18 @@ type Config struct {
 	Endpoints   Endpoints `yaml:"endpoints"`
 	Jobs        Jobs      `yaml:"jobs"`
 	Identity    Identity  `yaml:"identity"`
+	Demo        Demo      `yaml:"demo"`
+}
+
+// Demo configures demo mode (`orglane server --demo`): on an empty database
+// the server loads the demo dataset (demo/) instead of offering first-run
+// setup, and anyone who can reach the instance may sign in as a demo person
+// with one click. The server refuses to start in demo mode on a database
+// that holds other data.
+type Demo struct {
+	// Enabled turns demo mode on. Defaults to false. `orglane server --demo`
+	// sets it too.
+	Enabled bool `yaml:"enabled"`
 }
 
 // Log configures logging.

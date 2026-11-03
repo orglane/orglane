@@ -19,6 +19,7 @@ import (
 	"github.com/orglane/orglane/core/internal/api/apigen"
 	"github.com/orglane/orglane/core/internal/authz"
 	"github.com/orglane/orglane/core/internal/identity/web"
+	"github.com/orglane/orglane/demo"
 )
 
 func itoa(n int) string { return strconv.Itoa(n) }
@@ -49,6 +50,10 @@ type Options struct {
 	// Auth serves sign-in, sessions and passkeys. Without it those
 	// operations fail with 500 and every non-public operation is denied.
 	Auth *web.Auth
+	// Demo is the dataset of demo mode, nil outside demo mode. Only with it
+	// are the operations marked x-orglane-permission: demo served; without
+	// it their routes are not registered at all.
+	Demo *demo.Dataset
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
 }
@@ -81,7 +86,7 @@ func newHandler(spec []byte, opts Options) (http.Handler, error) {
 	}
 
 	mux := http.NewServeMux()
-	guard := newRouteGuard(mux, ops, opts.Authenticator, opts.Logger)
+	guard := newRouteGuard(mux, ops, opts.Authenticator, opts.Logger, opts.Demo != nil)
 	badRequest := func(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, r, http.StatusBadRequest, err.Error())
 	}

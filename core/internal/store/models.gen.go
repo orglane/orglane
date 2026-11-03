@@ -131,6 +131,14 @@ type Person struct {
 	Status      string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	Title       *string
+}
+
+type PersonAvatar struct {
+	PersonID    uuid.UUID
+	ContentType string
+	Data        []byte
+	UpdatedAt   time.Time
 }
 
 type PersonCredential struct {

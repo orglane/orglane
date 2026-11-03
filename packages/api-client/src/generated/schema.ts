@@ -357,6 +357,97 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List people
+         * @description The people directory: everyone except offboarded people, sorted by
+         *     display name. Any signed-in person may read it. Not paginated yet.
+         */
+        get: operations["listPeople"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/people/{personId}/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A person's avatar image
+         * @description Returns the avatar image with its stored content type. Responses
+         *     carry `X-Content-Type-Options: nosniff` and a sandboxing
+         *     `Content-Security-Policy`, so an image opened directly cannot run
+         *     scripts or load anything.
+         */
+        get: operations["getPersonAvatar"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/demo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Demo mode information
+         * @description Describes the demo dataset and the people one can sign in as with one
+         *     click. Served only in demo mode (`orglane server --demo`); otherwise
+         *     the path does not exist (404). The sign-in screen shows it when the
+         *     discovery document has `demo: true`.
+         */
+        get: operations["getDemo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/demo/sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * One-click sign-in as a demo person
+         * @description Signs in as a person of the demo dataset without a credential and
+         *     sets the session cookie, like a password sign-in. Without a body (or
+         *     without `username`) it signs in as the dataset's default person, the
+         *     Owner. Served only in demo mode; otherwise the path does not exist
+         *     (404). Attempts are rate limited per client address.
+         */
+        post: operations["signInAsDemoPerson"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -430,6 +521,13 @@ export interface components {
             issuer: string;
             /** @example v0.1.0 */
             version: string;
+            /**
+             * @description True when the instance runs in demo mode: its data is the demo
+             *     dataset and anyone who can reach it may sign in as a demo person
+             *     with one click (`GET /api/v1/demo`, `POST /api/v1/demo/sign-in`).
+             *     Clients should show a clear "demo" marker.
+             */
+            demo: boolean;
         };
         SetupStatus: {
             /** @description True while no owner exists and setup can be completed with the setup token. */
@@ -538,7 +636,8 @@ export interface components {
              * @description The absolute expiry; the session also ends after a period of inactivity.
              */
             expiresAt: string;
-            authMethods: ("password" | "passkey")[];
+            /** @description `demo` is the one-click sign-in of demo mode (no credential). */
+            authMethods: ("password" | "passkey" | "demo")[];
             /** @description True for the session making the request. */
             current: boolean;
         };
@@ -556,6 +655,72 @@ export interface components {
         };
         PasskeyList: {
             items: components["schemas"]["Passkey"][];
+        };
+        Person: {
+            /** Format: uuid */
+            id: string;
+            /** @example maya.okafor */
+            username: string;
+            /** @example maya.okafor@acme.com */
+            workEmail: string;
+            /** @example Maya Okafor */
+            displayName: string;
+            /**
+             * @description The job title, if set.
+             * @example Chief Executive Officer
+             */
+            title?: string;
+            /** @enum {string} */
+            status: "invited" | "active" | "suspended";
+            /** @description Keys of the roles the person holds, e.g. `owner`, `admin`, `member` (ADR 0004). The UI translates built-in roles by key. */
+            roles: string[];
+            /**
+             * @description Path of the avatar image (`GET /api/v1/people/{personId}/avatar`), if the person has one.
+             * @example /api/v1/people/0192b7a0-0000-7000-8000-000000000000/avatar
+             */
+            avatarUrl?: string;
+        };
+        PersonList: {
+            items: components["schemas"]["Person"][];
+        };
+        DemoInfo: {
+            /**
+             * @description The dataset identifier.
+             * @example acme
+             */
+            dataset: string;
+            /**
+             * @description The demo company name.
+             * @example Acme Robotics
+             */
+            company: string;
+            /**
+             * @description Who `POST /api/v1/demo/sign-in` signs in as without a username (the Owner).
+             * @example maya.okafor
+             */
+            defaultUsername: string;
+            /** @description The people one can sign in as, in dataset order. */
+            people: components["schemas"]["DemoPerson"][];
+        };
+        DemoPerson: {
+            /** @example maya.okafor */
+            username: string;
+            /** @example Maya Okafor */
+            displayName: string;
+            /** @example Chief Executive Officer */
+            title?: string;
+            /**
+             * @description The key of the person's built-in role (`owner`, `admin` or `member`).
+             * @example owner
+             */
+            role: string;
+        };
+        DemoSignInRequest: {
+            /**
+             * @description The demo person to sign in as. Defaults to `defaultUsername` of `GET /api/v1/demo`.
+             * @example maya.okafor
+             */
+            username?: string;
         };
     };
     responses: {
@@ -1080,6 +1245,105 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listPeople: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The people. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getPersonAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The avatar image. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/svg+xml": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getDemo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The demo dataset. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DemoInfo"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+        };
+    };
+    signInAsDemoPerson: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DemoSignInRequest"];
+            };
+        };
+        responses: {
+            /** @description Signed in. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignInResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
             500: components["responses"]["InternalError"];
         };
     };

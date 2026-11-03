@@ -14,8 +14,10 @@ info:
       `x-orglane-permission` vendor extension (ADR 0004). The value `public`
       marks an operation that needs no authentication; `authenticated` marks
       self-service operations any signed-in caller may use on their own
-      account. The server refuses to start, and the tests fail, if an
-      operation has no permission.
+      account; `demo` marks the operations of demo mode, which need no
+      authentication and are served only when the instance runs in demo mode
+      (otherwise they do not exist: 404). The server refuses to start, and
+      the tests fail, if an operation has no permission.
     - Errors use RFC 9457 problem details (`application/problem+json`).
 
     Authentication (ADR 0003):
@@ -467,6 +469,127 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/people:
+    get:
+      operationId: listPeople
+      summary: List people
+      description: |
+        The people directory: everyone except offboarded people, sorted by
+        display name. Any signed-in person may read it. Not paginated yet.
+      tags: [people]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The people.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/people/{personId}/avatar:
+    get:
+      operationId: getPersonAvatar
+      summary: A person's avatar image
+      description: |
+        Returns the avatar image with its stored content type. Responses
+        carry `X-Content-Type-Options: nosniff` and a sandboxing
+        `Content-Security-Policy`, so an image opened directly cannot run
+        scripts or load anything.
+      tags: [people]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: personId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The avatar image.
+          content:
+            image/svg+xml:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/demo:
+    get:
+      operationId: getDemo
+      summary: Demo mode information
+      description: |
+        Describes the demo dataset and the people one can sign in as with one
+        click. Served only in demo mode (`orglane server --demo`); otherwise
+        the path does not exist (404). The sign-in screen shows it when the
+        discovery document has `demo: true`.
+      tags: [demo]
+      x-orglane-permission: demo
+      responses:
+        "200":
+          description: The demo dataset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DemoInfo"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/demo/sign-in:
+    post:
+      operationId: signInAsDemoPerson
+      summary: One-click sign-in as a demo person
+      description: |
+        Signs in as a person of the demo dataset without a credential and
+        sets the session cookie, like a password sign-in. Without a body (or
+        without `username`) it signs in as the dataset's default person, the
+        Owner. Served only in demo mode; otherwise the path does not exist
+        (404). Attempts are rate limited per client address.
+      tags: [demo]
+      x-orglane-permission: demo
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DemoSignInRequest"
+      responses:
+        "200":
+          description: Signed in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignInResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 components:
   securitySchemes:
     bearerAuth:
@@ -594,7 +717,7 @@ components:
           example: work.acme.com
     OrglaneDiscovery:
       type: object
-      required: [workspaceUrl, apiBaseUrl, issuer, version]
+      required: [workspaceUrl, apiBaseUrl, issuer, version, demo]
       properties:
         workspaceUrl:
           type: string
@@ -611,6 +734,13 @@ components:
         version:
           type: string
           example: v0.1.0
+        demo:
+          type: boolean
+          description: |
+            True when the instance runs in demo mode: its data is the demo
+            dataset and anyone who can reach it may sign in as a demo person
+            with one click (`GET /api/v1/demo`, `POST /api/v1/demo/sign-in`).
+            Clients should show a clear "demo" marker.
     SetupStatus:
       type: object
       required: [required]
@@ -773,7 +903,8 @@ components:
           type: array
           items:
             type: string
-            enum: [password, passkey]
+            enum: [password, passkey, demo]
+          description: "`demo` is the one-click sign-in of demo mode (no credential)."
         current:
           type: boolean
           description: True for the session making the request.
@@ -808,3 +939,88 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Passkey"
+    Person:
+      type: object
+      required: [id, username, workEmail, displayName, status, roles]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+          example: maya.okafor
+        workEmail:
+          type: string
+          example: maya.okafor@acme.com
+        displayName:
+          type: string
+          example: Maya Okafor
+        title:
+          type: string
+          description: The job title, if set.
+          example: Chief Executive Officer
+        status:
+          type: string
+          enum: [invited, active, suspended]
+        roles:
+          type: array
+          items:
+            type: string
+          description: Keys of the roles the person holds, e.g. `owner`, `admin`, `member` (ADR 0004). The UI translates built-in roles by key.
+        avatarUrl:
+          type: string
+          description: Path of the avatar image (`GET /api/v1/people/{personId}/avatar`), if the person has one.
+          example: /api/v1/people/0192b7a0-0000-7000-8000-000000000000/avatar
+    PersonList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Person"
+    DemoInfo:
+      type: object
+      required: [dataset, company, defaultUsername, people]
+      properties:
+        dataset:
+          type: string
+          description: The dataset identifier.
+          example: acme
+        company:
+          type: string
+          description: The demo company name.
+          example: Acme Robotics
+        defaultUsername:
+          type: string
+          description: Who `POST /api/v1/demo/sign-in` signs in as without a username (the Owner).
+          example: maya.okafor
+        people:
+          type: array
+          description: The people one can sign in as, in dataset order.
+          items:
+            $ref: "#/components/schemas/DemoPerson"
+    DemoPerson:
+      type: object
+      required: [username, displayName, role]
+      properties:
+        username:
+          type: string
+          example: maya.okafor
+        displayName:
+          type: string
+          example: Maya Okafor
+        title:
+          type: string
+          example: Chief Executive Officer
+        role:
+          type: string
+          description: The key of the person's built-in role (`owner`, `admin` or `member`).
+          example: owner
+    DemoSignInRequest:
+      type: object
+      properties:
+        username:
+          type: string
+          description: The demo person to sign in as. Defaults to `defaultUsername` of `GET /api/v1/demo`.
+          example: maya.okafor

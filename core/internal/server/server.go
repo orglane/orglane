@@ -11,11 +11,15 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/orglane/orglane/core/internal/api"
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/database"
+	"github.com/orglane/orglane/core/internal/demomode"
 	"github.com/orglane/orglane/core/internal/identity/web"
 	"github.com/orglane/orglane/core/internal/jobs"
+	"github.com/orglane/orglane/demo"
 )
 
 // Run starts the server and blocks until ctx is canceled (SIGINT/SIGTERM in
@@ -42,7 +46,8 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	if err != nil {
 		return err
 	}
-	if err := prepareIdentity(ctx, cfg, stack, logger); err != nil {
+	dataset, err := prepareIdentity(ctx, cfg, pool, stack, logger)
+	if err != nil {
 		return err
 	}
 
@@ -63,6 +68,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		WorkspaceHost: cfg.Domain.WorkspaceHost,
 		WorkspaceURL:  cfg.WorkspaceURL(),
 		Auth:          stack.Auth,
+		Demo:          dataset,
 		ReadinessChecks: []api.ReadinessCheck{
 			{Name: "database", Check: pool.Ping},
 			{Name: "migrations", Check: migrator.Check},
@@ -103,10 +109,10 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	return errors.Join(err, shutdown(shutdownCtx, srv, jobClient, logger))
 }
 
-// prepareIdentity seeds the built-in roles, makes sure a signing key exists
-// and, on a fresh instance, creates the first-run setup token and logs it
-// once.
-func prepareIdentity(ctx context.Context, cfg *config.Config, stack *web.Stack, logger *slog.Logger) error {
+// prepareIdentity seeds the built-in roles and makes sure a signing key
+// exists. On a fresh instance it creates the first-run setup token and logs
+// it once; in demo mode it loads the demo dataset instead and returns it.
+func prepareIdentity(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, stack *web.Stack, logger *slog.Logger) (*demo.Dataset, error) {
 	if cfg.Identity.MasterSecret == config.DevMasterSecret {
 		logger.WarnContext(ctx, "using the public development master secret; set identity.master_secret (ORGLANE_IDENTITY_MASTER_SECRET) outside local development")
 	}
@@ -114,14 +120,22 @@ func prepareIdentity(ctx context.Context, cfg *config.Config, stack *web.Stack, 
 		logger.WarnContext(ctx, "serving the workspace over plain HTTP (domain.scheme: http): local demo mode only")
 	}
 	if err := stack.Identity.SeedBuiltinRoles(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := stack.Keys.Ensure(ctx); err != nil {
-		return fmt.Errorf("signing keys: %w", err)
+		return nil, fmt.Errorf("signing keys: %w", err)
+	}
+	if cfg.Demo.Enabled {
+		return prepareDemo(ctx, cfg, pool, stack, logger)
+	}
+	if marker, ok, err := demomode.IsDemo(ctx, pool); err != nil {
+		return nil, err
+	} else if ok {
+		logger.WarnContext(ctx, "this database holds the demo dataset, but demo mode is off: one-click sign-in is disabled. Start with --demo to enable it", "dataset", marker.Dataset)
 	}
 	token, err := stack.Identity.EnsureSetupToken(ctx)
 	if err != nil {
-		return fmt.Errorf("setup token: %w", err)
+		return nil, fmt.Errorf("setup token: %w", err)
 	}
 	if token != "" {
 		// Printed once: only its hash is stored. `orglane cli setup-token`
@@ -129,7 +143,27 @@ func prepareIdentity(ctx context.Context, cfg *config.Config, stack *web.Stack, 
 		logger.WarnContext(ctx, "first-run setup: no owner exists yet. Open the workspace and create the owner account with this one-time setup token",
 			"setup_token", token, "workspace_url", cfg.WorkspaceURL())
 	}
-	return nil
+	return nil, nil
+}
+
+// prepareDemo loads the demo dataset into an empty database (or checks it
+// was loaded on an earlier start) and logs the demo banner. First-run setup
+// is skipped: the dataset brings its owner.
+func prepareDemo(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, stack *web.Stack, logger *slog.Logger) (*demo.Dataset, error) {
+	dataset, err := demo.Load(demo.Acme)
+	if err != nil {
+		return nil, err
+	}
+	res, err := demomode.Prepare(ctx, pool, stack.Identity, dataset)
+	if err != nil {
+		return nil, fmt.Errorf("demo mode: %w", err)
+	}
+	if res.Loaded {
+		logger.InfoContext(ctx, "loaded the demo dataset", "dataset", dataset.Name, "version", dataset.Version, "people", res.People)
+	}
+	logger.WarnContext(ctx, "DEMO MODE: this instance runs the "+dataset.Company.Name+" demo dataset. Anyone who can reach it can sign in as any demo person, including the owner, with one click. Do not store real data here",
+		"dataset", dataset.Name, "workspace_url", cfg.WorkspaceURL(), "sign_in", "POST /api/v1/demo/sign-in")
+	return dataset, nil
 }
 
 func shutdown(ctx context.Context, srv *http.Server, jobClient *jobs.Client, logger *slog.Logger) error {

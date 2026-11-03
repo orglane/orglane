@@ -14,6 +14,7 @@ import (
 	specpkg "github.com/orglane/orglane/core/api"
 	"github.com/orglane/orglane/core/internal/api/apigen"
 	"github.com/orglane/orglane/core/internal/authz"
+	"github.com/orglane/orglane/demo"
 )
 
 // stubAuthenticator maps bearer tokens to principals. Real identity arrives
@@ -151,7 +152,7 @@ func TestDefaultAuthenticatorDeniesAll(t *testing.T) {
 
 func TestPrincipalReachesHandler(t *testing.T) {
 	var seen *authz.Principal
-	g := newRouteGuard(http.NewServeMux(), nil, testAuth, discardLogger())
+	g := newRouteGuard(http.NewServeMux(), nil, testAuth, discardLogger(), false)
 	h := g.enforce(Operation{OperationID: "getInstance", Permission: authz.InstanceRead},
 		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { seen = authz.PrincipalFrom(r.Context()) }))
 	do(t, h, "/api/v1/instance", "admin")
@@ -241,4 +242,80 @@ func TestPanicIsProblem(t *testing.T) {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 	decodeProblem(t, rec)
+}
+
+// TestDemoRoutesOnlyInDemoMode: the operations marked "demo" do not exist
+// outside demo mode (404, like any unknown path) and are public in it.
+func TestDemoRoutesOnlyInDemoMode(t *testing.T) {
+	ops, err := ParseOperations(specpkg.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var demoOps []Operation
+	for _, op := range ops {
+		if op.Permission == authz.Demo {
+			demoOps = append(demoOps, op)
+		}
+	}
+	if len(demoOps) != 2 {
+		t.Fatalf("found %d demo operations, want 2 (GET /api/v1/demo, POST /api/v1/demo/sign-in)", len(demoOps))
+	}
+	send := func(h http.Handler, op Operation) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(t.Context(), op.Method, op.Path, strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	off := newTestHandler(t, Options{})
+	for _, op := range demoOps {
+		rec := send(off, op)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("demo mode off: %s = %d, want 404", op.Pattern(), rec.Code)
+		}
+		decodeProblem(t, rec)
+	}
+
+	d, err := demo.Load(demo.Acme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	on := newTestHandler(t, Options{Demo: d})
+	rec := send(on, Operation{Method: http.MethodGet, Path: "/api/v1/demo"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("demo mode on: GET /api/v1/demo = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var info apigen.DemoInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Dataset != demo.Acme || info.DefaultUsername != d.DefaultUsername || len(info.People) != len(d.People) || info.People[0].Role != demo.RoleOwner {
+		t.Fatalf("demo info = %+v", info)
+	}
+	// Registered and reached without authentication; without the identity
+	// stack the sign-in itself fails, but not with 404 or 401.
+	if rec := send(on, Operation{Method: http.MethodPost, Path: "/api/v1/demo/sign-in"}); rec.Code == http.StatusNotFound || rec.Code == http.StatusUnauthorized {
+		t.Fatalf("demo mode on: POST /api/v1/demo/sign-in = %d", rec.Code)
+	}
+}
+
+func TestDiscoveryDemoFlag(t *testing.T) {
+	d, err := demo.Load(demo.Acme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		opts Options
+		want bool
+	}{{Options{}, false}, {Options{Demo: d}, true}} {
+		var doc apigen.OrglaneDiscovery
+		rec := do(t, newTestHandler(t, tc.opts), "/.well-known/orglane", "")
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if doc.Demo != tc.want {
+			t.Errorf("demo = %v, want %v", doc.Demo, tc.want)
+		}
+	}
 }

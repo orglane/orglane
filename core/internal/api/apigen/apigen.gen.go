@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -74,8 +76,30 @@ func (e HealthCheckStatus) Valid() bool {
 	}
 }
 
+// Defines values for PersonStatus.
+const (
+	Active    PersonStatus = "active"
+	Invited   PersonStatus = "invited"
+	Suspended PersonStatus = "suspended"
+)
+
+// Valid indicates whether the value is a known member of the PersonStatus enum.
+func (e PersonStatus) Valid() bool {
+	switch e {
+	case Active:
+		return true
+	case Invited:
+		return true
+	case Suspended:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionAuthMethods.
 const (
+	SessionAuthMethodsDemo     SessionAuthMethods = "demo"
 	SessionAuthMethodsPasskey  SessionAuthMethods = "passkey"
 	SessionAuthMethodsPassword SessionAuthMethods = "password"
 )
@@ -83,6 +107,8 @@ const (
 // Valid indicates whether the value is a known member of the SessionAuthMethods enum.
 func (e SessionAuthMethods) Valid() bool {
 	switch e {
+	case SessionAuthMethodsDemo:
+		return true
 	case SessionAuthMethodsPasskey:
 		return true
 	case SessionAuthMethodsPassword:
@@ -101,6 +127,52 @@ type AddPasskeyRequest struct {
 
 	// Name A name for the passkey, e.g. "MacBook". Defaults to "Passkey".
 	Name *string `json:"name,omitempty"`
+}
+
+// DemoInfo defines model for DemoInfo.
+type DemoInfo struct {
+	// Company The demo company name.
+	//
+	// Example: Acme Robotics
+	Company string `json:"company"`
+
+	// Dataset The dataset identifier.
+	//
+	// Example: acme
+	Dataset string `json:"dataset"`
+
+	// DefaultUsername Who `POST /api/v1/demo/sign-in` signs in as without a username (the Owner).
+	//
+	// Example: maya.okafor
+	DefaultUsername string `json:"defaultUsername"`
+
+	// People The people one can sign in as, in dataset order.
+	People []DemoPerson `json:"people"`
+}
+
+// DemoPerson defines model for DemoPerson.
+type DemoPerson struct {
+	// DisplayName Example: Maya Okafor
+	DisplayName string `json:"displayName"`
+
+	// Role The key of the person's built-in role (`owner`, `admin` or `member`).
+	//
+	// Example: owner
+	Role string `json:"role"`
+
+	// Title Example: Chief Executive Officer
+	Title *string `json:"title,omitempty"`
+
+	// Username Example: maya.okafor
+	Username string `json:"username"`
+}
+
+// DemoSignInRequest defines model for DemoSignInRequest.
+type DemoSignInRequest struct {
+	// Username The demo person to sign in as. Defaults to `defaultUsername` of `GET /api/v1/demo`.
+	//
+	// Example: maya.okafor
+	Username *string `json:"username,omitempty"`
 }
 
 // Device defines model for Device.
@@ -169,6 +241,12 @@ type OrglaneDiscovery struct {
 	// Example: https://work.acme.com/api/v1
 	ApiBaseUrl string `json:"apiBaseUrl"`
 
+	// Demo True when the instance runs in demo mode: its data is the demo
+	// dataset and anyone who can reach it may sign in as a demo person
+	// with one click (`GET /api/v1/demo`, `POST /api/v1/demo/sign-in`).
+	// Clients should show a clear "demo" marker.
+	Demo bool `json:"demo"`
+
 	// Issuer The OpenID Connect issuer (append `/.well-known/openid-configuration` for its metadata).
 	//
 	// Example: https://work.acme.com
@@ -222,6 +300,41 @@ type PasswordSignInRequest struct {
 	Password string `json:"password"`
 }
 
+// Person defines model for Person.
+type Person struct {
+	// AvatarUrl Path of the avatar image (`GET /api/v1/people/{personId}/avatar`), if the person has one.
+	//
+	// Example: /api/v1/people/0192b7a0-0000-7000-8000-000000000000/avatar
+	AvatarUrl *string `json:"avatarUrl,omitempty"`
+
+	// DisplayName Example: Maya Okafor
+	DisplayName string             `json:"displayName"`
+	Id          openapi_types.UUID `json:"id"`
+
+	// Roles Keys of the roles the person holds, e.g. `owner`, `admin`, `member` (ADR 0004). The UI translates built-in roles by key.
+	Roles  []string     `json:"roles"`
+	Status PersonStatus `json:"status"`
+
+	// Title The job title, if set.
+	//
+	// Example: Chief Executive Officer
+	Title *string `json:"title,omitempty"`
+
+	// Username Example: maya.okafor
+	Username string `json:"username"`
+
+	// WorkEmail Example: maya.okafor@acme.com
+	WorkEmail string `json:"workEmail"`
+}
+
+// PersonStatus defines model for Person.Status.
+type PersonStatus string
+
+// PersonList defines model for PersonList.
+type PersonList struct {
+	Items []Person `json:"items"`
+}
+
 // PersonSummary defines model for PersonSummary.
 type PersonSummary struct {
 	DisplayName string             `json:"displayName"`
@@ -256,6 +369,7 @@ type Problem struct {
 
 // Session defines model for Session.
 type Session struct {
+	// AuthMethods `demo` is the one-click sign-in of demo mode (no credential).
 	AuthMethods []SessionAuthMethods `json:"authMethods"`
 
 	// CreatedAt When the person signed in.
@@ -350,6 +464,9 @@ type CompleteSetupJSONRequestBody = SetupRequest
 // SignInWithPasswordJSONRequestBody defines body for SignInWithPassword for application/json ContentType.
 type SignInWithPasswordJSONRequestBody = PasswordSignInRequest
 
+// SignInAsDemoPersonJSONRequestBody defines body for SignInAsDemoPerson for application/json ContentType.
+type SignInAsDemoPersonJSONRequestBody = DemoSignInRequest
+
 // AddMyPasskeyJSONRequestBody defines body for AddMyPasskey for application/json ContentType.
 type AddMyPasskeyJSONRequestBody = AddPasskeyRequest
 
@@ -376,6 +493,12 @@ type ServerInterface interface {
 	// SignOut Sign out
 	// (POST /api/v1/auth/sign-out)
 	SignOut(w http.ResponseWriter, r *http.Request)
+	// GetDemo Demo mode information
+	// (GET /api/v1/demo)
+	GetDemo(w http.ResponseWriter, r *http.Request)
+	// SignInAsDemoPerson One-click sign-in as a demo person
+	// (POST /api/v1/demo/sign-in)
+	SignInAsDemoPerson(w http.ResponseWriter, r *http.Request)
 	// GetInstance Instance information
 	// (GET /api/v1/instance)
 	GetInstance(w http.ResponseWriter, r *http.Request)
@@ -403,6 +526,12 @@ type ServerInterface interface {
 	// RevokeMySession Revoke one of my sessions
 	// (DELETE /api/v1/me/sessions/{sessionId})
 	RevokeMySession(w http.ResponseWriter, r *http.Request, sessionId openapi_types.UUID)
+	// ListPeople List people
+	// (GET /api/v1/people)
+	ListPeople(w http.ResponseWriter, r *http.Request)
+	// GetPersonAvatar A person's avatar image
+	// (GET /api/v1/people/{personId}/avatar)
+	GetPersonAvatar(w http.ResponseWriter, r *http.Request, personId openapi_types.UUID)
 	// GetVersion Server version
 	// (GET /api/v1/version)
 	GetVersion(w http.ResponseWriter, r *http.Request)
@@ -512,6 +641,34 @@ func (siw *ServerInterfaceWrapper) SignOut(w http.ResponseWriter, r *http.Reques
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SignOut(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetDemo operation middleware
+func (siw *ServerInterfaceWrapper) GetDemo(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetDemo(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SignInAsDemoPerson operation middleware
+func (siw *ServerInterfaceWrapper) SignInAsDemoPerson(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SignInAsDemoPerson(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -662,6 +819,46 @@ func (siw *ServerInterfaceWrapper) RevokeMySession(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RevokeMySession(w, r, sessionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListPeople operation middleware
+func (siw *ServerInterfaceWrapper) ListPeople(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPeople(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPersonAvatar operation middleware
+func (siw *ServerInterfaceWrapper) GetPersonAvatar(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "personId" -------------
+	var personId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "personId", r.PathValue("personId"), &personId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "personId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPersonAvatar(w, r, personId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -852,6 +1049,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/me/passkeys/options", wrapper.BeginPasskeyRegistration)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/me/passkeys/{passkeyId}", wrapper.RemoveMyPasskey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/me/passkey-offer/dismiss", wrapper.DismissPasskeyOffer)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people", wrapper.ListPeople)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people/{personId}/avatar", wrapper.GetPersonAvatar)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/demo", wrapper.GetDemo)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/demo/sign-in", wrapper.SignInAsDemoPerson)
 
 	return m
 }
@@ -1342,6 +1543,148 @@ type SignOut500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response SignOut500ApplicationProblemPlusJSONResponse) VisitSignOutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetDemoRequestObject struct {
+}
+
+type GetDemoResponseObject interface {
+	VisitGetDemoResponse(w http.ResponseWriter) error
+}
+
+type GetDemo200JSONResponse DemoInfo
+
+func (response GetDemo200JSONResponse) VisitGetDemoResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetDemo500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetDemo500ApplicationProblemPlusJSONResponse) VisitGetDemoResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SignInAsDemoPersonRequestObject struct {
+	Body *SignInAsDemoPersonJSONRequestBody
+}
+
+type SignInAsDemoPersonResponseObject interface {
+	VisitSignInAsDemoPersonResponse(w http.ResponseWriter) error
+}
+
+type SignInAsDemoPerson200JSONResponse SignInResult
+
+func (response SignInAsDemoPerson200JSONResponse) VisitSignInAsDemoPersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SignInAsDemoPerson400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response SignInAsDemoPerson400ApplicationProblemPlusJSONResponse) VisitSignInAsDemoPersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SignInAsDemoPerson403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response SignInAsDemoPerson403ApplicationProblemPlusJSONResponse) VisitSignInAsDemoPersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SignInAsDemoPerson404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response SignInAsDemoPerson404ApplicationProblemPlusJSONResponse) VisitSignInAsDemoPersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SignInAsDemoPerson429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response SignInAsDemoPerson429ApplicationProblemPlusJSONResponse) VisitSignInAsDemoPersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SignInAsDemoPerson500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response SignInAsDemoPerson500ApplicationProblemPlusJSONResponse) VisitSignInAsDemoPersonResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -1959,6 +2302,175 @@ func (response RevokeMySession500ApplicationProblemPlusJSONResponse) VisitRevoke
 	return err
 }
 
+type ListPeopleRequestObject struct {
+}
+
+type ListPeopleResponseObject interface {
+	VisitListPeopleResponse(w http.ResponseWriter) error
+}
+
+type ListPeople200JSONResponse PersonList
+
+func (response ListPeople200JSONResponse) VisitListPeopleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPeople401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListPeople401ApplicationProblemPlusJSONResponse) VisitListPeopleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPeople500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ListPeople500ApplicationProblemPlusJSONResponse) VisitListPeopleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonAvatarRequestObject struct {
+	PersonId openapi_types.UUID `json:"personId"`
+}
+
+type GetPersonAvatarResponseObject interface {
+	VisitGetPersonAvatarResponse(w http.ResponseWriter) error
+}
+
+type GetPersonAvatar200ImagepngResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response GetPersonAvatar200ImagepngResponse) VisitGetPersonAvatarResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "image/png")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type GetPersonAvatar200ImagesvgXmlResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response GetPersonAvatar200ImagesvgXmlResponse) VisitGetPersonAvatarResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "image/svg+xml")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type GetPersonAvatar200ImagewebpResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response GetPersonAvatar200ImagewebpResponse) VisitGetPersonAvatarResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "image/webp")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type GetPersonAvatar401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonAvatar401ApplicationProblemPlusJSONResponse) VisitGetPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonAvatar404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonAvatar404ApplicationProblemPlusJSONResponse) VisitGetPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonAvatar500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonAvatar500ApplicationProblemPlusJSONResponse) VisitGetPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetVersionRequestObject struct {
 }
 
@@ -2075,6 +2587,12 @@ type StrictServerInterface interface {
 	// SignOut Sign out
 	// (POST /api/v1/auth/sign-out)
 	SignOut(ctx context.Context, request SignOutRequestObject) (SignOutResponseObject, error)
+	// GetDemo Demo mode information
+	// (GET /api/v1/demo)
+	GetDemo(ctx context.Context, request GetDemoRequestObject) (GetDemoResponseObject, error)
+	// SignInAsDemoPerson One-click sign-in as a demo person
+	// (POST /api/v1/demo/sign-in)
+	SignInAsDemoPerson(ctx context.Context, request SignInAsDemoPersonRequestObject) (SignInAsDemoPersonResponseObject, error)
 	// GetInstance Instance information
 	// (GET /api/v1/instance)
 	GetInstance(ctx context.Context, request GetInstanceRequestObject) (GetInstanceResponseObject, error)
@@ -2102,6 +2620,12 @@ type StrictServerInterface interface {
 	// RevokeMySession Revoke one of my sessions
 	// (DELETE /api/v1/me/sessions/{sessionId})
 	RevokeMySession(ctx context.Context, request RevokeMySessionRequestObject) (RevokeMySessionResponseObject, error)
+	// ListPeople List people
+	// (GET /api/v1/people)
+	ListPeople(ctx context.Context, request ListPeopleRequestObject) (ListPeopleResponseObject, error)
+	// GetPersonAvatar A person's avatar image
+	// (GET /api/v1/people/{personId}/avatar)
+	GetPersonAvatar(ctx context.Context, request GetPersonAvatarRequestObject) (GetPersonAvatarResponseObject, error)
 	// GetVersion Server version
 	// (GET /api/v1/version)
 	GetVersion(ctx context.Context, request GetVersionRequestObject) (GetVersionResponseObject, error)
@@ -2341,6 +2865,64 @@ func (sh *strictHandler) SignOut(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetDemo operation middleware
+func (sh *strictHandler) GetDemo(w http.ResponseWriter, r *http.Request) {
+	var request GetDemoRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetDemo(ctx, request.(GetDemoRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetDemo")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetDemoResponseObject); ok {
+		if err := validResponse.VisitGetDemoResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SignInAsDemoPerson operation middleware
+func (sh *strictHandler) SignInAsDemoPerson(w http.ResponseWriter, r *http.Request) {
+	var request SignInAsDemoPersonRequestObject
+
+	var body SignInAsDemoPersonJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SignInAsDemoPerson(ctx, request.(SignInAsDemoPersonRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SignInAsDemoPerson")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SignInAsDemoPersonResponseObject); ok {
+		if err := validResponse.VisitSignInAsDemoPersonResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetInstance operation middleware
 func (sh *strictHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 	var request GetInstanceRequestObject
@@ -2561,6 +3143,56 @@ func (sh *strictHandler) RevokeMySession(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RevokeMySessionResponseObject); ok {
 		if err := validResponse.VisitRevokeMySessionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListPeople operation middleware
+func (sh *strictHandler) ListPeople(w http.ResponseWriter, r *http.Request) {
+	var request ListPeopleRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListPeople(ctx, request.(ListPeopleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListPeople")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListPeopleResponseObject); ok {
+		if err := validResponse.VisitListPeopleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetPersonAvatar operation middleware
+func (sh *strictHandler) GetPersonAvatar(w http.ResponseWriter, r *http.Request, personId openapi_types.UUID) {
+	var request GetPersonAvatarRequestObject
+
+	request.PersonId = personId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPersonAvatar(ctx, request.(GetPersonAvatarRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPersonAvatar")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetPersonAvatarResponseObject); ok {
+		if err := validResponse.VisitGetPersonAvatarResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

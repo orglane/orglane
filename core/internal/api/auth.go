@@ -78,6 +78,7 @@ func (s *server) GetOrglaneDiscovery(context.Context, apigen.GetOrglaneDiscovery
 		ApiBaseUrl:   s.opts.WorkspaceURL + "/api/v1",
 		Issuer:       issuer,
 		Version:      s.opts.Version,
+		Demo:         s.opts.Demo != nil,
 	}, nil
 }
 

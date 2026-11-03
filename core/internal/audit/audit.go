@@ -62,6 +62,10 @@ const (
 	PersonStatusChanged Action = "person.status_changed"
 	PersonRoleAssigned  Action = "person.role_assigned"
 	PersonRoleRemoved   Action = "person.role_removed"
+	// PersonAvatarSet: a person's avatar was set or replaced.
+	PersonAvatarSet Action = "person.avatar_set"
+	// PersonAvatarRemoved: a person's avatar was removed.
+	PersonAvatarRemoved Action = "person.avatar_removed"
 
 	RoleCreated            Action = "role.created"
 	RoleUpdated            Action = "role.updated"
@@ -98,6 +102,10 @@ const (
 	// OIDCGrantRevoked: every token of an OIDC grant was revoked, for
 	// example because a used refresh token or code was presented again.
 	OIDCGrantRevoked Action = "oidc_grant.revoked"
+
+	// InstanceDemoLoaded: the demo dataset was loaded into an empty instance
+	// (demo mode).
+	InstanceDemoLoaded Action = "instance.demo_loaded"
 )
 
 // TargetKind is the kind of object an action applies to.

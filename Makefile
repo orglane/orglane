@@ -47,8 +47,11 @@ SQLC_CFG := core/internal/store/sqlc.yaml
 
 # Local development database (deploy/dev/compose.yaml).
 DEV_COMPOSE := docker compose -f deploy/dev/compose.yaml
+# Demo mode uses its own database next to the development one.
+DEMO_DB     := orglane_demo
+DEMO_DB_URL := postgres://orglane:orglane@127.0.0.1:5432/$(DEMO_DB)?sslmode=disable
 
-.PHONY: help bootstrap check-toolchain deps dev dev-down build build-go build-ts generate check-generate check-generate-go check-generate-ts \
+.PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts generate check-generate check-generate-go check-generate-ts \
 	test test-go test-unit test-integration measure-memory conformance test-ts \
 	lint lint-go lint-ts fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
@@ -119,6 +122,16 @@ dev: ## Start a local Postgres and run the server on http://localhost:8080
 
 dev-down: ## Stop the local Postgres (its data stays in a Docker volume)
 	$(DEV_COMPOSE) down
+
+demo: ## Run the server in demo mode with the Acme dataset on http://localhost:8080 (own database)
+	$(DEV_COMPOSE) up -d --wait
+	@$(DEV_COMPOSE) exec -T postgres psql -U orglane -d orglane -tAc "SELECT 1 FROM pg_database WHERE datname = '$(DEMO_DB)'" | grep -q 1 || \
+		$(DEV_COMPOSE) exec -T postgres createdb -U orglane $(DEMO_DB)
+	ORGLANE_DATABASE_URL='$(DEMO_DB_URL)' go run ./core/cmd/orglane server -config deploy/dev/orglane.yaml --demo
+
+demo-reset: ## Drop the demo database, so the next `make demo` loads the dataset afresh
+	$(DEV_COMPOSE) up -d --wait
+	$(DEV_COMPOSE) exec -T postgres dropdb -U orglane --if-exists --force $(DEMO_DB)
 
 generate: $(OAPI_CODEGEN) $(SQLC) ## Regenerate code from the OpenAPI contract (Go server, TypeScript client) and the SQL queries (sqlc)
 	$(OAPI_CODEGEN) -config $(API_CODEGEN_CFG) $(API_SPEC) > $(API_GENERATED)

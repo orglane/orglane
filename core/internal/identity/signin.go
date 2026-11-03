@@ -23,6 +23,9 @@ type AuthMethod string
 const (
 	AuthPassword AuthMethod = "password"
 	AuthPasskey  AuthMethod = "passkey"
+	// AuthDemo is the one-click sign-in of demo mode: no credential at all.
+	// Only the demo sign-in endpoint, served in demo mode only, uses it.
+	AuthDemo AuthMethod = "demo"
 )
 
 // Password policy (OWASP ASVS: length, not composition rules).
@@ -255,7 +258,7 @@ func (s *Service) StartSession(ctx context.Context, actor audit.Actor, personID 
 		return SignedIn{}, invalid("ttl", "must be positive")
 	}
 	switch opts.Method {
-	case AuthPassword, AuthPasskey:
+	case AuthPassword, AuthPasskey, AuthDemo:
 	default:
 		return SignedIn{}, invalid("method", "unknown method %q", opts.Method)
 	}

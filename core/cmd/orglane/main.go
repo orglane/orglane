@@ -1,6 +1,7 @@
 // Command orglane is the Orglane core binary. It runs in one of three modes:
 //
-//	orglane server         run the server (API, jobs, migrations on start)
+//	orglane server         run the server (API, jobs, migrations on start);
+//	                       --demo loads the demo dataset (demo mode)
 //	orglane agent          run the local agent (not implemented yet)
 //	orglane cli <command>  administrative commands (migrate, setup-token,
 //	                       oidc-client add, version)
@@ -52,6 +53,13 @@ Modes:
 
 Flags for server and the cli commands that use the database:
   -config <path>     YAML config file (default: $ORGLANE_CONFIG)
+
+Flags for server:
+  --demo             Demo mode: on an empty database, load the "Acme
+                     Robotics" demo dataset instead of first-run setup and
+                     allow one-click sign-in as any demo person (also
+                     demo.enabled / ORGLANE_DEMO_ENABLED). Refuses a
+                     database that holds other data.
 
 Every setting can also be set with an ORGLANE_* environment variable,
 for example ORGLANE_DATABASE_URL or ORGLANE_DOMAIN_BASE.
@@ -127,9 +135,14 @@ func loadConfigWith(fs *flag.FlagSet, args []string, stderr io.Writer, lookupEnv
 }
 
 func runServer(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(string) (string, bool)) error {
-	cfg, err := loadConfig("server", args, stderr, lookupEnv)
+	fs := flag.NewFlagSet("server", flag.ContinueOnError)
+	demoMode := fs.Bool("demo", false, "run in demo mode with the Acme demo dataset (needs an empty database)")
+	cfg, err := loadConfigWith(fs, args, stderr, lookupEnv)
 	if err != nil {
 		return err
+	}
+	if *demoMode {
+		cfg.Demo.Enabled = true
 	}
 	logger := logging.New(stderr, cfg.Log.Format, cfg.Log.Level)
 	slog.SetDefault(logger)

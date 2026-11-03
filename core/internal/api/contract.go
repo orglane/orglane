@@ -40,7 +40,7 @@ func (o Operation) Pattern() string {
 
 // ParseOperations reads the operations of an OpenAPI document and validates
 // the repository conventions: every operation has an operationId and a known
-// permission (or "public" or "authenticated"), and every path is versioned
+// permission (or "public", "authenticated" or "demo"), and every path is versioned
 // under /api/v1 unless it is a health probe or discovery. All violations are
 // reported together.
 func ParseOperations(spec []byte) ([]Operation, error) {
@@ -76,7 +76,7 @@ func ParseOperations(spec []byte) ([]Operation, error) {
 			switch {
 			case raw.Permission == nil:
 				errs = append(errs, fmt.Errorf("%s: missing %s (use %q for unauthenticated operations)", op.Pattern(), PermissionExtension, authz.Public))
-			case authz.Permission(*raw.Permission) != authz.Public && authz.Permission(*raw.Permission) != authz.Authenticated &&
+			case !slices.Contains([]authz.Permission{authz.Public, authz.Authenticated, authz.Demo}, authz.Permission(*raw.Permission)) &&
 				!authz.Known(authz.Permission(*raw.Permission)):
 				errs = append(errs, fmt.Errorf("%s: unknown permission %q in %s (add it to package authz first)", op.Pattern(), *raw.Permission, PermissionExtension))
 			default:

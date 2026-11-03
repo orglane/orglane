@@ -337,3 +337,21 @@ func TestEveryFieldHasEnvVar(t *testing.T) {
 		}
 	}
 }
+
+func TestDemo(t *testing.T) {
+	cfg, err := Load("", env(minimalEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Demo.Enabled {
+		t.Fatal("demo mode must be off by default")
+	}
+	vars := maps.Clone(minimalEnv)
+	vars["ORGLANE_DEMO_ENABLED"] = "true"
+	if cfg, err = Load("", env(vars)); err != nil || !cfg.Demo.Enabled {
+		t.Fatalf("ORGLANE_DEMO_ENABLED=true: enabled = %v, err = %v", cfg != nil && cfg.Demo.Enabled, err)
+	}
+	if cfg, err = Load(writeFile(t, "demo:\n  enabled: true\n"), env(minimalEnv)); err != nil || !cfg.Demo.Enabled {
+		t.Fatalf("demo.enabled in the file: err = %v", err)
+	}
+}

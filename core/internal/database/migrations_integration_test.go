@@ -23,6 +23,7 @@ var coreTables = []string{
 	"audit_entries",
 	"person_credentials", "passkeys", "webauthn_ceremonies", "sign_in_throttles",
 	"oidc_clients", "oidc_auth_requests", "oidc_refresh_tokens", "oidc_access_tokens", "signing_keys",
+	"person_avatars",
 }
 
 func newGoose(t *testing.T, pool *pgxpool.Pool) *goose.Provider {

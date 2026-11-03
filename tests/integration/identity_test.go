@@ -80,8 +80,9 @@ func TestFirstRunSetup(t *testing.T) {
 
 	// Discovery names the workspace and the issuer, nothing else.
 	_, _, body := get(t, p.baseURL+"/.well-known/orglane")
-	var disc map[string]string
-	if err := json.Unmarshal(body, &disc); err != nil || disc["issuer"] != "https://work.acme.test" || disc["apiBaseUrl"] != "https://work.acme.test/api/v1" || len(disc) != 4 {
+	var disc map[string]any
+	if err := json.Unmarshal(body, &disc); err != nil || disc["issuer"] != "https://work.acme.test" || disc["apiBaseUrl"] != "https://work.acme.test/api/v1" ||
+		disc["demo"] != false || len(disc) != 5 {
 		t.Fatalf("/.well-known/orglane = %s", body)
 	}
 	_, _, body = get(t, p.baseURL+"/.well-known/openid-configuration")

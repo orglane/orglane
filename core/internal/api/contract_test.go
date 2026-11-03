@@ -10,8 +10,8 @@ import (
 
 // TestContractDeclaresPermissions is the build gate from ADR 0004: every
 // operation in core/api/openapi.yaml must declare x-orglane-permission with a
-// permission from the registry in package authz, "public" or
-// "authenticated".
+// permission from the registry in package authz, "public", "authenticated"
+// or "demo".
 func TestContractDeclaresPermissions(t *testing.T) {
 	ops, err := ParseOperations(specpkg.Spec)
 	if err != nil {
@@ -21,7 +21,7 @@ func TestContractDeclaresPermissions(t *testing.T) {
 		t.Fatal("no operations found in core/api/openapi.yaml")
 	}
 	for _, op := range ops {
-		if op.Permission != authz.Public && op.Permission != authz.Authenticated && !authz.Known(op.Permission) {
+		if op.Permission != authz.Public && op.Permission != authz.Authenticated && op.Permission != authz.Demo && !authz.Known(op.Permission) {
 			t.Errorf("%s: permission %q is not in the authz registry", op.Pattern(), op.Permission)
 		}
 	}
@@ -54,6 +54,12 @@ func TestContractPermissions(t *testing.T) {
 		"POST /api/v1/me/passkeys/options":       authz.Authenticated,
 		"DELETE /api/v1/me/passkeys/{passkeyId}": authz.Authenticated,
 		"POST /api/v1/me/passkey-offer/dismiss":  authz.Authenticated,
+		// Every signed-in person can read the directory.
+		"GET /api/v1/people":                   authz.Authenticated,
+		"GET /api/v1/people/{personId}/avatar": authz.Authenticated,
+		// Demo mode only: not served at all otherwise.
+		"GET /api/v1/demo":          authz.Demo,
+		"POST /api/v1/demo/sign-in": authz.Demo,
 	}
 	got := map[string]authz.Permission{}
 	for _, op := range ops {

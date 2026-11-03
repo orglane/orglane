@@ -25,6 +25,12 @@ const Public Permission = "public"
 // sessions, passkeys, sign-out). It is not a grantable permission either.
 const Authenticated Permission = "authenticated"
 
+// Demo marks an operation of demo mode (one-click sign-in as a person of the
+// demo dataset). Like Public it needs no authentication, but its route is
+// registered only when the server runs in demo mode: otherwise it does not
+// exist at all (404). It is not a grantable permission either.
+const Demo Permission = "demo"
+
 // The permission registry: the single source of truth for permission names.
 // Add a permission here (constant and registry entry) before using it in the
 // OpenAPI contract, in a role bundle or in a module scope; the contract tests

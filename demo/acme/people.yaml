@@ -1,0 +1,111 @@
+# People of the "Acme Robotics" demo dataset. Every person is active and has
+# no password: in demo mode they sign in with one click.
+#
+# Fields:
+#   username      account name (a-z, 0-9, '.', '_', '-')
+#   display_name  full name as shown in the UI
+#   work_email    must use the company email domain (dataset.yaml)
+#   title         job title
+#   role          built-in role: owner, admin or member (exactly one owner)
+#   avatar        image file relative to this directory; the SVG initials
+#                 avatars are generated with `go generate ./demo`
+#
+# Teams and profile fields arrive in M1 as new keys and files.
+people:
+  - username: maya.okafor
+    display_name: Maya Okafor
+    work_email: maya.okafor@acme-robotics.example
+    title: Chief Executive Officer
+    role: owner
+    avatar: avatars/maya.okafor.svg
+
+  - username: lucas.ferreira
+    display_name: Lucas Ferreira
+    work_email: lucas.ferreira@acme-robotics.example
+    title: Head of Engineering
+    role: admin
+    avatar: avatars/lucas.ferreira.svg
+
+  - username: aiko.tanaka
+    display_name: Aiko Tanaka
+    work_email: aiko.tanaka@acme-robotics.example
+    title: Head of Operations
+    role: admin
+    avatar: avatars/aiko.tanaka.svg
+
+  - username: priya.raman
+    display_name: Priya Raman
+    work_email: priya.raman@acme-robotics.example
+    title: Senior Robotics Engineer
+    role: member
+    avatar: avatars/priya.raman.svg
+
+  - username: jonas.lindqvist
+    display_name: Jonas Lindqvist
+    work_email: jonas.lindqvist@acme-robotics.example
+    title: Firmware Engineer
+    role: member
+    avatar: avatars/jonas.lindqvist.svg
+
+  - username: fatima.alsayed
+    display_name: Fatima Al-Sayed
+    work_email: fatima.alsayed@acme-robotics.example
+    title: Product Designer
+    role: member
+    avatar: avatars/fatima.alsayed.svg
+
+  - username: mateo.rodriguez
+    display_name: Mateo Rodríguez
+    work_email: mateo.rodriguez@acme-robotics.example
+    title: Hardware Engineer
+    role: member
+    avatar: avatars/mateo.rodriguez.svg
+
+  - username: chen.wei
+    display_name: Chen Wei
+    work_email: chen.wei@acme-robotics.example
+    title: Machine Learning Engineer
+    role: member
+    avatar: avatars/chen.wei.svg
+
+  - username: amara.diallo
+    display_name: Amara Diallo
+    work_email: amara.diallo@acme-robotics.example
+    title: Quality Engineer
+    role: member
+    avatar: avatars/amara.diallo.svg
+
+  - username: olivia.kowalski
+    display_name: Olivia Kowalski
+    work_email: olivia.kowalski@acme-robotics.example
+    title: Product Manager
+    role: member
+    avatar: avatars/olivia.kowalski.svg
+
+  - username: elif.yilmaz
+    display_name: Elif Yılmaz
+    work_email: elif.yilmaz@acme-robotics.example
+    title: Supply Chain Lead
+    role: member
+    avatar: avatars/elif.yilmaz.svg
+
+  - username: kwame.mensah
+    display_name: Kwame Mensah
+    work_email: kwame.mensah@acme-robotics.example
+    title: Field Service Technician
+    role: member
+    avatar: avatars/kwame.mensah.svg
+
+  - username: sofia.petrova
+    display_name: Sofia Petrova
+    work_email: sofia.petrova@acme-robotics.example
+    title: Technical Writer
+    role: member
+    avatar: avatars/sofia.petrova.svg
+
+  - username: liam.oconnor
+    display_name: Liam O'Connor
+    work_email: liam.oconnor@acme-robotics.example
+    title: Sales Engineer
+    role: member
+    avatar: avatars/liam.oconnor.svg

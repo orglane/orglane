@@ -42,6 +42,7 @@ var transitions = map[Status][]Status{
 const (
 	maxEmailLength       = 254
 	maxDisplayNameLength = 200
+	maxTitleLength       = 200
 )
 
 var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
@@ -54,6 +55,8 @@ type NewPerson struct {
 	// WorkEmail is unique case-insensitively and stored as entered.
 	WorkEmail   string
 	DisplayName string
+	// Title is the job title, e.g. "Robotics Engineer". Optional.
+	Title string
 	// Status is StatusInvited (the default) or StatusActive.
 	Status Status
 }
@@ -63,6 +66,8 @@ type PersonUpdate struct {
 	Username    *string
 	WorkEmail   *string
 	DisplayName *string
+	// Title is the job title; an empty string clears it.
+	Title *string
 }
 
 // CreatePerson adds a person to the directory.
@@ -78,6 +83,9 @@ func (s *Service) CreatePerson(ctx context.Context, actor audit.Actor, in NewPer
 		return store.Person{}, err
 	}
 	if params.DisplayName, err = normalizeDisplayName(in.DisplayName); err != nil {
+		return store.Person{}, err
+	}
+	if params.Title, err = normalizeTitle(in.Title); err != nil {
 		return store.Person{}, err
 	}
 	switch in.Status {
@@ -122,6 +130,7 @@ func (s *Service) UpdatePerson(ctx context.Context, actor audit.Actor, id uuid.U
 			Username:    current.Username,
 			WorkEmail:   current.WorkEmail,
 			DisplayName: current.DisplayName,
+			Title:       current.Title,
 		}
 		var changed []string
 		if in.Username != nil {
@@ -146,6 +155,14 @@ func (s *Service) UpdatePerson(ctx context.Context, actor audit.Actor, id uuid.U
 			}
 			if params.DisplayName != current.DisplayName {
 				changed = append(changed, "display_name")
+			}
+		}
+		if in.Title != nil {
+			if params.Title, err = normalizeTitle(*in.Title); err != nil {
+				return err
+			}
+			if !equalPtr(params.Title, current.Title) {
+				changed = append(changed, "title")
 			}
 		}
 		if len(changed) == 0 {
@@ -230,6 +247,26 @@ func (s *Service) GetPerson(ctx context.Context, id uuid.UUID) (store.Person, er
 	return p, nil
 }
 
+// GetPersonByUsername returns a person by username (normalized to lower
+// case).
+func (s *Service) GetPersonByUsername(ctx context.Context, username string) (store.Person, error) {
+	p, err := s.queries().GetPersonByUsername(ctx, strings.ToLower(strings.TrimSpace(username)))
+	if err != nil {
+		return store.Person{}, notFound(err, "person")
+	}
+	return p, nil
+}
+
+// Directory returns everyone except offboarded people, by display name, with
+// their role keys and whether they have an avatar.
+func (s *Service) Directory(ctx context.Context) ([]store.ListDirectoryRow, error) {
+	rows, err := s.queries().ListDirectory(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("identity: list people: %w", err)
+	}
+	return rows, nil
+}
+
 // GetPersonByWorkEmail returns a person by work email, case-insensitively.
 func (s *Service) GetPersonByWorkEmail(ctx context.Context, email string) (store.Person, error) {
 	p, err := s.queries().GetPersonByWorkEmail(ctx, strings.TrimSpace(email))
@@ -269,4 +306,23 @@ func normalizeDisplayName(n string) (string, error) {
 		return "", invalid("display_name", "must be 1-%d characters", maxDisplayNameLength)
 	}
 	return n, nil
+}
+
+// normalizeTitle trims a title; an empty title is stored as NULL.
+func normalizeTitle(t string) (*string, error) {
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return nil, nil
+	}
+	if utf8.RuneCountInString(t) > maxTitleLength || !utf8.ValidString(t) || strings.ContainsRune(t, 0) {
+		return nil, invalid("title", "must be at most %d characters", maxTitleLength)
+	}
+	return &t, nil
+}
+
+func equalPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }

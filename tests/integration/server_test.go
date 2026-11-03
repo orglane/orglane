@@ -124,9 +124,15 @@ func serverEnv(dbURL, addr string) []string {
 // extraEnv adds or overrides environment variables.
 func startServer(t *testing.T, dbURL string, extraEnv ...string) *serverProc {
 	t.Helper()
+	return startServerArgs(t, dbURL, nil, extraEnv...)
+}
+
+// startServerArgs is startServer with extra `orglane server` arguments.
+func startServerArgs(t *testing.T, dbURL string, args []string, extraEnv ...string) *serverProc {
+	t.Helper()
 	addr := freeAddr(t)
 	p := &serverProc{
-		cmd:     exec.CommandContext(context.Background(), binary(t), "server"), //nolint:gosec // the binary built by binary()
+		cmd:     exec.CommandContext(context.Background(), binary(t), append([]string{"server"}, args...)...), //nolint:gosec // the binary built by binary()
 		baseURL: "http://" + addr,
 		logs:    &syncBuffer{},
 		done:    make(chan struct{}),

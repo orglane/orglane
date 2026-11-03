@@ -14,8 +14,12 @@ import (
 // declares in the contract, before any parameter or body is parsed. A route
 // without a contract operation is recorded as an error, so the server fails
 // closed instead of serving an unguarded endpoint.
+//
+// Operations marked authz.Demo are registered only in demo mode; otherwise
+// they are dropped here, so their paths answer 404 like any unknown path.
 type routeGuard struct {
 	mux        *http.ServeMux
+	demo       bool
 	ops        map[string]Operation
 	auth       authz.Authenticator
 	logger     *slog.Logger
@@ -23,9 +27,10 @@ type routeGuard struct {
 	errs       []error
 }
 
-func newRouteGuard(mux *http.ServeMux, ops []Operation, auth authz.Authenticator, logger *slog.Logger) *routeGuard {
+func newRouteGuard(mux *http.ServeMux, ops []Operation, auth authz.Authenticator, logger *slog.Logger, demo bool) *routeGuard {
 	g := &routeGuard{
 		mux:        mux,
+		demo:       demo,
 		ops:        make(map[string]Operation, len(ops)),
 		auth:       auth,
 		logger:     logger,
@@ -45,6 +50,9 @@ func (g *routeGuard) HandleFunc(pattern string, handler func(http.ResponseWriter
 		return
 	}
 	g.registered[pattern] = true
+	if op.Permission == authz.Demo && !g.demo {
+		return // demo mode only: not served at all
+	}
 	g.mux.Handle(pattern, g.enforce(op, http.HandlerFunc(handler)))
 }
 
@@ -66,7 +74,7 @@ func (g *routeGuard) err() error {
 }
 
 func (g *routeGuard) enforce(op Operation, next http.Handler) http.Handler {
-	if op.Permission == authz.Public {
+	if op.Permission == authz.Public || op.Permission == authz.Demo {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

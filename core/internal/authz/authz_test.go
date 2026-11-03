@@ -13,7 +13,7 @@ func TestKnown(t *testing.T) {
 	if !Known(InstanceRead) {
 		t.Errorf("Known(%q) = false, want true", InstanceRead)
 	}
-	for _, p := range []Permission{Public, "", "instance.write", "INSTANCE.READ", "people"} {
+	for _, p := range []Permission{Public, Authenticated, Demo, "", "instance.write", "INSTANCE.READ", "people"} {
 		if Known(p) {
 			t.Errorf("Known(%q) = true, want false", p)
 		}
@@ -38,8 +38,13 @@ func TestPrincipalHas(t *testing.T) {
 	if nilPrincipal.Has(Authenticated) {
 		t.Error("nil principal Has(Authenticated) = true, want false")
 	}
-	if Known(Authenticated) || permissionName.MatchString(string(Authenticated)) {
-		t.Errorf("%q must not be a grantable permission", Authenticated)
+	for _, marker := range []Permission{Authenticated, Demo} {
+		if Known(marker) || permissionName.MatchString(string(marker)) {
+			t.Errorf("%q must not be a grantable permission", marker)
+		}
+	}
+	if (&Principal{Subject: "bob", Permissions: All()}).Has(Demo) {
+		t.Error("no principal holds Demo: it marks demo-mode routes, it is not granted")
 	}
 }
 

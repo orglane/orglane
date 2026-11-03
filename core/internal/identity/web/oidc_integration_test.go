@@ -437,7 +437,7 @@ func TestDiscoveryDocuments(t *testing.T) {
 	r := b.req("GET", "/.well-known/orglane", nil)
 	expectStatus(t, r, http.StatusOK)
 	r.json(t, &doc)
-	if doc["workspaceUrl"] != origin || doc["apiBaseUrl"] != origin+"/api/v1" || doc["issuer"] != origin || doc["version"] != "test" || len(doc) != 4 {
+	if doc["workspaceUrl"] != origin || doc["apiBaseUrl"] != origin+"/api/v1" || doc["issuer"] != origin || doc["version"] != "test" || doc["demo"] != false || len(doc) != 5 {
 		t.Fatalf("/.well-known/orglane = %v", doc)
 	}
 
