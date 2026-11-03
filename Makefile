@@ -6,8 +6,10 @@
 #   Node           .nvmrc and package.json `engines`
 #   pnpm           package.json `packageManager` (via corepack)
 #   golangci-lint  GOLANGCI_LINT_VERSION below
+#   oapi-codegen   OAPI_CODEGEN_VERSION below
 
 GOLANGCI_LINT_VERSION := v2.15.0
+OAPI_CODEGEN_VERSION  := v2.8.2
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -euo pipefail -c
@@ -16,22 +18,32 @@ SHELL := /usr/bin/env bash
 ROOT          := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 TOOLS_BIN     := $(ROOT)/.bin
 GOLANGCI_LINT := $(TOOLS_BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+OAPI_CODEGEN  := $(TOOLS_BIN)/oapi-codegen-$(OAPI_CODEGEN_VERSION)
 PNPM          ?= pnpm
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GO_LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: help bootstrap check-toolchain dev build build-go build-ts test test-go test-ts \
+# OpenAPI contract and the server code generated from it.
+API_SPEC        := core/api/openapi.yaml
+API_CODEGEN_CFG := core/api/oapi-codegen.yaml
+API_GENERATED   := core/internal/api/apigen/apigen.gen.go
+
+# Local development database (deploy/dev/compose.yaml).
+DEV_COMPOSE := docker compose -f deploy/dev/compose.yaml
+
+.PHONY: help bootstrap check-toolchain dev dev-down build build-go build-ts generate check-generate \
+	test test-go test-unit test-integration measure-memory test-ts \
 	lint lint-go lint-ts fmt fmt-go fmt-ts clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-17s\033[0m %s\n", $$1, $$2}'
 
 ## ---------------------------------------------------------------------------
 ## Setup
 
-bootstrap: check-toolchain $(GOLANGCI_LINT) ## Install all dependencies and pinned tools
+bootstrap: check-toolchain $(GOLANGCI_LINT) $(OAPI_CODEGEN) ## Install all dependencies and pinned tools
 	go mod download
 	$(PNPM) install --frozen-lockfile
 
@@ -59,12 +71,27 @@ $(GOLANGCI_LINT):
 	GOBIN=$(TOOLS_BIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	mv $(TOOLS_BIN)/golangci-lint $@
 
+$(OAPI_CODEGEN):
+	@echo "installing oapi-codegen $(OAPI_CODEGEN_VERSION) into $(TOOLS_BIN)"
+	GOBIN=$(TOOLS_BIN) go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION)
+	mv $(TOOLS_BIN)/oapi-codegen $@
+
 ## ---------------------------------------------------------------------------
 ## Development
 
-dev: ## Run the development setup (placeholder until the core and web skeletons land)
-	go run ./core/cmd/orglane
-	$(PNPM) run dev
+dev: ## Start a local Postgres and run the server on http://localhost:8080
+	$(DEV_COMPOSE) up -d --wait
+	go run ./core/cmd/orglane server -config deploy/dev/orglane.yaml
+
+dev-down: ## Stop the local Postgres (its data stays in a Docker volume)
+	$(DEV_COMPOSE) down
+
+generate: $(OAPI_CODEGEN) ## Regenerate code from the OpenAPI contract
+	$(OAPI_CODEGEN) -config $(API_CODEGEN_CFG) $(API_SPEC) > $(API_GENERATED)
+
+check-generate: $(OAPI_CODEGEN)
+	@$(OAPI_CODEGEN) -config $(API_CODEGEN_CFG) $(API_SPEC) | diff -u $(API_GENERATED) - >/dev/null || \
+		{ echo "error: $(API_GENERATED) is stale, run 'make generate'"; exit 1; }
 
 build: build-go build-ts ## Build everything
 
@@ -76,17 +103,33 @@ build-ts:
 
 test: test-go test-ts ## Run all tests
 
+# Integration tests (build tag "integration") need Docker; without it only
+# unit tests run.
 test-go:
+	@if docker info >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory test-integration; \
+	else \
+		echo "warning: Docker is not available, skipping integration tests"; \
+		$(MAKE) --no-print-directory test-unit; \
+	fi
+
+test-unit: ## Run Go unit tests only
 	go test -race -count=1 ./...
+
+test-integration: ## Run Go unit and integration tests (needs Docker)
+	go test -race -count=1 -tags integration ./...
+
+measure-memory: ## Report idle RSS of the server against Postgres (needs Docker; warning only)
+	go test -count=1 -tags integration -run '^TestIdleMemory$$' -v ./tests/integration/ | grep -E '^(orglane-memory:|--- FAIL|FAIL)'
 
 test-ts:
 	$(PNPM) run test
 
 lint: lint-go lint-ts ## Run all linters and type checks
 
-lint-go: $(GOLANGCI_LINT)
+lint-go: $(GOLANGCI_LINT) check-generate
 	go mod tidy -diff
-	$(GOLANGCI_LINT) run ./...
+	$(GOLANGCI_LINT) run --build-tags integration ./...
 	$(GOLANGCI_LINT) fmt --diff ./...
 
 lint-ts:

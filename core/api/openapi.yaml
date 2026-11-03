@@ -1,0 +1,187 @@
+openapi: 3.0.3
+info:
+  title: Orglane API
+  version: 0.0.0
+  description: |
+    The unified Orglane API. The web UI, mobile app, modules and agents all use
+    this same API (see docs/architecture.md).
+
+    Conventions:
+    - Product endpoints live under `/api/v1`. Only the health probes
+      (`/healthz`, `/readyz`) live outside the versioned prefix.
+    - Every operation declares the permission it requires with the
+      `x-orglane-permission` vendor extension (ADR 0004). The value `public`
+      marks an operation that needs no authentication. The server refuses to
+      start, and the tests fail, if an operation has no permission.
+    - Errors use RFC 9457 problem details (`application/problem+json`).
+  license:
+    name: AGPL-3.0-or-later
+    url: https://www.gnu.org/licenses/agpl-3.0.html
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Liveness probe
+      description: Returns 200 while the process is running. Does not check dependencies.
+      tags: [health]
+      x-orglane-permission: public
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /readyz:
+    get:
+      operationId: getReadyz
+      summary: Readiness probe
+      description: |
+        Returns 200 when the instance can serve traffic: the database is
+        reachable and all migrations are applied. Returns 503 otherwise.
+        Check details are logged by the server, not returned.
+      tags: [health]
+      x-orglane-permission: public
+      responses:
+        "200":
+          description: The instance is ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          description: The instance is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /api/v1/version:
+    get:
+      operationId: getVersion
+      summary: Server version
+      tags: [meta]
+      x-orglane-permission: public
+      responses:
+        "200":
+          description: The server version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Version"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/instance:
+    get:
+      operationId: getInstance
+      summary: Instance information
+      description: Returns how this instance is addressed (ADR 0018).
+      tags: [instance]
+      x-orglane-permission: instance.read
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Instance information.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Instance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  responses:
+    Unauthorized:
+      description: The request has no valid credentials.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: The caller lacks the permission this operation requires.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InternalError:
+      description: An unexpected server error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          description: A URI reference identifying the problem type. `about:blank` means the HTTP status says it all.
+          example: about:blank
+        title:
+          type: string
+          description: A short, human-readable summary of the problem type.
+          example: Forbidden
+        status:
+          type: integer
+          description: The HTTP status code.
+          example: 403
+        detail:
+          type: string
+          description: A human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          description: A URI reference identifying this occurrence (the request path).
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/HealthCheck"
+    HealthCheck:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+          example: database
+        status:
+          type: string
+          enum: [ok, unavailable]
+    Version:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: string
+          example: v0.1.0
+    Instance:
+      type: object
+      required: [version, baseDomain, workspaceHost]
+      properties:
+        version:
+          type: string
+          example: v0.1.0
+        baseDomain:
+          type: string
+          description: The company base domain.
+          example: acme.com
+        workspaceHost:
+          type: string
+          description: The host the workspace is served on.
+          example: work.acme.com

@@ -1,0 +1,8 @@
+# oapi-codegen configuration for the server side of core/api/openapi.yaml.
+# `make generate` writes core/internal/api/apigen/apigen.gen.go; `make lint`
+# fails when that file is stale.
+package: apigen
+generate:
+  models: true
+  std-http-server: true
+  strict-server: true

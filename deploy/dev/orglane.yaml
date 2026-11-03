@@ -1,0 +1,29 @@
+# Configuration for local development (`make dev`). Every setting can be
+# overridden with an ORGLANE_* environment variable, e.g. ORGLANE_SERVER_LISTEN.
+environment: development
+
+log:
+  level: debug
+
+server:
+  listen: "127.0.0.1:8080"
+
+database:
+  # Matches deploy/dev/compose.yaml. Local development only.
+  url: postgres://orglane:orglane@127.0.0.1:5432/orglane?sslmode=disable
+
+domain:
+  base: localhost
+  workspace_host: localhost:8080
+  # Service hosts become e.g. git.localhost.
+  service_host_template: "{service}.{base}"
+
+# Project endpoints default to orglane.app (ADR 0018):
+# endpoints:
+#   push_relay_url: https://push.orglane.app
+#   discovery_url: https://orglane.app/api/discovery
+
+jobs:
+  noop:
+    enabled: false
+    interval: 1h

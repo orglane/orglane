@@ -2,4 +2,11 @@
 
 Integration and end-to-end tests. Integration tests run against real services (PostgreSQL, Forgejo, ...) in containers, never against mocks of provider APIs.
 
-Empty for now. Unit tests live next to the code they test (`*_test.go`, `*.test.ts`).
+Unit tests live next to the code they test (`*_test.go`, `*.test.ts`).
+
+| Path | Contents |
+|---|---|
+| `pgtest/` | Starts PostgreSQL with testcontainers-go for Go integration tests |
+| `integration/` | Runs the `orglane` binary against PostgreSQL: start-up, migrations, health checks, graceful shutdown, idle memory |
+
+Go integration tests carry the `integration` build tag. `make test` runs them when Docker is available; `make test-integration` always does.

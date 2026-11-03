@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project status
 
-Pre-alpha. The monorepo tooling is in place; the core, web app and API are still skeletons (see [ROADMAP.md](ROADMAP.md)).
+Pre-alpha. The monorepo tooling and the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API) are in place; identity, the data model and the web app are next (see [ROADMAP.md](ROADMAP.md)).
 
 ## Toolchain
 
@@ -14,25 +14,46 @@ Pre-alpha. The monorepo tooling is in place; the core, web app and API are still
 | Node.js | 26.13.0 (LTS) | `.nvmrc`, `package.json` `engines` |
 | pnpm | 12.16.1 | `package.json` `packageManager` (via corepack) |
 | golangci-lint | v2.15.0 | `Makefile` (`GOLANGCI_LINT_VERSION`), installed into `.bin/` |
+| oapi-codegen | v2.8.2 | `Makefile` (`OAPI_CODEGEN_VERSION`), installed into `.bin/` |
+| PostgreSQL | 18 | `deploy/dev/compose.yaml`, `tests/pgtest` (integration tests) |
 | Biome, TypeScript, Vitest | see `package.json` files | `pnpm-lock.yaml` |
 
-Prerequisites: Go, Node.js, corepack (`npm install -g corepack` on Node 25+) and Docker (for integration tests).
+Prerequisites: Go, Node.js, corepack (`npm install -g corepack` on Node 25+) and Docker (for integration tests and `make dev`).
 
 ## Commands
 
 Run everything from the repository root. Each target covers both Go and TypeScript.
 
 ```sh
-make bootstrap   # check toolchain, install golangci-lint, download Go modules, pnpm install
-make dev         # development setup (placeholder until the core and web skeletons land)
-make build       # go build -> bin/orglane; build all workspace packages
-make test        # go test -race ./...; vitest in every workspace package
-make lint        # go mod tidy check, golangci-lint (lint + format check), Biome, tsc --noEmit
-make fmt         # go mod tidy, golangci-lint fmt (gofmt + goimports), biome check --write
-make help        # list targets
+make bootstrap         # check toolchain, install golangci-lint and oapi-codegen, download Go modules, pnpm install
+make dev               # start a local Postgres (Docker) and run `orglane server` on http://localhost:8080
+make dev-down          # stop the local Postgres
+make generate          # regenerate Go server code from core/api/openapi.yaml
+make build             # go build -> bin/orglane; build all workspace packages
+make test              # Go unit + integration tests (integration only when Docker is available); vitest
+make test-unit         # Go unit tests only
+make test-integration  # Go unit + integration tests (needs Docker)
+make measure-memory    # idle RSS of the server against Postgres (warning only, needs Docker)
+make lint              # stale generated code check, go mod tidy check, golangci-lint, Biome, tsc --noEmit
+make fmt               # go mod tidy, golangci-lint fmt (gofmt + goimports), biome check --write
+make help              # list targets
 ```
 
 Run `make fmt && make lint && make test` before committing. Language-specific sub-targets exist too (`lint-go`, `test-ts`, ...).
+
+### Integration tests
+
+Integration tests carry the `integration` build tag (`//go:build integration`) and run against a real PostgreSQL started with testcontainers-go (`tests/pgtest`). Use `pgtest.Main` in `TestMain` and `pgtest.NewDatabase(t)` for a fresh database per test. Run one package with `go test -tags integration ./core/internal/database/`. The end-to-end tests of the `orglane` binary live in `tests/integration`.
+
+### Running the server locally
+
+`make dev` starts Postgres from `deploy/dev/compose.yaml` and runs `orglane server -config deploy/dev/orglane.yaml`. Other modes: `go run ./core/cmd/orglane cli migrate -config deploy/dev/orglane.yaml`, `... cli version`, `... agent` (stub).
+
+Configuration is a YAML file (`-config` or `ORGLANE_CONFIG`) plus `ORGLANE_*` environment variables, which override the file. The variable name is the YAML path in upper case joined with `_` (`domain.workspace_host` → `ORGLANE_DOMAIN_WORKSPACE_HOST`). Required: `database.url` and `domain.base`. See `core/internal/config/config.go` for every setting and its default. Hosts are never hard-coded outside that package (ADR 0018).
+
+### API changes
+
+The API is contract-first. Change `core/api/openapi.yaml` first, then run `make generate` and implement the generated `StrictServerInterface` in `core/internal/api`. Every operation must declare `x-orglane-permission` (a permission from `core/internal/authz`, or `public`); the server refuses to start and the tests fail otherwise. Add tests for allowed and denied access. Product endpoints live under `/api/v1`; errors are RFC 9457 problem details. Changes to `core/api/**` and `core/migrations/**` are high risk.
 
 ## Read first
 
