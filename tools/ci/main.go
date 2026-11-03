@@ -96,6 +96,10 @@ func runRisk(ctx context.Context, args []string, stdout *strings.Builder) error 
 		return err
 	}
 
+	if err := risk.CheckReviewAssets(ctx, *dir, *head); err != nil {
+		return err
+	}
+
 	changes, err := risk.GitDiff(ctx, *dir, *base, *head)
 	if err != nil {
 		return err

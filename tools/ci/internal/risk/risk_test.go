@@ -491,3 +491,46 @@ func TestX(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckReviewAssets(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.CommandContext(t.Context(), "git", args...) //nolint:gosec // fixed binary and test arguments
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git: %v: %s", err, out)
+		}
+	}
+	run("init", "-q")
+	run("commit", "--allow-empty", "-qm", "base")
+	for _, path := range []string{".github/pr-assets/web/capture with spaces.png", "docs/screenshots/old.png", "website/public/icon.svg"} {
+		p := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		run("add", path)
+		run("commit", "-qm", "asset")
+		err := CheckReviewAssets(t.Context(), dir, "HEAD")
+		reserved := path != "website/public/icon.svg"
+		if (err != nil) != reserved {
+			t.Fatalf("%s: %v", path, err)
+		}
+		// The requested revision, not the working tree, must be checked.
+		if err := CheckReviewAssets(t.Context(), dir, "HEAD^"); err != nil {
+			t.Fatal(err)
+		}
+		run("rm", path)
+		run("commit", "-qm", "cleanup")
+		if err := CheckReviewAssets(t.Context(), dir, "HEAD"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := CheckReviewAssets(t.Context(), dir, "missing-revision"); err == nil {
+		t.Fatal("invalid revision must fail")
+	}
+}

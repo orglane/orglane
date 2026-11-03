@@ -81,3 +81,9 @@ Policies live in [`internal/licenses/licenses.go`](internal/licenses/licenses.go
 - **apache** (production dependencies of `packages/*`): permissive licenses and MPL-2.0.
 
 SPDX expressions are evaluated (`OR`: one side allowed, `AND`: both). Unknown, missing or non-SPDX licenses fail the check. Go licenses come from `go-licenses report`, npm licenses from `pnpm licenses list`.
+
+The `risk` command rejects files in reserved PR-review directories
+(`.github/pr-assets/` and retired `docs/screenshots/`) in the requested head
+commit, including on documentation-only PRs. `make lint-pr-assets` checks the
+local git index, so force-added captures cannot bypass the ignore rules.
+See [UI review evidence](../../CONTRIBUTING.md#ui-review-evidence).
