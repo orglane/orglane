@@ -55,6 +55,11 @@ func TestContractPermissions(t *testing.T) {
 		"DELETE /api/v1/me/passkeys/{passkeyId}": authz.Authenticated,
 		"POST /api/v1/me/passkey-offer/dismiss":  authz.Authenticated,
 		// Every signed-in person can read the directory.
+		"GET /api/v1/people/{personId}": authz.Authenticated,
+		// Base edits and raster uploads allow self-service; handlers enforce
+		// self or people.manage, with admin-only identity/reporting fields.
+		"PATCH /api/v1/people/{personId}":      authz.Authenticated,
+		"PUT /api/v1/people/{personId}/avatar": authz.Authenticated,
 		"GET /api/v1/people":                   authz.Authenticated,
 		"GET /api/v1/people/{personId}/avatar": authz.Authenticated,
 		// Every signed-in person can read teams; managing them is people

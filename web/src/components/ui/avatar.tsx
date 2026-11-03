@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { cn, initials } from "@/lib/utils";
 
 // Avatar backgrounds are picked from the name, so a person keeps their color.
@@ -20,13 +21,16 @@ function tint(seed: string): string {
 
 export function Avatar({
   name,
+  src,
   seed,
   className,
 }: {
   name: string;
+  src?: string | undefined;
   seed?: string;
   className?: string;
 }) {
+  const [failed, setFailed] = useState<string>();
   return (
     <span
       aria-hidden="true"
@@ -36,7 +40,16 @@ export function Avatar({
         className,
       )}
     >
-      {initials(name)}
+      {src && failed !== src ? (
+        <img
+          src={src}
+          alt=""
+          className="size-full rounded-full object-cover"
+          onError={() => setFailed(src)}
+        />
+      ) : (
+        initials(name)
+      )}
     </span>
   );
 }

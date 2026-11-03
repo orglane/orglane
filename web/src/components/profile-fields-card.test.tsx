@@ -34,6 +34,16 @@ describe("Profile field hiding", () => {
     const path = `/api/v1/people/${me.person.id}/profile`;
     const app = renderApp(`/people/${me.person.id}`, {
       "GET /api/v1/me": { status: 200, body: me },
+      [`GET /api/v1/people/${me.person.id}`]: {
+        status: 200,
+        body: {
+          ...me.person,
+          status: "active",
+          roles: [],
+          teams: [],
+          updatedAt: "2026-11-03T00:00:00Z",
+        },
+      },
       [`GET ${path}`]: { status: 200, body: { personId: me.person.id, fields: [entry] } },
       [`PATCH ${path}`]: {
         status: 200,
@@ -57,6 +67,17 @@ describe("Profile field hiding", () => {
       "GET /api/v1/me": {
         status: 200,
         body: { ...me, permissions: ["people.manage", "people.sensitive.read"] },
+      },
+      [`GET /api/v1/people/${personId}`]: {
+        status: 200,
+        body: {
+          ...me.person,
+          id: personId,
+          status: "active",
+          roles: [],
+          teams: [],
+          updatedAt: "2026-11-03T00:00:00Z",
+        },
       },
       [`GET /api/v1/people/${personId}/profile`]: {
         status: 200,

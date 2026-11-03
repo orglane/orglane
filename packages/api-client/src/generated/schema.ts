@@ -366,8 +366,15 @@ export interface paths {
         };
         /**
          * List people
-         * @description The people directory: everyone except offboarded people, sorted by
-         *     display name. Any signed-in person may read it. Not paginated yet.
+         * @description Public base fields only; custom/sensitive profile fields are never searched
+         *     or included. Results are in stable UUID (creation) order, using keyset
+         *     pagination. Each response has a private, content-based ETag.
+         *     updated_since is inclusive and includes offboarded tombstones (id/status/updatedAt
+         *     only; required string/array fields are empty). It cannot
+         *     combine with search/team/role filters: revalidate filtered lists in full
+         *     to detect removals. Pages reflect current state, not a frozen snapshot;
+         *     cache consumers merge by ID, overlap incremental windows, and periodically
+         *     revalidate all pages. Authentication and permissions are checked before 304.
          */
         get: operations["listPeople"];
         put?: never;
@@ -376,6 +383,27 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/people/{personId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Public directory details of a person */
+        get: operations["getPerson"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Edit public base profile fields
+         * @description Self may edit displayName/title; people.manage may also edit username/workEmail/managerId. Empty managerId removes the manager. Teams and custom fields use their own endpoints.
+         */
+        patch: operations["updatePerson"];
         trace?: never;
     };
     "/api/v1/people/{personId}/avatar": {
@@ -393,7 +421,11 @@ export interface paths {
          *     scripts or load anything.
          */
         get: operations["getPersonAvatar"];
-        put?: never;
+        /**
+         * Upload a raster avatar for self or with people.manage
+         * @description Raw PNG/JPEG/WebP only, at most 5 MiB and 16 megapixels; decoded, proportionally resized to at most 512px, and re-encoded as a metadata-free PNG fitting 256 KiB. SVG uploads are rejected.
+         */
+        put: operations["uploadPersonAvatar"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1162,13 +1194,40 @@ export interface components {
              * @example /api/v1/people/0192b7a0-0000-7000-8000-000000000000/avatar
              */
             avatarUrl?: string;
+            /**
+             * Format: date-time
+             * @description Last public directory change; private contact email and custom/sensitive profile updates do not advance it.
+             */
+            updatedAt: string;
+            /** Format: uuid */
+            managerId?: string;
+            teams: components["schemas"]["DirectoryTeam"][];
+        };
+        DirectoryTeam: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            slug: string;
+        };
+        PersonUpdate: {
+            displayName?: string;
+            title?: string;
+            username?: string;
+            workEmail?: string;
+            /** @description UUID of the manager, or empty string to remove. Admin-only. */
+            managerId?: string;
         };
         /**
-         * @description `invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people are not listed.
+         * @description `invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people appear only as incremental-cache tombstones.
          * @enum {string}
          */
-        PersonStatus: "invited" | "active" | "suspended";
+        PersonStatus: "invited" | "active" | "suspended" | "offboarded";
         PersonList: {
+            /**
+             * Format: uuid
+             * @description Omitted on the last page.
+             */
+            nextCursor?: string;
             items: components["schemas"]["Person"][];
         };
         Team: {
@@ -2205,8 +2264,22 @@ export interface operations {
     };
     listPeople: {
         parameters: {
-            query?: never;
-            header?: never;
+            query?: {
+                /** @description Case-insensitive literal substring of name, username, work email or title. */
+                q?: string;
+                /** @description An active team ID (direct membership). */
+                team?: string;
+                /** @description Role key. */
+                role?: string;
+                limit?: number;
+                /** @description nextCursor from the previous page, with the same filters. */
+                cursor?: string;
+                /** @description Inclusive lower bound on public directory changes; includes offboarded tombstones. */
+                updated_since?: string;
+            };
+            header?: {
+                "If-None-Match"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -2215,13 +2288,80 @@ export interface operations {
             /** @description The people. */
             200: {
                 headers: {
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["PersonList"];
                 };
             };
+            /** @description The authenticated caller's page is unchanged. */
+            304: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getPerson: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Public base fields; custom values use the profile endpoint. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Person"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    updatePerson: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PersonUpdate"];
+            };
+        };
+        responses: {
+            /** @description Updated public profile. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Person"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -2249,6 +2389,53 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    uploadPersonAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "image/*": string;
+            };
+        };
+        responses: {
+            /** @description Avatar stored. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Upload exceeds 5 MiB. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unsupported avatar content type. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             500: components["responses"]["InternalError"];
         };
     };

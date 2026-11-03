@@ -474,22 +474,126 @@ paths:
       operationId: listPeople
       summary: List people
       description: |
-        The people directory: everyone except offboarded people, sorted by
-        display name. Any signed-in person may read it. Not paginated yet.
+        Public base fields only; custom/sensitive profile fields are never searched
+        or included. Results are in stable UUID (creation) order, using keyset
+        pagination. Each response has a private, content-based ETag.
+        updated_since is inclusive and includes offboarded tombstones (id/status/updatedAt
+        only; required string/array fields are empty). It cannot
+        combine with search/team/role filters: revalidate filtered lists in full
+        to detect removals. Pages reflect current state, not a frozen snapshot;
+        cache consumers merge by ID, overlap incremental windows, and periodically
+        revalidate all pages. Authentication and permissions are checked before 304.
       tags: [people]
       x-orglane-permission: authenticated
       security:
         - sessionCookie: []
         - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          description: Case-insensitive literal substring of name, username, work email or title.
+          schema: { type: string, maxLength: 200 }
+        - name: team
+          in: query
+          description: An active team ID (direct membership).
+          schema: { type: string, format: uuid }
+        - name: role
+          in: query
+          description: Role key.
+          schema: { type: string, maxLength: 63 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          description: nextCursor from the previous page, with the same filters.
+          schema: { type: string, format: uuid }
+        - name: updated_since
+          in: query
+          description: Inclusive lower bound on public directory changes; includes offboarded tombstones.
+          schema: { type: string, format: date-time }
+        - name: If-None-Match
+          in: header
+          schema: { type: string }
       responses:
         "200":
           description: The people.
+          headers:
+            ETag:
+              schema: { type: string }
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/PersonList"
+        "304":
+          description: The authenticated caller's page is unchanged.
+          headers:
+            ETag:
+              schema: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/people/{personId}:
+    get:
+      operationId: getPerson
+      summary: Public directory details of a person
+      tags: [people]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PersonId"
+      responses:
+        "200":
+          description: Public base fields; custom values use the profile endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Person"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      operationId: updatePerson
+      summary: Edit public base profile fields
+      description: Self may edit displayName/title; people.manage may also edit username/workEmail/managerId. Empty managerId removes the manager. Teams and custom fields use their own endpoints.
+      tags: [people]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PersonId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PersonUpdate"
+      responses:
+        "200":
+          description: Updated public profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Person"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
   /api/v1/people/{personId}/avatar:
@@ -533,6 +637,50 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      operationId: uploadPersonAvatar
+      summary: Upload a raster avatar for self or with people.manage
+      description: Raw PNG/JPEG/WebP only, at most 5 MiB and 16 megapixels; decoded, proportionally resized to at most 512px, and re-encoded as a metadata-free PNG fitting 256 KiB. SVG uploads are rejected.
+      tags: [people]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PersonId"
+      requestBody:
+        required: true
+        content:
+          image/*:
+            schema: { type: string, format: binary }
+            examples:
+              raster:
+                summary: Content-Type must be image/png, image/jpeg or image/webp.
+      responses:
+        "204":
+          description: Avatar stored.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          description: Upload exceeds 5 MiB.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "415":
+          description: Unsupported avatar content type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "500":
           $ref: "#/components/responses/InternalError"
   /api/v1/people/{personId}/teams:
@@ -1869,7 +2017,7 @@ components:
             $ref: "#/components/schemas/Passkey"
     Person:
       type: object
-      required: [id, username, workEmail, displayName, status, roles]
+      required: [id, username, workEmail, displayName, status, roles, teams, updatedAt]
       properties:
         id:
           type: string
@@ -1898,14 +2046,47 @@ components:
           type: string
           description: Path of the avatar image (`GET /api/v1/people/{personId}/avatar`), if the person has one.
           example: /api/v1/people/0192b7a0-0000-7000-8000-000000000000/avatar
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last public directory change; private contact email and custom/sensitive profile updates do not advance it.
+        managerId:
+          type: string
+          format: uuid
+        teams:
+          type: array
+          items:
+            $ref: "#/components/schemas/DirectoryTeam"
+    DirectoryTeam:
+      type: object
+      required: [id, name, slug]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+    PersonUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        displayName: { type: string, minLength: 1, maxLength: 200 }
+        title: { type: string, maxLength: 200 }
+        username: { type: string, minLength: 1, maxLength: 63 }
+        workEmail: { type: string, maxLength: 254 }
+        managerId:
+          type: string
+          description: UUID of the manager, or empty string to remove. Admin-only.
     PersonStatus:
       type: string
-      enum: [invited, active, suspended]
-      description: "`invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people are not listed."
+      enum: [invited, active, suspended, offboarded]
+      description: "`invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people appear only as incremental-cache tombstones."
     PersonList:
       type: object
       required: [items]
       properties:
+        nextCursor:
+          type: string
+          format: uuid
+          description: Omitted on the last page.
         items:
           type: array
           items:

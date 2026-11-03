@@ -155,15 +155,17 @@ type Passkey struct {
 }
 
 type Person struct {
-	ID           uuid.UUID
-	Username     string
-	WorkEmail    string
-	DisplayName  string
-	Status       string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	Title        *string
-	ContactEmail *string
+	ID                 uuid.UUID
+	Username           string
+	WorkEmail          string
+	DisplayName        string
+	Status             string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	Title              *string
+	ContactEmail       *string
+	ManagerID          *uuid.UUID
+	DirectoryUpdatedAt time.Time
 }
 
 type PersonAvatar struct {

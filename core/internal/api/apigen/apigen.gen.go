@@ -186,9 +186,10 @@ func (e InvitationDelivery) Valid() bool {
 
 // Defines values for PersonStatus.
 const (
-	Active    PersonStatus = "active"
-	Invited   PersonStatus = "invited"
-	Suspended PersonStatus = "suspended"
+	Active     PersonStatus = "active"
+	Invited    PersonStatus = "invited"
+	Offboarded PersonStatus = "offboarded"
+	Suspended  PersonStatus = "suspended"
 )
 
 // Valid indicates whether the value is a known member of the PersonStatus enum.
@@ -197,6 +198,8 @@ func (e PersonStatus) Valid() bool {
 	case Active:
 		return true
 	case Invited:
+		return true
+	case Offboarded:
 		return true
 	case Suspended:
 		return true
@@ -488,6 +491,13 @@ type Device struct {
 
 // DevicePlatform defines model for Device.Platform.
 type DevicePlatform string
+
+// DirectoryTeam defines model for DirectoryTeam.
+type DirectoryTeam struct {
+	Id   openapi_types.UUID `json:"id"`
+	Name string             `json:"name"`
+	Slug string             `json:"slug"`
+}
 
 // EmailDelivery The delivery state of an invitation email.
 type EmailDelivery struct {
@@ -806,19 +816,24 @@ type Person struct {
 	AvatarUrl *string `json:"avatarUrl,omitempty"`
 
 	// DisplayName Example: Maya Okafor
-	DisplayName string             `json:"displayName"`
-	Id          openapi_types.UUID `json:"id"`
+	DisplayName string              `json:"displayName"`
+	Id          openapi_types.UUID  `json:"id"`
+	ManagerId   *openapi_types.UUID `json:"managerId,omitempty"`
 
 	// Roles Keys of the roles the person holds, e.g. `owner`, `admin`, `member` (ADR 0004). The UI translates built-in roles by key.
 	Roles []string `json:"roles"`
 
-	// Status `invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people are not listed.
-	Status PersonStatus `json:"status"`
+	// Status `invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people appear only as incremental-cache tombstones.
+	Status PersonStatus    `json:"status"`
+	Teams  []DirectoryTeam `json:"teams"`
 
 	// Title The job title, if set.
 	//
 	// Example: Chief Executive Officer
 	Title *string `json:"title,omitempty"`
+
+	// UpdatedAt Last public directory change; private contact email and custom/sensitive profile updates do not advance it.
+	UpdatedAt time.Time `json:"updatedAt"`
 
 	// Username Example: maya.okafor
 	Username string `json:"username"`
@@ -836,7 +851,7 @@ type PersonCard struct {
 	DisplayName string             `json:"displayName"`
 	Id          openapi_types.UUID `json:"id"`
 
-	// Status `invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people are not listed.
+	// Status `invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people appear only as incremental-cache tombstones.
 	Status PersonStatus `json:"status"`
 
 	// Title Example: Senior Robotics Engineer
@@ -849,6 +864,9 @@ type PersonCard struct {
 // PersonList defines model for PersonList.
 type PersonList struct {
 	Items []Person `json:"items"`
+
+	// NextCursor Omitted on the last page.
+	NextCursor *openapi_types.UUID `json:"nextCursor,omitempty"`
 }
 
 // PersonProfile defines model for PersonProfile.
@@ -862,7 +880,7 @@ type PersonProfileUpdate struct {
 	Values []ProfileFieldValueChange `json:"values"`
 }
 
-// PersonStatus `invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people are not listed.
+// PersonStatus `invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people appear only as incremental-cache tombstones.
 type PersonStatus string
 
 // PersonSummary defines model for PersonSummary.
@@ -883,6 +901,17 @@ type PersonTeam struct {
 // PersonTeamList defines model for PersonTeamList.
 type PersonTeamList struct {
 	Items []PersonTeam `json:"items"`
+}
+
+// PersonUpdate defines model for PersonUpdate.
+type PersonUpdate struct {
+	DisplayName *string `json:"displayName,omitempty"`
+
+	// ManagerId UUID of the manager, or empty string to remove. Admin-only.
+	ManagerId *string `json:"managerId,omitempty"`
+	Title     *string `json:"title,omitempty"`
+	Username  *string `json:"username,omitempty"`
+	WorkEmail *string `json:"workEmail,omitempty"`
 }
 
 // Problem RFC 9457 problem details.
@@ -1292,6 +1321,26 @@ type TooManyRequests = Problem
 // Unauthorized RFC 9457 problem details.
 type Unauthorized = Problem
 
+// ListPeopleParams defines parameters for ListPeople.
+type ListPeopleParams struct {
+	// Q Case-insensitive literal substring of name, username, work email or title.
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// Team An active team ID (direct membership).
+	Team *openapi_types.UUID `form:"team,omitempty" json:"team,omitempty"`
+
+	// Role Role key.
+	Role  *string `form:"role,omitempty" json:"role,omitempty"`
+	Limit *int    `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor nextCursor from the previous page, with the same filters.
+	Cursor *openapi_types.UUID `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// UpdatedSince Inclusive lower bound on public directory changes; includes offboarded tombstones.
+	UpdatedSince *time.Time `form:"updated_since,omitempty" json:"updated_since,omitempty"`
+	IfNoneMatch  *string    `json:"If-None-Match,omitempty"`
+}
+
 // ListProfileFieldsParams defines parameters for ListProfileFields.
 type ListProfileFieldsParams struct {
 	IncludeArchived *bool `form:"includeArchived,omitempty" json:"includeArchived,omitempty"`
@@ -1326,6 +1375,9 @@ type CreateInvitationJSONRequestBody = CreateInvitationRequest
 
 // AddMyPasskeyJSONRequestBody defines body for AddMyPasskey for application/json ContentType.
 type AddMyPasskeyJSONRequestBody = AddPasskeyRequest
+
+// UpdatePersonJSONRequestBody defines body for UpdatePerson for application/json ContentType.
+type UpdatePersonJSONRequestBody = PersonUpdate
 
 // UpdatePersonProfileJSONRequestBody defines body for UpdatePersonProfile for application/json ContentType.
 type UpdatePersonProfileJSONRequestBody = PersonProfileUpdate
@@ -1430,10 +1482,19 @@ type ServerInterface interface {
 	RevokeMySession(w http.ResponseWriter, r *http.Request, sessionId openapi_types.UUID)
 	// ListPeople List people
 	// (GET /api/v1/people)
-	ListPeople(w http.ResponseWriter, r *http.Request)
+	ListPeople(w http.ResponseWriter, r *http.Request, params ListPeopleParams)
+	// GetPerson Public directory details of a person
+	// (GET /api/v1/people/{personId})
+	GetPerson(w http.ResponseWriter, r *http.Request, personId PersonId)
+	// UpdatePerson Edit public base profile fields
+	// (PATCH /api/v1/people/{personId})
+	UpdatePerson(w http.ResponseWriter, r *http.Request, personId PersonId)
 	// GetPersonAvatar A person's avatar image
 	// (GET /api/v1/people/{personId}/avatar)
 	GetPersonAvatar(w http.ResponseWriter, r *http.Request, personId openapi_types.UUID)
+	// UploadPersonAvatar Upload a raster avatar for self or with people.manage
+	// (PUT /api/v1/people/{personId}/avatar)
+	UploadPersonAvatar(w http.ResponseWriter, r *http.Request, personId PersonId)
 	// GetPersonProfile A person's profile fields
 	// (GET /api/v1/people/{personId}/profile)
 	GetPersonProfile(w http.ResponseWriter, r *http.Request, personId openapi_types.UUID)
@@ -1915,8 +1976,165 @@ func (siw *ServerInterfaceWrapper) RevokeMySession(w http.ResponseWriter, r *htt
 // ListPeople operation middleware
 func (siw *ServerInterfaceWrapper) ListPeople(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListPeopleParams
+
+	// ------------- Optional query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", r.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "q"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "team" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "team", r.URL.Query(), &params.Team, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "team"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "team", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "role" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "role", r.URL.Query(), &params.Role, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "role"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "role", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "updated_since" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "updated_since", r.URL.Query(), &params.UpdatedSince, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "updated_since"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "updated_since", Err: err})
+		}
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-None-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-None-Match", Err: err})
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListPeople(w, r)
+		siw.Handler.ListPeople(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPerson operation middleware
+func (siw *ServerInterfaceWrapper) GetPerson(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "personId" -------------
+	var personId PersonId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "personId", r.PathValue("personId"), &personId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "personId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPerson(w, r, personId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdatePerson operation middleware
+func (siw *ServerInterfaceWrapper) UpdatePerson(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "personId" -------------
+	var personId PersonId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "personId", r.PathValue("personId"), &personId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "personId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdatePerson(w, r, personId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1943,6 +2161,32 @@ func (siw *ServerInterfaceWrapper) GetPersonAvatar(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetPersonAvatar(w, r, personId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UploadPersonAvatar operation middleware
+func (siw *ServerInterfaceWrapper) UploadPersonAvatar(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "personId" -------------
+	var personId PersonId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "personId", r.PathValue("personId"), &personId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "personId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UploadPersonAvatar(w, r, personId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2602,7 +2846,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/me/passkeys/{passkeyId}", wrapper.RemoveMyPasskey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/me/passkey-offer/dismiss", wrapper.DismissPasskeyOffer)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people", wrapper.ListPeople)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people/{personId}", wrapper.GetPerson)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/api/v1/people/{personId}", wrapper.UpdatePerson)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people/{personId}/avatar", wrapper.GetPersonAvatar)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/v1/people/{personId}/avatar", wrapper.UploadPersonAvatar)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people/{personId}/teams", wrapper.ListPersonTeams)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/teams", wrapper.ListTeams)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/teams", wrapper.CreateTeam)
@@ -4566,22 +4813,65 @@ func (response RevokeMySession500ApplicationProblemPlusJSONResponse) VisitRevoke
 }
 
 type ListPeopleRequestObject struct {
+	Params ListPeopleParams
 }
 
 type ListPeopleResponseObject interface {
 	VisitListPeopleResponse(w http.ResponseWriter) error
 }
 
-type ListPeople200JSONResponse PersonList
+type ListPeople200ResponseHeaders struct {
+	ETag *string
+}
+
+type ListPeople200JSONResponse struct {
+	Body    PersonList
+	Headers ListPeople200ResponseHeaders
+}
 
 func (response ListPeople200JSONResponse) VisitListPeopleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.ETag != nil {
+		w.Header().Set("ETag", fmt.Sprint(*response.Headers.ETag))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPeople304ResponseHeaders struct {
+	ETag *string
+}
+
+type ListPeople304Response struct {
+	Headers ListPeople304ResponseHeaders
+}
+
+func (response ListPeople304Response) VisitListPeopleResponse(w http.ResponseWriter) error {
+	if response.Headers.ETag != nil {
+		w.Header().Set("ETag", fmt.Sprint(*response.Headers.ETag))
+	}
+	w.WriteHeader(304)
+	return nil
+}
+
+type ListPeople400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ListPeople400ApplicationProblemPlusJSONResponse) VisitListPeopleResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
 		return err
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -4607,6 +4897,195 @@ type ListPeople500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response ListPeople500ApplicationProblemPlusJSONResponse) VisitListPeopleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonRequestObject struct {
+	PersonId PersonId `json:"personId"`
+}
+
+type GetPersonResponseObject interface {
+	VisitGetPersonResponse(w http.ResponseWriter) error
+}
+
+type GetPerson200JSONResponse Person
+
+func (response GetPerson200JSONResponse) VisitGetPersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPerson401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetPerson401ApplicationProblemPlusJSONResponse) VisitGetPersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPerson404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetPerson404ApplicationProblemPlusJSONResponse) VisitGetPersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPerson500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetPerson500ApplicationProblemPlusJSONResponse) VisitGetPersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePersonRequestObject struct {
+	PersonId PersonId `json:"personId"`
+	Body     *UpdatePersonJSONRequestBody
+}
+
+type UpdatePersonResponseObject interface {
+	VisitUpdatePersonResponse(w http.ResponseWriter) error
+}
+
+type UpdatePerson200JSONResponse Person
+
+func (response UpdatePerson200JSONResponse) VisitUpdatePersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePerson400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePerson400ApplicationProblemPlusJSONResponse) VisitUpdatePersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePerson401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePerson401ApplicationProblemPlusJSONResponse) VisitUpdatePersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePerson403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePerson403ApplicationProblemPlusJSONResponse) VisitUpdatePersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePerson404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePerson404ApplicationProblemPlusJSONResponse) VisitUpdatePersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePerson409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePerson409ApplicationProblemPlusJSONResponse) VisitUpdatePersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePerson500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePerson500ApplicationProblemPlusJSONResponse) VisitUpdatePersonResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -4723,6 +5202,132 @@ type GetPersonAvatar500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response GetPersonAvatar500ApplicationProblemPlusJSONResponse) VisitGetPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPersonAvatarRequestObject struct {
+	PersonId    PersonId `json:"personId"`
+	ContentType string
+	Body        io.Reader
+}
+
+type UploadPersonAvatarResponseObject interface {
+	VisitUploadPersonAvatarResponse(w http.ResponseWriter) error
+}
+
+type UploadPersonAvatar204Response struct {
+}
+
+func (response UploadPersonAvatar204Response) VisitUploadPersonAvatarResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type UploadPersonAvatar400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response UploadPersonAvatar400ApplicationProblemPlusJSONResponse) VisitUploadPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPersonAvatar401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response UploadPersonAvatar401ApplicationProblemPlusJSONResponse) VisitUploadPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPersonAvatar403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response UploadPersonAvatar403ApplicationProblemPlusJSONResponse) VisitUploadPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPersonAvatar404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response UploadPersonAvatar404ApplicationProblemPlusJSONResponse) VisitUploadPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPersonAvatar413ApplicationProblemPlusJSONResponse Problem
+
+func (response UploadPersonAvatar413ApplicationProblemPlusJSONResponse) VisitUploadPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPersonAvatar415ApplicationProblemPlusJSONResponse Problem
+
+func (response UploadPersonAvatar415ApplicationProblemPlusJSONResponse) VisitUploadPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(415)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadPersonAvatar500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response UploadPersonAvatar500ApplicationProblemPlusJSONResponse) VisitUploadPersonAvatarResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -6754,9 +7359,18 @@ type StrictServerInterface interface {
 	// ListPeople List people
 	// (GET /api/v1/people)
 	ListPeople(ctx context.Context, request ListPeopleRequestObject) (ListPeopleResponseObject, error)
+	// GetPerson Public directory details of a person
+	// (GET /api/v1/people/{personId})
+	GetPerson(ctx context.Context, request GetPersonRequestObject) (GetPersonResponseObject, error)
+	// UpdatePerson Edit public base profile fields
+	// (PATCH /api/v1/people/{personId})
+	UpdatePerson(ctx context.Context, request UpdatePersonRequestObject) (UpdatePersonResponseObject, error)
 	// GetPersonAvatar A person's avatar image
 	// (GET /api/v1/people/{personId}/avatar)
 	GetPersonAvatar(ctx context.Context, request GetPersonAvatarRequestObject) (GetPersonAvatarResponseObject, error)
+	// UploadPersonAvatar Upload a raster avatar for self or with people.manage
+	// (PUT /api/v1/people/{personId}/avatar)
+	UploadPersonAvatar(ctx context.Context, request UploadPersonAvatarRequestObject) (UploadPersonAvatarResponseObject, error)
 	// GetPersonProfile A person's profile fields
 	// (GET /api/v1/people/{personId}/profile)
 	GetPersonProfile(ctx context.Context, request GetPersonProfileRequestObject) (GetPersonProfileResponseObject, error)
@@ -7535,8 +8149,10 @@ func (sh *strictHandler) RevokeMySession(w http.ResponseWriter, r *http.Request,
 }
 
 // ListPeople operation middleware
-func (sh *strictHandler) ListPeople(w http.ResponseWriter, r *http.Request) {
+func (sh *strictHandler) ListPeople(w http.ResponseWriter, r *http.Request, params ListPeopleParams) {
 	var request ListPeopleRequestObject
+
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.ListPeople(ctx, request.(ListPeopleRequestObject))
@@ -7551,6 +8167,65 @@ func (sh *strictHandler) ListPeople(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListPeopleResponseObject); ok {
 		if err := validResponse.VisitListPeopleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetPerson operation middleware
+func (sh *strictHandler) GetPerson(w http.ResponseWriter, r *http.Request, personId PersonId) {
+	var request GetPersonRequestObject
+
+	request.PersonId = personId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPerson(ctx, request.(GetPersonRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPerson")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetPersonResponseObject); ok {
+		if err := validResponse.VisitGetPersonResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdatePerson operation middleware
+func (sh *strictHandler) UpdatePerson(w http.ResponseWriter, r *http.Request, personId PersonId) {
+	var request UpdatePersonRequestObject
+
+	request.PersonId = personId
+
+	var body UpdatePersonJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdatePerson(ctx, request.(UpdatePersonRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdatePerson")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdatePersonResponseObject); ok {
+		if err := validResponse.VisitUpdatePersonResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -7577,6 +8252,35 @@ func (sh *strictHandler) GetPersonAvatar(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetPersonAvatarResponseObject); ok {
 		if err := validResponse.VisitGetPersonAvatarResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UploadPersonAvatar operation middleware
+func (sh *strictHandler) UploadPersonAvatar(w http.ResponseWriter, r *http.Request, personId PersonId) {
+	var request UploadPersonAvatarRequestObject
+
+	request.PersonId = personId
+	request.ContentType = r.Header.Get("Content-Type")
+
+	request.Body = r.Body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UploadPersonAvatar(ctx, request.(UploadPersonAvatarRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UploadPersonAvatar")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UploadPersonAvatarResponseObject); ok {
+		if err := validResponse.VisitUploadPersonAvatarResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
