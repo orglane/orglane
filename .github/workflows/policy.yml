@@ -1,0 +1,78 @@
+# Trusted policy (ADR 0017): computes each pull request's risk tier and merge
+# eligibility and reports them as the `risk/*` label and the `merge-gate`
+# commit status on the pull request's head commit.
+#
+# Why a separate workflow: CI runs the pull request's own workflows, local
+# actions and tools, so its results cannot decide the pull request's risk or
+# eligibility. This workflow's triggers (workflow_run, issue_comment,
+# workflow_dispatch) always run this file from the default branch. The job
+# checks out only the default branch and runs only its code; the pull
+# request's commits are fetched as data and diffed, never checked out or
+# executed. A change to any of this (.github/**, tools/ci/**) is itself
+# risk/high.
+#
+# The orchestrator does not rely on the status alone (a pull request's own
+# workflow could post a status with the same name): before merging it runs the
+# same command from an up-to-date main checkout, see tools/ci/README.md.
+
+name: Policy
+
+on:
+  # Re-evaluate when CI finishes for a pull request.
+  workflow_run: # zizmor: ignore[dangerous-triggers] -- no pull request code is checked out or run
+    workflows: [CI]
+    types: [completed]
+  # Re-evaluate on a new or edited "Codex review:" comment.
+  issue_comment: # zizmor: ignore[dangerous-triggers] -- the comment is read through the API only
+    types: [created, edited]
+  # Re-evaluate on demand: gh workflow run policy.yml -f pr=<number>
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  group: policy-${{ github.event.workflow_run.pull_requests[0].number || github.event.issue.number || inputs.pr || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request') ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       contains(github.event.comment.body, 'Codex review:')) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # fetch the pull request's commits as data
+      pull-requests: write # set the risk/* label
+      statuses: write # set the merge-gate status
+      checks: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0 # merge bases need history
+          # The policy fetches the pull request with this read-only token.
+          # Only default-branch code runs in this job and nothing is uploaded.
+          persist-credentials: true # zizmor: ignore[artipacked]
+      - id: tool
+        uses: ./.github/actions/ci-tool
+      - name: Evaluate
+        env:
+          CI_TOOL: ${{ steps.tool.outputs.path }}
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR: ${{ github.event.issue.number || inputs.pr }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_run ]; then
+            "$CI_TOOL" policy -from-event -apply
+          else
+            "$CI_TOOL" policy -pr "$PR" -apply
+          fi

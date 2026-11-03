@@ -129,5 +129,6 @@ orglane/
 ├── deploy/               # Compose files, install script
 ├── demo/                 # "Acme" demo dataset (demo mode, screenshots, e2e, module previews)
 ├── tests/                # Integration and end-to-end tests
+├── tools/ci/             # CI tooling: risk labeler, merge gate, license check
 └── docs/                 # Brief, architecture, ADRs, specs
 ```

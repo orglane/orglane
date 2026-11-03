@@ -16,6 +16,7 @@ Pre-alpha. The monorepo tooling, the core skeleton (server/agent/cli modes, Post
 | golangci-lint | v2.15.0 | `Makefile` (`GOLANGCI_LINT_VERSION`), installed into `.bin/` |
 | oapi-codegen | v2.8.2 | `Makefile` (`OAPI_CODEGEN_VERSION`), installed into `.bin/` |
 | sqlc | v1.31.1 | `Makefile` (`SQLC_VERSION`), installed into `.bin/` (needs cgo) |
+| govulncheck, go-licenses | see `Makefile` | `Makefile` (`GOVULNCHECK_VERSION`, `GO_LICENSES_VERSION`), installed into `.bin/` |
 | PostgreSQL | 18 | `deploy/dev/compose.yaml`, `tests/pgtest` (integration tests) |
 | Biome, TypeScript, Vitest | see `package.json` files | `pnpm-lock.yaml` |
 
@@ -38,10 +39,13 @@ make measure-memory    # idle RSS of the server against Postgres (warning only, 
 make conformance       # OpenID Conformance Suite against a local server (Docker)
 make lint              # stale generated code check (Go and TypeScript), go mod tidy check, golangci-lint, Biome, tsc --noEmit
 make fmt               # go mod tidy, golangci-lint fmt (gofmt + goimports), biome check --write
+make security          # govulncheck; dependency license check (ADR 0016)
 make help              # list targets
 ```
 
 Run `make fmt && make lint && make test` before committing. Language-specific sub-targets exist too (`lint-go`, `test-ts`, ...).
+
+CI (`.github/workflows/ci.yml`) runs the same targets: `make lint`, `make test`, `make build` and `make security`. The trusted Policy workflow (`.github/workflows/policy.yml`, default branch only) then labels the pull request with its `risk/*` tier and sets a `merge-gate` status that says whether it may be merged without a maintainer (ADR 0017). An AI approval must name the head commit SHA (`Codex review: APPROVE for <sha>`). Before merging, verify with `go run ./tools/ci policy -pr <number>` from an up-to-date `main`. See [tools/ci/README.md](tools/ci/README.md).
 
 ### Integration tests
 
@@ -104,6 +108,7 @@ orglane/
 ├── deploy/               # Compose files, install script
 ├── demo/                 # "Acme" demo dataset
 ├── tests/                # integration and end-to-end tests
+├── tools/ci/             # CI tooling: risk labeler, merge gate, license check (Go)
 └── docs/                 # brief, architecture, ADRs, specs
 ```
 

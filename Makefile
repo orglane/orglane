@@ -8,10 +8,14 @@
 #   golangci-lint  GOLANGCI_LINT_VERSION below
 #   oapi-codegen   OAPI_CODEGEN_VERSION below
 #   sqlc           SQLC_VERSION below
+#   govulncheck    GOVULNCHECK_VERSION below
+#   go-licenses    GO_LICENSES_VERSION below
 
 GOLANGCI_LINT_VERSION := v2.15.0
 OAPI_CODEGEN_VERSION  := v2.8.2
 SQLC_VERSION          := v1.31.1
+GOVULNCHECK_VERSION   := v1.9.0
+GO_LICENSES_VERSION   := v2.0.1
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -euo pipefail -c
@@ -22,6 +26,9 @@ TOOLS_BIN     := $(ROOT)/.bin
 GOLANGCI_LINT := $(TOOLS_BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 OAPI_CODEGEN  := $(TOOLS_BIN)/oapi-codegen-$(OAPI_CODEGEN_VERSION)
 SQLC          := $(TOOLS_BIN)/sqlc-$(SQLC_VERSION)
+GOVULNCHECK   := $(TOOLS_BIN)/govulncheck-$(GOVULNCHECK_VERSION)
+GO_LICENSES   := $(TOOLS_BIN)/go-licenses-$(GO_LICENSES_VERSION)
+CI_TOOL       := go run ./tools/ci
 PNPM          ?= pnpm
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -41,9 +48,9 @@ SQLC_CFG := core/internal/store/sqlc.yaml
 # Local development database (deploy/dev/compose.yaml).
 DEV_COMPOSE := docker compose -f deploy/dev/compose.yaml
 
-.PHONY: help bootstrap check-toolchain dev dev-down build build-go build-ts generate check-generate check-generate-go check-generate-ts \
+.PHONY: help bootstrap check-toolchain deps dev dev-down build build-go build-ts generate check-generate check-generate-go check-generate-ts \
 	test test-go test-unit test-integration measure-memory conformance test-ts \
-	lint lint-go lint-ts fmt fmt-go fmt-ts clean
+	lint lint-go lint-ts fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -52,7 +59,9 @@ help: ## Show available targets
 ## ---------------------------------------------------------------------------
 ## Setup
 
-bootstrap: check-toolchain $(GOLANGCI_LINT) $(OAPI_CODEGEN) $(SQLC) ## Install all dependencies and pinned tools
+bootstrap: check-toolchain deps $(GOLANGCI_LINT) $(OAPI_CODEGEN) $(SQLC) ## Install all dependencies and pinned tools
+
+deps: ## Download Go modules and install pnpm packages (no tools)
 	go mod download
 	$(PNPM) install --frozen-lockfile
 
@@ -90,6 +99,16 @@ $(SQLC):
 	@echo "installing sqlc $(SQLC_VERSION) into $(TOOLS_BIN)"
 	GOBIN=$(TOOLS_BIN) go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 	mv $(TOOLS_BIN)/sqlc $@
+
+$(GOVULNCHECK):
+	@echo "installing govulncheck $(GOVULNCHECK_VERSION) into $(TOOLS_BIN)"
+	GOBIN=$(TOOLS_BIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	mv $(TOOLS_BIN)/govulncheck $@
+
+$(GO_LICENSES):
+	@echo "installing go-licenses $(GO_LICENSES_VERSION) into $(TOOLS_BIN)"
+	GOBIN=$(TOOLS_BIN) go install github.com/google/go-licenses/v2@$(GO_LICENSES_VERSION)
+	mv $(TOOLS_BIN)/go-licenses $@
 
 ## ---------------------------------------------------------------------------
 ## Development
@@ -163,6 +182,26 @@ lint-go: $(GOLANGCI_LINT) check-generate-go
 
 lint-ts: check-generate-ts
 	$(PNPM) run lint
+
+security: vulncheck licenses ## Scan for known vulnerabilities and check dependency licenses
+
+vulncheck: $(GOVULNCHECK)
+	$(GOVULNCHECK) -tags integration ./...
+
+# Dependency licenses must be compatible with ADR 0016: the "server" policy for
+# everything (AGPL-3.0-or-later server, web UI and tooling) and the stricter
+# "apache" policy for production dependencies of the Apache-2.0 packages.
+# Policies live in tools/ci/internal/licenses.
+licenses: licenses-go licenses-ts
+
+# GOROOT is passed explicitly: go-licenses recognizes the standard library by
+# its GOROOT, which must match the toolchain selected by go.mod.
+licenses-go: $(GO_LICENSES)
+	GOROOT="$$(go env GOROOT)" GOFLAGS=-tags=integration $(GO_LICENSES) report ./... --ignore github.com/orglane/orglane | $(CI_TOOL) licenses -policy server -format go-licenses
+
+licenses-ts:
+	$(PNPM) -r licenses list --json | $(CI_TOOL) licenses -policy server -format pnpm
+	$(PNPM) --filter './packages/*' licenses list --prod --json | $(CI_TOOL) licenses -policy apache -format pnpm
 
 fmt: fmt-go fmt-ts ## Format all code
 

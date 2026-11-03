@@ -1,0 +1,25 @@
+name: Build the CI tool
+description: >-
+  Build tools/ci from the checked-out code. In CI (pull_request) that is the
+  pull request's code, which only decides which jobs to skip; in the Policy
+  workflow it is the default branch, which is what makes the policy trusted.
+
+outputs:
+  path:
+    description: Path of the built binary.
+    value: ${{ steps.build.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+        cache: false
+
+    - id: build
+      shell: bash
+      run: |
+        out="$RUNNER_TEMP/orglane-ci"
+        go build -trimpath -o "$out" ./tools/ci
+        echo "path=$out" >> "$GITHUB_OUTPUT"

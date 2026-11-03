@@ -1,0 +1,129 @@
+# CI for pull requests and main (ADR 0017).
+#
+# Minutes are scarce in the private phase, so:
+#   - superseded pull request runs are cancelled;
+#   - docs-only pull requests skip lint, test, build and security (the
+#     changes job decides, so the skipped checks still report);
+#   - caches are saved on main only and restored by every pull request.
+#
+# This workflow runs the pull request's own code and is therefore not trusted
+# to judge it: the risk label and the merge-gate status come from the Policy
+# workflow (policy.yml), which runs on the default branch after CI completes
+# and also verifies that skipped jobs were allowed to skip.
+#
+# Security: only `pull_request` (never `pull_request_target`), so pull requests
+# from forks get a read-only token and no secrets. Every job declares its own
+# minimal permissions. Third-party actions are pinned by commit SHA.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  schedule:
+    # Weekly vulnerability and license scan of main for newly published advisories.
+    - cron: "17 4 * * 1"
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2 # the merge commit and its base parent
+          persist-credentials: false
+      - id: tool
+        uses: ./.github/actions/ci-tool
+      - id: classify
+        name: Classify the change
+        env:
+          CI_TOOL: ${{ steps.tool.outputs.path }}
+        run: '"$CI_TOOL" risk -base HEAD^1 -head HEAD'
+
+  lint:
+    needs: changes
+    # On push and schedule the changes job is skipped and `code` is empty.
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: lint
+          save-cache: ${{ github.event_name == 'push' }}
+      - run: make lint
+
+  test:
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: test
+          save-cache: ${{ github.event_name == 'push' }}
+      - run: make test
+
+  build:
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: build
+          save-cache: ${{ github.event_name == 'push' }}
+      - run: make build
+
+  security:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: security
+          save-cache: ${{ github.event_name == 'push' }}
+      - name: govulncheck
+        run: make vulncheck
+      - name: Dependency licenses
+        run: make licenses

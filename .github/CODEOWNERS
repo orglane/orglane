@@ -1,8 +1,13 @@
 # Code owners — high-risk paths require a maintainer review (ADR 0017).
+# Keep in sync with the high-risk path rules in tools/ci/internal/risk/risk.go.
 # Enforced once branch protection is enabled (see the publication checklist issue).
 
 # Process, CI and licensing
 /.github/                     @orglane/maintainers
+/tools/ci/                    @orglane/maintainers
+/Makefile                     @orglane/maintainers
+/.golangci.yml                @orglane/maintainers
+/biome.json                   @orglane/maintainers
 /LICENSE                      @orglane/maintainers
 /**/LICENSE                   @orglane/maintainers
 /TRADEMARK.md                 @orglane/maintainers
@@ -11,6 +16,7 @@
 # Identity, permissions, cryptography
 /core/internal/identity/      @orglane/maintainers
 /core/internal/permissions/   @orglane/maintainers
+/core/internal/authz/         @orglane/maintainers
 /core/internal/crypto/        @orglane/maintainers
 
 # Database schema migrations

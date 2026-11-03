@@ -1,0 +1,72 @@
+name: Set up toolchains
+description: >-
+  Install the pinned Go (go.mod), Node.js (.nvmrc) and pnpm (package.json
+  packageManager, via corepack) toolchains, restore caches and install
+  dependencies with `make deps`. Tool versions are never repeated here.
+
+inputs:
+  cache-key:
+    description: Job-specific part of the cache key (each job builds different Go packages).
+    required: true
+  save-cache:
+    description: Save the caches at the end of the job. Only pushes to main do, so pull requests share them.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+        cache: false
+
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: .nvmrc
+        package-manager-cache: false
+
+    # Node.js 25+ no longer bundles corepack (pinned here, nowhere else).
+    # Corepack then installs the pnpm version pinned in package.json.
+    - name: Enable pnpm with corepack
+      id: pnpm
+      shell: bash
+      env:
+        COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      run: |
+        npm install --global --no-fund --no-audit corepack@0.36.0
+        corepack enable pnpm
+        echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore caches
+      if: inputs.save-cache != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+          ~/.cache/golangci-lint
+          .bin
+          ${{ steps.pnpm.outputs.store }}
+        key: ci-${{ runner.os }}-${{ inputs.cache-key }}-${{ hashFiles('go.mod', 'go.sum', 'pnpm-lock.yaml', 'Makefile', '.nvmrc') }}-${{ github.sha }}
+        restore-keys: |
+          ci-${{ runner.os }}-${{ inputs.cache-key }}-${{ hashFiles('go.mod', 'go.sum', 'pnpm-lock.yaml', 'Makefile', '.nvmrc') }}-
+          ci-${{ runner.os }}-${{ inputs.cache-key }}-
+
+    - name: Restore and save caches
+      if: inputs.save-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+          ~/.cache/golangci-lint
+          .bin
+          ${{ steps.pnpm.outputs.store }}
+        key: ci-${{ runner.os }}-${{ inputs.cache-key }}-${{ hashFiles('go.mod', 'go.sum', 'pnpm-lock.yaml', 'Makefile', '.nvmrc') }}-${{ github.sha }}
+        restore-keys: |
+          ci-${{ runner.os }}-${{ inputs.cache-key }}-${{ hashFiles('go.mod', 'go.sum', 'pnpm-lock.yaml', 'Makefile', '.nvmrc') }}-
+          ci-${{ runner.os }}-${{ inputs.cache-key }}-
+
+    - name: Install dependencies
+      shell: bash
+      run: make check-toolchain deps
