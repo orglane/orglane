@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -459,21 +461,57 @@ func TestOIDCEndSession(t *testing.T) {
 		t.Fatalf("end_session without a hint = %d %q, want the confirmation page", r.StatusCode, confirm)
 	}
 	expectStatus(t, b.req("GET", "/api/v1/me", nil), http.StatusOK)
-	page := b.req("GET", confirm, nil)
-	expectStatus(t, page, http.StatusOK)
 	u, _ := url.Parse(confirm)
 	form := url.Values{"next": {u.Query().Get("next")}, "sig": {u.Query().Get("sig")}}
-	expectStatus(t, b.req("POST", "/oidc/logout", form, "Origin", "https://evil.example"), http.StatusForbidden)
-	expectStatus(t, b.req("POST", "/oidc/logout", form, "Origin", ""), http.StatusForbidden)
-	expectStatus(t, b.req("GET", "/api/v1/me", nil), http.StatusOK)
+	token := logoutToken(t, b, confirm)
+
+	// The confirmation must come from the workspace origin and carry the
+	// session's CSRF token from the confirmation page.
+	other := e.browser()
+	other.signIn(ownerEmail) // the same person in another browser
+	otherToken := logoutToken(t, other, confirm)
+	if otherToken == token {
+		t.Fatal("two sessions share a CSRF token")
+	}
+	for _, c := range []struct {
+		name, token string
+		headers     []string
+	}{
+		{"foreign origin", token, []string{"Origin", "https://evil.example"}},
+		{"no origin", token, []string{"Origin", ""}},
+		{"missing token", "", nil},
+		{"wrong token", token[:len(token)-4] + "AAAA", nil},
+		{"another session's token", otherToken, nil},
+	} {
+		f := maps.Clone(form)
+		if c.token != "" {
+			f.Set("csrf_token", c.token)
+		}
+		if r := b.req("POST", "/oidc/logout", f, c.headers...); r.StatusCode != http.StatusForbidden {
+			t.Errorf("logout confirmation with %s = %d %q, want 403", c.name, r.StatusCode, r.Header.Get("Location"))
+		}
+		expectStatus(t, b.req("GET", "/api/v1/me", nil), http.StatusOK)
+	}
+	expectStatus(t, other.req("GET", "/api/v1/me", nil), http.StatusOK)
+
+	form.Set("csrf_token", token)
 	r = b.req("POST", "/oidc/logout", form)
 	if loc := r.Header.Get("Location"); r.StatusCode != http.StatusSeeOther || !strings.HasPrefix(loc, bye) || !strings.Contains(loc, "state=s1") {
 		t.Fatalf("confirmed logout = %d %q", r.StatusCode, loc)
 	}
 	expectStatus(t, b.req("GET", "/api/v1/me", nil), http.StatusUnauthorized)
+	// Only this browser's session ended.
+	expectStatus(t, other.req("GET", "/api/v1/me", nil), http.StatusOK)
+
+	// The token of the ended session does not confirm for the next one.
+	b.signIn(ownerEmail)
+	if r := b.req("POST", "/oidc/logout", form); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("logout confirmation with the previous session's token = %d %q, want 403", r.StatusCode, r.Header.Get("Location"))
+	}
+	expectStatus(t, b.req("GET", "/api/v1/me", nil), http.StatusOK)
 
 	// A tampered target is not followed.
-	b.signIn(ownerEmail)
+	form.Set("csrf_token", logoutToken(t, b, confirm))
 	form.Set("next", "https://evil.example/")
 	r = b.req("POST", "/oidc/logout", form)
 	if loc := r.Header.Get("Location"); loc != origin+"/" {
@@ -706,4 +744,19 @@ func TestConcurrentCodeReuseRevokesTheWinner(t *testing.T) {
 	if err := e.pool.QueryRow(ctx, "SELECT revoked_at IS NOT NULL FROM oidc_grants").Scan(&revoked); err != nil || !revoked {
 		t.Fatalf("grant revoked = %v, %v", revoked, err)
 	}
+}
+
+var logoutTokenField = regexp.MustCompile(`<input type="hidden" name="csrf_token" value="([^"]+)">`)
+
+// logoutToken opens the logout confirmation page in the browser and
+// returns the CSRF token of its form.
+func logoutToken(t *testing.T, b *browser, confirm string) string {
+	t.Helper()
+	page := b.req("GET", confirm, nil)
+	expectStatus(t, page, http.StatusOK)
+	m := logoutTokenField.FindSubmatch(page.body)
+	if m == nil {
+		t.Fatalf("the logout confirmation page has no CSRF token: %s", page.body)
+	}
+	return string(m[1])
 }

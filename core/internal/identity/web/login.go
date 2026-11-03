@@ -212,8 +212,13 @@ func (a *Auth) complete(w http.ResponseWriter, r *http.Request, req *oidcop.Auth
 // An id_token_hint for the signed-in person proves the request comes from
 // a client that person signed in to, so the session ends at once. Any other
 // request (no hint, or a hint for someone else) could be a cross-site link,
-// so the person confirms on /oidc/logout with a same-origin POST; the
-// validated redirect target travels signed.
+// so the person confirms on /oidc/logout with a same-origin POST that
+// carries the session's CSRF token (like every other cookie-authenticated
+// change); the validated redirect target travels signed.
+
+// logoutCSRFField is the confirmation form field that carries the
+// session's CSRF token.
+const logoutCSRFField = "csrf_token"
 
 func (a *Auth) endSession(w http.ResponseWriter, r *http.Request) {
 	a.provider.ServeHTTP(w, r.WithContext(oidcop.WithLogout(r.Context(), func(ctx context.Context, req *op.EndSessionRequest) (string, error) {
@@ -256,7 +261,7 @@ func (a *Auth) logoutTarget(v url.Values) string {
 }
 
 func (a *Auth) logoutPage(w http.ResponseWriter, r *http.Request) {
-	_, ok, err := a.Session(r)
+	session, ok, err := a.Session(r)
 	if err != nil {
 		a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
 		return
@@ -265,7 +270,12 @@ func (a *Auth) logoutPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, a.logoutTarget(r.URL.Query()), http.StatusFound) //nolint:gosec // signed target
 		return
 	}
-	render(w, http.StatusOK, logoutTemplate, logoutForm{Next: r.URL.Query().Get("next"), Sig: r.URL.Query().Get("sig")})
+	render(w, http.StatusOK, logoutTemplate, logoutForm{
+		Next:      r.URL.Query().Get("next"),
+		Sig:       r.URL.Query().Get("sig"),
+		CSRFField: logoutCSRFField,
+		CSRFToken: a.CSRFToken(session.ID),
+	})
 }
 
 func (a *Auth) logoutSubmit(w http.ResponseWriter, r *http.Request) {
@@ -275,7 +285,8 @@ func (a *Auth) logoutSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The session cookie authenticates this request: it must come from the
-	// workspace itself.
+	// workspace itself and carry the session's CSRF token from the
+	// confirmation page.
 	if !a.SameOrigin(r) {
 		a.renderError(w, http.StatusForbidden, "Cross-origin request rejected.")
 		return
@@ -286,6 +297,10 @@ func (a *Auth) logoutSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ok {
+		if !a.validCSRFToken(r.PostForm.Get(logoutCSRFField), session.ID) {
+			a.renderError(w, http.StatusForbidden, "This sign-out confirmation has expired. Go back to the application and try again.")
+			return
+		}
 		if err := a.identity.RevokeOwnSession(r.Context(), a.Actor(r, session.PersonID), session.PersonID, session.ID, "oidc_logout"); err != nil {
 			a.logger.ErrorContext(r.Context(), "end session", "error", err)
 			a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
@@ -348,8 +363,10 @@ func (c *errorCapture) Write(b []byte) (int, error) {
 }
 
 type logoutForm struct {
-	Next string
-	Sig  string
+	Next      string
+	Sig       string
+	CSRFField string
+	CSRFToken string
 }
 
 func (a *Auth) renderError(w http.ResponseWriter, status int, message string) {
@@ -377,6 +394,7 @@ var logoutTemplate = template.Must(template.New("logout").Parse(`<!doctype html>
 <form method="post" action="/oidc/logout">
 <input type="hidden" name="next" value="{{.Next}}">
 <input type="hidden" name="sig" value="{{.Sig}}">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRFToken}}">
 <button id="confirm" type="submit">Sign out</button>
 </form>
 </main></body></html>

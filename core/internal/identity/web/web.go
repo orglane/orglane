@@ -188,8 +188,12 @@ func (a *Auth) CSRFToken(sessionID uuid.UUID) string {
 }
 
 func (a *Auth) validCSRF(r *http.Request, sessionID uuid.UUID) bool {
-	got := r.Header.Get(CSRFHeader)
-	return got != "" && hmac.Equal([]byte(got), []byte(a.CSRFToken(sessionID)))
+	return a.validCSRFToken(r.Header.Get(CSRFHeader), sessionID)
+}
+
+// validCSRFToken reports whether token is the CSRF token of the session.
+func (a *Auth) validCSRFToken(token string, sessionID uuid.UUID) bool {
+	return token != "" && hmac.Equal([]byte(token), []byte(a.CSRFToken(sessionID)))
 }
 
 // SameOrigin reports whether a request comes from the workspace origin,
