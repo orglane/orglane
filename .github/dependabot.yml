@@ -1,6 +1,5 @@
 version: 2
 updates:
-  # The docker ecosystem is added once the repository has Dockerfiles or Compose files.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -14,9 +13,40 @@ updates:
       interval: weekly
     labels: ["type/chore", "area/core"]
 
-  # Root pnpm workspace: web/ and packages/*.
+  # Root pnpm workspace: web/, website/ and packages/*. The api-client code
+  # generator has its own entry below.
   - package-ecosystem: npm
     directory: /
+    exclude-paths:
+      - "packages/api-client/codegen"
+      - "packages/api-client/codegen/**"
     schedule:
       interval: weekly
     labels: ["type/chore", "area/packages"]
+
+  # The api-client code generator (a member of the root pnpm workspace). It
+  # pins TypeScript 5 on purpose: openapi-typescript needs the TypeScript 5
+  # compiler JS API, which TypeScript 7 no longer has. Minor and patch
+  # updates within 5.x are still proposed.
+  - package-ecosystem: npm
+    directory: /packages/api-client/codegen
+    schedule:
+      interval: weekly
+    labels: ["type/chore", "area/packages"]
+    ignore:
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+
+  # Base images of the core image (Dockerfile).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    labels: ["type/chore", "area/deploy"]
+
+  # Images of the production Compose bundle (deploy/compose/compose.yaml).
+  - package-ecosystem: docker-compose
+    directory: /deploy/compose
+    schedule:
+      interval: weekly
+    labels: ["type/chore", "area/deploy"]

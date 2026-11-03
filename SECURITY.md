@@ -8,10 +8,7 @@ Orglane is in pre-alpha. Only the latest commit on `main` and the latest release
 
 **Please do not report security vulnerabilities through issues, discussions or pull requests.**
 
-How to report depends on the repository's visibility:
-
-- **While the repository is private (pre-alpha):** only maintainers and collaborators can see it. Report vulnerabilities directly to the maintainers through a private channel: send a private message to a member of the `@orglane/maintainers` team.
-- **Once the repository is public:** use GitHub private vulnerability reporting. Open the repository's **Security** tab and choose **Report a vulnerability**.
+Report vulnerabilities privately through GitHub private vulnerability reporting: open the repository's [**Security** tab](https://github.com/orglane/orglane/security) and choose **Report a vulnerability** (or go straight to [the reporting form](https://github.com/orglane/orglane/security/advisories/new)). This is the only reporting channel; the report stays visible only to you and the maintainers until the advisory is published.
 
 Please include:
 - a description of the issue and its impact;
