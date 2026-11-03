@@ -85,6 +85,8 @@ func TestPeopleDirectoryAPIAndBasePermissions(t *testing.T) {
 	if _, err := e.stack.Identity.SetPersonStatus(t.Context(), audit.System, other.ID, identity.StatusOffboarded); err != nil {
 		t.Fatal(err)
 	}
+	// The admin form resubmits the existing manager alongside base edits.
+	expectStatus(t, owner.req("PATCH", path, map[string]any{"title": "Still editable", "displayName": "Annie Updated", "managerId": other.ID.String()}), 200)
 	delta := member.req("GET", "/api/v1/people?updated_since=2020-01-01T00:00:00Z", nil)
 	expectStatus(t, delta, 200)
 	var cache struct {

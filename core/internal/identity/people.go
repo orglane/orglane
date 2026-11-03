@@ -216,25 +216,30 @@ func (s *Service) UpdatePersonTx(ctx context.Context, q *store.Queries, actor au
 		}
 	}
 	if in.ManagerID != nil {
-		params.ManagerID = nil
-		if *in.ManagerID != uuid.Nil {
-			manager, err := q.GetPerson(ctx, *in.ManagerID)
-			if err != nil {
-				return store.Person{}, notFound(err, "manager")
-			}
-			if Status(manager.Status) == StatusOffboarded {
-				return store.Person{}, invalid("manager_id", "manager is offboarded")
-			}
-			chain, err := q.ListManagerAncestors(ctx, *in.ManagerID)
-			if err != nil {
-				return store.Person{}, err
-			}
-			if slices.Contains(chain, id) {
-				return store.Person{}, invalid("manager_id", "reporting lines must not form a cycle")
-			}
-			params.ManagerID = in.ManagerID
+		nextManager := in.ManagerID
+		if *nextManager == uuid.Nil {
+			nextManager = nil
 		}
-		if !equalUUIDPtr(params.ManagerID, current.ManagerID) {
+		// Re-submitting an existing reporting line must not block unrelated
+		// profile edits when that manager has since been offboarded.
+		if !equalUUIDPtr(nextManager, current.ManagerID) {
+			if nextManager != nil {
+				manager, err := q.GetPerson(ctx, *nextManager)
+				if err != nil {
+					return store.Person{}, notFound(err, "manager")
+				}
+				if Status(manager.Status) == StatusOffboarded {
+					return store.Person{}, invalid("manager_id", "manager is offboarded")
+				}
+				chain, err := q.ListManagerAncestors(ctx, *nextManager)
+				if err != nil {
+					return store.Person{}, err
+				}
+				if slices.Contains(chain, id) {
+					return store.Person{}, invalid("manager_id", "reporting lines must not form a cycle")
+				}
+			}
+			params.ManagerID = nextManager
 			changed = append(changed, "manager_id")
 		}
 	}

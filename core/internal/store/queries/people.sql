@@ -59,7 +59,7 @@ FROM people p
 WHERE (p.status <> 'offboarded' OR sqlc.narg(updated_since)::timestamptz IS NOT NULL)
   AND (sqlc.narg(updated_since)::timestamptz IS NULL OR p.directory_updated_at >= sqlc.narg(updated_since)::timestamptz)
   AND (sqlc.narg(cursor)::uuid IS NULL OR p.id > sqlc.narg(cursor)::uuid)
-  AND (@search::text = '' OR lower(p.display_name || ' ' || p.username || ' ' || p.work_email || ' ' || coalesce(p.title, '')) LIKE @search::text ESCAPE E'\\')
+  AND (@search::text = '' OR lower(p.display_name || ' ' || p.username || ' ' || p.work_email || ' ' || coalesce(p.title, '')) LIKE lower(@search::text) ESCAPE E'\\')
   AND (sqlc.narg(team_id)::uuid IS NULL OR EXISTS (
       SELECT 1 FROM team_memberships m JOIN teams t ON t.id = m.team_id
       WHERE m.person_id = p.id AND m.team_id = sqlc.narg(team_id)::uuid AND t.archived_at IS NULL))

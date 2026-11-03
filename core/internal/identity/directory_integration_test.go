@@ -4,15 +4,23 @@ package identity_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image/png"
+	"io"
+	"log/slog"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/orglane/orglane/core/internal/database"
 
 	"github.com/orglane/orglane/core/internal/store"
 
@@ -365,5 +373,138 @@ func TestPrivateContactUpdateDoesNotEnterDirectoryDelta(t *testing.T) {
 	page, err = svc.DirectoryPage(ctx, identity.DirectoryOptions{UpdatedSince: &since, Limit: 10})
 	if err != nil || len(page.Items) != 1 || page.Items[0].Person.ID != p.ID {
 		t.Fatalf("public change missing from delta: %+v %v", page, err)
+	}
+}
+
+// A libc C database intentionally has different non-ASCII case mapping from
+// Go's Unicode mapping. Keep expectations tied to PostgreSQL lower, not an
+// assumption that every locale treats the same Unicode strings as equivalent.
+func directoryCLocaleService(t *testing.T) (*identity.Service, *pgxpool.Pool) {
+	t.Helper()
+	adminPool := migratedPool(t)
+	ctx := t.Context()
+	name := "directory_c_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	quoted := pgx.Identifier{name}.Sanitize()
+	if _, err := adminPool.Exec(ctx, "CREATE DATABASE "+quoted+" TEMPLATE template0 LOCALE_PROVIDER libc LC_COLLATE 'C' LC_CTYPE 'C'"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := adminPool.Exec(context.Background(), "DROP DATABASE "+quoted+" WITH (FORCE)"); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := adminPool.Config()
+	cfg.ConnConfig.Database = name
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	migrator, err := database.NewMigrator(pool, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrator.Close() }()
+	if err := migrator.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return identity.NewService(pool), pool
+}
+
+func TestDirectorySearchUsesDatabaseCaseMapping(t *testing.T) {
+	for _, locale := range []string{"default", "C"} {
+		t.Run(locale, func(t *testing.T) {
+			var svc *identity.Service
+			var pool *pgxpool.Pool
+			if locale == "C" {
+				svc, pool = directoryCLocaleService(t)
+			} else {
+				svc, pool = newService(t)
+			}
+			ctx := t.Context()
+			first, err := svc.CreatePerson(ctx, admin, identity.NewPerson{Username: "locale.first", WorkEmail: "locale.first@acme.test", DisplayName: "Änne%_\\IŞIK", Title: "GrÜße ΟΣ", Status: identity.StatusActive})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := svc.CreatePerson(ctx, admin, identity.NewPerson{Username: "locale.decoy", WorkEmail: "locale.decoy@acme.test", DisplayName: "ÄnneXY\\IŞIK", Title: "Other", Status: identity.StatusActive}); err != nil {
+				t.Fatal(err)
+			}
+			for _, query := range []string{"ÄnNe%_\\IŞIK", "änne%_\\işik", "%_\\IŞIK", "GrÜßE", "grüße", "ΟΣ", "οσ", "LoCaLe.FIRST@"} {
+				t.Run(query, func(t *testing.T) {
+					// strpos tests literal substring intent independently of
+					// LIKE escaping; both folds use this database's locale.
+					rows, err := pool.Query(ctx, `SELECT id FROM people WHERE strpos(lower(display_name || ' ' || username || ' ' || work_email || ' ' || coalesce(title,'')),lower($1::text))>0 ORDER BY id`, query)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var expected []uuid.UUID
+					for rows.Next() {
+						var id uuid.UUID
+						if err := rows.Scan(&id); err != nil {
+							t.Fatal(err)
+						}
+						expected = append(expected, id)
+					}
+					rows.Close()
+					if err := rows.Err(); err != nil {
+						t.Fatal(err)
+					}
+					if query == "ÄnNe%_\\IŞIK" && (len(expected) != 1 || expected[0] != first.ID) {
+						t.Fatalf("locale fixture did not isolate literal name: %v", expected)
+					}
+					page, err := svc.DirectoryPage(ctx, identity.DirectoryOptions{Search: query, Limit: 10})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var actual []uuid.UUID
+					for _, p := range page.Items {
+						actual = append(actual, p.Person.ID)
+					}
+					if !slices.Equal(actual, expected) {
+						t.Fatalf("directory=%v, database literal lower semantics=%v", actual, expected)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestUnchangedOffboardedManagerAllowsProfileEdits(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := t.Context()
+	subject := createPerson(t, svc, "existing.report", identity.StatusActive)
+	manager := createPerson(t, svc, "departed.manager", identity.StatusActive)
+	other := createPerson(t, svc, "new.report", identity.StatusActive)
+	if _, err := svc.UpdatePerson(ctx, admin, subject.ID, identity.PersonUpdate{ManagerID: &manager.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetPersonStatus(ctx, admin, manager.ID, identity.StatusOffboarded); err != nil {
+		t.Fatal(err)
+	}
+	before := lastAuditID(t, pool)
+	title, name := "Engineer", "Updated Name"
+	changed, err := svc.UpdatePerson(ctx, admin, subject.ID, identity.PersonUpdate{DisplayName: &name, Title: &title, ManagerID: &manager.ID})
+	if err != nil || changed.DisplayName != name || changed.Title == nil || *changed.Title != title || changed.ManagerID == nil || *changed.ManagerID != manager.ID {
+		t.Fatalf("unchanged manager blocked profile edit: %+v %v", changed, err)
+	}
+	entries := auditLog(t, pool, before)
+	if len(entries) != 1 || entries[0].Action != string(audit.PersonUpdated) || string(entries[0].Metadata) != `{"fields": ["display_name", "title"]}` {
+		t.Fatalf("unrelated update audit: %+v", entries)
+	}
+	same, err := svc.UpdatePerson(ctx, admin, subject.ID, identity.PersonUpdate{DisplayName: &name, Title: &title, ManagerID: &manager.ID})
+	if err != nil || !same.DirectoryUpdatedAt.Equal(changed.DirectoryUpdatedAt) || len(auditLog(t, pool, before)) != 1 {
+		t.Fatal("unchanged manager resubmission changed no-op/audit semantics")
+	}
+	if _, err := svc.UpdatePerson(ctx, admin, other.ID, identity.PersonUpdate{ManagerID: &manager.ID}); !errors.Is(err, identity.ErrInvalid) {
+		t.Fatalf("new offboarded manager assignment: %v", err)
+	}
+	if len(auditLog(t, pool, before)) != 1 {
+		t.Fatal("rejected new manager wrote audit")
+	}
+	none := uuid.Nil
+	cleared, err := svc.UpdatePerson(ctx, admin, subject.ID, identity.PersonUpdate{ManagerID: &none})
+	if err != nil || cleared.ManagerID != nil {
+		t.Fatalf("clear departed manager: %+v %v", cleared, err)
 	}
 }

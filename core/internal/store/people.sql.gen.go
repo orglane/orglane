@@ -280,7 +280,7 @@ FROM people p
 WHERE (p.status <> 'offboarded' OR $1::timestamptz IS NOT NULL)
   AND ($1::timestamptz IS NULL OR p.directory_updated_at >= $1::timestamptz)
   AND ($2::uuid IS NULL OR p.id > $2::uuid)
-  AND ($3::text = '' OR lower(p.display_name || ' ' || p.username || ' ' || p.work_email || ' ' || coalesce(p.title, '')) LIKE $3::text ESCAPE E'\\')
+  AND ($3::text = '' OR lower(p.display_name || ' ' || p.username || ' ' || p.work_email || ' ' || coalesce(p.title, '')) LIKE lower($3::text) ESCAPE E'\\')
   AND ($4::uuid IS NULL OR EXISTS (
       SELECT 1 FROM team_memberships m JOIN teams t ON t.id = m.team_id
       WHERE m.person_id = p.id AND m.team_id = $4::uuid AND t.archived_at IS NULL))

@@ -61,7 +61,9 @@ func (s *Service) DirectoryPage(ctx context.Context, in DirectoryOptions) (Direc
 	}
 	search := ""
 	if in.Search != "" {
-		search = "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(strings.ToLower(in.Search)) + "%"
+		// Escape literal LIKE characters here; PostgreSQL folds both sides
+		// using its database locale rather than Go's Unicode case mapping.
+		search = "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(in.Search) + "%"
 	}
 	rows, err := s.queries().ListDirectoryPage(ctx, store.ListDirectoryPageParams{Search: search, TeamID: in.TeamID, RoleKey: in.Role, Cursor: in.Cursor, UpdatedSince: in.UpdatedSince, PageSize: int32(in.Limit + 1)})
 	if err != nil {
