@@ -1,0 +1,67 @@
+# Release automation (issue #10, ADR 0017). See docs/releasing.md.
+#
+# release-please reads the Conventional Commits on main and keeps one release
+# pull request open: the next version (.release-please-manifest.json) and its
+# CHANGELOG.md entry. Releases are a human decision: a maintainer merges that
+# pull request (both files are risk/high). The merge changes the manifest,
+# which starts this workflow again; release-please then tags the merge commit
+# (vX.Y.Z), publishes the GitHub release and the images job builds and pushes
+# the container images.
+#
+# Minutes are scarce in the private phase, so this workflow does not run on
+# every push to main: only when the manifest changes (a release was merged),
+# once a day to refresh the release pull request, and on demand
+# (gh workflow run release.yml) before a maintainer reviews the release.
+#
+# The tag and the pull request are created with GITHUB_TOKEN, and events
+# caused by GITHUB_TOKEN start no workflows. That is why the images are built
+# here (workflow_call) and not by the tag push, and why CI does not run on the
+# release pull request (it changes only CHANGELOG.md and the manifest).
+#
+# Security: no pull request code runs here (push to main, schedule,
+# workflow_dispatch). Every job declares its own minimal permissions.
+# Third-party actions are pinned by commit SHA.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .release-please-manifest.json
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # release branch, tag and GitHub release
+      pull-requests: write # the release pull request
+      issues: write # release labels (autorelease: pending / tagged)
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      # Configuration: release-please-config.json and .release-please-manifest.json.
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+
+  images:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/images.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}

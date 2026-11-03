@@ -7,6 +7,8 @@
 | `risk` | CI `changes` job | Classifies a change and reports whether code changed, so docs-only pull requests skip the heavy jobs |
 | `policy` | `Policy` workflow, orchestrator | **Trusted:** computes the risk tier, sets exactly one `risk/*` label and the `merge-gate` status, and decides whether the pull request may be merged without a maintainer |
 | `licenses` | `make licenses` | Checks dependency licenses against the [ADR 0016](../../docs/adr/0016-licensing.md) policy |
+| `release-version` | `Images` workflow (build) | Validates a release tag (`vX.Y.Z[-pre]`) and prints its image version |
+| `release-aliases` | `Images` workflow (promote) | Lists the image's tags in the registry and computes where `latest` and every `X.Y` alias must point, see [docs/releasing.md](../../docs/releasing.md) |
 
 ### Trust model
 
@@ -31,7 +33,7 @@ Tier rules live in [`internal/risk/risk.go`](internal/risk/risk.go). The highest
 
 **High** (a maintainer must review):
 
-- paths: `.github/**`, `tools/ci/**`, `Makefile`, `.golangci.yml`, `biome.json` (CI configuration), `**/LICENSE`, `TRADEMARK.md`, `docs/adr/**`, `core/internal/identity/**`, `core/internal/permissions/**`, `core/internal/authz/**`, `core/internal/crypto/**`, `core/migrations/**`, `core/internal/agent/**`, `core/api/**`. Renames count for both the old and the new path. Keep this list in sync with `.github/CODEOWNERS`;
+- paths: `.github/**`, `tools/ci/**`, `Makefile`, `.golangci.yml`, `biome.json` (CI configuration), `release-please-config.json`, `.release-please-manifest.json` (releases are a human decision, so the release pull request needs a maintainer), `**/LICENSE`, `TRADEMARK.md`, `docs/adr/**`, `core/internal/identity/**`, `core/internal/permissions/**`, `core/internal/authz/**`, `core/internal/crypto/**`, `core/migrations/**`, `core/internal/agent/**`, `core/api/**`. Renames count for both the old and the new path. Keep this list in sync with `.github/CODEOWNERS`;
 - weakened tests (the threat model is accidental weakening by agents, so the checks are conservative rather than a full parser):
   - **any modified or deleted line in an existing test file or fixture** (`*_test.go`, `*.test.*`, `*.spec.*`, `tests/`, `testdata/`, `__tests__/`, `__fixtures__/`). Counting cannot judge a changed matcher or argument (`toEqual({ id: 123 })` → `toBeDefined()`), so any change to existing tests needs a maintainer. Pure additions (new test files, new lines in existing test files) keep the normal tier. The checks below still run and say *what* changed in the summary;
   - a deleted test file, or **any rename or move** of a test file (the new name may exclude it, e.g. `_a_test.go`, `a_windows_test.go`, or a path outside the runner's include list);

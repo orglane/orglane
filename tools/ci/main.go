@@ -1,5 +1,5 @@
 // Command ci holds the repository's CI tooling: the ADR 0017 risk labeler,
-// the merge gate and the dependency license check.
+// the merge gate, the dependency license check and the release image tags.
 //
 // It uses only the standard library. The policy command is the trusted part:
 // the Policy workflow runs it from the default branch, and it reads pull
@@ -12,6 +12,8 @@
 //	go run ./tools/ci policy -pr N [-apply]
 //	go run ./tools/ci policy -from-event -apply
 //	go run ./tools/ci licenses -policy server|apache -format pnpm|go-licenses < report
+//	go run ./tools/ci release-version -tag v1.2.3
+//	go run ./tools/ci release-aliases -image ghcr.io/orglane/orglane
 package main
 
 import (
@@ -46,9 +48,11 @@ func main() {
 const usage = `usage: ci <command> [flags]
 
 commands:
-  risk      classify a change into an ADR 0017 risk tier (CI "changes" job)
-  policy    compute a pull request's risk tier and merge eligibility (trusted)
-  licenses  check dependency licenses against the ADR 0016 policy`
+  risk             classify a change into an ADR 0017 risk tier (CI "changes" job)
+  policy           compute a pull request's risk tier and merge eligibility (trusted)
+  licenses         check dependency licenses against the ADR 0016 policy
+  release-version  validate a release tag and print its image version (Images workflow)
+  release-aliases  compute the latest and X.Y image aliases from the registry (Images workflow)`
 
 // run executes a command. Its report is buffered and written to stdout even
 // when the command fails.
@@ -73,6 +77,10 @@ func dispatch(ctx context.Context, args []string, stdin io.Reader, stdout *strin
 		return runPolicy(ctx, args, stdout)
 	case "licenses":
 		return runLicenses(args, stdin, stdout)
+	case "release-version":
+		return runReleaseVersion(args, stdout)
+	case "release-aliases":
+		return runReleaseAliases(ctx, args, stdout)
 	}
 	return fmt.Errorf("unknown command %q\n%s", cmd, usage)
 }

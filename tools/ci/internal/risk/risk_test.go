@@ -86,6 +86,14 @@ func TestClassify(t *testing.T) {
 		{name: "CI tooling", changes: []FileChange{mod("tools/ci/internal/risk/risk.go")}, want: High, wantCode: true},
 		{name: "Makefile", changes: []FileChange{mod("Makefile")}, want: High, wantCode: true},
 		{
+			name:     "release pull request",
+			changes:  []FileChange{mod(".release-please-manifest.json"), mod("CHANGELOG.md")},
+			want:     High,
+			wantCode: true,
+			reason:   "cuts a release",
+		},
+		{name: "release configuration", changes: []FileChange{mod("release-please-config.json")}, want: High, wantCode: true},
+		{
 			name:     "file moved out of a high-risk directory",
 			changes:  []FileChange{{Status: Renamed, Path: "core/internal/people/token.go", OldPath: "core/internal/identity/token.go"}},
 			want:     High,

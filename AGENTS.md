@@ -49,6 +49,8 @@ Run `make fmt && make lint && make test` before committing. Language-specific su
 
 CI (`.github/workflows/ci.yml`) runs the same targets: `make lint`, `make test`, `make build` and `make security`. The trusted Policy workflow (`.github/workflows/policy.yml`, default branch only) then labels the pull request with its `risk/*` tier and sets a `merge-gate` status that says whether it may be merged without a maintainer (ADR 0017). An AI approval must name the head commit SHA (`Codex review: APPROVE for <sha>`). Before merging, verify with `go run ./tools/ci policy -pr <number>` from an up-to-date `main`. See [tools/ci/README.md](tools/ci/README.md). The OpenID Conformance Suite runs in its own workflow (`.github/workflows/conformance.yml`): by hand with `gh workflow run conformance.yml --ref <branch>` and weekly on main (see [tests/conformance/README.md](tests/conformance/README.md)).
 
+Releases are prepared by release-please from the Conventional Commits on `main` (`.github/workflows/release.yml`): it keeps a release pull request with the version bump and the `CHANGELOG.md` entry. Merging it is a maintainer's decision; the tag it creates publishes multi-arch images to `ghcr.io/orglane/orglane` (`.github/workflows/images.yml`). See [docs/releasing.md](docs/releasing.md).
+
 ### Integration tests
 
 Integration tests carry the `integration` build tag (`//go:build integration`) and run against a real PostgreSQL started with testcontainers-go (`tests/pgtest`). Use `pgtest.Main` in `TestMain` and `pgtest.NewDatabase(t)` for a fresh database per test. Run one package with `go test -tags integration ./core/internal/database/`. The end-to-end tests of the `orglane` binary live in `tests/integration`.

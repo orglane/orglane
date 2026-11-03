@@ -8,6 +8,8 @@
 /Makefile                     @orglane/maintainers
 /.golangci.yml                @orglane/maintainers
 /biome.json                   @orglane/maintainers
+/release-please-config.json   @orglane/maintainers
+/.release-please-manifest.json @orglane/maintainers
 /LICENSE                      @orglane/maintainers
 /**/LICENSE                   @orglane/maintainers
 /TRADEMARK.md                 @orglane/maintainers

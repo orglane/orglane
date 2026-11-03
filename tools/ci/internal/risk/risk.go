@@ -66,7 +66,7 @@ type Result struct {
 }
 
 // highPaths are path rules that always make a change high risk (ADR 0017:
-// CI configuration, licenses, ADRs, identity, permissions, cryptography,
+// CI configuration, releases, licenses, ADRs, identity, permissions, cryptography,
 // migrations, the agent, public API contracts). Keep in sync with
 // .github/CODEOWNERS.
 var highPaths = []struct {
@@ -78,6 +78,8 @@ var highPaths = []struct {
 	{"Makefile", "CI gate definitions (make lint/test/build)"},
 	{".golangci.yml", "lint configuration"},
 	{"biome.json", "lint configuration"},
+	{"release-please-config.json", "release configuration (releases are a human decision)"},
+	{".release-please-manifest.json", "release version (merging the release pull request cuts a release)"},
 	{"**/LICENSE", "license"},
 	{"TRADEMARK.md", "trademark policy"},
 	{"docs/adr/**", "architecture decision record"},
