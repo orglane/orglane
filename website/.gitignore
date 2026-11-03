@@ -1,0 +1,5 @@
+# Astro generated types
+.astro/
+# Playwright output
+test-results/
+playwright-report/

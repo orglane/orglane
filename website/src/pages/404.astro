@@ -1,0 +1,18 @@
+---
+import { messages } from "../i18n/index.ts";
+import Base from "../layouts/Base.astro";
+import { routes } from "../lib/site.ts";
+
+const m = messages();
+---
+
+<Base title={m.meta.notFoundTitle} description={m.notFound.body} path="/404" noindex>
+  <section class="section not-found" aria-labelledby="not-found-title">
+    <div class="container">
+      <p class="not-found__code" aria-hidden="true">404</p>
+      <h1 id="not-found-title">{m.notFound.title}</h1>
+      <p class="section__intro">{m.notFound.body}</p>
+      <p><a class="button button--primary" href={routes.home}>{m.notFound.home}</a></p>
+    </div>
+  </section>
+</Base>

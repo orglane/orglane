@@ -14,7 +14,9 @@
       "!packages/ui-tokens/tokens.css",
       "!web/dist",
       "!web/test-results",
-      "!web/playwright-report"
+      "!web/playwright-report",
+      "!website/dist",
+      "!website/.astro"
     ]
   },
   "formatter": {
@@ -43,6 +45,17 @@
     }
   },
   "overrides": [
+    {
+      "includes": ["**/*.astro"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnusedImports": "off",
+            "noUnusedVariables": "off"
+          }
+        }
+      }
+    },
     {
       "includes": ["web/src/**/*.tsx", "!web/src/**/*.test.tsx"],
       "plugins": [

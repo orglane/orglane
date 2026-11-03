@@ -1,0 +1,107 @@
+# Builds the orglane.app website (website/) and deploys it to GitHub Pages
+# (issue #13, ADR 0018). The site serves deploy/install.sh at /install.sh, so
+# it is redeployed whenever the installer changes.
+#
+# Deployment needs GitHub Pages, which a private repository on GitHub Free
+# does not have: until the repository is public, only the build runs, unless
+# the repository variable WEBSITE_DEPLOY is "true" (a paid plan). One-time
+# setup and DNS: website/README.md.
+#
+# Security: runs only for pushes to main and by hand, never for pull
+# requests (CI builds and tests the site there). Every job declares its own
+# minimal permissions; only the deploy job can write to Pages. Third-party
+# actions are pinned by commit SHA.
+
+name: Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "deploy/install.sh"
+      - "packages/ui-tokens/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/website.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+# One deployment at a time; a newer one waits instead of cancelling a
+# deployment in progress.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: website
+          save-cache: "true"
+      # Builds website/dist and checks it (scripts/check-dist.ts): install.sh
+      # is byte-identical to deploy/install.sh, the page shows its SHA-256,
+      # CNAME matches, nothing loads from other origins.
+      - run: make website
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: website/dist
+
+  deploy:
+    needs: build
+    if: ${{ !github.event.repository.private || vars.WEBSITE_DEPLOY == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  # The issue's acceptance check: the deployed site serves the installer of
+  # this commit, as a shell script rather than a page.
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: deploy/install.sh
+          sparse-checkout-cone-mode: false
+      - name: Check /install.sh on the deployed site
+        env:
+          PAGE_URL: ${{ needs.deploy.outputs.page_url }}
+        run: |
+          url="${PAGE_URL%/}/install.sh"
+          # The Pages CDN may serve the previous version for a short while.
+          for _ in $(seq 1 18); do
+            if curl -fsSL -D headers.txt -o served.sh "$url" && cmp -s served.sh deploy/install.sh; then
+              type="$(grep -i '^content-type:' headers.txt | tail -n 1 | tr -d '\r')"
+              echo "$url: identical to deploy/install.sh ($type)"
+              case "$type" in
+                *application/x-sh* | *text/plain*) exit 0 ;;
+                *) echo "::error::$url is served as '$type'"; exit 1 ;;
+              esac
+            fi
+            sleep 10
+          done
+          echo "::error::$url does not serve deploy/install.sh of this commit"
+          exit 1

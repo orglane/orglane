@@ -1,0 +1,57 @@
+---
+import { messages } from "../i18n/index.ts";
+import { installerSha256 } from "../lib/installer.ts";
+import { installerUrl, routes } from "../lib/site.ts";
+import Command from "./Command.astro";
+
+const m = messages().install;
+const install = `curl -fsSL ${installerUrl} | sh`;
+const demo = `curl -fsSL ${installerUrl} | sh -s -- --mode demo --yes`;
+// Compares the download with the published checksum and prints "install.sh:
+// OK" or fails, so nobody has to compare 64 hex digits by eye.
+const verify = `curl -fsSLO ${installerUrl} && echo "${installerSha256}  install.sh" | sha256sum -c`;
+---
+
+<section class="section section--alt" id="install" aria-labelledby="install-title">
+  <div class="container install">
+    <div class="install__text">
+      <h2 id="install-title">{m.title}</h2>
+      <p class="section__intro">{m.intro}</p>
+      <div class="today">
+        <h3>{m.todayTitle}</h3>
+        <p>{m.today}</p>
+      </div>
+      <div class="notice" role="note" aria-labelledby="install-notice-title">
+        <svg class="notice__icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <path d="M12 3.5 2.75 19.5h18.5L12 3.5Z"></path>
+          <path d="M12 10v4M12 17h.01"></path>
+        </svg>
+        <div>
+          <p class="notice__title" id="install-notice-title">{m.noticeTitle}</p>
+          <p>{m.notice}</p>
+        </div>
+      </div>
+    </div>
+    <div class="install__commands">
+      <Command command={install} label={m.commandLabel} />
+      <p class="command-caption">{m.demoLabel}</p>
+      <Command command={demo} label={m.demoLabel} />
+
+      <div class="integrity">
+        <h3>{m.integrityTitle}</h3>
+        <p>
+          {m.integrity}{" "}
+          <a class="integrity__link" href={routes.installer}>{m.readScript}</a>
+        </p>
+        <dl class="checksum">
+          <dt>{m.checksumLabel}</dt>
+          <dd><code data-testid="installer-sha256">{installerSha256}</code></dd>
+        </dl>
+        <p class="command-caption">{m.verifyLabel}</p>
+        <Command command={verify} label={m.verifyLabel} />
+        <p class="small muted">{m.verifyResult} {m.verifyMacos}</p>
+      </div>
+      <p class="visually-hidden" id="copy-status" role="status"></p>
+    </div>
+  </div>
+</section>

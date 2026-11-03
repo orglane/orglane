@@ -1,0 +1,24 @@
+---
+import { messages } from "../i18n/index.ts";
+import { repositoryUrl } from "../lib/site.ts";
+import Stack from "./Stack.astro";
+
+const m = messages().hero;
+---
+
+<section class="hero" aria-labelledby="hero-title">
+  <div class="container hero__inner">
+    <div class="hero__text">
+      <p class="badge"><span class="badge__dot" aria-hidden="true"></span><strong>{m.badge}</strong><span class="badge__detail">{m.badgeDetail}</span></p>
+      <h1 id="hero-title">{m.title}</h1>
+      <p class="hero__lead">{m.lead}</p>
+      <p class="hero__lead hero__lead--secondary">{m.leadSecondary}</p>
+      <div class="hero__actions">
+        <a class="button button--primary" href="#install">{m.install}</a>
+        <a class="button button--secondary" href={repositoryUrl}>{m.github}</a>
+      </div>
+      <p class="small muted">{m.privateNote}</p>
+    </div>
+    <Stack />
+  </div>
+</section>

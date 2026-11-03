@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project status
 
-Pre-alpha. The monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the M0 data model (people, roles, devices, sessions, audit log), identity (embedded OpenID Provider, password and passkey sign-in, sessions), the web skeleton (React SPA embedded into the binary, design tokens, i18n), the Compose bundle with Traefik and the one-command installer (`deploy/install.sh`) are in place (see [ROADMAP.md](ROADMAP.md)).
+Pre-alpha. The monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the M0 data model (people, roles, devices, sessions, audit log), identity (embedded OpenID Provider, password and passkey sign-in, sessions), the web skeleton (React SPA embedded into the binary, design tokens, i18n), the Compose bundle with Traefik, the one-command installer (`deploy/install.sh`) and the orglane.app website (`website/`) are in place (see [ROADMAP.md](ROADMAP.md)).
 
 ## Toolchain
 
@@ -34,14 +34,17 @@ make dev-down          # stop the local Postgres
 make demo              # demo mode: local Postgres + `orglane server --demo` with the "Acme Robotics" dataset (own database)
 make demo-reset        # drop the demo database
 make image             # build the core container image (orglane:dev, with the web UI)
+make website           # build the orglane.app website into website/dist and check it (serves deploy/install.sh)
+make website-dev       # run the website with live reload on http://localhost:4321
 make generate          # regenerate the Go server code and the TypeScript client from core/api/openapi.yaml, the sqlc query layer, tokens.css and the English i18n catalog
 make build             # build all workspace packages (incl. the web UI), then go build -> bin/orglane with the UI embedded
-make test              # Go unit + integration tests (integration only when Docker is available); vitest; web e2e (when Docker and Chromium are available)
+make test              # Go unit + integration tests (integration only when Docker is available); vitest; web e2e (when Docker and Chromium are available); website e2e (when Chromium is available)
 make test-unit         # Go unit tests only
 make test-integration  # Go unit + integration tests, including the Compose bundle tests (needs Docker)
 make test-compose      # only the Compose bundle tests: local mode and domain mode against Pebble (needs Docker)
 make test-install      # the installer (deploy/install.sh) end to end: local, demo, domain mode with Pebble (needs Docker)
 make test-e2e          # Playwright end-to-end tests of the web UI against a real server (needs Docker and Playwright's Chromium)
+make test-website      # build the website and run its Playwright tests (needs Playwright's Chromium)
 make measure-memory    # idle RSS of the server against Postgres (warning only, needs Docker)
 make conformance       # OpenID Conformance Suite against a local server (Docker)
 make lint              # stale generated code check (Go and TypeScript), go mod tidy check, golangci-lint, Biome, tsc --noEmit, shellcheck
@@ -73,6 +76,10 @@ The production bundle is `deploy/compose/compose.yaml` (Traefik, the core image 
 ### Installer
 
 `deploy/install.sh` is the one-command installer (`curl -fsSL https://orglane.app/install.sh | sh`): modes `demo`, `local` and `domain`; `status` and `uninstall` subcommands. It writes the bundle and a `.env` (mode 600, secrets included) into the data directory and runs `docker compose` there. It must stay POSIX sh and shellcheck-clean (`make lint-sh`). It never installs Docker without explicit confirmation, and it never requests a certificate before the DNS and reachability checks pass. Changes to it, or to the bundle it installs, need `make test-install` to pass (it runs the installer from `--source` against an image built from the checkout). Usage and behavior are in [deploy/README.md](deploy/README.md#the-installer).
+
+### Website
+
+`website/` is the static orglane.app site (Astro, deployed to GitHub Pages by `.github/workflows/website.yml` on pushes to `main`). It serves `deploy/install.sh` unchanged at `/install.sh` and shows its SHA-256; the build fails if they differ. No external fonts, trackers or CDNs; strings live in `website/src/i18n`. Paths reserved by ADR 0018 (`/docs`, `/login`, `/signup`, `/checkout`, `/open`) are not built yet. Deployment setup and DNS records are in [website/README.md](website/README.md).
 
 ### API changes
 
@@ -117,8 +124,9 @@ orglane/
 ├── core/                 # Go: cmd/orglane (server | agent | cli), internal/...
 ├── providers/            # provider adapters (Go, compiled into core) + managed packages
 ├── package.json          # pnpm workspace root (private, AGPL-3.0-or-later)
-├── pnpm-workspace.yaml   # workspace members: web/, packages/*
+├── pnpm-workspace.yaml   # workspace members: web/, website/, packages/*
 ├── web/                  # React + Vite, embedded into the core binary (AGPL-3.0-or-later)
+├── website/              # orglane.app: Astro static site, serves install.sh (AGPL-3.0-or-later)
 ├── packages/             # shared TypeScript packages (Apache-2.0, see packages/LICENSE)
 │   ├── api-client/       # typed API client and React Query hooks, generated from the OpenAPI contract
 │   └── ui-tokens/        # design tokens

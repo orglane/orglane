@@ -1,0 +1,13 @@
+---
+// The Orglane mark (the same drawing as public/favicon.svg). Decorative: the
+// surrounding link or text carries the name.
+interface Props {
+  size?: number;
+}
+const { size = 28 } = Astro.props;
+---
+
+<svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width={size} height={size} aria-hidden="true" focusable="false">
+  <rect width="32" height="32" rx="8" fill="currentColor"></rect>
+  <path d="M9 11.5h14M9 16h10M9 20.5h6" stroke="var(--logo-lines, #fff)" stroke-width="2.6" stroke-linecap="round"></path>
+</svg>

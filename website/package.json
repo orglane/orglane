@@ -1,0 +1,26 @@
+{
+  "name": "@orglane/website",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The orglane.app website: landing page and the installer at /install.sh.",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "build": "ASTRO_TELEMETRY_DISABLED=1 astro build && node scripts/check-dist.ts",
+    "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev",
+    "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@orglane/ui-tokens": "workspace:*"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "26.6.6",
+    "astro": "7.4.4",
+    "typescript": "7.0.2",
+    "vitest": "5.0.2"
+  }
+}

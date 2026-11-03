@@ -1,0 +1,23 @@
+---
+import { messages } from "../i18n/index.ts";
+import { repositoryUrl, routes } from "../lib/site.ts";
+import Logo from "./Logo.astro";
+
+const m = messages();
+---
+
+<header class="site-header">
+  <div class="container site-header__inner">
+    <a class="brand" href={routes.home} aria-label={m.nav.home}>
+      <Logo />
+      <span class="brand__name" aria-hidden="true">Orglane</span>
+    </a>
+    <nav aria-label={m.nav.label}>
+      <ul class="nav">
+        <li class="nav__optional"><a href={`${routes.home}#features`}>{m.nav.features}</a></li>
+        <li><a href={`${routes.home}#install`}>{m.nav.install}</a></li>
+        <li><a href={repositoryUrl}>{m.nav.github}</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>

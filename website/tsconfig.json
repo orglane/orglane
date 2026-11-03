@@ -1,0 +1,22 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["astro/client", "node"]
+  },
+  // .astro files are compiled (and their syntax checked) by `astro build`;
+  // `astro check` needs the TypeScript 5/6 JS API, which TypeScript 7 lacks,
+  // so the logic lives in .ts files checked here.
+  "include": [
+    "src/**/*.ts",
+    "scripts",
+    "e2e",
+    "astro.config.ts",
+    "playwright.config.ts",
+    "vitest.config.ts"
+  ]
+}

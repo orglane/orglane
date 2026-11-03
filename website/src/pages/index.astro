@@ -1,0 +1,16 @@
+---
+import Features from "../components/Features.astro";
+import Hero from "../components/Hero.astro";
+import Install from "../components/Install.astro";
+import { messages } from "../i18n/index.ts";
+import Base from "../layouts/Base.astro";
+import { routes } from "../lib/site.ts";
+
+const m = messages().meta;
+---
+
+<Base title={m.title} description={m.description} path={routes.home}>
+  <Hero />
+  <Features />
+  <Install />
+</Base>

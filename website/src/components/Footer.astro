@@ -1,0 +1,34 @@
+---
+import { messages } from "../i18n/index.ts";
+import { repositoryFile, repositoryUrl } from "../lib/site.ts";
+import Logo from "./Logo.astro";
+
+const m = messages();
+---
+
+<footer class="site-footer">
+  <div class="container site-footer__inner">
+    <div class="site-footer__brand">
+      <p class="brand brand--static">
+        <Logo size={24} />
+        <span class="brand__name">Orglane</span>
+      </p>
+      <p class="muted">{m.footer.tagline}</p>
+    </div>
+    <nav aria-label={m.footer.linksLabel}>
+      <ul class="footer-links">
+        <li><a href={repositoryUrl}>{m.footer.github}</a></li>
+        <li><a href={repositoryFile("ROADMAP.md")}>{m.footer.roadmap}</a></li>
+        <li><a href={repositoryFile("SECURITY.md")}>{m.footer.security}</a></li>
+        <li><a href={repositoryFile("TRADEMARK.md")}>{m.footer.trademark}</a></li>
+      </ul>
+      <p class="small muted">{m.footer.privateNote}</p>
+    </nav>
+    <div class="site-footer__legal small muted">
+      <p>{m.footer.license}</p>
+      <p>{m.footer.trademarkNote}</p>
+      <p>{m.footer.privacy}</p>
+      <p>{m.footer.copyright}</p>
+    </div>
+  </div>
+</footer>

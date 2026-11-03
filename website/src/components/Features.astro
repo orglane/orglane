@@ -1,0 +1,36 @@
+---
+import { messages } from "../i18n/index.ts";
+import { repositoryFile } from "../lib/site.ts";
+import FeatureIcon from "./FeatureIcon.astro";
+
+const m = messages().features;
+const icons = ["app", "identity", "integration", "hosting", "extension"] as const;
+---
+
+<section class="section" id="features" aria-labelledby="features-title">
+  <div class="container">
+    <div class="section__head">
+      <p class="eyebrow">{m.eyebrow}</p>
+      <h2 id="features-title">{m.title}</h2>
+      <p class="section__intro">{m.intro}</p>
+      <p class="planned-note">
+        <span class="tag tag--planned">{m.plannedTag}</span>{m.planned}{" "}
+        <a href={repositoryFile("ROADMAP.md")}>{m.roadmap}</a>
+      </p>
+    </div>
+    <ul class="features">
+      {
+        m.items.map((item, i) => (
+          <li class="feature">
+            <div class="feature__top">
+              <FeatureIcon name={icons[i] ?? "app"} />
+              <span class="tag tag--planned">{m.plannedTag}</span>
+            </div>
+            <h3>{item.title}</h3>
+            <p>{item.body}</p>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</section>

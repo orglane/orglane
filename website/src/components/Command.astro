@@ -1,0 +1,65 @@
+---
+// A shell command with a copy button. Without JavaScript (or the Clipboard
+// API) the button stays hidden and the command can be selected as usual; the
+// "$" prompt is drawn by CSS, so it is never selected or copied. Long
+// commands wrap instead of scrolling. When copying fails (for example a
+// denied clipboard permission), a visible message says so, the command is
+// selected for copying by hand, and the page's status region announces it.
+import { messages } from "../i18n/index.ts";
+
+interface Props {
+  command: string;
+  label: string;
+}
+const { command, label } = Astro.props;
+const m = messages().install;
+---
+
+<div class="command-block">
+  <div class="command">
+    <pre class="command__code"><code>{command}</code></pre>
+    <button type="button" class="command__copy" data-copy={command} data-copied={m.copied} data-failed={m.copyFailed} aria-label={`${m.copyCommand}: ${label}`} hidden>
+      <span class="command__copy-text">{m.copy}</span>
+    </button>
+  </div>
+  <p class="command__error" hidden>{m.copyFailed}</p>
+</div>
+
+<script>
+  const status = document.getElementById("copy-status");
+  const announce = (message: string) => {
+    if (status) status.textContent = message;
+  };
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>("button[data-copy]")) {
+    if (!navigator.clipboard) continue;
+    const block = button.closest(".command-block");
+    const code = block?.querySelector("code");
+    const error = block?.querySelector<HTMLElement>(".command__error");
+    const text = button.querySelector(".command__copy-text");
+    const idle = text?.textContent ?? "";
+    let reset: ReturnType<typeof setTimeout> | undefined;
+    button.hidden = false;
+
+    button.addEventListener("click", async () => {
+      clearTimeout(reset);
+      try {
+        await navigator.clipboard.writeText(button.dataset.copy ?? "");
+      } catch {
+        // Never let a failed copy look like a successful one: say so, and
+        // select the command so it can be copied by hand.
+        if (error) error.hidden = false;
+        if (code) getSelection()?.selectAllChildren(code);
+        announce(button.dataset.failed ?? "");
+        return;
+      }
+      if (error) error.hidden = true;
+      if (text) text.textContent = button.dataset.copied ?? idle;
+      announce(button.dataset.copied ?? "");
+      reset = setTimeout(() => {
+        if (text) text.textContent = idle;
+        announce("");
+      }, 2000);
+    });
+  }
+</script>

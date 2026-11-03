@@ -18,7 +18,7 @@ curl -fsSL https://orglane.app/install.sh | sudo sh -s -- --mode domain \
     --domain acme.com --workspace-host work.acme.com --acme-email admin@acme.com --yes
 ```
 
-`install.sh` is POSIX sh (dash, busybox and bash). When it is piped into `sh`, it reads answers from the terminal (`/dev/tty`). With `--yes` it asks nothing and uses the options and defaults. `install.sh --help` lists every option.
+`orglane.app/install.sh` serves this file unchanged, with its SHA-256 on the landing page (see [website/README.md](../website/README.md)). `install.sh` is POSIX sh (dash, busybox and bash). When it is piped into `sh`, it reads answers from the terminal (`/dev/tty`). With `--yes` it asks nothing and uses the options and defaults. `install.sh --help` lists every option.
 
 | Mode | For | Result |
 |---|---|---|

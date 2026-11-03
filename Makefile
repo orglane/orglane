@@ -48,6 +48,7 @@ API_GENERATED   := core/internal/api/apigen/apigen.gen.go
 API_CLIENT      := @orglane/api-client
 UI_TOKENS       := @orglane/ui-tokens
 WEB             := @orglane/web
+WEBSITE         := @orglane/website
 
 # sqlc query layer: core/internal/store/queries/*.sql against core/migrations.
 SQLC_CFG := core/internal/store/sqlc.yaml
@@ -61,8 +62,8 @@ DEMO_DB_URL := postgres://orglane:orglane@127.0.0.1:5432/$(DEMO_DB)?sslmode=disa
 # Core container image built by `make image` (Dockerfile).
 IMAGE ?= orglane:dev
 
-.PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image generate check-generate check-generate-go check-generate-ts \
-	test test-go test-unit test-integration test-compose test-install measure-memory conformance test-ts test-e2e test-e2e-if-available \
+.PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image website website-dev generate check-generate check-generate-go check-generate-ts \
+	test test-go test-unit test-integration test-compose test-install measure-memory conformance test-ts test-e2e test-e2e-if-available test-website test-website-if-available \
 	lint lint-go lint-ts lint-sh fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
 help: ## Show available targets
@@ -179,7 +180,16 @@ build-ts:
 image: ## Build the core container image (IMAGE, default orglane:dev)
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
 
-test: test-go test-ts test-e2e-if-available ## Run all tests (integration and e2e when Docker and Chromium are available)
+# The orglane.app website (website/, Astro): a static site in website/dist
+# that serves deploy/install.sh at /install.sh. Deployed to GitHub Pages by
+# .github/workflows/website.yml.
+website: ## Build the orglane.app website into website/dist (and check it)
+	$(PNPM) --silent --filter $(WEBSITE) run build
+
+website-dev: ## Run the website with live reload on http://localhost:4321
+	$(PNPM) --filter $(WEBSITE) run dev
+
+test: test-go test-ts test-e2e-if-available test-website-if-available ## Run all tests (integration and e2e when Docker and Chromium are available)
 
 # Integration tests (build tag "integration") need Docker; without it only
 # unit tests run.
@@ -235,6 +245,18 @@ test-e2e-if-available:
 		echo "warning: Playwright's Chromium is not installed, skipping the web end-to-end tests (pnpm --filter $(WEB) exec playwright install chromium)"; \
 	else \
 		$(MAKE) --no-print-directory test-e2e; \
+	fi
+
+# Playwright tests of the built website (website/e2e), served by `astro
+# preview`; no Docker needed.
+test-website: website ## Build the website and run its end-to-end tests (needs Playwright's Chromium)
+	$(PNPM) --silent --filter $(WEBSITE) run test:e2e
+
+test-website-if-available:
+	@if ! $(PNPM) --silent --filter $(WEB) exec node e2e/chromium-installed.mjs; then \
+		echo "warning: Playwright's Chromium is not installed, skipping the website end-to-end tests (pnpm --filter $(WEB) exec playwright install chromium)"; \
+	else \
+		$(MAKE) --no-print-directory test-website; \
 	fi
 
 lint: lint-go lint-ts lint-sh ## Run all linters and type checks
@@ -293,3 +315,4 @@ clean: ## Remove build output and installed tools
 	find packages -name dist -type d -prune -exec rm -rf {} + 2>/dev/null || true
 	find web/dist -mindepth 1 ! -name .gitkeep -exec rm -rf {} + 2>/dev/null || true
 	rm -rf web/test-results web/playwright-report
+	rm -rf website/dist website/.astro website/test-results website/playwright-report

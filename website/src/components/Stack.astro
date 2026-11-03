@@ -1,0 +1,25 @@
+---
+// "How it works" in four layers, from the README's diagram. Pure HTML/CSS.
+import { messages } from "../i18n/index.ts";
+
+const m = messages().stack;
+const layers = [
+  { title: m.clients, detail: m.clientsDetail, tone: "clients" },
+  { title: m.api, detail: m.apiDetail, tone: "api" },
+  { title: m.core, detail: m.coreDetail, tone: "core" },
+  { title: m.providers, detail: m.providersDetail, tone: "providers" },
+];
+---
+
+<figure class="stack" aria-label={m.label}>
+  <ol class="stack__layers">
+    {
+      layers.map((layer) => (
+        <li class={`stack__layer stack__layer--${layer.tone}`}>
+          <span class="stack__title">{layer.title}</span>
+          <span class="stack__detail">{layer.detail}</span>
+        </li>
+      ))
+    }
+  </ol>
+</figure>
