@@ -4,9 +4,30 @@ import (
 	"strings"
 	"testing"
 
+	"go.yaml.in/yaml/v3"
+
 	specpkg "github.com/orglane/orglane/core/api"
 	"github.com/orglane/orglane/core/internal/authz"
 )
+
+func TestPeopleImportApplyDocumentsBadRequest(t *testing.T) {
+	var doc struct {
+		Paths map[string]struct {
+			Post struct {
+				Responses map[string]struct {
+					Ref string `yaml:"$ref"`
+				} `yaml:"responses"`
+			} `yaml:"post"`
+		} `yaml:"paths"`
+	}
+	if err := yaml.Unmarshal(specpkg.Spec, &doc); err != nil {
+		t.Fatal(err)
+	}
+	response := doc.Paths["/api/v1/people-imports/{runId}/apply"].Post.Responses["400"]
+	if response.Ref != "#/components/responses/BadRequest" {
+		t.Fatal("applyPeopleImport must document its invalid-mapping BadRequest response")
+	}
+}
 
 // TestContractDeclaresPermissions is the build gate from ADR 0004: every
 // operation in core/api/openapi.yaml must declare x-orglane-permission with a

@@ -5678,6 +5678,22 @@ func (response ApplyPeopleImport200JSONResponse) VisitApplyPeopleImportResponse(
 	return err
 }
 
+type ApplyPeopleImport400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyPeopleImport400ApplicationProblemPlusJSONResponse) VisitApplyPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ApplyPeopleImport401ApplicationProblemPlusJSONResponse struct {
 	UnauthorizedApplicationProblemPlusJSONResponse
 }

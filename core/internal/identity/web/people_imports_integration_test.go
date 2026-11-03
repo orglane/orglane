@@ -4,6 +4,7 @@ package web_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -220,25 +221,107 @@ func TestPeopleImportMappingRequestBoundary(t *testing.T) {
 	e := newEnv(t)
 	owner := e.browser()
 	e.setupOwner(owner)
-	run := stageImport(t, owner, "username,work_email,display_name\nnewperson,newperson@acme.test,New Person\n")
-	path := "/api/v1/people-imports/" + run.ID.String() + "/preview"
 	valid := `{"columns":[{"column":0,"target":"username"},{"column":1,"target":"work_email"},{"column":2,"target":"display_name"}],"createTeams":false,"sendInvitations":false,"skipRows":[]}`
 	cases := map[string]string{
-		"null":           "null",
-		"unknown fields": strings.TrimSuffix(valid, "}") + `,"roles":["owner"]}`,
-		"trailing JSON":  valid + `{}`,
-		"oversized":      `{"columns":[{"column":0,"target":"` + strings.Repeat("private-marker", 6000) + `"}]}`,
+		"null":                "null",
+		"unknown fields":      strings.TrimSuffix(valid, "}") + `,"roles":["owner"]}`,
+		"trailing JSON":       valid + `{}`,
+		"oversized":           `{"columns":[{"column":0,"target":"` + strings.Repeat("private-marker", 6000) + `"}]}`,
+		"missing item column": strings.Replace(valid, `"column":0,`, "", 1),
+		"null item column":    strings.Replace(valid, `"column":0`, `"column":null`, 1),
+		"missing item target": strings.Replace(valid, `,"target":"username"`, "", 1),
+		"null item target":    strings.Replace(valid, `"target":"username"`, `"target":null`, 1),
+		"null column item":    strings.Replace(valid, `{"column":0,"target":"username"}`, "null", 1),
+		"null skip row":       strings.Replace(valid, `"skipRows":[]`, `"skipRows":[null]`, 1),
+	}
+	for _, key := range []string{"columns", "createTeams", "sendInvitations", "skipRows"} {
+		for _, missing := range []bool{true, false} {
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(valid), &object); err != nil {
+				t.Fatal(err)
+			}
+			name := "null " + key
+			object[key] = json.RawMessage("null")
+			if missing {
+				name = "missing " + key
+				delete(object, key)
+			}
+			data, err := json.Marshal(object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cases[name] = string(data)
+		}
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
+			run := stageImport(t, owner, "username,work_email,display_name\nnewperson,newperson@acme.test,New Person\n")
+			path := "/api/v1/people-imports/" + run.ID.String() + "/preview"
+			before := importMutationState(t, e, run.ID)
 			response := owner.req(http.MethodPost, path, strings.NewReader(body), "Content-Type", "application/json")
-			expectStatus(t, response, http.StatusBadRequest)
+			if response.StatusCode != http.StatusBadRequest {
+				t.Errorf("mapping response=%d, want400", response.StatusCode)
+			}
+			if !bytes.Equal(before, importMutationState(t, e, run.ID)) {
+				t.Error("rejected mapping changed preview, people, profile, invitations or audit")
+			}
 			if bytes.Contains(response.body, []byte("private-marker")) {
 				t.Fatal("mapping diagnostic exposed input")
 			}
 		})
 	}
 	// The bounded strict decoder must preserve the valid public request.
+	run := stageImport(t, owner, "username,work_email,display_name\nnewperson,newperson@acme.test,New Person\n")
+	path := "/api/v1/people-imports/" + run.ID.String() + "/preview"
 	preview := owner.req(http.MethodPost, path, strings.NewReader(valid), "Content-Type", "application/json")
 	expectStatus(t, preview, http.StatusOK)
+	preview.json(t, &run)
+	if run.State != "previewed" || len(run.Rows) != 1 || run.Rows[0].Decision != "create" || len(run.Mapping.Columns) != 3 || run.Mapping.Columns[0].Column != 0 || run.Mapping.CreateTeams || run.Mapping.SendInvitations || run.Mapping.SkipRows == nil || len(run.Mapping.SkipRows) != 0 {
+		t.Fatal("explicit zero, false options and empty skip list were not preserved")
+	}
+}
+
+// importMutationState compares private database state without logging its values.
+func importMutationState(t *testing.T, e *env, id uuid.UUID) []byte {
+	t.Helper()
+	var state []byte
+	err := e.pool.QueryRow(t.Context(), `SELECT jsonb_build_object(
+        'run', (SELECT to_jsonb(r) FROM people_import_runs r WHERE id=$1),
+        'rows', (SELECT jsonb_agg(to_jsonb(r) ORDER BY row_number) FROM people_import_rows r WHERE run_id=$1),
+        'people', (SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM people p),
+        'profile_values', (SELECT count(*) FROM profile_field_values),
+        'invitations', (SELECT count(*) FROM invitations),
+        'audit', (SELECT count(*) FROM audit_entries))`, id).Scan(&state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func TestPeopleImportApplyArchivedMappedFieldDoesNotMutate(t *testing.T) {
+	e := newEnv(t)
+	owner := e.browser()
+	e.setupOwner(owner)
+	existing := e.createMember("fieldimport")
+	r := owner.req(http.MethodPost, "/api/v1/profile-fields", map[string]any{"key": "office", "label": "Office", "type": "text"})
+	expectStatus(t, r, http.StatusCreated)
+	var field apiField
+	r.json(t, &field)
+	run := stageImport(t, owner, "username,work_email,display_name,office\nfieldimport,"+existing.WorkEmail+",Changed Name,Lisbon\nnewperson,newperson@acme.test,New Person,Paris\n")
+	run = previewImport(t, owner, run, importMapping("username", "work_email", "display_name", "profile.office"))
+	if run.Rows[0].Decision != "update" || run.Rows[1].Decision != "create" {
+		t.Fatalf("preview=%+v", run.Rows)
+	}
+	expectStatus(t, owner.req(http.MethodPatch, "/api/v1/profile-fields/"+field.ID, map[string]any{"archived": true}), http.StatusOK)
+	before := importMutationState(t, e, run.ID)
+	r = owner.req(http.MethodPost, "/api/v1/people-imports/"+run.ID.String()+"/apply", nil)
+	expectStatus(t, r, http.StatusBadRequest)
+	if !bytes.Equal(before, importMutationState(t, e, run.ID)) {
+		t.Fatal("invalid apply changed preview, people, profile, invitations or audit")
+	}
+	for _, value := range []string{"Changed Name", "Lisbon", "Paris", "office"} {
+		if bytes.Contains(r.body, []byte(value)) {
+			t.Fatal("invalid apply diagnostic exposed mapped data")
+		}
+	}
 }
