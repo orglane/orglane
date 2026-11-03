@@ -456,27 +456,39 @@ func (s *storage) TerminateSessionFromRequest(ctx context.Context, req *op.EndSe
 
 // RevokeToken implements op.AuthStorage (RFC 7009). Revoking a refresh
 // token revokes its whole grant.
+//
+// zitadel passes a refresh token as GetRefreshTokenInfo returned it: the
+// token itself (it has no other ID here), with the person as userID. An
+// access token arrives as its ID, decrypted from the token. Anything else is
+// a token this provider did not issue.
 func (s *storage) RevokeToken(ctx context.Context, tokenOrID, userID, clientID string) *oidc.Error {
-	if userID != "" {
-		id, err := parseID(tokenOrID)
-		if err != nil {
-			return nil //nolint:nilerr // RFC 7009: invalid tokens are not an error
-		}
-		t, err := s.q().GetOIDCAccessToken(ctx, id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		} else if err != nil {
-			return oidc.ErrServerError().WithParent(err)
-		}
-		if t.ClientID != clientID {
-			return oidc.ErrInvalidClient().WithDescription("the token was issued to another client")
-		}
-		if _, err := s.q().RevokeOIDCAccessToken(ctx, id); err != nil {
-			return oidc.ErrServerError().WithParent(err)
-		}
-		return nil
+	if strings.HasPrefix(tokenOrID, RefreshTokenPrefix) {
+		return s.revokeRefreshToken(ctx, tokenOrID, clientID)
 	}
-	row, err := s.q().GetOIDCRefreshTokenByHash(ctx, crypto.HashToken(tokenOrID))
+	if userID == "" {
+		return nil // RFC 7009: invalid tokens are not an error
+	}
+	id, err := parseID(tokenOrID)
+	if err != nil {
+		return nil //nolint:nilerr // RFC 7009: invalid tokens are not an error
+	}
+	t, err := s.q().GetOIDCAccessToken(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return oidc.ErrServerError().WithParent(err)
+	}
+	if t.ClientID != clientID {
+		return oidc.ErrInvalidClient().WithDescription("the token was issued to another client")
+	}
+	if _, err := s.q().RevokeOIDCAccessToken(ctx, id); err != nil {
+		return oidc.ErrServerError().WithParent(err)
+	}
+	return nil
+}
+
+func (s *storage) revokeRefreshToken(ctx context.Context, token, clientID string) *oidc.Error {
+	row, err := s.q().GetOIDCRefreshTokenByHash(ctx, crypto.HashToken(token))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	} else if err != nil {
@@ -491,7 +503,8 @@ func (s *storage) RevokeToken(ctx context.Context, tokenOrID, userID, clientID s
 	return nil
 }
 
-// GetRefreshTokenInfo implements op.AuthStorage.
+// GetRefreshTokenInfo implements op.AuthStorage. It returns the token itself
+// as its ID, so RevokeToken can tell it from an access token ID.
 func (s *storage) GetRefreshTokenInfo(ctx context.Context, _ string, token string) (string, string, error) {
 	if !strings.HasPrefix(token, RefreshTokenPrefix) {
 		return "", "", op.ErrInvalidRefreshToken
@@ -500,7 +513,7 @@ func (s *storage) GetRefreshTokenInfo(ctx context.Context, _ string, token strin
 	if err != nil {
 		return "", "", op.ErrInvalidRefreshToken
 	}
-	return row.PersonID.String(), row.ID.String(), nil
+	return row.PersonID.String(), token, nil
 }
 
 // --- keys ---

@@ -423,6 +423,49 @@ func TestOIDCAuthorizationRules(t *testing.T) {
 	expectStatus(t, api.req("GET", "/api/v1/me", nil, bearer(tr.AccessToken)...), http.StatusUnauthorized)
 }
 
+// TestRevokeRefreshToken is a regression test: revoking a refresh token at
+// the revocation endpoint (RFC 7009) must revoke its grant, with or without
+// a token_type_hint, and only for the client it was issued to.
+func TestRevokeRefreshToken(t *testing.T) {
+	e := newEnv(t)
+	b := e.browser()
+	e.setupOwner(b)
+	e.registerClient(identity.NewOIDCClient{ID: "mobile", Public: true, Native: true, RefreshTokens: true})
+	e.registerClient(identity.NewOIDCClient{ID: "spa", Public: true})
+	p := newPKCE()
+	api := e.browser()
+
+	for _, hint := range []string{"refresh_token", ""} {
+		q := clientRedirect(t, b.authorize(authParams("mobile", p)))
+		status, tr := b.token(url.Values{"grant_type": {"authorization_code"}, "code": {q.Get("code")}, "redirect_uri": {redirectURI}, "client_id": {"mobile"}, "code_verifier": {p.verifier}})
+		if status != http.StatusOK || tr.RefreshToken == "" {
+			t.Fatalf("token exchange = %d %+v", status, tr)
+		}
+		form := url.Values{"token": {tr.RefreshToken}, "client_id": {"mobile"}}
+		if hint != "" {
+			form.Set("token_type_hint", hint)
+		}
+		before := e.auditCount(audit.OIDCGrantRevoked)
+
+		// Another client cannot revoke it.
+		other := url.Values{"token": {tr.RefreshToken}, "client_id": {"spa"}}
+		if r := b.req("POST", "/oidc/revoke", other, "Origin", ""); r.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("hint %q: revoking another client's refresh token = %d %s", hint, r.StatusCode, r.body)
+		}
+		expectStatus(t, api.req("GET", "/api/v1/me", nil, bearer(tr.AccessToken)...), http.StatusOK)
+
+		expectStatus(t, b.req("POST", "/oidc/revoke", form, "Origin", ""), http.StatusOK)
+		if status, again := b.token(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tr.RefreshToken}, "client_id": {"mobile"}}); status != http.StatusBadRequest || again.Error != "invalid_grant" {
+			t.Fatalf("hint %q: refresh with a revoked token = %d %+v", hint, status, again)
+		}
+		// The grant is revoked with every token issued for it.
+		expectStatus(t, api.req("GET", "/api/v1/me", nil, bearer(tr.AccessToken)...), http.StatusUnauthorized)
+		if n := e.auditCount(audit.OIDCGrantRevoked) - before; n != 1 {
+			t.Fatalf("hint %q: %d oidc_grant.revoked entries, want 1", hint, n)
+		}
+	}
+}
+
 func TestOIDCEndSession(t *testing.T) {
 	e := newEnv(t)
 	b := e.browser()
