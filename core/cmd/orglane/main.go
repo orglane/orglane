@@ -21,6 +21,7 @@ import (
 
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/database"
+	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/logging"
 	"github.com/orglane/orglane/core/internal/server"
 )
@@ -33,7 +34,7 @@ const usage = `Usage: orglane <mode> [flags]
 Modes:
   server             Run the Orglane server
   agent              Run the local agent (not implemented yet)
-  cli migrate        Apply database migrations and exit
+  cli migrate        Apply database migrations, seed built-in roles and exit
   cli version        Print the version
 
 Flags for server and cli migrate:
@@ -154,6 +155,9 @@ func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer, lo
 	}
 	defer func() { err = errors.Join(err, migrator.Close()) }()
 	if err := migrator.Up(ctx); err != nil {
+		return err
+	}
+	if err := identity.NewService(pool).SeedBuiltinRoles(ctx); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintln(stdout, "migrations are up to date")

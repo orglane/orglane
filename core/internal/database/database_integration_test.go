@@ -59,7 +59,7 @@ func TestMigrations(t *testing.T) {
 		t.Fatalf("second Up() error = %v", err)
 	}
 
-	for _, table := range []string{"instance_settings", "goose_db_version", "river_job", "river_migration"} {
+	for _, table := range append([]string{"goose_db_version", "river_job", "river_migration"}, coreTables...) {
 		var exists bool
 		if err := pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", table).Scan(&exists); err != nil || !exists {
 			t.Errorf("table %s exists = %v, %v", table, exists, err)

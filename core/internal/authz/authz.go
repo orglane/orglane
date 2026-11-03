@@ -20,21 +20,51 @@ type Permission string
 // version endpoint). It is not a grantable permission.
 const Public Permission = "public"
 
-// Known permissions. Add a permission here before using it in the OpenAPI
-// contract; the contract tests reject unknown names so typos fail the build.
+// The permission registry: the single source of truth for permission names.
+// Add a permission here (constant and registry entry) before using it in the
+// OpenAPI contract, in a role bundle or in a module scope; the contract tests
+// reject unknown names so typos fail the build. Names are lower case,
+// dot-separated "<area>.<action>" and never change once released, because
+// role bundles reference them by name in the database.
 const (
 	// InstanceRead allows reading how the instance is addressed and configured.
 	InstanceRead Permission = "instance.read"
+	// InstanceManage allows changing instance-wide settings.
+	InstanceManage Permission = "instance.manage"
+	// PeopleManage allows adding, editing, suspending and offboarding people
+	// and assigning their roles.
+	PeopleManage Permission = "people.manage"
+	// PeopleSensitiveRead allows reading sensitive profile fields (ADR 0015).
+	PeopleSensitiveRead Permission = "people.sensitive.read"
+	// AppsManage allows connecting and configuring providers and modules.
+	AppsManage Permission = "apps.manage"
+	// SecurityManage allows managing security settings, other people's
+	// devices and sessions, and reading the audit log.
+	SecurityManage Permission = "security.manage"
+	// BillingManage allows managing the subscription and payments.
+	BillingManage Permission = "billing.manage"
 )
 
-var known = []Permission{
+// registry lists every known permission, in a stable order.
+var registry = []Permission{
 	InstanceRead,
+	InstanceManage,
+	PeopleManage,
+	PeopleSensitiveRead,
+	AppsManage,
+	SecurityManage,
+	BillingManage,
 }
 
-// Known reports whether p is a permission from the vocabulary above. Public is
-// not a permission and is not known.
+// Known reports whether p is a permission from the registry. Public is not a
+// permission and is not known.
 func Known(p Permission) bool {
-	return slices.Contains(known, p)
+	return slices.Contains(registry, p)
+}
+
+// All returns every known permission, in a stable order.
+func All() []Permission {
+	return slices.Clone(registry)
 }
 
 // Principal is an authenticated caller: a person, a module or an agent.

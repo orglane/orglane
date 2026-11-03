@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -31,6 +32,11 @@ func Connect(ctx context.Context, cfg config.Database, logger *slog.Logger) (*pg
 	}
 	poolCfg.MaxConns = cfg.MaxConns
 	poolCfg.MinConns = 0 // no idle connections kept open without load (ADR 0009)
+	useUTC(poolCfg.ConnConfig)
+	poolCfg.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
+		scanTimestamptzAsUTC(conn)
+		return nil
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create database pool: %w", err)
@@ -53,6 +59,23 @@ func Connect(ctx context.Context, cfg config.Database, logger *slog.Logger) (*pg
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// useUTC makes the session time zone UTC, so SQL that formats or truncates
+// timestamps (to_char, date_trunc, ::date) is independent of the server's
+// configuration.
+func useUTC(cfg *pgx.ConnConfig) {
+	cfg.RuntimeParams["timezone"] = "UTC"
+}
+
+// scanTimestamptzAsUTC makes timestamptz values scan into time.Time in UTC
+// instead of the process's local time zone.
+func scanTimestamptzAsUTC(conn *pgx.Conn) {
+	conn.TypeMap().RegisterType(&pgtype.Type{
+		Name:  "timestamptz",
+		OID:   pgtype.TimestamptzOID,
+		Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC},
+	})
 }
 
 // Migrator applies the core migrations (goose, embedded SQL in

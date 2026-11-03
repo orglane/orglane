@@ -10,7 +10,7 @@ import (
 
 // TestContractDeclaresPermissions is the build gate from ADR 0004: every
 // operation in core/api/openapi.yaml must declare x-orglane-permission with a
-// known permission or "public".
+// permission from the registry in package authz, or "public".
 func TestContractDeclaresPermissions(t *testing.T) {
 	ops, err := ParseOperations(specpkg.Spec)
 	if err != nil {
@@ -20,8 +20,8 @@ func TestContractDeclaresPermissions(t *testing.T) {
 		t.Fatal("no operations found in core/api/openapi.yaml")
 	}
 	for _, op := range ops {
-		if op.Permission == "" {
-			t.Errorf("%s: empty permission", op.Pattern())
+		if op.Permission != authz.Public && !authz.Known(op.Permission) {
+			t.Errorf("%s: permission %q is not in the authz registry", op.Pattern(), op.Permission)
 		}
 	}
 }
@@ -74,6 +74,42 @@ paths:
       x-orglane-permission: things.manage
 `,
 			wantErr: `unknown permission "things.manage"`,
+		},
+		{
+			name: "permission not in the registry next to a valid one",
+			spec: `
+paths:
+  /api/v1/people:
+    get:
+      operationId: listPeople
+      x-orglane-permission: people.manage
+    delete:
+      operationId: deletePeople
+      x-orglane-permission: people.delete
+`,
+			wantErr: `DELETE /api/v1/people: unknown permission "people.delete"`,
+		},
+		{
+			name: "permission with the wrong case",
+			spec: `
+paths:
+  /api/v1/people:
+    get:
+      operationId: listPeople
+      x-orglane-permission: People.Manage
+`,
+			wantErr: `unknown permission "People.Manage"`,
+		},
+		{
+			name: "empty permission",
+			spec: `
+paths:
+  /api/v1/people:
+    get:
+      operationId: listPeople
+      x-orglane-permission: ""
+`,
+			wantErr: `unknown permission ""`,
 		},
 		{
 			name: "missing operationId",

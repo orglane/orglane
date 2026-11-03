@@ -1,5 +1,5 @@
-// Package server runs the core in server mode: database, migrations, job
-// queue and the HTTP API, with graceful shutdown.
+// Package server runs the core in server mode: database, migrations and
+// built-in roles, job queue and the HTTP API, with graceful shutdown.
 package server
 
 import (
@@ -14,6 +14,7 @@ import (
 	"github.com/orglane/orglane/core/internal/api"
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/database"
+	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/jobs"
 )
 
@@ -35,6 +36,9 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	}
 	defer func() { err = errors.Join(err, migrator.Close()) }()
 	if err := migrator.Up(ctx); err != nil {
+		return err
+	}
+	if err := identity.NewService(pool).SeedBuiltinRoles(ctx); err != nil {
 		return err
 	}
 

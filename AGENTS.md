@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project status
 
-Pre-alpha. The monorepo tooling and the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API) are in place; identity, the data model and the web app are next (see [ROADMAP.md](ROADMAP.md)).
+Pre-alpha. The monorepo tooling and the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API) and the M0 data model (people, roles, devices, sessions, audit log) are in place; identity flows and the web app are next (see [ROADMAP.md](ROADMAP.md)).
 
 ## Toolchain
 
@@ -15,6 +15,7 @@ Pre-alpha. The monorepo tooling and the core skeleton (server/agent/cli modes, P
 | pnpm | 12.16.1 | `package.json` `packageManager` (via corepack) |
 | golangci-lint | v2.15.0 | `Makefile` (`GOLANGCI_LINT_VERSION`), installed into `.bin/` |
 | oapi-codegen | v2.8.2 | `Makefile` (`OAPI_CODEGEN_VERSION`), installed into `.bin/` |
+| sqlc | v1.31.1 | `Makefile` (`SQLC_VERSION`), installed into `.bin/` (needs cgo) |
 | PostgreSQL | 18 | `deploy/dev/compose.yaml`, `tests/pgtest` (integration tests) |
 | Biome, TypeScript, Vitest | see `package.json` files | `pnpm-lock.yaml` |
 
@@ -25,10 +26,10 @@ Prerequisites: Go, Node.js, corepack (`npm install -g corepack` on Node 25+) and
 Run everything from the repository root. Each target covers both Go and TypeScript.
 
 ```sh
-make bootstrap         # check toolchain, install golangci-lint and oapi-codegen, download Go modules, pnpm install
+make bootstrap         # check toolchain, install golangci-lint, oapi-codegen and sqlc, download Go modules, pnpm install
 make dev               # start a local Postgres (Docker) and run `orglane server` on http://localhost:8080
 make dev-down          # stop the local Postgres
-make generate          # regenerate the Go server code and the TypeScript client from core/api/openapi.yaml
+make generate          # regenerate the Go server code and the TypeScript client from core/api/openapi.yaml, and the sqlc query layer
 make build             # go build -> bin/orglane; build all workspace packages
 make test              # Go unit + integration tests (integration only when Docker is available); vitest
 make test-unit         # Go unit tests only
@@ -54,6 +55,12 @@ Configuration is a YAML file (`-config` or `ORGLANE_CONFIG`) plus `ORGLANE_*` en
 ### API changes
 
 The API is contract-first. Change `core/api/openapi.yaml` first, then run `make generate` (it regenerates the Go server interface and the TypeScript client in `packages/api-client`) and implement the generated `StrictServerInterface` in `core/internal/api`. Commit the regenerated files: `make lint` fails when either is stale. Every operation must declare `x-orglane-permission` (a permission from `core/internal/authz`, or `public`); the server refuses to start and the tests fail otherwise. Add tests for allowed and denied access. Product endpoints live under `/api/v1`; errors are RFC 9457 problem details. Changes to `core/api/**` and `core/migrations/**` are high risk.
+
+Permission names live in one place: the registry in `core/internal/authz` (`authz.go`), together with the built-in Owner / Admin / Member bundles (`roles.go`). The built-in roles are seeded into the database on every start (and by `cli migrate`).
+
+### Database changes
+
+Add a new goose migration in `core/migrations` (never edit an applied one) with a working `-- +goose Down`; `core/internal/database` tests apply and roll back every migration. IDs are UUIDv7 (`DEFAULT uuidv7()`, PostgreSQL 18), timestamps are `timestamptz` and read in UTC. Queries are SQL files in `core/internal/store/queries`; run `make generate` to regenerate the typed sqlc code in `core/internal/store` (`make lint` fails when it is stale). People, roles, devices and sessions are changed only through `core/internal/identity`, which writes an audit entry (`core/internal/audit`) in the same transaction; `audit_entries` is append-only at the database level.
 
 ## Read first
 

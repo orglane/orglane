@@ -1,0 +1,45 @@
+# sqlc configuration for the core query layer. `make generate` runs
+# `sqlc generate` with this file; `make lint` fails when the generated code
+# is stale (`sqlc diff`). The schema is read from the goose migrations.
+version: "2"
+sql:
+  - engine: postgresql
+    schema: ../../migrations
+    queries: queries
+    gen:
+      go:
+        package: store
+        out: .
+        sql_package: pgx/v5
+        output_db_file_name: db.gen.go
+        output_models_file_name: models.gen.go
+        output_files_suffix: .gen
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        rename:
+          ip: IP
+        overrides:
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true
+          - db_type: inet
+            go_type: net/netip.Addr
+          - db_type: inet
+            nullable: true
+            go_type:
+              import: net/netip
+              type: Addr
+              pointer: true

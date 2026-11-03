@@ -294,6 +294,22 @@ func TestCLIMigrate(t *testing.T) {
 			t.Fatalf("cli migrate: %v\n%s", err, out)
 		}
 	}
+
+	// The built-in roles are seeded once, with one audit entry per change.
+	conn, err := pgx.Connect(t.Context(), dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	var roles, created int
+	if err := conn.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM roles WHERE builtin AND key IN ('owner', 'admin', 'member')),
+		(SELECT count(*) FROM audit_entries WHERE action = 'role.created' AND actor_kind = 'system')`).Scan(&roles, &created); err != nil {
+		t.Fatal(err)
+	}
+	if roles != 3 || created != 3 {
+		t.Fatalf("after two migrate runs: %d built-in roles, %d role.created entries; want 3 and 3", roles, created)
+	}
 }
 
 func TestServerRejectsInvalidConfig(t *testing.T) {

@@ -7,9 +7,11 @@
 #   pnpm           package.json `packageManager` (via corepack)
 #   golangci-lint  GOLANGCI_LINT_VERSION below
 #   oapi-codegen   OAPI_CODEGEN_VERSION below
+#   sqlc           SQLC_VERSION below
 
 GOLANGCI_LINT_VERSION := v2.15.0
 OAPI_CODEGEN_VERSION  := v2.8.2
+SQLC_VERSION          := v1.31.1
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -euo pipefail -c
@@ -19,6 +21,7 @@ ROOT          := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 TOOLS_BIN     := $(ROOT)/.bin
 GOLANGCI_LINT := $(TOOLS_BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 OAPI_CODEGEN  := $(TOOLS_BIN)/oapi-codegen-$(OAPI_CODEGEN_VERSION)
+SQLC          := $(TOOLS_BIN)/sqlc-$(SQLC_VERSION)
 PNPM          ?= pnpm
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -31,6 +34,9 @@ API_SPEC        := core/api/openapi.yaml
 API_CODEGEN_CFG := core/api/oapi-codegen.yaml
 API_GENERATED   := core/internal/api/apigen/apigen.gen.go
 API_CLIENT      := @orglane/api-client
+
+# sqlc query layer: core/internal/store/queries/*.sql against core/migrations.
+SQLC_CFG := core/internal/store/sqlc.yaml
 
 # Local development database (deploy/dev/compose.yaml).
 DEV_COMPOSE := docker compose -f deploy/dev/compose.yaml
@@ -46,7 +52,7 @@ help: ## Show available targets
 ## ---------------------------------------------------------------------------
 ## Setup
 
-bootstrap: check-toolchain $(GOLANGCI_LINT) $(OAPI_CODEGEN) ## Install all dependencies and pinned tools
+bootstrap: check-toolchain $(GOLANGCI_LINT) $(OAPI_CODEGEN) $(SQLC) ## Install all dependencies and pinned tools
 	go mod download
 	$(PNPM) install --frozen-lockfile
 
@@ -79,6 +85,12 @@ $(OAPI_CODEGEN):
 	GOBIN=$(TOOLS_BIN) go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION)
 	mv $(TOOLS_BIN)/oapi-codegen $@
 
+# sqlc embeds the PostgreSQL parser (cgo); the first build takes a minute.
+$(SQLC):
+	@echo "installing sqlc $(SQLC_VERSION) into $(TOOLS_BIN)"
+	GOBIN=$(TOOLS_BIN) go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+	mv $(TOOLS_BIN)/sqlc $@
+
 ## ---------------------------------------------------------------------------
 ## Development
 
@@ -89,16 +101,20 @@ dev: ## Start a local Postgres and run the server on http://localhost:8080
 dev-down: ## Stop the local Postgres (its data stays in a Docker volume)
 	$(DEV_COMPOSE) down
 
-generate: $(OAPI_CODEGEN) ## Regenerate code from the OpenAPI contract (Go server, TypeScript client)
+generate: $(OAPI_CODEGEN) $(SQLC) ## Regenerate code from the OpenAPI contract (Go server, TypeScript client) and the SQL queries (sqlc)
 	$(OAPI_CODEGEN) -config $(API_CODEGEN_CFG) $(API_SPEC) > $(API_GENERATED)
+	$(SQLC) generate -f $(SQLC_CFG)
 	$(PNPM) --silent --filter $(API_CLIENT) run generate
 
-# Fails when generated code no longer matches the contract (part of `make lint`).
+# Fails when generated code no longer matches the contract or the SQL queries
+# (part of `make lint`).
 check-generate: check-generate-go check-generate-ts
 
-check-generate-go: $(OAPI_CODEGEN)
+check-generate-go: $(OAPI_CODEGEN) $(SQLC)
 	@$(OAPI_CODEGEN) -config $(API_CODEGEN_CFG) $(API_SPEC) | diff -u $(API_GENERATED) - >/dev/null || \
 		{ echo "error: $(API_GENERATED) is stale, run 'make generate'"; exit 1; }
+	@$(SQLC) diff -f $(SQLC_CFG) || \
+		{ echo "error: the sqlc query layer in core/internal/store is stale, run 'make generate'"; exit 1; }
 
 check-generate-ts:
 	@$(PNPM) --silent --filter $(API_CLIENT) run check-generate
