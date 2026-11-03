@@ -51,7 +51,7 @@ func (c InvitationChannel) AllowsGrant(ceiling, current []string) bool {
 	if c != ChannelLink && c != ChannelConfigEmail && c != ChannelSettingsEmail {
 		return false
 	}
-	if c == ChannelSettingsEmail && !EditableSMTPAllowsGrant(current) {
+	if c == ChannelSettingsEmail && (!EditableSMTPAllowsGrant(ceiling) || !EditableSMTPAllowsGrant(current)) {
 		return false
 	}
 	for _, permission := range current {
@@ -60,4 +60,16 @@ func (c InvitationChannel) AllowsGrant(ceiling, current []string) bool {
 		}
 	}
 	return true
+}
+
+// AllowsSMTP validates the full capability authority, not just today's
+// assignment: a temporarily removed permission can return within its ceiling.
+func (c InvitationChannel) AllowsSMTP(source Source, ceiling, current []string) bool {
+	if c == ChannelLink || !c.AllowsGrant(ceiling, current) {
+		return false
+	}
+	if source == SourceConfig {
+		return true
+	}
+	return source == SourceSettings && EditableSMTPAllowsGrant(ceiling) && EditableSMTPAllowsGrant(current)
 }

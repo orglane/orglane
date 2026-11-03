@@ -51,3 +51,19 @@ func TestInvitationGrantEnvelope(t *testing.T) {
 		t.Fatal("ordinary invitations stopped working")
 	}
 }
+
+func TestSMTPAuthorityCoversEntireIssuedCeiling(t *testing.T) {
+	high := []string{string(authz.PeopleSensitiveRead)}
+	if ChannelConfigEmail.AllowsSMTP(SourceSettings, high, []string{}) {
+		t.Fatal("temporary demotion allowed a higher-ceiling token through editable SMTP")
+	}
+	if !ChannelConfigEmail.AllowsSMTP(SourceConfig, high, []string{}) {
+		t.Fatal("trusted immutable SMTP rejected its recorded ceiling")
+	}
+	if ChannelSettingsEmail.AllowsGrant(high, []string{}) {
+		t.Fatal("settings-email provenance accepted a higher issued ceiling")
+	}
+	if ChannelLink.AllowsSMTP(SourceConfig, high, high) {
+		t.Fatal("copy-link provenance was treated as an email capability")
+	}
+}

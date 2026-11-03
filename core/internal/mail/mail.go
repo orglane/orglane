@@ -497,8 +497,7 @@ func (s *Service) Deliver(ctx context.Context, id uuid.UUID, attempt int) error 
 				return err
 			}
 			if inv.AcceptedAt != nil || inv.RevokedAt != nil || !time.Now().Before(inv.ExpiresAt) ||
-				!InvitationChannel(inv.Channel).AllowsGrant(inv.GrantPermissions, permissions) ||
-				(settings.Source != SourceConfig && !EditableSMTPAllowsGrant(permissions)) {
+				!InvitationChannel(inv.Channel).AllowsSMTP(settings.Source, inv.GrantPermissions, permissions) {
 				return ErrUnsafeGrant
 			}
 		}

@@ -175,7 +175,7 @@ const (
 	TargetOIDCGrant  TargetKind = "oidc_grant"
 	// TargetProfileField is a profile field definition.
 	TargetProfileField TargetKind = "profile_field"
-	TargetInvitation TargetKind = "invitation"
+	TargetInvitation   TargetKind = "invitation"
 )
 
 // Target is the object an action applies to. The zero Target means the

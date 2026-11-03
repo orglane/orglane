@@ -128,8 +128,10 @@ resend because the original ceiling is unknown. New explicit privileged
 copy-links remain usable independently of current SMTP settings.
 
 Every queued delivery attempt resolves one effective SMTP settings snapshot,
-checks the current grant against both its issued envelope and that snapshot's
-authority, and sends using the same snapshot. A settings-source transition,
+checks both the entire issued ceiling and the current grant against that
+snapshot's authority, and sends using the same snapshot. Checking the ceiling
+prevents a temporary demotion from routing a token that could regain its
+original authority later. A settings-source transition,
 legacy queued privileged email or later role promotion cannot redirect an
 additional permission grant to a lower-trust relay. Unsafe attempts fail
 terminally, clear encrypted content and tell the inviter to resend via a safe

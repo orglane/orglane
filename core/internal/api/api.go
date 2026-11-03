@@ -19,8 +19,8 @@ import (
 	"github.com/orglane/orglane/core/internal/api/apigen"
 	"github.com/orglane/orglane/core/internal/authz"
 	"github.com/orglane/orglane/core/internal/identity/web"
-	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/core/internal/mail"
+	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/demo"
 )
 

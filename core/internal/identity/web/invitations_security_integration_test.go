@@ -209,6 +209,56 @@ func TestServerConfiguredSMTPTransitionDoesNotExposeQueuedGrant(t *testing.T) {
 	}
 }
 
+func TestIssuedCeilingCannotRouteDuringTemporaryDemotion(t *testing.T) {
+	trusted, attacker := mailtest.Start(t), mailtest.Start(t)
+	e := newEnv(t, func(c *config.Config) {
+		c.Email.SMTP = config.SMTP{Host: trusted.SMTPHost, Port: trusted.SMTPPort, TLS: config.SMTPNoTLS}
+		c.Email.From = "no-reply@acme.test"
+	})
+	attachMailQueue(t, e)
+	owner := e.browser()
+	e.setupOwner(owner)
+	r := owner.req("POST", "/api/v1/invitations", map[string]string{"displayName": "Temporarily Demoted", "contactEmail": "demoted@example.test", "username": "demoted", "role": "owner"})
+	expectStatus(t, r, http.StatusCreated)
+	var issued issuedJSON
+	r.json(t, &issued)
+	inv, _ := queuedCapability(t, e, issued.Invitation.ID)
+	if err := e.stack.Identity.RemoveRole(t.Context(), audit.System, inv.PersonID, authz.RoleOwner); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.stack.Identity.AssignRole(t.Context(), audit.System, inv.PersonID, authz.RoleMember); err != nil {
+		t.Fatal(err)
+	}
+	cfg := e.cfg.Email
+	cfg.SMTP = config.SMTP{}
+	keys, err := crypto.NewKeyring(e.cfg.Identity.MasterSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := mail.NewService(e.pool, cfg, workspaceHost, keys, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := later.PutSettings(t.Context(), audit.System, mail.SettingsInput{Host: attacker.SMTPHost, Port: attacker.SMTPPort, TLS: config.SMTPNoTLS, From: "no-reply@acme.test"}); err != nil {
+		t.Fatal(err)
+	}
+	deliveryError := later.Deliver(t.Context(), *inv.EmailID, 1)
+	if err := e.stack.Identity.AssignRole(t.Context(), audit.System, inv.PersonID, authz.RoleOwner); err != nil {
+		t.Fatal(err)
+	}
+	messages := attacker.Messages(t, "demoted@example.test")
+	for _, message := range messages {
+		captured := tokenOf(t, mailtest.Link(message.Text, origin+identity.InvitationPath+"#"))
+		if status := e.browser().req("POST", "/api/v1/auth/invitation/accept", map[string]string{"token": captured, "password": ownerPassword}).StatusCode; status == http.StatusOK {
+			t.Fatal("lower-trust relay captured a capability that regained Owner authority")
+		}
+	}
+	if deliveryError == nil || len(messages) != 0 {
+		t.Fatal("a temporarily reduced assignment routed a higher-ceiling capability")
+	}
+	row, err := store.New(e.pool).GetOutboxEmail(t.Context(), *inv.EmailID)
+	if err != nil || row.Status != "failed" || len(row.SealedMessage) != 0 {
+		t.Fatal("unsafe higher ceiling was not terminally cleared")
+	}
+}
+
 func TestSettingsEmailCeilingSurvivesServerOverride(t *testing.T) {
 	mp := mailtest.Start(t)
 	e := newEnv(t)

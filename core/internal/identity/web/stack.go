@@ -16,8 +16,8 @@ import (
 	"github.com/orglane/orglane/core/internal/crypto"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/identity/oidcop"
-	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/core/internal/mail"
+	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/core/internal/store"
 )
 
