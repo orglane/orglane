@@ -18,10 +18,12 @@ The UI uses the existing components, tokens and English i18n catalog. Welcome em
 
 The real-Postgres HTTP scenario exercises invitation acceptance, interrupted/repeated sign-in, required edits, administrator-only follow-up, optional skip, idempotent finish, sensitive-progress invariance for unauthorized admins, mandatory sensitive-read audit failures, welcome-write rollback, profile clearing, avatar addition/removal and a real WebAuthn registration/removal. Existing migration up/down tests include the new table. Registry unit tests cover live completion, omission, duplicate IDs and unsafe/impossible actions. UI tests cover required blocking, optional continuation, CSRF and the session guard. Playwright uses the real server and Postgres to complete an invited profile, skip optional steps, return after sign-in and follow the real directory avatar upload action.
 
-## UX review images
+## UX review evidence
 
-- [Welcome with required profile information missing](../screenshots/onboarding-welcome-required.png)
-- [Welcome at 360px](../screenshots/onboarding-welcome-narrow.png)
-- [Welcome after required completion](../screenshots/onboarding-welcome-complete.png)
-- [Home with optional steps skipped](../screenshots/onboarding-home-skipped.png)
-- [Permissioned progress on the existing person page](../screenshots/onboarding-admin-progress.png)
+The [grouped PR attachments](https://github.com/orglane/orglane/pull/39#issuecomment-6616403498) preserve the verified captures from source `6f132e09407462b7d20d78b20dc1afc2ac764238` and their SHA-256 hashes. Review images are outside Git; future captures are written to the ignored PR assets directory.
+
+- [Welcome with required profile information missing](https://github.com/user-attachments/assets/458d3b89-9776-4e16-87bc-bd854f6bd4fb)
+- [Welcome at 360px](https://github.com/user-attachments/assets/387f8cd4-e1a3-4856-bc09-123b2fc7d3eb)
+- [Welcome after required completion](https://github.com/user-attachments/assets/c93bf78b-dbb1-4fb6-b6b9-75235bb18411)
+- [Home with optional steps skipped](https://github.com/user-attachments/assets/1d8f13ef-d1f9-4b65-913e-643b1650b304)
+- [Permissioned progress on the existing person page](https://github.com/user-attachments/assets/214363d9-6667-4d4d-8052-ef9a6a941f13)

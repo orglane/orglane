@@ -1,3 +1,7 @@
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+
+import { repo } from "./env";
 import { expect, owner, setUp, test } from "./fixtures";
 
 test("invited person completes required profile, skips optional steps, and progress stays live", async ({
@@ -6,6 +10,8 @@ test("invited person completes required profile, skips optional steps, and progr
   instance,
   webauthn: _,
 }) => {
+  const screenshotDirectory = join(repo, ".github/pr-assets/onboarding");
+  await mkdir(screenshotDirectory, { recursive: true });
   await setUp(page, instance);
   await page.getByRole("button", { name: "Skip for now" }).click();
   const ownerMe = await (await page.request.get(`${instance.url}/api/v1/me`)).json();
@@ -38,7 +44,7 @@ test("invited person completes required profile, skips optional steps, and progr
   ).toBeDisabled();
   await expect(employee.getByText("Orglane mobile", { exact: false })).toHaveCount(0);
   await employee.screenshot({
-    path: test.info().outputPath("onboarding-welcome-required.png"),
+    path: join(screenshotDirectory, "onboarding-welcome-required.png"),
     fullPage: true,
     animations: "disabled",
   });
@@ -49,7 +55,7 @@ test("invited person completes required profile, skips optional steps, and progr
   ).toBeDisabled();
   await employee.evaluate(() => document.fonts.ready);
   await employee.screenshot({
-    path: test.info().outputPath("onboarding-welcome-narrow.png"),
+    path: join(screenshotDirectory, "onboarding-welcome-narrow.png"),
     fullPage: true,
     animations: "disabled",
   });
@@ -75,7 +81,7 @@ test("invited person completes required profile, skips optional steps, and progr
   await expect(completion).toHaveText("Complete · Required");
   await expect(completion).toHaveAttribute("aria-live", "polite");
   await employee.screenshot({
-    path: test.info().outputPath("onboarding-welcome-complete.png"),
+    path: join(screenshotDirectory, "onboarding-welcome-complete.png"),
     fullPage: true,
     animations: "disabled",
   });
@@ -84,7 +90,7 @@ test("invited person completes required profile, skips optional steps, and progr
   await expect(employee.getByTestId("onboarding-passkey")).toContainText("To do");
   await expect(employee.getByTestId("onboarding-avatar")).toContainText("To do");
   await employee.screenshot({
-    path: test.info().outputPath("onboarding-home-skipped.png"),
+    path: join(screenshotDirectory, "onboarding-home-skipped.png"),
     fullPage: true,
     animations: "disabled",
   });
@@ -94,7 +100,7 @@ test("invited person completes required profile, skips optional steps, and progr
   ).toBeVisible();
   await expect(page.getByTestId("onboarding-profile")).toContainText("Complete · Required");
   await page.screenshot({
-    path: test.info().outputPath("onboarding-admin-progress.png"),
+    path: join(screenshotDirectory, "onboarding-admin-progress.png"),
     fullPage: true,
     animations: "disabled",
   });
