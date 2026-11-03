@@ -58,11 +58,11 @@ export function authenticator(cdp: CDPSession): string {
   return id;
 }
 
-export const test = base.extend<{ instance: Instance; webauthn: CDPSession }>({
+export const test = base.extend<{ instance: Instance; webauthn: CDPSession; demo: boolean }>({
+  demo: [false, { option: true }],
   // A fresh database and `orglane server` for every test, reached on
   // localhost (the plain-HTTP development mode).
-  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixtures take their dependencies as the first argument
-  instance: async ({}, use, testInfo) => {
+  instance: async ({ demo }, use, testInfo) => {
     const state = loadState();
     const db = `e2e_${randomBytes(6).toString("hex")}`;
     run("docker", ["exec", state.container, "createdb", "-U", "orglane", db]);
@@ -79,7 +79,10 @@ export const test = base.extend<{ instance: Instance; webauthn: CDPSession }>({
       ORGLANE_LOG_FORMAT: "text",
     };
     let log = "";
-    const server = spawn(state.binary, ["server"], { env, stdio: ["ignore", "pipe", "pipe"] });
+    const server = spawn(state.binary, demo ? ["server", "--demo"] : ["server"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     server.stdout?.on("data", (d) => (log += d));
     server.stderr?.on("data", (d) => (log += d));
     try {

@@ -198,6 +198,25 @@ type SigningKey struct {
 	ExpiresAt  *time.Time
 }
 
+type Team struct {
+	ID          uuid.UUID
+	Slug        string
+	Name        string
+	Description *string
+	ParentID    *uuid.UUID
+	ArchivedAt  *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type TeamMembership struct {
+	TeamID    uuid.UUID
+	PersonID  uuid.UUID
+	Role      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type WebauthnCeremony struct {
 	ID          uuid.UUID
 	Kind        string

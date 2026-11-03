@@ -1,0 +1,47 @@
+# Teams of the "Acme Robotics" demo dataset.
+#
+# Fields:
+#   slug         identifies the team (a-z, 0-9 and inner '-')
+#   name         as shown in the UI
+#   description  optional
+#   leads        usernames of the team leads (a team may have several)
+#   members      usernames of the other members
+#
+# A person may belong to several teams; within one team a person is either
+# a lead or a member.
+teams:
+  - slug: leadership
+    name: Leadership
+    description: Company direction, priorities and hiring.
+    leads: [maya.okafor]
+    members: [lucas.ferreira, aiko.tanaka]
+
+  - slug: platform
+    name: Platform
+    description: Robot software, firmware and the fleet cloud.
+    leads: [lucas.ferreira, priya.raman]
+    members: [jonas.lindqvist, chen.wei, sofia.petrova]
+
+  - slug: hardware
+    name: Hardware
+    description: Mechanical and electrical design, prototypes and testing.
+    leads: [mateo.rodriguez]
+    members: [amara.diallo, jonas.lindqvist]
+
+  - slug: product
+    name: Product
+    description: Roadmap, research and design of what we build.
+    leads: [olivia.kowalski]
+    members: [fatima.alsayed, sofia.petrova]
+
+  - slug: operations
+    name: Operations
+    description: Manufacturing, supply chain, quality and field service.
+    leads: [aiko.tanaka]
+    members: [elif.yilmaz, amara.diallo, kwame.mensah]
+
+  - slug: sales
+    name: Sales
+    description: Customers, demos and deployments.
+    leads: [liam.oconnor]
+    members: [kwame.mensah, maya.okafor]

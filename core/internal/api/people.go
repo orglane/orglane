@@ -41,7 +41,7 @@ func (s *server) ListPeople(ctx context.Context, _ apigen.ListPeopleRequestObjec
 			Roles:       row.RoleKeys,
 		}
 		if row.HasAvatar {
-			url := VersionPrefix + "people/" + row.ID.String() + "/avatar"
+			url := avatarURL(row.ID)
 			p.AvatarUrl = &url
 		}
 		items = append(items, p)

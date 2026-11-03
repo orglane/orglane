@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 
 import { me, renderApp } from "@/test/harness";
 
-const signedIn = { "GET /api/v1/me": { status: 200, body: me } };
+const signedIn = {
+  "GET /api/v1/me": { status: 200, body: me },
+  "GET /api/v1/teams": { status: 200, body: { items: [] } },
+};
 
 describe("the app shell", () => {
   it("navigates between the main sections", async () => {
@@ -14,6 +17,7 @@ describe("the app shell", () => {
     for (const [name, path] of [
       ["Inbox", "/inbox"],
       ["People", "/people"],
+      ["Teams", "/teams"],
       ["Apps", "/apps"],
       ["Home", "/"],
     ] as const) {

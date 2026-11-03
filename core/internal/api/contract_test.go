@@ -57,6 +57,17 @@ func TestContractPermissions(t *testing.T) {
 		// Every signed-in person can read the directory.
 		"GET /api/v1/people":                   authz.Authenticated,
 		"GET /api/v1/people/{personId}/avatar": authz.Authenticated,
+		// Every signed-in person can read teams; managing them is people
+		// management.
+		"GET /api/v1/people/{personId}/teams":              authz.Authenticated,
+		"GET /api/v1/teams":                                authz.Authenticated,
+		"GET /api/v1/teams/{teamId}":                       authz.Authenticated,
+		"GET /api/v1/teams/{teamId}/members":               authz.Authenticated,
+		"POST /api/v1/teams":                               authz.PeopleManage,
+		"PATCH /api/v1/teams/{teamId}":                     authz.PeopleManage,
+		"POST /api/v1/teams/{teamId}/archive":              authz.PeopleManage,
+		"PUT /api/v1/teams/{teamId}/members/{personId}":    authz.PeopleManage,
+		"DELETE /api/v1/teams/{teamId}/members/{personId}": authz.PeopleManage,
 		// Demo mode only: not served at all otherwise.
 		"GET /api/v1/demo":          authz.Demo,
 		"POST /api/v1/demo/sign-in": authz.Demo,

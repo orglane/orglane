@@ -103,6 +103,19 @@ const (
 	// example because a used refresh token or code was presented again.
 	OIDCGrantRevoked Action = "oidc_grant.revoked"
 
+	TeamCreated Action = "team.created"
+	// TeamUpdated: base fields of a team changed; the entry lists the fields.
+	TeamUpdated Action = "team.updated"
+	// TeamArchived: a team was archived. It keeps its memberships and
+	// history and becomes read-only.
+	TeamArchived Action = "team.archived"
+	// TeamMemberAdded: a person joined a team with a role (member or lead).
+	TeamMemberAdded Action = "team.member_added"
+	// TeamMemberRoleChanged: a member's role in a team changed, e.g. to lead.
+	TeamMemberRoleChanged Action = "team.member_role_changed"
+	// TeamMemberRemoved: a person left a team.
+	TeamMemberRemoved Action = "team.member_removed"
+
 	// InstanceDemoLoaded: the demo dataset was loaded into an empty instance
 	// (demo mode).
 	InstanceDemoLoaded Action = "instance.demo_loaded"
@@ -115,6 +128,7 @@ type TargetKind string
 const (
 	TargetPerson     TargetKind = "person"
 	TargetRole       TargetKind = "role"
+	TargetTeam       TargetKind = "team"
 	TargetDevice     TargetKind = "device"
 	TargetSession    TargetKind = "session"
 	TargetPasskey    TargetKind = "passkey"

@@ -17,6 +17,7 @@ import { SecurityPage } from "./routes/security";
 import { SetupPage } from "./routes/setup";
 import { SignInPage, type SignInSearch } from "./routes/sign-in";
 import { ErrorPage, NotFoundPage, PendingPage } from "./routes/status";
+import { TeamPage, TeamsPage } from "./routes/teams";
 
 /**
  * Renders the signed-in part of the app only while there is a session: when
@@ -142,6 +143,18 @@ const appsRoute = createRoute({
   path: "/apps",
   component: AppsPage,
 });
+const teamsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/teams",
+  component: TeamsPage,
+});
+const teamRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/teams/$teamId",
+  component: function Team() {
+    return <TeamPage key={teamRoute.useParams().teamId} teamId={teamRoute.useParams().teamId} />;
+  },
+});
 const securityRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings/security",
@@ -153,7 +166,15 @@ export const routeTree = rootRoute.addChildren([
   signInRoute,
   authedRoute.addChildren([
     passkeyOfferRoute,
-    shellRoute.addChildren([homeRoute, inboxRoute, peopleRoute, appsRoute, securityRoute]),
+    shellRoute.addChildren([
+      homeRoute,
+      inboxRoute,
+      peopleRoute,
+      teamsRoute,
+      teamRoute,
+      appsRoute,
+      securityRoute,
+    ]),
   ]),
 ]);
 

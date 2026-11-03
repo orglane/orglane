@@ -4,7 +4,7 @@
 # `version` changes when the dataset changes in a way loaders or tests must
 # know about. Entities live in their own files, so later milestones add
 # files (teams.yaml, profile_fields.yaml, ...) next to people.yaml.
-version: 1
+version: 2
 company:
   name: Acme Robotics
   # Reserved for documentation (RFC 2606): never a real mailbox.
