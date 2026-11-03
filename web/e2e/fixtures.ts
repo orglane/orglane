@@ -58,8 +58,44 @@ export function authenticator(cdp: CDPSession): string {
   return id;
 }
 
-export const test = base.extend<{ instance: Instance; webauthn: CDPSession; demo: boolean }>({
+export const test = base.extend<{
+  instance: Instance;
+  demo: boolean;
+  webauthn: CDPSession;
+  mailpit: { smtpPort: number; api: string };
+}>({
   demo: [false, { option: true }],
+  // Real SMTP, isolated per test; only starts for tests requesting it.
+  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture dependencies
+  mailpit: async ({}, use) => {
+    const container = run("docker", [
+      "run",
+      "-d",
+      "--rm",
+      "-p",
+      "127.0.0.1::1025",
+      "-p",
+      "127.0.0.1::8025",
+      "axllent/mailpit:v1.29.7",
+    ]);
+    try {
+      const port = (p: string) =>
+        Number(run("docker", ["port", container, p]).split("\n")[0]?.split(":").pop());
+      const api = `http://127.0.0.1:${port("8025/tcp")}`;
+      for (let i = 0; ; i++) {
+        try {
+          if ((await fetch(`${api}/livez`)).ok) break;
+        } catch {
+          /* starting */
+        }
+        if (i === 60) throw new Error("Mailpit did not start");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      await use({ smtpPort: port("1025/tcp"), api });
+    } finally {
+      run("docker", ["rm", "-f", container]);
+    }
+  },
   // A fresh database and `orglane server` for every test, reached on
   // localhost (the plain-HTTP development mode).
   instance: async ({ demo }, use, testInfo) => {
@@ -77,6 +113,8 @@ export const test = base.extend<{ instance: Instance; webauthn: CDPSession; demo
       ORGLANE_DOMAIN_SCHEME: "http",
       ORGLANE_SERVER_LISTEN: `127.0.0.1:${port}`,
       ORGLANE_LOG_FORMAT: "text",
+      ORGLANE_EMAIL_RETRY_DELAY: "1s",
+      ORGLANE_EMAIL_MAX_ATTEMPTS: "2",
     };
     let log = "";
     const server = spawn(state.binary, demo ? ["server", "--demo"] : ["server"], {
@@ -94,6 +132,9 @@ export const test = base.extend<{ instance: Instance; webauthn: CDPSession; demo
         cli: (...args) => run(state.binary, ["cli", ...args], { env }),
         log: () => log,
       });
+    } catch (error) {
+      await testInfo.attach("server-startup.log", { body: log, contentType: "text/plain" });
+      throw error;
     } finally {
       server.kill("SIGTERM");
       if (testInfo.status !== testInfo.expectedStatus) {

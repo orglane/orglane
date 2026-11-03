@@ -16,6 +16,7 @@ import (
 	"github.com/orglane/orglane/core/internal/crypto"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/identity/oidcop"
+	"github.com/orglane/orglane/core/internal/mail"
 	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/core/internal/store"
 )
@@ -28,6 +29,8 @@ type Stack struct {
 	Keys     *oidcop.KeyManager
 	Provider *oidcop.Provider
 	Auth     *Auth
+	// Mail sends system email; the job queue delivers what it queues.
+	Mail *mail.Service
 }
 
 // StackOptions adjust a Stack, mostly for tests.
@@ -69,10 +72,13 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	if hasher == nil {
 		hasher = crypto.NewPasswordHasher(crypto.DefaultPasswordParams, runtime.GOMAXPROCS(0))
 	}
+	mailer := mail.NewService(pool, cfg.Email, cfg.WorkspaceHostname(), keyring, logger)
 	svc := identity.NewService(pool,
 		identity.WithPasswordHasher(hasher),
 		identity.WithSignInLimits(identity.SignInLimits{Failures: cfg.Identity.SignInAccountLimit, Lockout: cfg.Identity.SignInLockout}),
 		identity.WithWebAuthn(wa),
+		identity.WithMailer(mailer),
+		identity.WithInvitations(identity.InvitationConfig{WorkspaceURL: workspaceURL, Lifetime: cfg.Identity.InvitationLifetime}),
 	)
 	keys := oidcop.NewKeyManager(pool, keyring, oidcop.KeyManagerOptions{
 		Rotation: cfg.Identity.SigningKeyRotation,
@@ -109,11 +115,12 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	if err != nil {
 		return nil, err
 	}
-	return &Stack{Identity: svc, Profile: profile.NewService(pool, keyring, profile.WithTeams(svc)), Keys: keys, Provider: provider, Auth: auth}, nil
+	return &Stack{Identity: svc, Profile: profile.NewService(pool, keyring, profile.WithTeams(svc)), Keys: keys, Provider: provider, Auth: auth, Mail: mailer}, nil
 }
 
-// Maintain rotates the signing key when due and deletes expired sign-in and
-// OIDC state. The identity maintenance job runs it hourly.
+// Maintain rotates the signing key when due, deletes expired sign-in and
+// OIDC state and audits expired invitations. The identity maintenance job
+// runs it hourly.
 func (s *Stack) Maintain(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := s.Keys.Ensure(ctx); err != nil {
 		return err
@@ -123,6 +130,9 @@ func (s *Stack) Maintain(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	q := store.New(pool)
 	if _, err := q.DeleteExpiredWebAuthnCeremonies(ctx); err != nil {
+		return err
+	}
+	if _, err := s.Identity.RecordExpiredInvitations(ctx); err != nil {
 		return err
 	}
 	_, err := q.DeleteStaleSignInThrottles(ctx)

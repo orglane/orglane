@@ -77,6 +77,19 @@ func TestContractPermissions(t *testing.T) {
 		"PATCH /api/v1/profile-fields/{fieldId}":          authz.PeopleManage,
 		"GET /api/v1/profile-field-library":               authz.PeopleManage,
 		"POST /api/v1/profile-field-library/{libraryKey}": authz.PeopleManage,
+		// Accepting an invitation is how invited people get credentials.
+		"POST /api/v1/auth/invitation":        authz.Public,
+		"POST /api/v1/auth/invitation/accept": authz.Public,
+		// Inviting adds people; email settings are instance settings.
+		"GET /api/v1/invitations":                        authz.PeopleManage,
+		"POST /api/v1/invitations":                       authz.PeopleManage,
+		"GET /api/v1/invitations/options":                authz.PeopleManage,
+		"POST /api/v1/invitations/{invitationId}/resend": authz.PeopleManage,
+		"DELETE /api/v1/invitations/{invitationId}":      authz.PeopleManage,
+		"GET /api/v1/settings/email":                     authz.InstanceManage,
+		"PUT /api/v1/settings/email":                     authz.InstanceManage,
+		"DELETE /api/v1/settings/email":                  authz.InstanceManage,
+		"POST /api/v1/settings/email/test":               authz.InstanceManage,
 		// Demo mode only: not served at all otherwise.
 		"GET /api/v1/demo":          authz.Demo,
 		"POST /api/v1/demo/sign-in": authz.Demo,

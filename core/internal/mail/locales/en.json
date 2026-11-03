@@ -1,0 +1,18 @@
+{
+  "common.footer": "This is a system email from {workspace}. Replies to it are not read.",
+  "invitation.subject": "{inviter} invited you to {workspace}",
+  "invitation.preheader": "Accept the invitation and choose your password.",
+  "invitation.greeting": "Hi {name},",
+  "invitation.intro": "{inviter} invited you to join {workspace}, your company's workspace on Orglane.",
+  "invitation.workEmail": "Your work email will be {workEmail}.",
+  "invitation.action": "Accept the invitation",
+  "invitation.actionText": "Accept the invitation and choose your password:",
+  "invitation.linkFallback": "If the button doesn't work, copy this link into your browser:",
+  "invitation.expiry.one": "The link works once and expires in {days} day.",
+  "invitation.expiry.other": "The link works once and expires in {days} days.",
+  "invitation.ignore": "Didn't expect this invitation? You can ignore this email.",
+  "test.subject": "Test email from {workspace}",
+  "test.preheader": "System email works.",
+  "test.heading": "System email works",
+  "test.body": "This test email was sent from {workspace} by {sender}. Invitations and notifications will be delivered the same way."
+}

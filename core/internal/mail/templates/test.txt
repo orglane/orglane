@@ -1,0 +1,6 @@
+{{t "test.heading"}}
+
+{{t "test.body" "workspace" .Workspace "sender" .Sender}}
+
+--
+{{t "common.footer" "workspace" .Workspace}}

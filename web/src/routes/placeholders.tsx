@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { Inbox, LayoutGrid, Users } from "lucide-react";
 import { defineMessages, FormattedMessage, useIntl } from "react-intl";
 
@@ -5,6 +6,7 @@ import { navMessages } from "@/components/app-shell";
 import { EmptyState } from "@/components/empty-state";
 import { Page } from "@/components/page";
 import { Badge } from "@/components/ui/badge";
+import { useMe } from "@/lib/session";
 
 const messages = defineMessages({
   inboxDescription: {
@@ -33,6 +35,7 @@ const messages = defineMessages({
       "Code hosting, chat, files and calendars will show up here once they're connected.",
   },
   soon: { id: "common.comingSoon", defaultMessage: "Coming soon" },
+  invite: { id: "people.invite", defaultMessage: "Invite people" },
 });
 
 export function InboxPage() {
@@ -53,10 +56,18 @@ export function InboxPage() {
 
 export function PeoplePage() {
   const intl = useIntl();
+  const me = useMe();
   return (
     <Page
       title={intl.formatMessage(navMessages.people)}
       description={<FormattedMessage {...messages.peopleDescription} />}
+      actions={
+        me.permissions.includes("people.manage") ? (
+          <Link to="/people/invitations" className="text-sm underline">
+            <FormattedMessage {...messages.invite} />
+          </Link>
+        ) : undefined
+      }
     >
       <EmptyState
         icon={Users}

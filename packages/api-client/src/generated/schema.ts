@@ -730,6 +730,208 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/invitation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Look up an invitation
+         * @description Returns who an invitation link is for, so the accept page can greet
+         *     the person before they choose a password. The token is the fragment
+         *     of the invitation link (`/invite#<token>`); it is sent in the body,
+         *     never in a URL. Attempts are rate limited per client address.
+         */
+        post: operations["previewInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/invitation/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept an invitation
+         * @description Sets the invited person's password, makes them active and signs them
+         *     in (sets the session cookie, like a password sign-in). The token can
+         *     be used once: afterwards it answers 409. An unknown, revoked or
+         *     replaced token answers 404 and an expired one 410. Attempts are rate
+         *     limited per client address.
+         */
+        post: operations["acceptInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List open invitations
+         * @description Invitations of people who are still invited, newest first, with how
+         *     each was delivered and, for email, its delivery state: a failing
+         *     SMTP server shows up here as `retrying` and then `failed`, with the
+         *     error.
+         */
+        get: operations["listInvitations"];
+        put?: never;
+        /**
+         * Invite a person
+         * @description Adds the person to the directory as `invited`, with the role, and
+         *     issues a single-use invitation link that expires
+         *     (`identity.invitation_lifetime`, 7 days by default). With system
+         *     email configured the link is emailed to the contact email in the
+         *     background when the channel is trusted for that permission grant;
+         *     otherwise it is returned as `link` for the admin to share. Editable
+         *     SMTP can carry only permissions guaranteed to every SMTP editor
+         *     (`instance.manage`); additional grants require a copy-link. Immutable
+         *     server-configured SMTP can carry all grants. Granting a role requires
+         *     holding every permission in it.
+         *     The language of the email follows `Accept-Language`.
+         */
+        post: operations["createInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How new invitations are made
+         * @description How a new invitation would be delivered right now, the default work email pattern and the link lifetime.
+         */
+        get: operations["getInvitationOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/{invitationId}/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resend an invitation
+         * @description Issues a new link with a new expiry and sends it like a new
+         *     invitation (or returns it as `link`). The previous link stops
+         *     working; a revoked invitation becomes valid again.
+         */
+        post: operations["resendInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/{invitationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke an invitation
+         * @description The link stops working at once and a queued email is canceled. The
+         *     person stays in the directory as invited; resending issues a new
+         *     link.
+         */
+        delete: operations["revokeInvitation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * System email settings
+         * @description The SMTP server used for system email (ADR 0014). `source` is
+         *     `config` when the server configuration sets it (`email.smtp.*`):
+         *     then it cannot be changed here. The password is never returned.
+         */
+        get: operations["getEmailSettings"];
+        /**
+         * Save the system email settings
+         * @description Saves the SMTP server. The password is stored encrypted with a key
+         *     derived from the instance master secret; omit it to keep the saved
+         *     one. Credentials are only ever sent over TLS (or to localhost).
+         */
+        put: operations["putEmailSettings"];
+        post?: never;
+        /**
+         * Remove the system email settings
+         * @description Without email, invitations produce links to share.
+         */
+        delete: operations["deleteEmailSettings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/email/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a test email
+         * @description Queues a test email in the outbox and waits for its first delivery
+         *     result. An SMTP failure answers 502 with a bounded safe error
+         *     category in `detail`; the worker continues its configured retries.
+         */
+        post: operations["sendTestEmail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1286,6 +1488,173 @@ export interface components {
              */
             username?: string;
         };
+        InvitationTokenRequest: {
+            /** @description The token from the invitation link (`/invite#<token>`). */
+            token: string;
+        };
+        AcceptInvitationRequest: {
+            token: string;
+            /**
+             * Format: password
+             * @description At least 12 characters.
+             */
+            password: string;
+        };
+        InvitationPreview: {
+            /** @example Maya Okafor */
+            displayName: string;
+            /** @example maya.okafor */
+            username: string;
+            /** @example maya.okafor@acme.com */
+            workEmail: string;
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        CreateInvitationRequest: {
+            /** @example Maya Okafor */
+            displayName: string;
+            /**
+             * @description Where the invitation goes, e.g. a personal address. Kept as the person's contact email, separate from the work email.
+             * @example maya@example.com
+             */
+            contactEmail: string;
+            /** @example maya.okafor */
+            username: string;
+            /**
+             * @description The person's work email (their identity in the workspace). Defaults to `workEmailPattern` of the invitation options with the username.
+             * @example maya.okafor@acme.com
+             */
+            workEmail?: string;
+            /** @example Robotics Engineer */
+            title?: string;
+            /**
+             * @description The key of the role the person gets (`owner`, `admin` or `member`).
+             * @example member
+             */
+            role: string;
+            /** @description Initial active teams. Memberships (as member), role, person and invitation are created atomically. */
+            teamIds?: string[];
+        };
+        /**
+         * @description `email`: sent through a trusted channel to the contact email; `link`: email is absent or cannot safely carry this permission grant, share the link yourself.
+         * @enum {string}
+         */
+        InvitationDelivery: "email" | "link";
+        IssuedInvitation: {
+            invitation: components["schemas"]["Invitation"];
+            /**
+             * @description The invitation link, only with delivery `link`. It is shown once; resend to get a new one.
+             * @example https://work.acme.com/invite#oli_...
+             */
+            link?: string;
+        };
+        Invitation: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            personId: string;
+            displayName: string;
+            username: string;
+            workEmail: string;
+            contactEmail: string;
+            roles: string[];
+            /** @enum {string} */
+            status: "pending" | "expired" | "revoked";
+            delivery: components["schemas"]["InvitationDelivery"];
+            email?: components["schemas"]["EmailDelivery"];
+            /** Format: uuid */
+            invitedBy?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the current link was issued (the last resend).
+             */
+            issuedAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        /** @description The delivery state of an invitation email. */
+        EmailDelivery: {
+            /**
+             * @description `retrying`: at least one attempt failed and another is scheduled; `failed`: every attempt failed.
+             * @enum {string}
+             */
+            status: "queued" | "retrying" | "sent" | "failed" | "canceled";
+            attempts: number;
+            maxAttempts: number;
+            /** @description A bounded safe category for the last failure. Untrusted relay text, bearer tokens and credentials are never exposed. */
+            lastError?: string;
+            /** Format: date-time */
+            sentAt?: string;
+        };
+        InvitationList: {
+            items: components["schemas"]["Invitation"][];
+        };
+        InvitationOptions: {
+            delivery: components["schemas"]["InvitationDelivery"];
+            /**
+             * @description The default work email with `{username}` in place of the username.
+             * @example {username}@acme.com
+             */
+            workEmailPattern: string;
+            /**
+             * @description How long a new link stays valid.
+             * @example 168
+             */
+            lifetimeHours: number;
+            /** @description Role keys that this caller has permission to grant. */
+            roles: string[];
+            /** @description Delivery for each grantable role. Editable SMTP uses a link for permissions outside the guaranteed SMTP-editor envelope. */
+            roleDeliveries: {
+                [key: string]: components["schemas"]["InvitationDelivery"];
+            };
+        };
+        /**
+         * @description `starttls` (port 587) upgrades the connection and refuses to continue without TLS; `tls` (port 465) connects with TLS; `none` sends in the clear (a relay on the same host or trusted network only).
+         * @enum {string}
+         */
+        EmailTLSMode: "starttls" | "tls" | "none";
+        EmailSettings: {
+            /**
+             * @description `none`: email is not configured (invitations produce links); `settings`: saved here; `config`: set by the server configuration, read-only.
+             * @enum {string}
+             */
+            source: "none" | "settings" | "config";
+            /** @example smtp.example.com */
+            host?: string;
+            /** @example 587 */
+            port?: number;
+            tls?: components["schemas"]["EmailTLSMode"];
+            username?: string;
+            /** @description True when a password is stored (it is never returned). */
+            passwordSet?: boolean;
+            /** @example Acme <no-reply@acme.com> */
+            from?: string;
+        };
+        EmailSettingsInput: {
+            /** @example smtp.example.com */
+            host: string;
+            /** @description Defaults to the usual port of the TLS mode. */
+            port?: number;
+            tls: components["schemas"]["EmailTLSMode"];
+            /** @description Empty for a server without authentication. */
+            username?: string;
+            /**
+             * Format: password
+             * @description Omit to keep the saved password.
+             */
+            password?: string;
+            /**
+             * @description The sender, a bare address or "Name <address>".
+             * @example Acme <no-reply@acme.com>
+             */
+            from: string;
+        };
+        TestEmailRequest: {
+            /** @example alex@example.com */
+            to: string;
+        };
     };
     responses: {
         /** @description The request is invalid. */
@@ -1355,10 +1724,29 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
+        /** @description The resource expired. */
+        Gone: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
+        /** @description An upstream server (for example the SMTP server) failed; `detail` says how. */
+        BadGateway: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
     };
     parameters: {
         TeamId: string;
         PersonId: string;
+        InvitationId: string;
     };
     requestBodies: never;
     headers: never;
@@ -2362,6 +2750,295 @@ export interface operations {
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["InternalError"];
+        };
+    };
+    previewInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitationTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description The invitation is valid. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationPreview"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            410: components["responses"]["Gone"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    acceptInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptInvitationRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted and signed in. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignInResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            410: components["responses"]["Gone"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listInvitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The invitations. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    createInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateInvitationRequest"];
+            };
+        };
+        responses: {
+            /** @description The person was invited. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuedInvitation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getInvitationOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The options. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationOptions"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    resendInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The invitation was reissued. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuedInvitation"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    revokeInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getEmailSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmailSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    putEmailSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailSettingsInput"];
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmailSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    deleteEmailSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    sendTestEmail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestEmailRequest"];
+            };
+        };
+        responses: {
+            /** @description The SMTP server accepted the message. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+            502: components["responses"]["BadGateway"];
         };
     };
 }

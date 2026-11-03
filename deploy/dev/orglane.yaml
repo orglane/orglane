@@ -35,3 +35,11 @@ jobs:
   noop:
     enabled: false
     interval: 1h
+
+# Mailpit captures development mail at http://localhost:8025.
+email:
+  smtp:
+    host: localhost
+    port: 1025
+    tls: none
+  from: "Orglane <no-reply@localhost>"

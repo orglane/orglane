@@ -51,6 +51,13 @@ var (
 	ErrInvalidSetupToken  = errors.New("identity: invalid setup token")
 	ErrWeakPassword       = errors.New("identity: password does not meet the policy")
 	ErrPasskeysDisabled   = errors.New("identity: passkeys are not configured")
+	// ErrInvitationInvalid: the invitation token is unknown, revoked or
+	// replaced by a newer one, or the person is no longer invited.
+	ErrInvitationInvalid = errors.New("identity: the invitation is not valid")
+	// ErrInvitationExpired: the invitation token expired.
+	ErrInvitationExpired = errors.New("identity: the invitation has expired")
+	// ErrInvitationUsed: the invitation was already accepted.
+	ErrInvitationUsed = errors.New("identity: the invitation was already accepted")
 )
 
 // LockedError is returned when an account is locked after too many failed
@@ -77,6 +84,8 @@ type Service struct {
 	hasher   *crypto.PasswordHasher
 	limits   SignInLimits
 	webAuthn *webauthn.WebAuthn
+	mailer   Mailer
+	invites  InvitationConfig
 	// dummyHash is verified for unknown accounts, so a sign-in takes as long
 	// whether or not the account exists.
 	dummyHash func() (string, error)
@@ -113,9 +122,20 @@ func WithWebAuthn(w *webauthn.WebAuthn) Option {
 	return func(s *Service) { s.webAuthn = w }
 }
 
+// WithMailer uses the mail channel authority to choose invitation delivery;
+// without it they are always issued as links to share.
+func WithMailer(m Mailer) Option {
+	return func(s *Service) { s.mailer = m }
+}
+
+// WithInvitations configures invitation links.
+func WithInvitations(c InvitationConfig) Option {
+	return func(s *Service) { s.invites = c }
+}
+
 // NewService returns a Service using pool.
 func NewService(pool *pgxpool.Pool, opts ...Option) *Service {
-	s := &Service{pool: pool, limits: DefaultSignInLimits}
+	s := &Service{pool: pool, limits: DefaultSignInLimits, invites: DefaultInvitationConfig}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -133,6 +153,14 @@ func NewService(pool *pgxpool.Pool, opts ...Option) *Service {
 func (s *Service) inTx(ctx context.Context, fn func(q *store.Queries) error) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		return fn(store.New(tx))
+	})
+}
+
+// inTxWith is inTx for changes that also queue work in the transaction
+// (system email).
+func (s *Service) inTxWith(ctx context.Context, fn func(tx pgx.Tx, q *store.Queries) error) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		return fn(tx, store.New(tx))
 	})
 }
 

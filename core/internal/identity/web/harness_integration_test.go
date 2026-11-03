@@ -30,6 +30,7 @@ import (
 	"github.com/orglane/orglane/core/internal/database"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/identity/web"
+	"github.com/orglane/orglane/core/internal/jobs"
 	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/tests/pgtest"
 )
@@ -114,7 +115,7 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 	}
 	handler, err := api.NewHandler(api.Options{
 		Version: "test", BaseDomain: cfg.Domain.Base, WorkspaceHost: workspaceHost, WorkspaceURL: cfg.WorkspaceURL(),
-		Auth: stack.Auth, Profile: stack.Profile, Logger: logger,
+		Auth: stack.Auth, Profile: stack.Profile, Mail: stack.Mail, WorkEmail: cfg.WorkEmail, Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +123,27 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 	srv := httptest.NewTLSServer(handler)
 	t.Cleanup(srv.Close)
 	return &env{t: t, cfg: &cfg, pool: pool, stack: stack, srv: srv, clock: clk}
+}
+
+// startJobs starts the job queue, which delivers queued email, for the
+// rest of the test.
+func (e *env) startJobs() {
+	e.t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := e.cfg.Jobs
+	cfg.FetchPollInterval = 200 * time.Millisecond
+	client, err := jobs.NewClient(e.pool, cfg, logger, jobs.Options{Mail: e.stack.Mail})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if err := client.Start(context.Background()); err != nil {
+		e.t.Fatal(err)
+	}
+	e.t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = client.StopAndCancel(ctx)
+	})
 }
 
 // browser is an HTTP client with a cookie jar that does not follow

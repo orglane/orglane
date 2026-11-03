@@ -26,6 +26,7 @@ var coreTables = []string{
 	"person_avatars",
 	"teams", "team_memberships",
 	"profile_fields", "profile_field_values",
+	"invitations", "email_outbox",
 }
 
 func newGoose(t *testing.T, pool *pgxpool.Pool) *goose.Provider {

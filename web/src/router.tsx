@@ -9,7 +9,10 @@ import {
 import { AppShell } from "./components/app-shell";
 import { type Api, meQuery, setupStatusQuery } from "./lib/api";
 import { safeRedirect } from "./lib/utils";
+import { AcceptInvitationPage } from "./routes/accept-invitation";
+import { EmailSettingsPage } from "./routes/email-settings";
 import { HomePage } from "./routes/home";
+import { InvitationsPage } from "./routes/invitations";
 import { PasskeyOfferPage } from "./routes/passkey-offer";
 import { PersonProfilePage } from "./routes/person-profile";
 import { AppsPage, InboxPage, PeoplePage } from "./routes/placeholders";
@@ -96,6 +99,12 @@ const signInRoute = createRoute({
   },
 });
 
+const inviteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/invite",
+  component: AcceptInvitationPage,
+});
+
 /** Everything below needs a signed-in person. */
 const authedRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -161,6 +170,16 @@ const securityRoute = createRoute({
   path: "/settings/security",
   component: SecurityPage,
 });
+const invitationsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/people/invitations",
+  component: InvitationsPage,
+});
+const emailSettingsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings/email",
+  component: EmailSettingsPage,
+});
 
 const profileFieldsRoute = createRoute({
   getParentRoute: () => shellRoute,
@@ -178,6 +197,7 @@ const personProfileRoute = createRoute({
 export const routeTree = rootRoute.addChildren([
   setupRoute,
   signInRoute,
+  inviteRoute,
   authedRoute.addChildren([
     passkeyOfferRoute,
     shellRoute.addChildren([
@@ -190,6 +210,8 @@ export const routeTree = rootRoute.addChildren([
       securityRoute,
       profileFieldsRoute,
       personProfileRoute,
+      invitationsRoute,
+      emailSettingsRoute,
     ]),
   ]),
 ]);

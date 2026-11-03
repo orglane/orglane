@@ -1,6 +1,6 @@
 -- name: CreatePerson :one
-INSERT INTO people (username, work_email, display_name, title, status)
-VALUES (@username, @work_email, @display_name, sqlc.narg(title), @status)
+INSERT INTO people (username, work_email, display_name, title, contact_email, status)
+VALUES (@username, @work_email, @display_name, sqlc.narg(title), sqlc.narg(contact_email), @status)
 RETURNING *;
 
 -- name: GetPerson :one

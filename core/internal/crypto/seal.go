@@ -40,9 +40,7 @@ func NewSealer(key []byte) (*Sealer, error) {
 // context (for example a row ID) so they cannot be swapped between rows.
 func (s *Sealer) Seal(plaintext, additionalData []byte) []byte {
 	nonce := RandomBytes(s.aead.NonceSize())
-	out := make([]byte, 0, 1+len(nonce)+len(plaintext)+s.aead.Overhead())
-	out = append(out, sealVersion)
-	out = append(out, nonce...)
+	out := append([]byte{sealVersion}, nonce...)
 	return s.aead.Seal(out, nonce, plaintext, additionalData)
 }
 

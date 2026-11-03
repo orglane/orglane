@@ -134,6 +134,29 @@ const (
 	// InstanceDemoLoaded: the demo dataset was loaded into an empty instance
 	// (demo mode).
 	InstanceDemoLoaded Action = "instance.demo_loaded"
+
+	// InvitationCreated: a person was invited (sent by email or issued as a
+	// link to share).
+	InvitationCreated Action = "invitation.created"
+	// InvitationResent: an invitation was reissued with a new link; the
+	// previous link stops working.
+	InvitationResent Action = "invitation.resent"
+	// InvitationRevoked: an invitation link was revoked before it was used.
+	InvitationRevoked Action = "invitation.revoked"
+	// InvitationAccepted: the invited person accepted and became active.
+	InvitationAccepted Action = "invitation.accepted"
+	// InvitationExpired: an invitation expired unused (recorded by identity
+	// maintenance).
+	InvitationExpired Action = "invitation.expired"
+
+	// EmailSettingsUpdated: the SMTP settings for system email were set or
+	// changed in the web UI.
+	EmailSettingsUpdated Action = "email_settings.updated"
+	// EmailSettingsRemoved: the SMTP settings were removed; invitations
+	// produce links to share.
+	EmailSettingsRemoved Action = "email_settings.removed"
+	// EmailSettingsTested: a test email was queued.
+	EmailSettingsTested Action = "email_settings.tested"
 )
 
 // TargetKind is the kind of object an action applies to.
@@ -152,6 +175,7 @@ const (
 	TargetOIDCGrant  TargetKind = "oidc_grant"
 	// TargetProfileField is a profile field definition.
 	TargetProfileField TargetKind = "profile_field"
+	TargetInvitation   TargetKind = "invitation"
 )
 
 // Target is the object an action applies to. The zero Target means the

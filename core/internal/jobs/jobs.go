@@ -17,6 +17,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/orglane/orglane/core/internal/config"
+	"github.com/orglane/orglane/core/internal/mail"
 )
 
 // NoopArgs are the arguments of the example no-op job.
@@ -70,6 +71,9 @@ type Client = river.Client[pgx.Tx]
 type Options struct {
 	// IdentityMaintenance, when set, runs hourly and on start.
 	IdentityMaintenance func(ctx context.Context) error
+	// Mail, when set, delivers queued system email (mail.SendArgs). The
+	// client is attached to it as its queue.
+	Mail *mail.Service
 }
 
 // NewClient builds the job queue client. Start it with Start and stop it with
@@ -78,6 +82,12 @@ func NewClient(pool *pgxpool.Pool, cfg config.Jobs, logger *slog.Logger, opts Op
 	workers := river.NewWorkers()
 	if err := river.AddWorkerSafely(workers, &NoopWorker{Logger: logger}); err != nil {
 		return nil, fmt.Errorf("register noop worker: %w", err)
+	}
+
+	if opts.Mail != nil {
+		if err := river.AddWorkerSafely(workers, &mail.Worker{Service: opts.Mail}); err != nil {
+			return nil, fmt.Errorf("register email worker: %w", err)
+		}
 	}
 
 	var periodic []*river.PeriodicJob
@@ -108,6 +118,9 @@ func NewClient(pool *pgxpool.Pool, cfg config.Jobs, logger *slog.Logger, opts Op
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create job queue client: %w", err)
+	}
+	if opts.Mail != nil {
+		opts.Mail.SetQueue(client)
 	}
 	return client, nil
 }
