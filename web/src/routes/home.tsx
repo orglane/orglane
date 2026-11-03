@@ -1,8 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, KeyRound, LayoutGrid, Sparkles } from "lucide-react";
 import { defineMessage, defineMessages, FormattedMessage, useIntl } from "react-intl";
-
 import { EmptyState } from "@/components/empty-state";
+import { OnboardingChecklist } from "@/components/onboarding-checklist";
 import { Page } from "@/components/page";
 import { Card } from "@/components/ui/card";
 import { useMe } from "@/lib/session";
@@ -94,6 +94,7 @@ export function HomePage() {
       description={<FormattedMessage {...messages.description} />}
     >
       <div className="flex flex-col gap-6">
+        <OnboardingChecklist />
         <EmptyState
           icon={Sparkles}
           title={<FormattedMessage {...messages.emptyTitle} />}

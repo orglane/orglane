@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { call, type Schema } from "@/lib/api";
 import { useApi } from "@/lib/api-context";
 import { errorMessage } from "@/lib/errors";
+import { onboardingKey } from "@/lib/onboarding";
 import {
   displayValue,
   fieldLabel,
@@ -44,6 +45,7 @@ function ProfileValue({
       ),
     onSuccess: (result) => {
       client.setQueryData(profileKey(personId), result);
+      void client.invalidateQueries({ queryKey: onboardingKey });
       setEditing(false);
       setPendingHidden(undefined);
     },
@@ -181,7 +183,13 @@ function ProfileValue({
 }
 
 /** Every entry is already authorized by the profile service. */
-export function ProfileFieldsCard({ personId }: { personId: string }) {
+export function ProfileFieldsCard({
+  personId,
+  requiredOnly = false,
+}: {
+  personId: string;
+  requiredOnly?: boolean;
+}) {
   const intl = useIntl();
   const api = useApi();
   const profile = useQuery({
@@ -190,6 +198,10 @@ export function ProfileFieldsCard({ personId }: { personId: string }) {
       call(api.client.GET("/api/v1/people/{personId}/profile", { params: { path: { personId } } })),
     retry: false,
   });
+  const fields =
+    profile.data?.fields.filter(
+      (e) => !requiredOnly || (e.field.requiredAtOnboarding && e.editable),
+    ) ?? [];
   return (
     <Card className="p-5 sm:p-6">
       <h2 className="mb-4 font-semibold text-lg">
@@ -212,19 +224,19 @@ export function ProfileFieldsCard({ personId }: { personId: string }) {
           </Button>
         </div>
       )}
-      {profile.data?.fields.length === 0 && (
+      {profile.data && fields.length === 0 && (
         <p className="text-muted-foreground text-sm">
           <FormattedMessage {...m.empty} />
         </p>
       )}
       {profile.data &&
-        [...new Set(profile.data.fields.map((e) => e.field.section))].map((section) => (
+        [...new Set(fields.map((e) => e.field.section))].map((section) => (
           <section key={section} className="mb-4">
             <h2 className="border-b pb-2 font-medium text-muted-foreground text-sm">
               {intl.formatMessage(sectionMessages[section])}
             </h2>
             <ul className="divide-y">
-              {profile.data.fields
+              {fields
                 .filter((e) => e.field.section === section)
                 .map((entry) => (
                   <ProfileValue key={entry.field.id} entry={entry} personId={personId} />

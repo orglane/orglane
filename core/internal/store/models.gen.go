@@ -183,6 +183,11 @@ type PersonCredential struct {
 	UpdatedAt               time.Time
 }
 
+type PersonOnboarding struct {
+	PersonID          uuid.UUID
+	WelcomeFinishedAt time.Time
+}
+
 type PersonRole struct {
 	PersonID  uuid.UUID
 	RoleID    uuid.UUID

@@ -258,6 +258,11 @@ func (s *server) GetMe(ctx context.Context, _ apigen.GetMeRequestObject) (apigen
 			return nil, err
 		}
 	}
+	pending, err := a.Identity().WelcomePending(ctx, personID)
+	if err != nil {
+		return nil, err
+	}
+	me.WelcomePending = &pending
 	return apigen.GetMe200JSONResponse(me), nil
 }
 

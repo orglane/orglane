@@ -56,8 +56,13 @@ export function useAfterSignIn() {
       browserNavigation.assign(oidcContinueUrl(authRequest));
       return;
     }
-    await queryClient.fetchQuery({ ...meQuery(api), staleTime: 0 });
-    const target = safeRedirect(redirect);
+    const me = await queryClient.fetchQuery({ ...meQuery(api), staleTime: 0 });
+    const destination = safeRedirect(redirect);
+    const target = me?.welcomePending
+      ? destination === "/" || destination.startsWith("/welcome")
+        ? "/welcome"
+        : `/welcome?redirect=${encodeURIComponent(destination)}`
+      : destination;
     if (result.passkeyOffer && passkeysSupported()) {
       await navigate({
         to: "/welcome/passkey",

@@ -5,6 +5,7 @@ import { FormattedMessage, useIntl } from "react-intl";
 
 import { Choice } from "@/components/choice";
 import { Field } from "@/components/field";
+import { OnboardingChecklist } from "@/components/onboarding-checklist";
 import { Page } from "@/components/page";
 import { ProfileFieldsCard } from "@/components/profile-fields-card";
 import { Alert } from "@/components/ui/alert";
@@ -15,6 +16,7 @@ import { Card } from "@/components/ui/card";
 import { ApiError, call, meKey, type Schema } from "@/lib/api";
 import { useApi } from "@/lib/api-context";
 import { errorMessage } from "@/lib/errors";
+import { onboardingKey } from "@/lib/onboarding";
 import { peopleMessages as m, peopleKey, personKey, personQuery } from "@/lib/people";
 import { useMe } from "@/lib/session";
 
@@ -65,6 +67,7 @@ function BaseProfileForm({
       client.setQueryData(personKey(person.id), saved);
       await client.invalidateQueries({ queryKey: peopleKey });
       await client.invalidateQueries({ queryKey: meKey });
+      await client.invalidateQueries({ queryKey: onboardingKey });
       onSaved();
     },
   });
@@ -205,6 +208,7 @@ export function PersonProfilePage({ personId }: { personId: string }) {
     },
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: peopleKey });
+      await client.invalidateQueries({ queryKey: onboardingKey });
     },
   });
   const p = person.data;
@@ -363,6 +367,11 @@ export function PersonProfilePage({ personId }: { personId: string }) {
             </Alert>
           )}
           <ProfileFieldsCard personId={personId} />
+          {manage && (
+            <div className="mt-5">
+              <OnboardingChecklist personId={personId} />
+            </div>
+          )}
         </>
       )}
     </Page>
