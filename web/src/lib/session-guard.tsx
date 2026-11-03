@@ -11,7 +11,7 @@ export type SessionEndReason = "signedOut" | "expired";
 const isMeKey = (key: readonly unknown[]) => key.length === 1 && key[0] === meKey[0];
 
 // Screens where a 401 is an answer (wrong password), not a lost session.
-const publicPaths = ["/sign-in", "/setup"];
+const publicPaths = ["/sign-in", "/setup", "/invite"];
 
 /**
  * The one place where a signed-in browser becomes signed out. Whatever

@@ -33,6 +33,10 @@ const (
 	// PurposeProfileFields encrypts values of sensitive profile fields
 	// (ADR 0015).
 	PurposeProfileFields Purpose = "orglane/v1/profile-fields"
+	// PurposeEmailSettings encrypts the SMTP password in the email settings.
+	PurposeEmailSettings Purpose = "orglane/v1/email-settings"
+	// PurposeEmailOutbox encrypts queued emails (they carry invitation links).
+	PurposeEmailOutbox Purpose = "orglane/v1/email-outbox"
 )
 
 // keySize is the size of every derived key (256 bits).

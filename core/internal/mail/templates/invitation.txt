@@ -1,0 +1,14 @@
+{{t "invitation.greeting" "name" .Name}}
+
+{{t "invitation.intro" "inviter" .Inviter "workspace" .Workspace}}
+
+{{t "invitation.workEmail" "workEmail" .WorkEmail}}
+
+{{t "invitation.actionText"}}
+{{.Link}}
+
+{{tn "invitation.expiry" .Days "days" .Days}}
+{{t "invitation.ignore"}}
+
+--
+{{t "common.footer" "workspace" .Workspace}}

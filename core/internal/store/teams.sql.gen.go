@@ -298,7 +298,7 @@ func (q *Queries) ListTeamAncestors(ctx context.Context, id uuid.UUID) ([]uuid.U
 
 const listTeamMembers = `-- name: ListTeamMembers :many
 SELECT
-    p.id, p.username, p.work_email, p.display_name, p.status, p.created_at, p.updated_at, p.title,
+    p.id, p.username, p.work_email, p.display_name, p.status, p.created_at, p.updated_at, p.title, p.contact_email,
     m.role,
     m.created_at AS joined_at,
     EXISTS (SELECT 1 FROM person_avatars a WHERE a.person_id = p.id) AS has_avatar
@@ -335,6 +335,7 @@ func (q *Queries) ListTeamMembers(ctx context.Context, teamID uuid.UUID) ([]List
 			&i.Person.CreatedAt,
 			&i.Person.UpdatedAt,
 			&i.Person.Title,
+			&i.Person.ContactEmail,
 			&i.Role,
 			&i.JoinedAt,
 			&i.HasAvatar,

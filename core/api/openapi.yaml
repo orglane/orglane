@@ -1143,6 +1143,343 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/auth/invitation:
+    post:
+      operationId: previewInvitation
+      summary: Look up an invitation
+      description: |
+        Returns who an invitation link is for, so the accept page can greet
+        the person before they choose a password. The token is the fragment
+        of the invitation link (`/invite#<token>`); it is sent in the body,
+        never in a URL. Attempts are rate limited per client address.
+      tags: [auth]
+      x-orglane-permission: public
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvitationTokenRequest"
+      responses:
+        "200":
+          description: The invitation is valid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationPreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/auth/invitation/accept:
+    post:
+      operationId: acceptInvitation
+      summary: Accept an invitation
+      description: |
+        Sets the invited person's password, makes them active and signs them
+        in (sets the session cookie, like a password sign-in). The token can
+        be used once: afterwards it answers 409. An unknown, revoked or
+        replaced token answers 404 and an expired one 410. Attempts are rate
+        limited per client address.
+      tags: [auth]
+      x-orglane-permission: public
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptInvitationRequest"
+      responses:
+        "200":
+          description: Accepted and signed in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignInResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/invitations:
+    get:
+      operationId: listInvitations
+      summary: List open invitations
+      description: |
+        Invitations of people who are still invited, newest first, with how
+        each was delivered and, for email, its delivery state: a failing
+        SMTP server shows up here as `retrying` and then `failed`, with the
+        error.
+      tags: [invitations]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The invitations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createInvitation
+      summary: Invite a person
+      description: |
+        Adds the person to the directory as `invited`, with the role, and
+        issues a single-use invitation link that expires
+        (`identity.invitation_lifetime`, 7 days by default). With system
+        email configured the link is emailed to the contact email in the
+        background; otherwise it is returned as `link` for the admin to
+        share. Granting a role requires holding every permission in it.
+        The language of the email follows `Accept-Language`.
+      tags: [invitations]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInvitationRequest"
+      responses:
+        "201":
+          description: The person was invited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedInvitation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/invitations/options:
+    get:
+      operationId: getInvitationOptions
+      summary: How new invitations are made
+      description: How a new invitation would be delivered right now, the default work email pattern and the link lifetime.
+      tags: [invitations]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The options.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationOptions"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/invitations/{invitationId}/resend:
+    post:
+      operationId: resendInvitation
+      summary: Resend an invitation
+      description: |
+        Issues a new link with a new expiry and sends it like a new
+        invitation (or returns it as `link`). The previous link stops
+        working; a revoked invitation becomes valid again.
+      tags: [invitations]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InvitationId"
+      responses:
+        "200":
+          description: The invitation was reissued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedInvitation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/invitations/{invitationId}:
+    delete:
+      operationId: revokeInvitation
+      summary: Revoke an invitation
+      description: |
+        The link stops working at once and a queued email is canceled. The
+        person stays in the directory as invited; resending issues a new
+        link.
+      tags: [invitations]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InvitationId"
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/settings/email:
+    get:
+      operationId: getEmailSettings
+      summary: System email settings
+      description: |
+        The SMTP server used for system email (ADR 0014). `source` is
+        `config` when the server configuration sets it (`email.smtp.*`):
+        then it cannot be changed here. The password is never returned.
+      tags: [settings]
+      x-orglane-permission: instance.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      operationId: putEmailSettings
+      summary: Save the system email settings
+      description: |
+        Saves the SMTP server. The password is stored encrypted with a key
+        derived from the instance master secret; omit it to keep the saved
+        one. Credentials are only ever sent over TLS (or to localhost).
+      tags: [settings]
+      x-orglane-permission: instance.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailSettingsInput"
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailSettings"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      operationId: deleteEmailSettings
+      summary: Remove the system email settings
+      description: Without email, invitations produce links to share.
+      tags: [settings]
+      x-orglane-permission: instance.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/settings/email/test:
+    post:
+      operationId: sendTestEmail
+      summary: Send a test email
+      description: |
+        Queues a test email in the outbox and waits for its first delivery
+        result. An SMTP failure answers 502 with the server's error in
+        `detail`; the worker continues its configured retries.
+      tags: [settings]
+      x-orglane-permission: instance.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestEmailRequest"
+      responses:
+        "204":
+          description: The SMTP server accepted the message.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
 components:
   securitySchemes:
     bearerAuth:
@@ -1162,6 +1499,13 @@ components:
         format: uuid
     PersonId:
       name: personId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    InvitationId:
+      name: invitationId
       in: path
       required: true
       schema:
@@ -1212,6 +1556,18 @@ components:
             $ref: "#/components/schemas/Problem"
     InternalError:
       description: An unexpected server error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Gone:
+      description: The resource expired.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    BadGateway:
+      description: An upstream server (for example the SMTP server) failed; `detail` says how.
       content:
         application/problem+json:
           schema:
@@ -2044,3 +2400,248 @@ components:
           type: string
           description: The demo person to sign in as. Defaults to `defaultUsername` of `GET /api/v1/demo`.
           example: maya.okafor
+    InvitationTokenRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: The token from the invitation link (`/invite#<token>`).
+    AcceptInvitationRequest:
+      type: object
+      required: [token, password]
+      properties:
+        token:
+          type: string
+        password:
+          type: string
+          format: password
+          minLength: 12
+          description: At least 12 characters.
+    InvitationPreview:
+      type: object
+      required: [displayName, username, workEmail, expiresAt]
+      properties:
+        displayName:
+          type: string
+          example: Maya Okafor
+        username:
+          type: string
+          example: maya.okafor
+        workEmail:
+          type: string
+          example: maya.okafor@acme.com
+        expiresAt:
+          type: string
+          format: date-time
+    CreateInvitationRequest:
+      type: object
+      required: [displayName, contactEmail, username, role]
+      properties:
+        displayName:
+          type: string
+          maxLength: 200
+          example: Maya Okafor
+        contactEmail:
+          type: string
+          description: Where the invitation goes, e.g. a personal address. Kept as the person's contact email, separate from the work email.
+          example: maya@example.com
+        username:
+          type: string
+          example: maya.okafor
+        workEmail:
+          type: string
+          description: The person's work email (their identity in the workspace). Defaults to `workEmailPattern` of the invitation options with the username.
+          example: maya.okafor@acme.com
+        title:
+          type: string
+          maxLength: 200
+          example: Robotics Engineer
+        role:
+          type: string
+          description: The key of the role the person gets (`owner`, `admin` or `member`).
+          example: member
+        teamIds:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          description: Initial active teams. Memberships (as member), role, person and invitation are created atomically.
+          items:
+            type: string
+            format: uuid
+    InvitationDelivery:
+      type: string
+      enum: [email, link]
+      description: "`email`: sent to the contact email; `link`: no email is configured, share the link yourself."
+    IssuedInvitation:
+      type: object
+      required: [invitation]
+      properties:
+        invitation:
+          $ref: "#/components/schemas/Invitation"
+        link:
+          type: string
+          description: The invitation link, only with delivery `link`. It is shown once; resend to get a new one.
+          example: https://work.acme.com/invite#oli_...
+    Invitation:
+      type: object
+      required:
+        [
+          id,
+          personId,
+          displayName,
+          username,
+          workEmail,
+          contactEmail,
+          roles,
+          status,
+          delivery,
+          createdAt,
+          issuedAt,
+          expiresAt,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        personId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        username:
+          type: string
+        workEmail:
+          type: string
+        contactEmail:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [pending, expired, revoked]
+        delivery:
+          $ref: "#/components/schemas/InvitationDelivery"
+        email:
+          $ref: "#/components/schemas/EmailDelivery"
+        invitedBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        issuedAt:
+          type: string
+          format: date-time
+          description: When the current link was issued (the last resend).
+        expiresAt:
+          type: string
+          format: date-time
+    EmailDelivery:
+      type: object
+      required: [status, attempts, maxAttempts]
+      description: The delivery state of an invitation email.
+      properties:
+        status:
+          type: string
+          enum: [queued, retrying, sent, failed, canceled]
+          description: "`retrying`: at least one attempt failed and another is scheduled; `failed`: every attempt failed."
+        attempts:
+          type: integer
+        maxAttempts:
+          type: integer
+        lastError:
+          type: string
+          description: The error of the last failed attempt, as reported by the SMTP server.
+        sentAt:
+          type: string
+          format: date-time
+    InvitationList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Invitation"
+    InvitationOptions:
+      type: object
+      required: [delivery, workEmailPattern, lifetimeHours, roles]
+      properties:
+        delivery:
+          $ref: "#/components/schemas/InvitationDelivery"
+        workEmailPattern:
+          type: string
+          description: The default work email with `{username}` in place of the username.
+          example: "{username}@acme.com"
+        lifetimeHours:
+          type: integer
+          description: How long a new link stays valid.
+          example: 168
+        roles:
+          type: array
+          description: Role keys that this caller has permission to grant.
+          items:
+            type: string
+    EmailTLSMode:
+      type: string
+      enum: [starttls, tls, none]
+      description: "`starttls` (port 587) upgrades the connection and refuses to continue without TLS; `tls` (port 465) connects with TLS; `none` sends in the clear (a relay on the same host or trusted network only)."
+    EmailSettings:
+      type: object
+      required: [source]
+      properties:
+        source:
+          type: string
+          enum: [none, settings, config]
+          description: "`none`: email is not configured (invitations produce links); `settings`: saved here; `config`: set by the server configuration, read-only."
+        host:
+          type: string
+          example: smtp.example.com
+        port:
+          type: integer
+          example: 587
+        tls:
+          $ref: "#/components/schemas/EmailTLSMode"
+        username:
+          type: string
+        passwordSet:
+          type: boolean
+          description: True when a password is stored (it is never returned).
+        from:
+          type: string
+          example: Acme <no-reply@acme.com>
+    EmailSettingsInput:
+      type: object
+      required: [host, tls, from]
+      properties:
+        host:
+          type: string
+          example: smtp.example.com
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: Defaults to the usual port of the TLS mode.
+        tls:
+          $ref: "#/components/schemas/EmailTLSMode"
+        username:
+          type: string
+          description: Empty for a server without authentication.
+        password:
+          type: string
+          format: password
+          description: Omit to keep the saved password.
+        from:
+          type: string
+          description: The sender, a bare address or "Name <address>".
+          example: Acme <no-reply@acme.com>
+    TestEmailRequest:
+      type: object
+      required: [to]
+      properties:
+        to:
+          type: string
+          example: alex@example.com

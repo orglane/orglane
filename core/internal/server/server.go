@@ -58,6 +58,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 
 	jobClient, err := jobs.NewClient(pool, cfg.Jobs, logger, jobs.Options{
 		IdentityMaintenance: func(ctx context.Context) error { return stack.Maintain(ctx, pool) },
+		Mail:                stack.Mail,
 	})
 	if err != nil {
 		return err
@@ -82,6 +83,8 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		WorkspaceURL:  cfg.WorkspaceURL(),
 		Auth:          stack.Auth,
 		Profile:       stack.Profile,
+		Mail:          stack.Mail,
+		WorkEmail:     cfg.WorkEmail,
 		Demo:          dataset,
 		ReadinessChecks: []api.ReadinessCheck{
 			{Name: "database", Check: pool.Ping},

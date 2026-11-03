@@ -20,6 +20,7 @@ import (
 	"github.com/orglane/orglane/core/internal/authz"
 	"github.com/orglane/orglane/core/internal/identity/web"
 	"github.com/orglane/orglane/core/internal/profile"
+	"github.com/orglane/orglane/core/internal/mail"
 	"github.com/orglane/orglane/demo"
 )
 
@@ -54,6 +55,12 @@ type Options struct {
 	// Profile serves profile fields (ADR 0015). Without it those operations
 	// fail with 500.
 	Profile *profile.Service
+	// Mail serves the system email settings. Without it those operations
+	// fail with 500.
+	Mail *mail.Service
+	// WorkEmail builds the default work email from a username
+	// (config.Config.WorkEmail). Defaults to <username>@<BaseDomain>.
+	WorkEmail func(username string) string
 	// Demo is the dataset of demo mode, nil outside demo mode. Only with it
 	// are the operations marked x-orglane-permission: demo served; without
 	// it their routes are not registered at all.

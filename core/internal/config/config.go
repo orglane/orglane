@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/mail"
 	"net/netip"
 	"net/url"
 	"os"
@@ -47,6 +48,9 @@ const (
 // DefaultServiceHostTemplate builds service hosts such as git.acme.com.
 const DefaultServiceHostTemplate = "{service}.{base}"
 
+// DefaultWorkEmailTemplate builds work emails such as maya@acme.com.
+const DefaultWorkEmailTemplate = "{username}@{base}"
+
 // Config is the core configuration.
 type Config struct {
 	// Environment is "production" (default) or "development".
@@ -59,8 +63,70 @@ type Config struct {
 	Ingress     Ingress   `yaml:"ingress"`
 	Jobs        Jobs      `yaml:"jobs"`
 	Identity    Identity  `yaml:"identity"`
+	Email       Email     `yaml:"email"`
 	Demo        Demo      `yaml:"demo"`
 }
+
+// SMTP TLS modes (Email.SMTP.TLS).
+const (
+	// SMTPStartTLS upgrades a plain connection with STARTTLS and refuses to
+	// continue without it (submission, port 587).
+	SMTPStartTLS = "starttls"
+	// SMTPImplicitTLS connects with TLS from the start (port 465).
+	SMTPImplicitTLS = "tls"
+	// SMTPNoTLS sends in the clear. Only for a relay on the same host or a
+	// trusted network, such as Mailpit in development; authentication is
+	// refused over it except to localhost.
+	SMTPNoTLS = "none"
+)
+
+// DefaultSMTPPort returns the usual port of a TLS mode.
+func DefaultSMTPPort(tlsMode string) int {
+	switch tlsMode {
+	case SMTPImplicitTLS:
+		return 465
+	case SMTPNoTLS:
+		return 25
+	default:
+		return 587
+	}
+}
+
+// Email configures system email: invitations and notifications, sent
+// through SMTP (ADR 0014), separate from employee mailboxes.
+//
+// The SMTP server is normally set by an Owner or Admin in the web UI
+// (Settings → Email). Setting email.smtp.host here instead manages it from
+// the configuration (useful for installs and development): the UI then
+// shows it read-only. Without either, invitations produce a link to share.
+type Email struct {
+	SMTP SMTP `yaml:"smtp"`
+	// From is the sender, e.g. "Acme <no-reply@acme.com>". Required with
+	// email.smtp.host.
+	From string `yaml:"from"`
+	// MaxAttempts is how often a message is tried before it is given up.
+	// Defaults to 6.
+	MaxAttempts int `yaml:"max_attempts"`
+	// RetryDelay is the wait after the first failed attempt; it doubles
+	// after every further failure (30s, 1m, 2m, ... by default).
+	RetryDelay time.Duration `yaml:"retry_delay"`
+}
+
+// SMTP is an SMTP server for system email.
+type SMTP struct {
+	// Host is the SMTP server. Empty (the default) leaves email to the
+	// settings in the web UI.
+	Host string `yaml:"host"`
+	// Port defaults to 587 for starttls, 465 for tls and 25 for none.
+	Port int `yaml:"port"`
+	// TLS is starttls (default), tls or none.
+	TLS      string `yaml:"tls"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+}
+
+// Configured reports whether the configuration sets the SMTP server.
+func (e Email) Configured() bool { return e.SMTP.Host != "" }
 
 // Demo configures demo mode (`orglane server --demo`): on an empty database
 // the server loads the demo dataset (demo/) instead of offering first-run
@@ -142,6 +208,10 @@ type Domain struct {
 	// ServiceHostTemplate builds company service hosts from {service} and
 	// {base}. Defaults to "{service}.{base}".
 	ServiceHostTemplate string `yaml:"service_host_template"`
+	// WorkEmailTemplate builds the default work email of a new person from
+	// {username} and {base}. Defaults to "{username}@{base}"; admins can
+	// change the address of each person.
+	WorkEmailTemplate string `yaml:"work_email_template"`
 	// Scheme is the scheme the workspace is reached with by browsers and
 	// clients: https (default) or http. TLS is usually terminated in front of
 	// the core (Traefik). http is only allowed in development, for local
@@ -241,6 +311,9 @@ type Identity struct {
 	// SignInLockout. Defaults to 5 and 15 minutes.
 	SignInAccountLimit int           `yaml:"sign_in_account_limit"`
 	SignInLockout      time.Duration `yaml:"sign_in_lockout"`
+	// InvitationLifetime is how long an invitation link stays valid.
+	// Resending an invitation issues a new link. Defaults to 7 days.
+	InvitationLifetime time.Duration `yaml:"invitation_lifetime"`
 }
 
 // DevMasterSecret is the master secret used in development when none is
@@ -264,7 +337,7 @@ func Default() Config {
 		Log:         Log{Level: "info"},
 		Server:      Server{Listen: ":8080", ShutdownTimeout: 15 * time.Second},
 		Database:    Database{MaxConns: 10, ConnectTimeout: 30 * time.Second},
-		Domain:      Domain{ServiceHostTemplate: DefaultServiceHostTemplate, Scheme: "https"},
+		Domain:      Domain{ServiceHostTemplate: DefaultServiceHostTemplate, WorkEmailTemplate: DefaultWorkEmailTemplate, Scheme: "https"},
 		Endpoints:   Endpoints{PushRelayURL: DefaultPushRelayURL, DiscoveryURL: DefaultDiscoveryURL},
 		Ingress:     Ingress{Mode: IngressDomain, CertResolver: DefaultCertResolver, HSTSMaxAge: 365 * 24 * time.Hour},
 		Jobs: Jobs{
@@ -284,6 +357,12 @@ func Default() Config {
 			SignInIPWindow:         5 * time.Minute,
 			SignInAccountLimit:     5,
 			SignInLockout:          15 * time.Minute,
+			InvitationLifetime:     7 * 24 * time.Hour,
+		},
+		Email: Email{
+			SMTP:        SMTP{TLS: SMTPStartTLS},
+			MaxAttempts: 6,
+			RetryDelay:  30 * time.Second,
 		},
 	}
 }
@@ -390,6 +469,13 @@ func (c *Config) normalize() {
 		c.Domain.WorkspaceHost = c.Domain.Base
 	}
 	c.Domain.ServiceHostTemplate = strings.ToLower(strings.TrimSpace(c.Domain.ServiceHostTemplate))
+	c.Domain.WorkEmailTemplate = strings.ToLower(strings.TrimSpace(c.Domain.WorkEmailTemplate))
+	c.Email.SMTP.Host = normalizeHost(c.Email.SMTP.Host)
+	c.Email.SMTP.TLS = strings.ToLower(strings.TrimSpace(c.Email.SMTP.TLS))
+	c.Email.From = strings.TrimSpace(c.Email.From)
+	if c.Email.SMTP.Port == 0 {
+		c.Email.SMTP.Port = DefaultSMTPPort(c.Email.SMTP.TLS)
+	}
 	c.Domain.Scheme = strings.ToLower(strings.TrimSpace(c.Domain.Scheme))
 	if c.Identity.MasterSecret == "" && c.Environment == Development {
 		c.Identity.MasterSecret = DevMasterSecret
@@ -468,6 +554,9 @@ func (c *Config) Validate() error {
 	if err := c.validateServiceTemplate(); err != nil {
 		fail("domain.service_host_template", "%v", err)
 	}
+	if err := c.validateWorkEmailTemplate(); err != nil {
+		fail("domain.work_email_template", "%v", err)
+	}
 	switch {
 	case c.Domain.Scheme == "https":
 	case c.Domain.Scheme == "http" && c.Environment == Development:
@@ -490,7 +579,44 @@ func (c *Config) Validate() error {
 		fail("jobs.noop.interval", "must be at least 1s")
 	}
 	c.validateIdentity(fail)
+	c.validateEmail(fail)
 	return errors.Join(errs...)
+}
+
+func (c *Config) validateEmail(fail func(string, string, ...any)) {
+	e := c.Email
+	if e.MaxAttempts < 1 || e.MaxAttempts > 25 {
+		fail("email.max_attempts", "must be between 1 and 25")
+	}
+	if e.RetryDelay < time.Second {
+		fail("email.retry_delay", "must be at least 1s")
+	}
+	if !slices.Contains([]string{SMTPStartTLS, SMTPImplicitTLS, SMTPNoTLS}, e.SMTP.TLS) {
+		fail("email.smtp.tls", "must be %s, %s or %s, got %q", SMTPStartTLS, SMTPImplicitTLS, SMTPNoTLS, e.SMTP.TLS)
+	}
+	if e.SMTP.Port < 1 || e.SMTP.Port > 65535 {
+		fail("email.smtp.port", "must be between 1 and 65535")
+	}
+	if !e.Configured() {
+		if e.From != "" || e.SMTP.Username != "" || e.SMTP.Password != "" {
+			fail("email.smtp.host", "required when other email settings are set")
+		}
+		return
+	}
+	if !validHostname(e.SMTP.Host) {
+		if _, err := netip.ParseAddr(e.SMTP.Host); err != nil {
+			fail("email.smtp.host", "%q is not a valid host name or IP address", e.SMTP.Host)
+		}
+	}
+	if (e.SMTP.Username == "") != (e.SMTP.Password == "") {
+		// Never echo the values.
+		fail("email.smtp.username", "username and password go together: set both or neither")
+	}
+	if e.From == "" {
+		fail("email.from", "required with email.smtp.host, e.g. \"Acme <no-reply@acme.com>\"")
+	} else if _, err := mail.ParseAddress(e.From); err != nil || strings.ContainsAny(e.From, "\r\n") {
+		fail("email.from", "%q is not an email address such as \"Acme <no-reply@acme.com>\"", e.From)
+	}
 }
 
 func (c *Config) validateIdentity(fail func(string, string, ...any)) {
@@ -516,6 +642,9 @@ func (c *Config) validateIdentity(fail func(string, string, ...any)) {
 	positive("identity.refresh_token_lifetime", id.RefreshTokenLifetime)
 	positive("identity.sign_in_ip_window", id.SignInIPWindow)
 	positive("identity.sign_in_lockout", id.SignInLockout)
+	if id.InvitationLifetime < time.Hour || id.InvitationLifetime > 90*24*time.Hour {
+		fail("identity.invitation_lifetime", "must be between 1h and 90 days")
+	}
 	if id.SigningKeyRotation < time.Hour {
 		fail("identity.signing_key_rotation", "must be at least 1h")
 	}
@@ -551,6 +680,34 @@ func (c *Config) validateServiceTemplate() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) validateWorkEmailTemplate() error {
+	tmpl := c.Domain.WorkEmailTemplate
+	if !strings.Contains(tmpl, "{username}") {
+		return fmt.Errorf("%q must contain {username}", tmpl)
+	}
+	rest := strings.NewReplacer("{username}", "", "{base}", "").Replace(tmpl)
+	if strings.ContainsAny(rest, "{}") {
+		return fmt.Errorf("%q: only {username} and {base} are supported", tmpl)
+	}
+	if c.Domain.Base != "" {
+		email := c.WorkEmail("maya.okafor")
+		local, domain, ok := strings.Cut(email, "@")
+		if !ok || local == "" || strings.Contains(domain, "@") || !validHostname(domain) {
+			return fmt.Errorf("%q produces the invalid address %q", tmpl, email)
+		}
+		if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
+			return fmt.Errorf("%q produces the invalid address %q", tmpl, email)
+		}
+	}
+	return nil
+}
+
+// WorkEmail returns the default work email of a person, e.g.
+// WorkEmail("maya") is maya@acme.com with the default template.
+func (c *Config) WorkEmail(username string) string {
+	return strings.NewReplacer("{username}", username, "{base}", c.Domain.Base).Replace(c.Domain.WorkEmailTemplate)
 }
 
 func (c *Config) validateIngress(fail func(string, string, ...any)) {

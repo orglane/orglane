@@ -34,10 +34,39 @@ type Device struct {
 	RevokedAt  *time.Time
 }
 
+type EmailOutbox struct {
+	ID            uuid.UUID
+	Kind          string
+	Recipient     string
+	Status        string
+	SealedMessage []byte
+	Attempts      int32
+	MaxAttempts   int32
+	LastError     *string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	SentAt        *time.Time
+}
+
 type InstanceSetting struct {
 	Key       string
 	Value     []byte
 	UpdatedAt time.Time
+}
+
+type Invitation struct {
+	ID               uuid.UUID
+	PersonID         uuid.UUID
+	TokenHash        []byte
+	Locale           string
+	InvitedBy        *uuid.UUID
+	EmailID          *uuid.UUID
+	CreatedAt        time.Time
+	IssuedAt         time.Time
+	ExpiresAt        time.Time
+	AcceptedAt       *time.Time
+	RevokedAt        *time.Time
+	ExpiryRecordedAt *time.Time
 }
 
 type OidcAccessToken struct {
@@ -124,14 +153,15 @@ type Passkey struct {
 }
 
 type Person struct {
-	ID          uuid.UUID
-	Username    string
-	WorkEmail   string
-	DisplayName string
-	Status      string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	Title       *string
+	ID           uuid.UUID
+	Username     string
+	WorkEmail    string
+	DisplayName  string
+	Status       string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	Title        *string
+	ContactEmail *string
 }
 
 type PersonAvatar struct {

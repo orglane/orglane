@@ -59,6 +59,9 @@ type NewPerson struct {
 	Title string
 	// Status is StatusInvited (the default) or StatusActive.
 	Status Status
+	// ContactEmail is where invitations and recovery messages go, separate
+	// from the work email. Optional.
+	ContactEmail string
 }
 
 // PersonUpdate changes base fields of a person. Nil fields stay unchanged.
@@ -87,6 +90,13 @@ func (s *Service) CreatePerson(ctx context.Context, actor audit.Actor, in NewPer
 	}
 	if params.Title, err = normalizeTitle(in.Title); err != nil {
 		return store.Person{}, err
+	}
+	if in.ContactEmail != "" {
+		contact, err := normalizeAddress("contact_email", in.ContactEmail)
+		if err != nil {
+			return store.Person{}, err
+		}
+		params.ContactEmail = &contact
 	}
 	switch in.Status {
 	case "":
@@ -289,13 +299,18 @@ func normalizeUsername(u string) (string, error) {
 }
 
 func normalizeEmail(e string) (string, error) {
+	return normalizeAddress("work_email", e)
+}
+
+// normalizeAddress trims and checks a bare email address for field.
+func normalizeAddress(field, e string) (string, error) {
 	e = strings.TrimSpace(e)
 	if e == "" || len(e) > maxEmailLength {
-		return "", invalid("work_email", "must be 1-%d characters", maxEmailLength)
+		return "", invalid(field, "must be 1-%d characters", maxEmailLength)
 	}
 	addr, err := mail.ParseAddress(e)
 	if err != nil || addr.Name != "" || addr.Address != e || strings.Count(e, "@") != 1 || strings.ContainsAny(e, " \t\r\n") {
-		return "", invalid("work_email", "must be a bare address such as name@example.com")
+		return "", invalid(field, "must be a bare address such as name@example.com")
 	}
 	return e, nil
 }

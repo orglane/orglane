@@ -1,0 +1,19 @@
+{{define "layout"}}<!doctype html>
+<html lang="{{.Lang}}" dir="{{.Dir}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{{.Subject}}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f5;color:#18181b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.5;">
+<div style="display:none;max-height:0;overflow:hidden;">{{.Preheader}}</div>
+<main style="max-width:560px;margin:0 auto;padding:32px 16px;">
+<div style="background:#ffffff;border:1px solid #e4e4e7;border-radius:12px;padding:32px;">
+{{template "content" .}}
+</div>
+<p style="margin:24px 8px 0;color:#52525b;font-size:13px;">{{t "common.footer" "workspace" .Workspace}}</p>
+</main>
+</body>
+</html>
+{{end}}

@@ -24,17 +24,18 @@ func (q *Queries) CountPeople(ctx context.Context) (int64, error) {
 }
 
 const createPerson = `-- name: CreatePerson :one
-INSERT INTO people (username, work_email, display_name, title, status)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, username, work_email, display_name, status, created_at, updated_at, title
+INSERT INTO people (username, work_email, display_name, title, contact_email, status)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, username, work_email, display_name, status, created_at, updated_at, title, contact_email
 `
 
 type CreatePersonParams struct {
-	Username    string
-	WorkEmail   string
-	DisplayName string
-	Title       *string
-	Status      string
+	Username     string
+	WorkEmail    string
+	DisplayName  string
+	Title        *string
+	ContactEmail *string
+	Status       string
 }
 
 func (q *Queries) CreatePerson(ctx context.Context, arg CreatePersonParams) (Person, error) {
@@ -43,6 +44,7 @@ func (q *Queries) CreatePerson(ctx context.Context, arg CreatePersonParams) (Per
 		arg.WorkEmail,
 		arg.DisplayName,
 		arg.Title,
+		arg.ContactEmail,
 		arg.Status,
 	)
 	var i Person
@@ -55,12 +57,13 @@ func (q *Queries) CreatePerson(ctx context.Context, arg CreatePersonParams) (Per
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Title,
+		&i.ContactEmail,
 	)
 	return i, err
 }
 
 const getPerson = `-- name: GetPerson :one
-SELECT id, username, work_email, display_name, status, created_at, updated_at, title FROM people WHERE id = $1
+SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email FROM people WHERE id = $1
 `
 
 func (q *Queries) GetPerson(ctx context.Context, id uuid.UUID) (Person, error) {
@@ -75,12 +78,13 @@ func (q *Queries) GetPerson(ctx context.Context, id uuid.UUID) (Person, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Title,
+		&i.ContactEmail,
 	)
 	return i, err
 }
 
 const getPersonByUsername = `-- name: GetPersonByUsername :one
-SELECT id, username, work_email, display_name, status, created_at, updated_at, title FROM people WHERE username = $1
+SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email FROM people WHERE username = $1
 `
 
 func (q *Queries) GetPersonByUsername(ctx context.Context, username string) (Person, error) {
@@ -95,12 +99,13 @@ func (q *Queries) GetPersonByUsername(ctx context.Context, username string) (Per
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Title,
+		&i.ContactEmail,
 	)
 	return i, err
 }
 
 const getPersonByWorkEmail = `-- name: GetPersonByWorkEmail :one
-SELECT id, username, work_email, display_name, status, created_at, updated_at, title FROM people WHERE lower(work_email) = lower($1)
+SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email FROM people WHERE lower(work_email) = lower($1)
 `
 
 func (q *Queries) GetPersonByWorkEmail(ctx context.Context, workEmail string) (Person, error) {
@@ -115,12 +120,13 @@ func (q *Queries) GetPersonByWorkEmail(ctx context.Context, workEmail string) (P
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Title,
+		&i.ContactEmail,
 	)
 	return i, err
 }
 
 const getPersonForUpdate = `-- name: GetPersonForUpdate :one
-SELECT id, username, work_email, display_name, status, created_at, updated_at, title FROM people WHERE id = $1 FOR UPDATE
+SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email FROM people WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetPersonForUpdate(ctx context.Context, id uuid.UUID) (Person, error) {
@@ -135,13 +141,14 @@ func (q *Queries) GetPersonForUpdate(ctx context.Context, id uuid.UUID) (Person,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Title,
+		&i.ContactEmail,
 	)
 	return i, err
 }
 
 const listDirectory = `-- name: ListDirectory :many
 SELECT
-    p.id, p.username, p.work_email, p.display_name, p.status, p.created_at, p.updated_at, p.title,
+    p.id, p.username, p.work_email, p.display_name, p.status, p.created_at, p.updated_at, p.title, p.contact_email,
     coalesce(
         (SELECT array_agg(r.key ORDER BY r.id)::text[]
          FROM person_roles pr JOIN roles r ON r.id = pr.role_id
@@ -155,16 +162,17 @@ ORDER BY lower(p.display_name), p.id
 `
 
 type ListDirectoryRow struct {
-	ID          uuid.UUID
-	Username    string
-	WorkEmail   string
-	DisplayName string
-	Status      string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	Title       *string
-	RoleKeys    []string
-	HasAvatar   bool
+	ID           uuid.UUID
+	Username     string
+	WorkEmail    string
+	DisplayName  string
+	Status       string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	Title        *string
+	ContactEmail *string
+	RoleKeys     []string
+	HasAvatar    bool
 }
 
 // The people directory: everyone except offboarded people, by display name,
@@ -187,6 +195,7 @@ func (q *Queries) ListDirectory(ctx context.Context) ([]ListDirectoryRow, error)
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Title,
+			&i.ContactEmail,
 			&i.RoleKeys,
 			&i.HasAvatar,
 		); err != nil {
@@ -203,7 +212,7 @@ func (q *Queries) ListDirectory(ctx context.Context) ([]ListDirectoryRow, error)
 const setPersonStatus = `-- name: SetPersonStatus :one
 UPDATE people SET status = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, username, work_email, display_name, status, created_at, updated_at, title
+RETURNING id, username, work_email, display_name, status, created_at, updated_at, title, contact_email
 `
 
 type SetPersonStatusParams struct {
@@ -223,6 +232,7 @@ func (q *Queries) SetPersonStatus(ctx context.Context, arg SetPersonStatusParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Title,
+		&i.ContactEmail,
 	)
 	return i, err
 }
@@ -231,7 +241,7 @@ const updatePerson = `-- name: UpdatePerson :one
 UPDATE people
 SET username = $1, work_email = $2, display_name = $3, title = $4, updated_at = now()
 WHERE id = $5
-RETURNING id, username, work_email, display_name, status, created_at, updated_at, title
+RETURNING id, username, work_email, display_name, status, created_at, updated_at, title, contact_email
 `
 
 type UpdatePersonParams struct {
@@ -260,6 +270,7 @@ func (q *Queries) UpdatePerson(ctx context.Context, arg UpdatePersonParams) (Per
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Title,
+		&i.ContactEmail,
 	)
 	return i, err
 }
