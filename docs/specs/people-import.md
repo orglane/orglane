@@ -24,7 +24,11 @@ Matching checks work email, contact email and source-scoped external ID in that
 priority order; ambiguity or identifiers pointing to different people is a
 conflict. Duplicate identifiers within a file are conflicts, excluding rows the
 operator explicitly skips. Reimports produce no duplicate people or memberships. Preview
-records a version of the matched person's state and related grants. Apply
+records a version of the matched person's state and related grants, plus the
+resolved manager and team identities, absence and ambiguity. Team resolution
+is compared against an initial snapshot under the import locks, before any
+apply writes; teams auto-created by earlier rows of that same apply may be
+reused without treating simulated preview UUIDs as stable identities. Apply
 revalidates identities, grants, field definitions and versions. A stale row fails
 and must be previewed again in a new run. Applied runs are immutable; repeated
 apply returns the saved result.

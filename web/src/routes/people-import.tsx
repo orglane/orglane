@@ -381,6 +381,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
               </Button>
               <Field
                 type="file"
+                disabled={busy}
                 accept=".csv,.xlsx"
                 label={<FormattedMessage {...messages.file} />}
                 hint={<FormattedMessage {...messages.limits} />}
@@ -416,6 +417,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
                       : intl.formatMessage(columnMessage, { number: column + 1 })}
                   </span>
                   <select
+                    disabled={busy}
                     className="rounded-md border bg-background px-3 py-2 text-sm"
                     aria-label={intl.formatMessage(columnMessage, { number: column + 1 })}
                     value={mapping.columns.find((c) => c.column === column)?.target ?? ""}
@@ -444,6 +446,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
               <label className="flex gap-2">
                 <input
                   type="checkbox"
+                  disabled={busy}
                   checked={mapping.createTeams}
                   onChange={(e) => setMapping((m) => ({ ...m, createTeams: e.target.checked }))}
                 />
@@ -452,6 +455,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
               <label className="flex gap-2">
                 <input
                   type="checkbox"
+                  disabled={busy}
                   checked={mapping.sendInvitations}
                   onChange={(e) => setMapping((m) => ({ ...m, sendInvitations: e.target.checked }))}
                 />
@@ -531,6 +535,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
                           ) : (
                             <input
                               type="checkbox"
+                              disabled={busy}
                               aria-label={intl.formatMessage(skipMessage, { number: row.row })}
                               checked={mapping.skipRows.includes(row.row)}
                               onChange={(e) => {

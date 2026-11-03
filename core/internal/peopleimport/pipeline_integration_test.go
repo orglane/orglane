@@ -386,3 +386,99 @@ func TestExplicitSkipAndMissingTeams(t *testing.T) {
 		t.Fatal("explicit skip mutated identity")
 	}
 }
+
+func TestPreviewBindsTeamResolution(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		pending, absent bool
+		change          string
+	}{
+		{name: "existing person replacement", change: "replace"},
+		{name: "pending person replacement", pending: true, change: "replace"},
+		{name: "renamed team would auto-create", change: "rename"},
+		{name: "new ambiguity", change: "ambiguous"},
+		{name: "archived reference", change: "archive"},
+		{name: "pending absent team created externally", pending: true, absent: true, change: "create"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			var original store.Team
+			var err error
+			if !tc.absent {
+				original, err = f.ids.CreateTeam(t.Context(), audit.System, identity.NewTeam{Slug: "engineering", Name: "Engineering"})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			input := "username,work_email,display_name,teams\nowner,owner@acme.test,Owner,Engineering\n"
+			if tc.pending {
+				input = "username,work_email,display_name,teams\npending,pending@acme.test,Pending,Engineering\n"
+			}
+			run := f.preview(f.uploadText(input), mapping("username", "work_email", "display_name", "teams"))
+			if tc.pending {
+				assertDecision(t, run, "create")
+			} else {
+				assertDecision(t, run, "update")
+			}
+			if tc.change == "replace" || tc.change == "rename" {
+				name := "Old Engineering"
+				if _, err = f.ids.UpdateTeam(t.Context(), audit.System, original.ID, identity.TeamUpdate{Name: &name}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.change == "archive" {
+				if _, err = f.ids.ArchiveTeam(t.Context(), audit.System, original.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.change != "rename" && tc.change != "archive" {
+				if _, err = f.ids.CreateTeam(t.Context(), audit.System, identity.NewTeam{Slug: "replacement", Name: "Engineering"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run = f.apply(run)
+			if run.Rows[0].Result != "failed" || run.Rows[0].Error != "stale_preview" {
+				t.Fatalf("team drift was not rejected as stale: %+v", run.Rows)
+			}
+			if f.count("SELECT count(*) FROM team_memberships") != 0 {
+				t.Fatal("stale team resolution granted membership")
+			}
+			if tc.pending && f.count("SELECT count(*) FROM people WHERE username='pending'") != 0 {
+				t.Fatal("stale pending row created a person")
+			}
+		})
+	}
+}
+
+func TestStableTeamResolutionAndSharedAutoCreation(t *testing.T) {
+	t.Run("stable existing team", func(t *testing.T) {
+		f := newFixture(t)
+		team, err := f.ids.CreateTeam(t.Context(), audit.System, identity.NewTeam{Slug: "engineering", Name: "Engineering"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := f.preview(f.uploadText("work_email,teams\nowner@acme.test,Engineering\n"), mapping("work_email", "teams"))
+		assertDecision(t, run, "update")
+		run = f.apply(run)
+		if run.Rows[0].Result != "updated" || f.count("SELECT count(*) FROM team_memberships WHERE person_id=$1 AND team_id=$2", f.owner.ID, team.ID) != 1 {
+			t.Fatalf("stable team was not applied: %+v", run.Rows)
+		}
+	})
+	t.Run("stable absence shared across rows", func(t *testing.T) {
+		f := newFixture(t)
+		run := f.preview(f.uploadText("username,work_email,display_name,teams\nfirst,first@acme.test,First,Engineering\nsecond,second@acme.test,Second,engineering\n"), mapping("username", "work_email", "display_name", "teams"))
+		assertDecision(t, run, "create", "create")
+		if f.count("SELECT count(*) FROM teams") != 0 {
+			t.Fatal("preview auto-created a persistent team")
+		}
+		run = f.apply(run)
+		for _, row := range run.Rows {
+			if row.Result != "created" {
+				t.Fatalf("same-run auto-create became stale: %+v", run.Rows)
+			}
+		}
+		if f.count("SELECT count(*) FROM teams WHERE lower(name)='engineering'") != 1 || f.count("SELECT count(DISTINCT team_id) FROM team_memberships") != 1 || f.count("SELECT count(*) FROM team_memberships") != 2 {
+			t.Fatal("shared team auto-creation was not idempotent")
+		}
+	})
+}

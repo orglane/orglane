@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, setUp, test } from "./fixtures";
+import type { Page } from "@playwright/test";
+import { expect, type Instance, setUp, test } from "./fixtures";
 
 const fifty = fileURLToPath(
   new URL("../../core/internal/peopleimport/testdata/fifty.csv", import.meta.url),
@@ -89,5 +90,90 @@ test("upload, map, preview and apply fifty people with persisted idempotent resu
   await page.getByRole("button", { name: "Apply import", exact: true }).click();
   await expect(page.getByRole("status")).toContainText(
     "Finished: 0 created, 0 updated, 50 skipped, 0 failed.",
+  );
+});
+
+async function mappedImport(page: Page, instance: Instance) {
+  await setUp(page, instance);
+  await page.getByRole("button", { name: "Skip for now" }).click();
+  await page.goto(`${instance.url}/people/import`);
+  await page.getByLabel("CSV or XLSX file").setInputFiles(fifty);
+  await page.getByRole("button", { name: "Upload file", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Map columns" })).toBeVisible();
+  await page.getByLabel("Column 2", { exact: true }).selectOption("work_email");
+  await page.getByRole("checkbox", { name: "Create teams that do not exist" }).check();
+}
+
+test("mapping controls stay frozen while a preview response is pending", async ({
+  page,
+  instance,
+  webauthn: _,
+}) => {
+  await mappedImport(page, instance);
+  let release: (() => void) | undefined;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reached = false;
+  await page.route("**/api/v1/people-imports/*/preview", async (route) => {
+    const response = await route.fetch();
+    reached = true;
+    await blocked;
+    await route.fulfill({ response });
+  });
+  try {
+    await page.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await expect.poll(() => reached).toBe(true);
+    await expect(page.getByLabel("Column 2", { exact: true })).toBeDisabled();
+    await expect(
+      page.getByRole("checkbox", { name: "Create teams that do not exist" }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("checkbox", { name: "Email invitations for newly created people" }),
+    ).toBeDisabled();
+  } finally {
+    release?.();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+  await expect(page.getByRole("status")).toContainText(
+    "50 rows: 50 create, 0 update, 0 skip, 0 conflict.",
+  );
+  await expect(page.getByRole("checkbox", { name: "Skip row 2", exact: true })).toBeEnabled();
+});
+
+test("skip controls stay frozen while an apply response is pending", async ({
+  page,
+  instance,
+  webauthn: _,
+}) => {
+  await mappedImport(page, instance);
+  await page.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "50 rows: 50 create, 0 update, 0 skip, 0 conflict.",
+  );
+  let release: (() => void) | undefined;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reached = false;
+  await page.route("**/api/v1/people-imports/*/apply", async (route) => {
+    const response = await route.fetch();
+    reached = true;
+    await blocked;
+    await route.fulfill({ response });
+  });
+  try {
+    await page.getByRole("button", { name: "Apply import", exact: true }).click();
+    await expect.poll(() => reached).toBe(true);
+    const skip = page.getByRole("checkbox", { name: "Skip row 2", exact: true });
+    await expect(skip).toBeDisabled();
+    await expect(skip).not.toBeChecked();
+    await expect(page.getByRole("button", { name: "Edit mapping", exact: true })).toBeDisabled();
+  } finally {
+    release?.();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+  await expect(page.getByRole("status")).toContainText(
+    "Finished: 50 created, 0 updated, 0 skipped, 0 failed.",
   );
 });

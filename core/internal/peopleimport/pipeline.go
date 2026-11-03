@@ -351,11 +351,70 @@ func (s *Service) match(ctx context.Context, q *store.Queries, source string, v 
 var errConflict = errors.New("identity_conflict")
 var errStale = errors.New("stale_preview")
 
-// previewState contains only internal IDs/hashes; it is encrypted regardless.
+// previewState contains internal IDs, availability and hashes; it stays encrypted.
 type previewState struct {
 	ID        uuid.UUID
 	ManagerID uuid.UUID
 	Version   []byte
+	Teams     []teamResolution
+}
+
+// An empty resolution records absence. Candidate IDs and availability capture
+// both unambiguous and ambiguous names without storing source values here.
+type teamResolution []teamCandidate
+type teamCandidate struct {
+	ID       uuid.UUID
+	Archived bool
+}
+
+func teamNames(raw string) []string {
+	var names []string
+	for _, name := range strings.Split(raw, ";") {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func sameTeams(a, b []teamResolution) bool {
+	return slices.EqualFunc(a, b, slices.Equal[teamResolution])
+}
+
+// Resolve source names under the import locks before any row writes. SQL owns
+// case matching. In particular, a missing team stays absent in this snapshot
+// even if an earlier row of this same apply subsequently auto-creates it.
+func frozenTeamResolutions(ctx context.Context, q *store.Queries, records []Record, m Mapping, duplicate map[int]bool) (map[int][]teamResolution, error) {
+	frozen := make(map[int][]teamResolution, len(records))
+	cache := map[string]teamResolution{}
+	for _, rec := range records {
+		if rec.Error != "" || duplicate[rec.Number] || slices.Contains(m.SkipRows, rec.Number) {
+			continue
+		}
+		names := teamNames(values(rec, m)["teams"])
+		if len(names) > 100 {
+			// The row mutation reports the domain limit.
+			continue
+		}
+		resolutions := make([]teamResolution, 0, len(names))
+		for _, name := range names {
+			found, ok := cache[name]
+			if !ok {
+				teams, err := q.FindPeopleImportTeams(ctx, name)
+				if err != nil {
+					return nil, err
+				}
+				found = make(teamResolution, 0, len(teams))
+				for _, team := range teams {
+					found = append(found, teamCandidate{ID: team.ID, Archived: team.ArchivedAt != nil})
+				}
+				cache[name] = found
+			}
+			resolutions = append(resolutions, found)
+		}
+		frozen[rec.Number] = resolutions
+	}
+	return frozen, nil
 }
 
 func snapshot(ctx context.Context, q *store.Queries, id uuid.UUID) ([]byte, error) {
@@ -366,7 +425,7 @@ func snapshot(ctx context.Context, q *store.Queries, id uuid.UUID) ([]byte, erro
 	sum := sha256.Sum256(b)
 	return sum[:], nil
 }
-func (s *Service) mutate(ctx context.Context, tx pgx.Tx, q *store.Queries, actor audit.Actor, run store.PeopleImportRun, rec Record, m Mapping, expected *previewState) (string, previewState, error) {
+func (s *Service) mutate(ctx context.Context, tx pgx.Tx, q *store.Queries, actor audit.Actor, run store.PeopleImportRun, rec Record, m Mapping, teams []teamResolution, expected *previewState) (string, previewState, error) {
 	v := values(rec, m)
 	id, err := s.match(ctx, q, run.Source, v)
 	if err != nil {
@@ -394,7 +453,7 @@ func (s *Service) mutate(ctx context.Context, tx pgx.Tx, q *store.Queries, actor
 	if err != nil {
 		return "conflict", previewState{}, err
 	}
-	state := previewState{ID: id, Version: before}
+	state := previewState{ID: id, Version: before, Teams: teams}
 	if manager := v["manager_email"]; manager != "" {
 		people, e := q.FindPeopleImportWorkEmail(ctx, manager)
 		if e != nil {
@@ -405,19 +464,16 @@ func (s *Service) mutate(ctx context.Context, tx pgx.Tx, q *store.Queries, actor
 		}
 		state.ManagerID = people[0].ID
 	}
-	if expected != nil && (expected.ID != id || expected.ManagerID != state.ManagerID || !bytes.Equal(expected.Version, before)) {
+	if expected != nil && (expected.ID != id || expected.ManagerID != state.ManagerID || !bytes.Equal(expected.Version, before) || !sameTeams(expected.Teams, teams)) {
 		return "conflict", state, errStale
 	}
 	in := identity.ImportedPerson{ID: id, Username: v["username"], WorkEmail: v["work_email"], ContactEmail: v["contact_email"], DisplayName: v["display_name"], Title: v["title"], Role: authz.RoleKey(v["role"]), CreateTeams: m.CreateTeams, SendInvitation: m.SendInvitations}
 	if state.ManagerID != uuid.Nil {
 		in.ManagerID = &state.ManagerID
 	}
-	if names := v["teams"]; names != "" {
-		for _, name := range strings.Split(names, ";") {
-			if strings.TrimSpace(name) != "" {
-				in.Teams = append(in.Teams, strings.TrimSpace(name))
-			}
-		}
+	in.Teams = teamNames(v["teams"])
+	if len(in.Teams) > 100 {
+		return "conflict", state, identity.ErrInvalid
 	}
 	person, err := s.identity.ImportPersonTx(ctx, tx, q, actor, in)
 	if err != nil {
@@ -580,6 +636,10 @@ func (s *Service) process(ctx context.Context, actor audit.Actor, id uuid.UUID, 
 				}
 			}
 		}
+		teams, err := frozenTeamResolutions(ctx, q, records, m, duplicate)
+		if err != nil {
+			return err
+		}
 		for i, row := range rows {
 			rec := records[i]
 			decision, code := "skip", rec.Error
@@ -606,7 +666,7 @@ func (s *Service) process(ctx context.Context, actor audit.Actor, id uuid.UUID, 
 				if err != nil {
 					return err
 				}
-				decision, state, err = s.mutate(ctx, nested, store.New(nested), actor, run, rec, m, expected)
+				decision, state, err = s.mutate(ctx, nested, store.New(nested), actor, run, rec, m, teams[rec.Number], expected)
 				if err != nil {
 					code = errorCode(err)
 					decision = "conflict"
