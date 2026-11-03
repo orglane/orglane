@@ -71,6 +71,9 @@ type PersonUpdate struct {
 	DisplayName *string
 	// Title is the job title; an empty string clears it.
 	Title *string
+	// ManagerID: uuid.Nil removes the reporting line. Only directory managers
+	// may set this field through the API.
+	ManagerID *uuid.UUID
 }
 
 // CreatePerson adds a person to the directory.
@@ -126,69 +129,131 @@ func (s *Service) CreatePerson(ctx context.Context, actor audit.Actor, in NewPer
 	return person, nil
 }
 
-// UpdatePerson changes the base fields of a person. The audit entry lists
-// the changed fields, not their values.
+// UpdatePerson changes base fields and records changed field names in audit.
 func (s *Service) UpdatePerson(ctx context.Context, actor audit.Actor, id uuid.UUID, in PersonUpdate) (store.Person, error) {
 	var person store.Person
 	err := s.inTx(ctx, func(q *store.Queries) error {
-		current, err := q.GetPersonForUpdate(ctx, id)
-		if err != nil {
-			return notFound(err, "person")
-		}
-		params := store.UpdatePersonParams{
-			ID:          id,
-			Username:    current.Username,
-			WorkEmail:   current.WorkEmail,
-			DisplayName: current.DisplayName,
-			Title:       current.Title,
-		}
-		var changed []string
-		if in.Username != nil {
-			if params.Username, err = normalizeUsername(*in.Username); err != nil {
-				return err
-			}
-			if params.Username != current.Username {
-				changed = append(changed, "username")
-			}
-		}
-		if in.WorkEmail != nil {
-			if params.WorkEmail, err = normalizeEmail(*in.WorkEmail); err != nil {
-				return err
-			}
-			if params.WorkEmail != current.WorkEmail {
-				changed = append(changed, "work_email")
-			}
-		}
-		if in.DisplayName != nil {
-			if params.DisplayName, err = normalizeDisplayName(*in.DisplayName); err != nil {
-				return err
-			}
-			if params.DisplayName != current.DisplayName {
-				changed = append(changed, "display_name")
-			}
-		}
-		if in.Title != nil {
-			if params.Title, err = normalizeTitle(*in.Title); err != nil {
-				return err
-			}
-			if !equalPtr(params.Title, current.Title) {
-				changed = append(changed, "title")
-			}
-		}
-		if len(changed) == 0 {
-			person = current
-			return nil
-		}
-		if person, err = q.UpdatePerson(ctx, params); err != nil {
-			return uniqueViolation(err)
-		}
-		_, err = audit.Record(ctx, q, audit.Entry{
-			Actor:    actor,
-			Action:   audit.PersonUpdated,
-			Target:   personTarget(id),
-			Metadata: map[string]any{"fields": changed},
-		})
+		var err error
+		person, err = s.UpdatePersonTx(ctx, q, actor, id, in)
 		return err
+	})
+	if err != nil {
+		return store.Person{}, err
+	}
+	return person, nil
+}
+
+// AcquireReportingLock serializes reporting changes within a trusted caller's
+// transaction. q must be store.New(tx) for that transaction. Take this lock
+// before any person row locks; callers with a grant lock take that lock first.
+// It is safe to reacquire, and is released only by outer commit or rollback.
+func AcquireReportingLock(ctx context.Context, q *store.Queries) error {
+	if err := q.AcquireXactLock(ctx, personManagerLockID); err != nil {
+		return fmt.Errorf("identity: lock reporting lines: %w", err)
+	}
+	return nil
+}
+
+// UpdatePersonTx applies the same validation, no-op behavior and audit as
+// UpdatePerson, without committing independently. q must be bound to the
+// caller's transaction. If that transaction may change reporting lines, call
+// AcquireReportingLock before taking any person row locks; this helper safely
+// reacquires it for ManagerID updates. Propagate errors and roll back the outer
+// transaction so person fields, directory timestamps and audit remain atomic.
+// ContactEmail is separate invitation/import-owned state and is not changed.
+func (s *Service) UpdatePersonTx(ctx context.Context, q *store.Queries, actor audit.Actor, id uuid.UUID, in PersonUpdate) (store.Person, error) {
+	var person store.Person
+	// Serialize all reporting changes before row locks: two concurrent
+	// opposite assignments must never both validate an acyclic old graph.
+	if in.ManagerID != nil {
+		if err := AcquireReportingLock(ctx, q); err != nil {
+			return store.Person{}, err
+		}
+	}
+	current, err := q.GetPersonForUpdate(ctx, id)
+	if err != nil {
+		return store.Person{}, notFound(err, "person")
+	}
+	params := store.UpdatePersonParams{
+		ID:          id,
+		Username:    current.Username,
+		WorkEmail:   current.WorkEmail,
+		DisplayName: current.DisplayName,
+		Title:       current.Title,
+		ManagerID:   current.ManagerID,
+	}
+	var changed []string
+	if in.Username != nil {
+		if params.Username, err = normalizeUsername(*in.Username); err != nil {
+			return store.Person{}, err
+		}
+		if params.Username != current.Username {
+			changed = append(changed, "username")
+		}
+	}
+	if in.WorkEmail != nil {
+		if params.WorkEmail, err = normalizeEmail(*in.WorkEmail); err != nil {
+			return store.Person{}, err
+		}
+		if params.WorkEmail != current.WorkEmail {
+			changed = append(changed, "work_email")
+		}
+	}
+	if in.DisplayName != nil {
+		if params.DisplayName, err = normalizeDisplayName(*in.DisplayName); err != nil {
+			return store.Person{}, err
+		}
+		if params.DisplayName != current.DisplayName {
+			changed = append(changed, "display_name")
+		}
+	}
+	if in.Title != nil {
+		if params.Title, err = normalizeTitle(*in.Title); err != nil {
+			return store.Person{}, err
+		}
+		if !equalPtr(params.Title, current.Title) {
+			changed = append(changed, "title")
+		}
+	}
+	if in.ManagerID != nil {
+		nextManager := in.ManagerID
+		if *nextManager == uuid.Nil {
+			nextManager = nil
+		}
+		// Re-submitting an existing reporting line must not block unrelated
+		// profile edits when that manager has since been offboarded.
+		if !equalUUIDPtr(nextManager, current.ManagerID) {
+			if nextManager != nil {
+				manager, err := q.GetPerson(ctx, *nextManager)
+				if err != nil {
+					return store.Person{}, notFound(err, "manager")
+				}
+				if Status(manager.Status) == StatusOffboarded {
+					return store.Person{}, invalid("manager_id", "manager is offboarded")
+				}
+				chain, err := q.ListManagerAncestors(ctx, *nextManager)
+				if err != nil {
+					return store.Person{}, err
+				}
+				if slices.Contains(chain, id) {
+					return store.Person{}, invalid("manager_id", "reporting lines must not form a cycle")
+				}
+			}
+			params.ManagerID = nextManager
+			changed = append(changed, "manager_id")
+		}
+	}
+	if len(changed) == 0 {
+		return current, nil
+	}
+	if person, err = q.UpdatePerson(ctx, params); err != nil {
+		return store.Person{}, uniqueViolation(err)
+	}
+	_, err = audit.Record(ctx, q, audit.Entry{
+		Actor:    actor,
+		Action:   audit.PersonUpdated,
+		Target:   personTarget(id),
+		Metadata: map[string]any{"fields": changed},
 	})
 	if err != nil {
 		return store.Person{}, err
@@ -341,3 +406,6 @@ func equalPtr(a, b *string) bool {
 	}
 	return *a == *b
 }
+
+// Separate from the Teams hierarchy lock; reporting lines are an independent graph.
+const personManagerLockID int64 = 0x6f72676c6d677273

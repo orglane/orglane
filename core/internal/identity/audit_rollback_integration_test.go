@@ -148,7 +148,9 @@ func auditRollbackCases() []auditRollbackCase {
 			},
 		},
 		{
-			name:   "set avatar",
+			name: "set avatar",
+			// Includes the public directory timestamp invalidated by migration 00009.
+			tables: 3,
 			reject: rejectAction(audit.PersonAvatarSet),
 			prepare: func(t *testing.T, f *rollbackFixture) func() error {
 				alice := f.person(t, "alice", identity.StatusActive)
@@ -158,7 +160,9 @@ func auditRollbackCases() []auditRollbackCase {
 			},
 		},
 		{
-			name:   "remove avatar",
+			name: "remove avatar",
+			// Includes the public directory timestamp invalidated by migration 00009.
+			tables: 3,
 			reject: rejectAction(audit.PersonAvatarRemoved),
 			prepare: func(t *testing.T, f *rollbackFixture) func() error {
 				alice := f.person(t, "alice", identity.StatusActive)
@@ -166,6 +170,29 @@ func auditRollbackCases() []auditRollbackCase {
 					t.Fatal(err)
 				}
 				return func() error { return f.svc.RemoveAvatar(f.ctx, admin, alice) }
+			},
+		},
+
+		{
+			name:   "upload processed avatar",
+			tables: 3,
+			reject: rejectAction(audit.PersonAvatarSet),
+			prepare: func(t *testing.T, f *rollbackFixture) func() error {
+				alice := f.person(t, "alice", identity.StatusActive)
+				data := rasterJPEG(t)
+				return func() error { return f.svc.UploadAvatar(f.ctx, admin, alice, "image/jpeg", data) }
+			},
+		},
+		{
+			name:   "update manager",
+			reject: rejectAction(audit.PersonUpdated),
+			prepare: func(t *testing.T, f *rollbackFixture) func() error {
+				alice := f.person(t, "alice", identity.StatusActive)
+				manager := f.person(t, "manager", identity.StatusActive)
+				return func() error {
+					_, err := f.svc.UpdatePerson(f.ctx, admin, alice, identity.PersonUpdate{ManagerID: &manager})
+					return err
+				}
 			},
 		},
 
@@ -195,7 +222,9 @@ func auditRollbackCases() []auditRollbackCase {
 			},
 		},
 		{
-			name:   "assign role",
+			name: "assign role",
+			// Includes the public directory timestamp invalidated by migration 00009.
+			tables: 3,
 			reject: rejectAction(audit.PersonRoleAssigned),
 			prepare: func(t *testing.T, f *rollbackFixture) func() error {
 				alice := f.person(t, "alice", identity.StatusActive)
@@ -203,7 +232,9 @@ func auditRollbackCases() []auditRollbackCase {
 			},
 		},
 		{
-			name:   "remove role",
+			name: "remove role",
+			// Includes the public directory timestamp invalidated by migration 00009.
+			tables: 3,
 			reject: rejectAction(audit.PersonRoleRemoved),
 			prepare: func(t *testing.T, f *rollbackFixture) func() error {
 				alice := f.person(t, "alice", identity.StatusActive)
@@ -251,7 +282,9 @@ func auditRollbackCases() []auditRollbackCase {
 			},
 		},
 		{
-			name:   "add team member",
+			name: "add team member",
+			// Includes the public directory timestamp invalidated by migration 00009.
+			tables: 3,
 			reject: rejectAction(audit.TeamMemberAdded),
 			prepare: func(t *testing.T, f *rollbackFixture) func() error {
 				team := f.team(t)
@@ -263,7 +296,9 @@ func auditRollbackCases() []auditRollbackCase {
 			},
 		},
 		{
-			name:   "make team lead",
+			name: "make team lead",
+			// Includes the public directory timestamp invalidated by migration 00009.
+			tables: 3,
 			reject: rejectAction(audit.TeamMemberRoleChanged),
 			prepare: func(t *testing.T, f *rollbackFixture) func() error {
 				team := f.team(t)
@@ -278,7 +313,9 @@ func auditRollbackCases() []auditRollbackCase {
 			},
 		},
 		{
-			name:   "remove team member",
+			name: "remove team member",
+			// Includes the public directory timestamp invalidated by migration 00009.
+			tables: 3,
 			reject: rejectAction(audit.TeamMemberRemoved),
 			prepare: func(t *testing.T, f *rollbackFixture) func() error {
 				team := f.team(t)

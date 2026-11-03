@@ -95,6 +95,9 @@ func (g *routeGuard) enforce(op Operation, next http.Handler) http.Handler {
 			writeProblem(w, r, http.StatusForbidden, fmt.Sprintf("This operation requires the %q permission.", op.Permission))
 			return
 		}
+		if op.OperationID == "updatePerson" && !validatePersonUpdate(w, r) {
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), principal)))
 	})
 }

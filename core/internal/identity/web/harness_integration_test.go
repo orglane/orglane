@@ -194,6 +194,8 @@ func (b *browser) req(method, target string, body any, headers ...string) respon
 	contentType := ""
 	switch v := body.(type) {
 	case nil:
+	case []byte:
+		rd = bytes.NewReader(v)
 	case url.Values:
 		rd, contentType = strings.NewReader(v.Encode()), "application/x-www-form-urlencoded"
 	default:

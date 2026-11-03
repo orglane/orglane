@@ -17,6 +17,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { call, hasStatus, type Schema } from "@/lib/api";
 import { useApi } from "@/lib/api-context";
 import { errorMessage } from "@/lib/errors";
+import { allPeople } from "@/lib/people";
 import { useMe } from "@/lib/session";
 import { teamMembersQuery, teamQuery, teamsKey, teamsQuery } from "@/lib/teams";
 
@@ -133,8 +134,8 @@ function AddMember({ teamId, members }: { teamId: string; members: Schema<"TeamM
   const id = useId();
   const [personId, setPersonId] = useState("");
   const people = useQuery({
-    queryKey: ["people"],
-    queryFn: () => call(api.client.GET("/api/v1/people")),
+    queryKey: ["people", "team-picker"],
+    queryFn: () => allPeople(api),
   });
   const available =
     people.data?.items.filter((p) => !members.some((m) => m.person.id === p.id)) ?? [];

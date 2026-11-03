@@ -26,7 +26,7 @@ func (q *Queries) CountPeople(ctx context.Context) (int64, error) {
 const createPerson = `-- name: CreatePerson :one
 INSERT INTO people (username, work_email, display_name, title, contact_email, status)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, username, work_email, display_name, status, created_at, updated_at, title, contact_email
+RETURNING id, username, work_email, display_name, status, created_at, updated_at, title, contact_email, manager_id, directory_updated_at
 `
 
 type CreatePersonParams struct {
@@ -58,12 +58,57 @@ func (q *Queries) CreatePerson(ctx context.Context, arg CreatePersonParams) (Per
 		&i.UpdatedAt,
 		&i.Title,
 		&i.ContactEmail,
+		&i.ManagerID,
+		&i.DirectoryUpdatedAt,
+	)
+	return i, err
+}
+
+const getDirectoryPerson = `-- name: GetDirectoryPerson :one
+SELECT
+    p.id, p.username, p.work_email, p.display_name, p.status, p.created_at, p.updated_at, p.title, p.contact_email, p.manager_id, p.directory_updated_at,
+    coalesce((SELECT array_agg(r.key ORDER BY r.key)::text[]
+              FROM person_roles pr JOIN roles r ON r.id = pr.role_id
+              WHERE pr.person_id = p.id), '{}'::text[])::text[] AS role_keys,
+    EXISTS (SELECT 1 FROM person_avatars a WHERE a.person_id = p.id) AS has_avatar,
+    coalesce((SELECT jsonb_agg(jsonb_build_object('id', t.id, 'name', t.name, 'slug', t.slug) ORDER BY lower(t.name), t.id)
+              FROM team_memberships m JOIN teams t ON t.id = m.team_id
+              WHERE m.person_id = p.id AND t.archived_at IS NULL), '[]'::jsonb)::jsonb AS teams
+FROM people p
+WHERE p.id = $1 AND p.status <> 'offboarded'
+`
+
+type GetDirectoryPersonRow struct {
+	Person    Person
+	RoleKeys  []string
+	HasAvatar bool
+	Teams     []byte
+}
+
+func (q *Queries) GetDirectoryPerson(ctx context.Context, id uuid.UUID) (GetDirectoryPersonRow, error) {
+	row := q.db.QueryRow(ctx, getDirectoryPerson, id)
+	var i GetDirectoryPersonRow
+	err := row.Scan(
+		&i.Person.ID,
+		&i.Person.Username,
+		&i.Person.WorkEmail,
+		&i.Person.DisplayName,
+		&i.Person.Status,
+		&i.Person.CreatedAt,
+		&i.Person.UpdatedAt,
+		&i.Person.Title,
+		&i.Person.ContactEmail,
+		&i.Person.ManagerID,
+		&i.Person.DirectoryUpdatedAt,
+		&i.RoleKeys,
+		&i.HasAvatar,
+		&i.Teams,
 	)
 	return i, err
 }
 
 const getPerson = `-- name: GetPerson :one
-SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email FROM people WHERE id = $1
+SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email, manager_id, directory_updated_at FROM people WHERE id = $1
 `
 
 func (q *Queries) GetPerson(ctx context.Context, id uuid.UUID) (Person, error) {
@@ -79,12 +124,14 @@ func (q *Queries) GetPerson(ctx context.Context, id uuid.UUID) (Person, error) {
 		&i.UpdatedAt,
 		&i.Title,
 		&i.ContactEmail,
+		&i.ManagerID,
+		&i.DirectoryUpdatedAt,
 	)
 	return i, err
 }
 
 const getPersonByUsername = `-- name: GetPersonByUsername :one
-SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email FROM people WHERE username = $1
+SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email, manager_id, directory_updated_at FROM people WHERE username = $1
 `
 
 func (q *Queries) GetPersonByUsername(ctx context.Context, username string) (Person, error) {
@@ -100,12 +147,14 @@ func (q *Queries) GetPersonByUsername(ctx context.Context, username string) (Per
 		&i.UpdatedAt,
 		&i.Title,
 		&i.ContactEmail,
+		&i.ManagerID,
+		&i.DirectoryUpdatedAt,
 	)
 	return i, err
 }
 
 const getPersonByWorkEmail = `-- name: GetPersonByWorkEmail :one
-SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email FROM people WHERE lower(work_email) = lower($1)
+SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email, manager_id, directory_updated_at FROM people WHERE lower(work_email) = lower($1)
 `
 
 func (q *Queries) GetPersonByWorkEmail(ctx context.Context, workEmail string) (Person, error) {
@@ -121,12 +170,14 @@ func (q *Queries) GetPersonByWorkEmail(ctx context.Context, workEmail string) (P
 		&i.UpdatedAt,
 		&i.Title,
 		&i.ContactEmail,
+		&i.ManagerID,
+		&i.DirectoryUpdatedAt,
 	)
 	return i, err
 }
 
 const getPersonForUpdate = `-- name: GetPersonForUpdate :one
-SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email FROM people WHERE id = $1 FOR UPDATE
+SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email, manager_id, directory_updated_at FROM people WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetPersonForUpdate(ctx context.Context, id uuid.UUID) (Person, error) {
@@ -142,13 +193,15 @@ func (q *Queries) GetPersonForUpdate(ctx context.Context, id uuid.UUID) (Person,
 		&i.UpdatedAt,
 		&i.Title,
 		&i.ContactEmail,
+		&i.ManagerID,
+		&i.DirectoryUpdatedAt,
 	)
 	return i, err
 }
 
 const listDirectory = `-- name: ListDirectory :many
 SELECT
-    p.id, p.username, p.work_email, p.display_name, p.status, p.created_at, p.updated_at, p.title, p.contact_email,
+    p.id, p.username, p.work_email, p.display_name, p.status, p.created_at, p.updated_at, p.title, p.contact_email, p.manager_id, p.directory_updated_at,
     coalesce(
         (SELECT array_agg(r.key ORDER BY r.id)::text[]
          FROM person_roles pr JOIN roles r ON r.id = pr.role_id
@@ -162,17 +215,19 @@ ORDER BY lower(p.display_name), p.id
 `
 
 type ListDirectoryRow struct {
-	ID           uuid.UUID
-	Username     string
-	WorkEmail    string
-	DisplayName  string
-	Status       string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	Title        *string
-	ContactEmail *string
-	RoleKeys     []string
-	HasAvatar    bool
+	ID                 uuid.UUID
+	Username           string
+	WorkEmail          string
+	DisplayName        string
+	Status             string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	Title              *string
+	ContactEmail       *string
+	ManagerID          *uuid.UUID
+	DirectoryUpdatedAt time.Time
+	RoleKeys           []string
+	HasAvatar          bool
 }
 
 // The people directory: everyone except offboarded people, by display name,
@@ -196,6 +251,8 @@ func (q *Queries) ListDirectory(ctx context.Context) ([]ListDirectoryRow, error)
 			&i.UpdatedAt,
 			&i.Title,
 			&i.ContactEmail,
+			&i.ManagerID,
+			&i.DirectoryUpdatedAt,
 			&i.RoleKeys,
 			&i.HasAvatar,
 		); err != nil {
@@ -209,10 +266,122 @@ func (q *Queries) ListDirectory(ctx context.Context) ([]ListDirectoryRow, error)
 	return items, nil
 }
 
+const listDirectoryPage = `-- name: ListDirectoryPage :many
+SELECT
+    p.id, p.username, p.work_email, p.display_name, p.status, p.created_at, p.updated_at, p.title, p.contact_email, p.manager_id, p.directory_updated_at,
+    coalesce((SELECT array_agg(r.key ORDER BY r.key)::text[]
+              FROM person_roles pr JOIN roles r ON r.id = pr.role_id
+              WHERE pr.person_id = p.id), '{}'::text[])::text[] AS role_keys,
+    EXISTS (SELECT 1 FROM person_avatars a WHERE a.person_id = p.id) AS has_avatar,
+    coalesce((SELECT jsonb_agg(jsonb_build_object('id', t.id, 'name', t.name, 'slug', t.slug) ORDER BY lower(t.name), t.id)
+              FROM team_memberships m JOIN teams t ON t.id = m.team_id
+              WHERE m.person_id = p.id AND t.archived_at IS NULL), '[]'::jsonb)::jsonb AS teams
+FROM people p
+WHERE (p.status <> 'offboarded' OR $1::timestamptz IS NOT NULL)
+  AND ($1::timestamptz IS NULL OR p.directory_updated_at >= $1::timestamptz)
+  AND ($2::uuid IS NULL OR p.id > $2::uuid)
+  AND ($3::text = '' OR lower(p.display_name || ' ' || p.username || ' ' || p.work_email || ' ' || coalesce(p.title, '')) LIKE lower($3::text) ESCAPE E'\\')
+  AND ($4::uuid IS NULL OR EXISTS (
+      SELECT 1 FROM team_memberships m JOIN teams t ON t.id = m.team_id
+      WHERE m.person_id = p.id AND m.team_id = $4::uuid AND t.archived_at IS NULL))
+  AND ($5::text = '' OR EXISTS (
+      SELECT 1 FROM person_roles pr JOIN roles r ON r.id = pr.role_id
+      WHERE pr.person_id = p.id AND r.key = $5::text))
+ORDER BY p.id
+LIMIT $6
+`
+
+type ListDirectoryPageParams struct {
+	UpdatedSince *time.Time
+	Cursor       *uuid.UUID
+	Search       string
+	TeamID       *uuid.UUID
+	RoleKey      string
+	PageSize     int32
+}
+
+type ListDirectoryPageRow struct {
+	Person    Person
+	RoleKeys  []string
+	HasAvatar bool
+	Teams     []byte
+}
+
+func (q *Queries) ListDirectoryPage(ctx context.Context, arg ListDirectoryPageParams) ([]ListDirectoryPageRow, error) {
+	rows, err := q.db.Query(ctx, listDirectoryPage,
+		arg.UpdatedSince,
+		arg.Cursor,
+		arg.Search,
+		arg.TeamID,
+		arg.RoleKey,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDirectoryPageRow{}
+	for rows.Next() {
+		var i ListDirectoryPageRow
+		if err := rows.Scan(
+			&i.Person.ID,
+			&i.Person.Username,
+			&i.Person.WorkEmail,
+			&i.Person.DisplayName,
+			&i.Person.Status,
+			&i.Person.CreatedAt,
+			&i.Person.UpdatedAt,
+			&i.Person.Title,
+			&i.Person.ContactEmail,
+			&i.Person.ManagerID,
+			&i.Person.DirectoryUpdatedAt,
+			&i.RoleKeys,
+			&i.HasAvatar,
+			&i.Teams,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listManagerAncestors = `-- name: ListManagerAncestors :many
+WITH RECURSIVE chain (id, manager_id) AS (
+    SELECT p.id, p.manager_id FROM people p WHERE p.id = $1
+    UNION
+    SELECT p.id, p.manager_id FROM people p JOIN chain c ON p.id = c.manager_id
+)
+SELECT chain.id FROM chain
+`
+
+func (q *Queries) ListManagerAncestors(ctx context.Context, id uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listManagerAncestors, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setPersonStatus = `-- name: SetPersonStatus :one
-UPDATE people SET status = $1, updated_at = now()
+UPDATE people SET status = $1, updated_at = clock_timestamp()
 WHERE id = $2
-RETURNING id, username, work_email, display_name, status, created_at, updated_at, title, contact_email
+RETURNING id, username, work_email, display_name, status, created_at, updated_at, title, contact_email, manager_id, directory_updated_at
 `
 
 type SetPersonStatusParams struct {
@@ -233,15 +402,17 @@ func (q *Queries) SetPersonStatus(ctx context.Context, arg SetPersonStatusParams
 		&i.UpdatedAt,
 		&i.Title,
 		&i.ContactEmail,
+		&i.ManagerID,
+		&i.DirectoryUpdatedAt,
 	)
 	return i, err
 }
 
 const updatePerson = `-- name: UpdatePerson :one
 UPDATE people
-SET username = $1, work_email = $2, display_name = $3, title = $4, updated_at = now()
-WHERE id = $5
-RETURNING id, username, work_email, display_name, status, created_at, updated_at, title, contact_email
+SET username = $1, work_email = $2, display_name = $3, title = $4, manager_id = $5, updated_at = clock_timestamp()
+WHERE id = $6
+RETURNING id, username, work_email, display_name, status, created_at, updated_at, title, contact_email, manager_id, directory_updated_at
 `
 
 type UpdatePersonParams struct {
@@ -249,6 +420,7 @@ type UpdatePersonParams struct {
 	WorkEmail   string
 	DisplayName string
 	Title       *string
+	ManagerID   *uuid.UUID
 	ID          uuid.UUID
 }
 
@@ -258,6 +430,7 @@ func (q *Queries) UpdatePerson(ctx context.Context, arg UpdatePersonParams) (Per
 		arg.WorkEmail,
 		arg.DisplayName,
 		arg.Title,
+		arg.ManagerID,
 		arg.ID,
 	)
 	var i Person
@@ -271,6 +444,8 @@ func (q *Queries) UpdatePerson(ctx context.Context, arg UpdatePersonParams) (Per
 		&i.UpdatedAt,
 		&i.Title,
 		&i.ContactEmail,
+		&i.ManagerID,
+		&i.DirectoryUpdatedAt,
 	)
 	return i, err
 }

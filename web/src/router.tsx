@@ -14,8 +14,9 @@ import { EmailSettingsPage } from "./routes/email-settings";
 import { HomePage } from "./routes/home";
 import { InvitationsPage } from "./routes/invitations";
 import { PasskeyOfferPage } from "./routes/passkey-offer";
+import { PeoplePage } from "./routes/people";
 import { PersonProfilePage } from "./routes/person-profile";
-import { AppsPage, InboxPage, PeoplePage } from "./routes/placeholders";
+import { AppsPage, InboxPage } from "./routes/placeholders";
 import { ProfileFieldsPage } from "./routes/profile-fields";
 import { SecurityPage } from "./routes/security";
 import { SetupPage } from "./routes/setup";
@@ -190,7 +191,12 @@ const personProfileRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/people/$personId",
   component: function PersonProfile() {
-    return <PersonProfilePage personId={personProfileRoute.useParams().personId} />;
+    return (
+      <PersonProfilePage
+        key={personProfileRoute.useParams().personId}
+        personId={personProfileRoute.useParams().personId}
+      />
+    );
   },
 });
 
