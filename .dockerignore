@@ -1,0 +1,17 @@
+# Only what the image build needs reaches the build context: the Go module
+# (core/, demo/, web/web.go) and the pnpm workspace that builds web/dist.
+*
+!go.mod
+!go.sum
+!core/
+!demo/
+!web/
+!packages/
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+**/node_modules
+**/dist
+**/*_test.go
+web/e2e/

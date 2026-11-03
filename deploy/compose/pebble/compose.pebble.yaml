@@ -1,0 +1,49 @@
+# TESTING ONLY. Overlay that runs domain mode against Pebble, Let's Encrypt's
+# ACME test server, so certificate issuance can be checked without a public
+# domain. Use it together with compose.yaml (see deploy/README.md):
+#
+#   docker compose -f compose.yaml -f pebble/compose.pebble.yaml up -d --wait
+#
+# The test domain work.orglane.test resolves to Traefik inside the Compose
+# network only (a network alias), which is where Pebble validates the HTTP-01
+# challenge. pebble.minica.pem is Pebble's public test CA for its own API
+# certificate (from the Pebble image); it carries no secret.
+services:
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199
+    command: ["-config", "/config/pebble-config.json"]
+    environment:
+      # Validate challenges at once and don't reject nonces at random.
+      PEBBLE_VA_NOSLEEP: "1"
+      PEBBLE_WFE_NONCEREJECT: "0"
+    volumes:
+      - ./pebble/pebble-config.json:/config/pebble-config.json:ro
+    ports:
+      # Management API: /roots/0 returns the root that signs issued
+      # certificates. Published on a random localhost port.
+      - ${ORGLANE_PEBBLE_MANAGEMENT_PUBLISH:-127.0.0.1:}:15000
+    networks:
+      edge: {}
+
+  traefik:
+    depends_on:
+      pebble:
+        condition: service_started
+    environment:
+      TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_CASERVER: https://pebble:14000/dir
+      # Trust Pebble's API certificate (lego, Traefik's ACME client).
+      LEGO_CA_CERTIFICATES: /pebble/pebble.minica.pem
+    volumes:
+      - ./pebble/pebble.minica.pem:/pebble/pebble.minica.pem:ro
+    networks:
+      edge:
+        aliases: [work.orglane.test]
+
+  orglane:
+    # Domain mode whatever ORGLANE_INGRESS_MODE says (loaded after the mode's
+    # file, so it wins).
+    env_file:
+      - path: modes/domain.env
+    environment:
+      ORGLANE_DOMAIN_BASE: orglane.test
+      ORGLANE_DOMAIN_WORKSPACE_HOST: work.orglane.test

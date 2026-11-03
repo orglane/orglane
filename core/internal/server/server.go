@@ -1,5 +1,7 @@
 // Package server runs the core in server mode: database, migrations and
-// built-in roles, job queue and the HTTP API, with graceful shutdown.
+// built-in roles, job queue, the public HTTP listener (API) and, when
+// configured, the internal listener for Traefik (ADR 0008), with graceful
+// shutdown.
 package server
 
 import (
@@ -18,6 +20,7 @@ import (
 	"github.com/orglane/orglane/core/internal/database"
 	"github.com/orglane/orglane/core/internal/demomode"
 	"github.com/orglane/orglane/core/internal/identity/web"
+	"github.com/orglane/orglane/core/internal/ingress"
 	"github.com/orglane/orglane/core/internal/jobs"
 	"github.com/orglane/orglane/core/internal/webui"
 	"github.com/orglane/orglane/demo"
@@ -90,7 +93,59 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		return errors.Join(err, jobClient.Stop(context.WithoutCancel(ctx)))
 	}
 
-	srv := &http.Server{
+	listeners := []listener{{name: "public", addr: cfg.Server.Listen, handler: handler}}
+	if cfg.Server.InternalListen != "" {
+		internal, err := ingress.NewHandler(cfg, logger)
+		if err != nil {
+			return errors.Join(err, jobClient.Stop(context.WithoutCancel(ctx)))
+		}
+		listeners = append(listeners, listener{name: "internal", addr: cfg.Server.InternalListen, handler: internal})
+	}
+
+	servers := make([]*http.Server, 0, len(listeners))
+	serveErr := make(chan error, len(listeners))
+	for _, l := range listeners {
+		var lc net.ListenConfig
+		ln, err := lc.Listen(ctx, "tcp", l.addr)
+		if err != nil {
+			err = fmt.Errorf("listen on %s (%s listener): %w", l.addr, l.name, err)
+			return errors.Join(err, shutdownWithin(ctx, cfg.Server.ShutdownTimeout, servers, jobClient, logger))
+		}
+		srv := newHTTPServer(l.handler, logger)
+		servers = append(servers, srv)
+		go func() {
+			if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+				serveErr <- fmt.Errorf("%s http server: %w", l.name, err)
+			}
+		}()
+		logger.InfoContext(ctx, "server listening", "listener", l.name, "addr", ln.Addr().String())
+	}
+
+	select {
+	case <-ctx.Done():
+		logger.Info("shutting down", "timeout", cfg.Server.ShutdownTimeout)
+	case err = <-serveErr:
+	}
+
+	return errors.Join(err, shutdownWithin(ctx, cfg.Server.ShutdownTimeout, servers, jobClient, logger))
+}
+
+// shutdownWithin runs shutdown with a fresh timeout, even if ctx is done.
+func shutdownWithin(ctx context.Context, timeout time.Duration, servers []*http.Server, jobClient *jobs.Client, logger *slog.Logger) error {
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	return shutdown(shutdownCtx, servers, jobClient, logger)
+}
+
+// listener is one HTTP listener of the server.
+type listener struct {
+	name    string
+	addr    string
+	handler http.Handler
+}
+
+func newHTTPServer(handler http.Handler, logger *slog.Logger) *http.Server {
+	return &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -98,26 +153,6 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		IdleTimeout:       120 * time.Second,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", cfg.Server.Listen)
-	if err != nil {
-		return errors.Join(fmt.Errorf("listen on %s: %w", cfg.Server.Listen, err), jobClient.Stop(context.WithoutCancel(ctx)))
-	}
-
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve(ln) }()
-	logger.InfoContext(ctx, "server listening", "addr", ln.Addr().String())
-
-	select {
-	case <-ctx.Done():
-		logger.Info("shutting down", "timeout", cfg.Server.ShutdownTimeout)
-	case err = <-serveErr:
-		err = fmt.Errorf("http server: %w", err)
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.Server.ShutdownTimeout)
-	defer cancel()
-	return errors.Join(err, shutdown(shutdownCtx, srv, jobClient, logger))
 }
 
 // prepareIdentity seeds the built-in roles and makes sure a signing key
@@ -177,10 +212,12 @@ func prepareDemo(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, st
 	return dataset, nil
 }
 
-func shutdown(ctx context.Context, srv *http.Server, jobClient *jobs.Client, logger *slog.Logger) error {
+func shutdown(ctx context.Context, servers []*http.Server, jobClient *jobs.Client, logger *slog.Logger) error {
 	var errs []error
-	if err := srv.Shutdown(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("stop http server: %w", err))
+	for _, srv := range servers {
+		if err := srv.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop http server: %w", err))
+		}
 	}
 	if err := jobClient.Stop(ctx); err != nil {
 		logger.Warn("job queue did not stop in time, canceling running jobs", "error", err)

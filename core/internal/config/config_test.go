@@ -65,6 +65,12 @@ func TestDefaults(t *testing.T) {
 	if err != nil || len(proxies) != 0 {
 		t.Errorf("default trusted proxies = %v, %v; want none", proxies, err)
 	}
+	if cfg.Server.InternalListen != "" {
+		t.Errorf("internal listener = %q, want disabled by default", cfg.Server.InternalListen)
+	}
+	if cfg.Ingress.Mode != IngressDomain || cfg.Ingress.CertResolver != "letsencrypt" || cfg.Ingress.HSTSMaxAge != 365*24*time.Hour {
+		t.Errorf("ingress = %+v", cfg.Ingress)
+	}
 }
 
 func TestMasterSecret(t *testing.T) {
@@ -140,6 +146,88 @@ func TestSchemeAndIdentitySettings(t *testing.T) {
 	}
 	if p, err := cfg.Server.TrustedProxyPrefixes(); err != nil || len(p) != 0 {
 		t.Errorf("trusted proxies none = %v, %v", p, err)
+	}
+}
+
+func TestIngress(t *testing.T) {
+	base := maps.Clone(minimalEnv)
+	maps.Copy(base, map[string]string{
+		"ORGLANE_SERVER_INTERNAL_LISTEN": ":9090",
+		"ORGLANE_INGRESS_UPSTREAM_URL":   "http://orglane:8080",
+	})
+	// Local mode serves plain HTTP, which is a development setting.
+	local := map[string]string{"ORGLANE_INGRESS_MODE": "local", "ORGLANE_ENVIRONMENT": "development", "ORGLANE_DOMAIN_SCHEME": "http"}
+	tests := []struct {
+		name string
+		env  map[string]string
+		want []string // error fragments; none means the configuration is valid
+	}{
+		{name: "domain mode", env: map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_DOMAIN_WORKSPACE_HOST": "work.acme.com"}},
+		{name: "local mode with port", env: with(local, map[string]string{
+			"ORGLANE_DOMAIN_BASE": "localhost", "ORGLANE_DOMAIN_WORKSPACE_HOST": "localhost:8000", "ORGLANE_INGRESS_MODE": "Local",
+		})},
+		{name: "local mode needs plain http", env: with(local, map[string]string{"ORGLANE_DOMAIN_BASE": "localhost", "ORGLANE_DOMAIN_SCHEME": "https"}),
+			want: []string{`domain.scheme (ORGLANE_DOMAIN_SCHEME): must be http in local ingress mode`}},
+		{name: "domain mode needs https and production", env: map[string]string{
+			"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_ENVIRONMENT": "development", "ORGLANE_DOMAIN_SCHEME": "http",
+		}, want: []string{"domain.scheme (ORGLANE_DOMAIN_SCHEME): must be https in domain ingress mode", "environment (ORGLANE_ENVIRONMENT): must be \"production\" in domain ingress mode"}},
+		{name: "localhost needs local mode", env: map[string]string{"ORGLANE_DOMAIN_BASE": "localhost"},
+			want: []string{`domain.workspace_host (ORGLANE_DOMAIN_WORKSPACE_HOST): "localhost" cannot get a public certificate`}},
+		{name: "port in domain mode", env: map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_DOMAIN_WORKSPACE_HOST": "acme.com:8443"},
+			want: []string{"must not carry a port"}},
+		{name: "invalid ingress values", env: map[string]string{
+			"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_INGRESS_MODE": "cloud", "ORGLANE_INGRESS_UPSTREAM_URL": "orglane:8080",
+			"ORGLANE_INGRESS_HSTS_MAX_AGE": "-1s",
+		}, want: []string{"ingress.mode (ORGLANE_INGRESS_MODE)", "ingress.upstream_url", "ingress.hsts_max_age"}},
+		{name: "upstream with path", env: map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_INGRESS_UPSTREAM_URL": "http://orglane:8080/api"},
+			want: []string{"ingress.upstream_url"}},
+		{name: "missing upstream and resolver", env: map[string]string{
+			"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_INGRESS_UPSTREAM_URL": "", "ORGLANE_INGRESS_CERT_RESOLVER": " ",
+		}, want: []string{"ingress.upstream_url (ORGLANE_INGRESS_UPSTREAM_URL): required", "ingress.cert_resolver"}},
+		{name: "same port as the public listener", env: map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_SERVER_INTERNAL_LISTEN": ":8080"},
+			want: []string{"server.internal_listen (ORGLANE_SERVER_INTERNAL_LISTEN): must differ"}},
+		{name: "bad internal listen", env: map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_SERVER_INTERNAL_LISTEN": "9090"},
+			want: []string{"server.internal_listen"}},
+		{name: "disabled listener skips the ingress checks", env: map[string]string{
+			"ORGLANE_DOMAIN_BASE": "localhost", "ORGLANE_SERVER_INTERNAL_LISTEN": "", "ORGLANE_INGRESS_UPSTREAM_URL": "",
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vars := maps.Clone(base)
+			maps.Copy(vars, tt.env)
+			_, err := Load("", env(vars))
+			if len(tt.want) == 0 {
+				if err != nil {
+					t.Fatalf("Load() = %v, want no error", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("Load() succeeded, want an error")
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error does not mention %q:\n%v", w, err)
+				}
+			}
+		})
+	}
+}
+
+// with returns a copy of a with b's entries added.
+func with(a, b map[string]string) map[string]string {
+	out := maps.Clone(a)
+	maps.Copy(out, b)
+	return out
+}
+
+func TestWorkspaceHostname(t *testing.T) {
+	for host, want := range map[string]string{"localhost:8000": "localhost", "work.acme.com": "work.acme.com"} {
+		cfg := Config{Domain: Domain{WorkspaceHost: host}}
+		if got := cfg.WorkspaceHostname(); got != want {
+			t.Errorf("WorkspaceHostname(%q) = %q, want %q", host, got, want)
+		}
 	}
 }
 
@@ -327,6 +415,8 @@ func TestEveryFieldHasEnvVar(t *testing.T) {
 		"ORGLANE_IDENTITY_SIGNING_KEY_ROTATION", "ORGLANE_IDENTITY_SIGNING_KEY_GRACE",
 		"ORGLANE_IDENTITY_SIGN_IN_IP_LIMIT", "ORGLANE_IDENTITY_SIGN_IN_IP_WINDOW",
 		"ORGLANE_IDENTITY_SIGN_IN_ACCOUNT_LIMIT", "ORGLANE_IDENTITY_SIGN_IN_LOCKOUT",
+		"ORGLANE_SERVER_INTERNAL_LISTEN", "ORGLANE_INGRESS_MODE", "ORGLANE_INGRESS_UPSTREAM_URL", "ORGLANE_INGRESS_CERT_RESOLVER",
+		"ORGLANE_INGRESS_HSTS_MAX_AGE",
 	} {
 		found := false
 		for _, s := range seen {

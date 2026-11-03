@@ -53,8 +53,11 @@ DEV_COMPOSE := docker compose -f deploy/dev/compose.yaml
 DEMO_DB     := orglane_demo
 DEMO_DB_URL := postgres://orglane:orglane@127.0.0.1:5432/$(DEMO_DB)?sslmode=disable
 
-.PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts generate check-generate check-generate-go check-generate-ts \
-	test test-go test-unit test-integration measure-memory conformance test-ts test-e2e test-e2e-if-available \
+# Core container image built by `make image` (Dockerfile).
+IMAGE ?= orglane:dev
+
+.PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image generate check-generate check-generate-go check-generate-ts \
+	test test-go test-unit test-integration test-compose measure-memory conformance test-ts test-e2e test-e2e-if-available \
 	lint lint-go lint-ts fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
 help: ## Show available targets
@@ -168,6 +171,9 @@ build-go:
 build-ts:
 	$(PNPM) run build
 
+image: ## Build the core container image (IMAGE, default orglane:dev)
+	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
+
 test: test-go test-ts test-e2e-if-available ## Run all tests (integration and e2e when Docker and Chromium are available)
 
 # Integration tests (build tag "integration") need Docker; without it only
@@ -185,6 +191,9 @@ test-unit: ## Run Go unit tests only
 
 test-integration: ## Run Go unit and integration tests (needs Docker)
 	go test -race -count=1 -tags integration ./...
+
+test-compose: ## Start the Compose bundle (local mode, domain mode with Pebble) and test it (needs Docker)
+	go test -count=1 -tags integration -v ./tests/compose/
 
 measure-memory: ## Report idle RSS of the server against Postgres (needs Docker; warning only)
 	go test -count=1 -tags integration -run '^TestIdleMemory$$' -v ./tests/integration/ | grep -E '^(orglane-memory:|--- FAIL|FAIL)'

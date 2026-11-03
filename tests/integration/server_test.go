@@ -342,3 +342,57 @@ func TestServerRejectsInvalidConfig(t *testing.T) {
 		t.Fatalf("server with invalid config: %v\n%s", err, out)
 	}
 }
+
+// TestInternalListener checks that the Traefik dynamic configuration is
+// served on the internal listener only, and that `cli healthcheck` sees the
+// running server.
+func TestInternalListener(t *testing.T) {
+	dbURL := pgtest.NewDatabase(t)
+	internalAddr := freeAddr(t)
+	p := startServer(t, dbURL,
+		"ORGLANE_SERVER_INTERNAL_LISTEN="+internalAddr,
+		"ORGLANE_INGRESS_UPSTREAM_URL=http://orglane:8080",
+	)
+
+	code, header, body := get(t, "http://"+internalAddr+"/traefik/config")
+	if code != 200 || header.Get("Content-Type") != "application/json" {
+		t.Fatalf("internal /traefik/config = %d %s %s", code, header.Get("Content-Type"), body)
+	}
+	var dyn struct {
+		HTTP struct {
+			Routers map[string]struct {
+				Rule string
+				TLS  *struct{ CertResolver string }
+			}
+		}
+	}
+	if err := json.Unmarshal(body, &dyn); err != nil {
+		t.Fatal(err)
+	}
+	r := dyn.HTTP.Routers["orglane-workspace"]
+	if r.Rule != "Host(`work.acme.test`)" || r.TLS == nil || r.TLS.CertResolver != "letsencrypt" {
+		t.Errorf("workspace router = %+v in %s", r, body)
+	}
+	// The public listener answers unknown paths with the web UI (or its
+	// notice), never with the route configuration.
+	if code, header, body := get(t, p.baseURL+"/traefik/config"); strings.Contains(string(body), "orglane-workspace") ||
+		strings.Contains(header.Get("Content-Type"), "json") {
+		t.Errorf("public /traefik/config = %d %s %s: it must only be served internally", code, header.Get("Content-Type"), body)
+	}
+	if code, _, _ := get(t, "http://"+internalAddr+"/readyz"); code != 404 {
+		t.Errorf("internal /readyz = %d, want 404: the internal listener only serves Traefik", code)
+	}
+
+	cmd := exec.CommandContext(t.Context(), binary(t), "cli", "healthcheck") //nolint:gosec // the binary built by binary()
+	cmd.Env = serverEnv(dbURL, strings.TrimPrefix(p.baseURL, "http://"))
+	if out, err := cmd.CombinedOutput(); err != nil || string(out) != "ready\n" {
+		t.Errorf("cli healthcheck against a running server: %v\n%s", err, out)
+	}
+
+	if err := p.stop(t); err != nil {
+		t.Fatalf("exit after SIGTERM: %v\n%s", err, p.logs)
+	}
+	if !strings.Contains(p.logs.String(), `"listener":"internal"`) {
+		t.Errorf("logs lack the internal listener:\n%s", p.logs)
+	}
+}

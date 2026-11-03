@@ -1,0 +1,174 @@
+# Orglane Compose bundle: Traefik + the Orglane core + PostgreSQL.
+#
+# Settings come from environment variables, usually an .env file next to this
+# file (see .env.example and deploy/README.md). Two modes:
+#
+#   ORGLANE_INGRESS_MODE=local   plain HTTP on localhost, no domain (--demo)
+#   ORGLANE_INGRESS_MODE=domain  HTTPS with Let's Encrypt for a real domain
+#
+# The mode selects modes/<mode>.env, which sets the core's ingress mode,
+# environment and workspace URL scheme together.
+#
+# Traefik has no Docker socket (ADR 0008): it polls its routes from the core's
+# internal listener (Traefik HTTP provider). Data lives under ORGLANE_DATA_DIR
+# (default /var/lib/orglane).
+#
+# Images are pinned by version and digest; Orglane releases bump them.
+name: orglane
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  traefik:
+    image: traefik:v3.7.17@sha256:30ff62491aacdb862ceb8c9edcf2627da638d7deafdd4b6dab32fe34f8aa3e90
+    restart: unless-stopped
+    depends_on:
+      orglane:
+        condition: service_healthy
+    # Static configuration. It is the same in both modes: the routes the core
+    # serves decide whether the workspace is on HTTP or HTTPS.
+    environment:
+      TRAEFIK_GLOBAL_CHECKNEWVERSION: "false"
+      TRAEFIK_GLOBAL_SENDANONYMOUSUSAGE: "false"
+      TRAEFIK_LOG_LEVEL: ${ORGLANE_TRAEFIK_LOG_LEVEL:-INFO}
+      # Drop headers such as X_Forwarded_For that alias the ones Traefik
+      # manages, so clients cannot spoof them.
+      TRAEFIK_GLOBAL_ALIASHEADERSSTRATEGY: delete
+      TRAEFIK_ENTRYPOINTS_WEB_ADDRESS: ":80"
+      TRAEFIK_ENTRYPOINTS_WEBSECURE_ADDRESS: ":443"
+      # Healthcheck endpoint, on the container's loopback only.
+      TRAEFIK_ENTRYPOINTS_PING_ADDRESS: "127.0.0.1:8082"
+      TRAEFIK_PING: "true"
+      TRAEFIK_PING_ENTRYPOINT: ping
+      TRAEFIK_PROVIDERS_HTTP_ENDPOINT: http://orglane:9090/traefik/config
+      TRAEFIK_PROVIDERS_HTTP_POLLINTERVAL: 10s
+      # Used by the routes in domain mode only; in local mode nothing asks it
+      # for a certificate.
+      TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL: ${ORGLANE_ACME_EMAIL:-}
+      TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_CASERVER: ${ORGLANE_ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}
+      TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_STORAGE: /data/acme.json
+      TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_HTTPCHALLENGE_ENTRYPOINT: web
+    ports:
+      # Published on localhost by default; set "80" and "443" to serve a
+      # domain on every interface.
+      - ${ORGLANE_HTTP_PUBLISH:-127.0.0.1:80}:80
+      - ${ORGLANE_HTTPS_PUBLISH:-127.0.0.1:443}:443
+    volumes:
+      - ${ORGLANE_DATA_DIR:-/var/lib/orglane}/traefik:/data
+    networks:
+      edge:
+        # Fixed, so the core can trust exactly this peer for X-Forwarded-For
+        # (server.trusted_proxies).
+        ipv4_address: ${ORGLANE_EDGE_NETWORK_PREFIX:-10.231.0}.2
+    healthcheck:
+      # No flags: they would make Traefik ignore the environment config.
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+  orglane:
+    image: ${ORGLANE_IMAGE:-ghcr.io/orglane/orglane:latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["server"]
+    # ORGLANE_INGRESS_MODE, ORGLANE_ENVIRONMENT and ORGLANE_DOMAIN_SCHEME. The
+    # core refuses to start if they don't fit together.
+    env_file:
+      - path: modes/${ORGLANE_INGRESS_MODE:-local}.env
+    environment:
+      ORGLANE_LOG_LEVEL: ${ORGLANE_LOG_LEVEL:-info}
+      ORGLANE_LOG_FORMAT: json
+      ORGLANE_DATABASE_URL: postgres://orglane:${ORGLANE_POSTGRES_PASSWORD:?set ORGLANE_POSTGRES_PASSWORD (see .env.example)}@postgres:5432/orglane?sslmode=disable
+      # Encrypts signing keys at rest. Never change it on a running instance.
+      ORGLANE_IDENTITY_MASTER_SECRET: ${ORGLANE_IDENTITY_MASTER_SECRET:?set ORGLANE_IDENTITY_MASTER_SECRET (see .env.example)}
+      ORGLANE_DOMAIN_BASE: ${ORGLANE_DOMAIN_BASE:-localhost}
+      # Empty means the base domain.
+      ORGLANE_DOMAIN_WORKSPACE_HOST: ${ORGLANE_DOMAIN_WORKSPACE_HOST:-}
+      ORGLANE_SERVER_LISTEN: ":8080"
+      # Only Traefik may name the client in X-Forwarded-For.
+      ORGLANE_SERVER_TRUSTED_PROXIES: ${ORGLANE_EDGE_NETWORK_PREFIX:-10.231.0}.2/32
+      # Internal listener for Traefik's HTTP provider. Not published, and
+      # not routed by Traefik.
+      ORGLANE_SERVER_INTERNAL_LISTEN: ":9090"
+      ORGLANE_INGRESS_UPSTREAM_URL: http://orglane:8080
+    networks:
+      edge: {}
+      database: {}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/orglane", "cli", "healthcheck"]
+      interval: 10s
+      timeout: 6s
+      retries: 3
+      start_period: 60s
+      start_interval: 1s
+    stop_grace_period: 20s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+  postgres:
+    image: postgres:18.6-alpine3.24@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: orglane
+      POSTGRES_DB: orglane
+      POSTGRES_PASSWORD: ${ORGLANE_POSTGRES_PASSWORD:?set ORGLANE_POSTGRES_PASSWORD (see .env.example)}
+    # Light defaults for a small host (ADR 0009). The installer scales them
+    # with the host's memory; see deploy/README.md for the sizing rules.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${ORGLANE_POSTGRES_SHARED_BUFFERS:-128MB}
+      - -c
+      - effective_cache_size=${ORGLANE_POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}
+      - -c
+      - work_mem=${ORGLANE_POSTGRES_WORK_MEM:-4MB}
+      - -c
+      - maintenance_work_mem=${ORGLANE_POSTGRES_MAINTENANCE_WORK_MEM:-64MB}
+      - -c
+      - max_connections=${ORGLANE_POSTGRES_MAX_CONNECTIONS:-50}
+    shm_size: 256mb
+    volumes:
+      - ${ORGLANE_DATA_DIR:-/var/lib/orglane}/postgres:/var/lib/postgresql
+    networks:
+      database: {}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "orglane", "-d", "orglane"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+      start_interval: 1s
+    stop_grace_period: 60s
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+networks:
+  # Traefik <-> core. A fixed subnet, so Traefik's address is known (see
+  # server.trusted_proxies); containers other than Traefik get addresses from
+  # the upper half. Change ORGLANE_EDGE_NETWORK_PREFIX (the first three
+  # octets) if 10.231.0.0/24 collides with a network of the host.
+  edge:
+    ipam:
+      config:
+        - subnet: ${ORGLANE_EDGE_NETWORK_PREFIX:-10.231.0}.0/24
+          ip_range: ${ORGLANE_EDGE_NETWORK_PREFIX:-10.231.0}.128/25
+          gateway: ${ORGLANE_EDGE_NETWORK_PREFIX:-10.231.0}.1
+  # Core <-> PostgreSQL, without outside access.
+  database:
+    internal: true

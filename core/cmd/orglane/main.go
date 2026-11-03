@@ -3,8 +3,8 @@
 //	orglane server         run the server (API, jobs, migrations on start);
 //	                       --demo loads the demo dataset (demo mode)
 //	orglane agent          run the local agent (not implemented yet)
-//	orglane cli <command>  administrative commands (migrate, setup-token,
-//	                       oidc-client add, version)
+//	orglane cli <command>  administrative commands (migrate, healthcheck,
+//	                       setup-token, oidc-client add, version)
 //
 // Configuration comes from a YAML file (-config or ORGLANE_CONFIG) and
 // ORGLANE_* environment variables; see core/internal/config.
@@ -17,10 +17,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -49,6 +52,7 @@ Modes:
                        [-post-logout-redirect-uri <uri>]... [-public]
                        [-native] [-refresh-tokens] [-auth-method
                        client_secret_basic|client_secret_post]
+  cli healthcheck    Exit 0 if the local server is ready (container healthcheck)
   cli version        Print the version
 
 Flags for server and the cli commands that use the database:
@@ -163,6 +167,8 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, lookup
 		return printVersion(stdout)
 	case "migrate":
 		return runMigrate(ctx, rest, stdout, stderr, lookupEnv)
+	case "healthcheck":
+		return runHealthcheck(ctx, rest, stdout, stderr, lookupEnv)
 	case "setup-token":
 		return runSetupToken(ctx, rest, stdout, stderr, lookupEnv)
 	case "oidc-client":
@@ -284,6 +290,49 @@ func runOIDCClientAdd(ctx context.Context, args []string, stdout, stderr io.Writ
 		_, err = fmt.Fprintf(stdout, "client_secret: %s\n(shown once: store it now)\n", secret)
 	}
 	return err
+}
+
+// runHealthcheck asks the server on this host for /readyz on its public
+// listener. It is the container healthcheck: the image has no shell or curl.
+func runHealthcheck(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) error {
+	cfg, err := loadConfig("healthcheck", args, stderr, lookupEnv)
+	if err != nil {
+		return err
+	}
+	target := "http://" + loopbackAddr(cfg.Server.Listen) + "/readyz"
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, http.NoBody)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("healthcheck: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthcheck: %s answered %s", target, resp.Status)
+	}
+	_, err = fmt.Fprintln(stdout, "ready")
+	return err
+}
+
+// loopbackAddr turns a listen address into one to connect to on this host:
+// ":8080" and "0.0.0.0:8080" become "127.0.0.1:8080", "[::]:8080" becomes
+// "[::1]:8080"; a specific host is kept.
+func loopbackAddr(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return listen
+	}
+	switch ip := net.ParseIP(host); {
+	case host == "" || (ip != nil && ip.To4() != nil && ip.IsUnspecified()):
+		host = "127.0.0.1"
+	case ip != nil && ip.IsUnspecified():
+		host = "::1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func printVersion(w io.Writer) error {

@@ -56,6 +56,7 @@ type Config struct {
 	Database    Database  `yaml:"database"`
 	Domain      Domain    `yaml:"domain"`
 	Endpoints   Endpoints `yaml:"endpoints"`
+	Ingress     Ingress   `yaml:"ingress"`
 	Jobs        Jobs      `yaml:"jobs"`
 	Identity    Identity  `yaml:"identity"`
 	Demo        Demo      `yaml:"demo"`
@@ -83,8 +84,14 @@ type Log struct {
 
 // Server configures the HTTP server.
 type Server struct {
-	// Listen is the TCP address to listen on. Defaults to ":8080".
+	// Listen is the TCP address of the public listener (API, web app).
+	// Defaults to ":8080".
 	Listen string `yaml:"listen"`
+	// InternalListen is the TCP address of the internal listener, which
+	// serves the Traefik dynamic configuration (ADR 0008). It must only be
+	// reachable from Traefik, never published. Empty (the default) disables
+	// it.
+	InternalListen string `yaml:"internal_listen"`
 	// ShutdownTimeout bounds graceful shutdown. Defaults to 15s.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 	// TrustedProxies is a comma-separated list of the addresses (CIDRs) of
@@ -149,6 +156,38 @@ type Endpoints struct {
 	PushRelayURL string `yaml:"push_relay_url"`
 	// DiscoveryURL is the discovery API for cloud instances.
 	DiscoveryURL string `yaml:"discovery_url"`
+}
+
+// Ingress modes.
+const (
+	// IngressDomain serves the workspace over HTTPS with certificates from
+	// an ACME certificate resolver and redirects HTTP to HTTPS.
+	IngressDomain = "domain"
+	// IngressLocal serves the workspace over plain HTTP, for trying Orglane
+	// on localhost (--demo) without a domain.
+	IngressLocal = "local"
+)
+
+// DefaultCertResolver is the Traefik certificate resolver used in domain
+// mode (deploy/compose defines it for Let's Encrypt).
+const DefaultCertResolver = "letsencrypt"
+
+// Ingress configures the routes the core hands to Traefik through the
+// internal listener (ADR 0008). It only takes effect when
+// server.internal_listen is set.
+type Ingress struct {
+	// Mode is "domain" (default: HTTPS, HTTP redirected to HTTPS, HSTS) or
+	// "local" (plain HTTP on localhost, no TLS).
+	Mode string `yaml:"mode"`
+	// UpstreamURL is where Traefik reaches the core's public listener, e.g.
+	// http://orglane:8080. Required when server.internal_listen is set.
+	UpstreamURL string `yaml:"upstream_url"`
+	// CertResolver names the Traefik certificate resolver used in domain
+	// mode. Defaults to "letsencrypt".
+	CertResolver string `yaml:"cert_resolver"`
+	// HSTSMaxAge is the Strict-Transport-Security max-age in domain mode.
+	// Defaults to one year; 0 disables the header.
+	HSTSMaxAge time.Duration `yaml:"hsts_max_age"`
 }
 
 // Jobs configures the in-process, Postgres-backed job queue (ADR 0009).
@@ -227,6 +266,7 @@ func Default() Config {
 		Database:    Database{MaxConns: 10, ConnectTimeout: 30 * time.Second},
 		Domain:      Domain{ServiceHostTemplate: DefaultServiceHostTemplate, Scheme: "https"},
 		Endpoints:   Endpoints{PushRelayURL: DefaultPushRelayURL, DiscoveryURL: DefaultDiscoveryURL},
+		Ingress:     Ingress{Mode: IngressDomain, CertResolver: DefaultCertResolver, HSTSMaxAge: 365 * 24 * time.Hour},
 		Jobs: Jobs{
 			MaxWorkers:        5,
 			FetchPollInterval: 5 * time.Second,
@@ -354,6 +394,10 @@ func (c *Config) normalize() {
 	if c.Identity.MasterSecret == "" && c.Environment == Development {
 		c.Identity.MasterSecret = DevMasterSecret
 	}
+	c.Server.InternalListen = strings.TrimSpace(c.Server.InternalListen)
+	c.Ingress.Mode = strings.ToLower(strings.TrimSpace(c.Ingress.Mode))
+	c.Ingress.UpstreamURL = strings.TrimSpace(c.Ingress.UpstreamURL)
+	c.Ingress.CertResolver = strings.TrimSpace(c.Ingress.CertResolver)
 }
 
 func normalizeHost(h string) string {
@@ -381,6 +425,13 @@ func (c *Config) Validate() error {
 
 	if _, _, err := net.SplitHostPort(c.Server.Listen); err != nil {
 		fail("server.listen", "must be host:port or :port, got %q", c.Server.Listen)
+	}
+	if c.Server.InternalListen != "" {
+		if _, _, err := net.SplitHostPort(c.Server.InternalListen); err != nil {
+			fail("server.internal_listen", "must be host:port or :port, got %q", c.Server.InternalListen)
+		} else if c.Server.InternalListen == c.Server.Listen {
+			fail("server.internal_listen", "must differ from server.listen")
+		}
 	}
 	if c.Server.ShutdownTimeout <= 0 {
 		fail("server.shutdown_timeout", "must be positive")
@@ -423,6 +474,8 @@ func (c *Config) Validate() error {
 	default:
 		fail("domain.scheme", "must be https (http is allowed in development), got %q", c.Domain.Scheme)
 	}
+
+	c.validateIngress(fail)
 
 	c.validateEndpoint("endpoints.push_relay_url", c.Endpoints.PushRelayURL, fail)
 	c.validateEndpoint("endpoints.discovery_url", c.Endpoints.DiscoveryURL, fail)
@@ -500,6 +553,53 @@ func (c *Config) validateServiceTemplate() error {
 	return nil
 }
 
+func (c *Config) validateIngress(fail func(string, string, ...any)) {
+	if c.Ingress.Mode != IngressDomain && c.Ingress.Mode != IngressLocal {
+		fail("ingress.mode", "must be %q or %q, got %q", IngressDomain, IngressLocal, c.Ingress.Mode)
+	}
+	if c.Ingress.HSTSMaxAge < 0 {
+		fail("ingress.hsts_max_age", "must not be negative")
+	}
+	if c.Server.InternalListen == "" {
+		// Nothing is handed to Traefik, so the rest does not apply.
+		return
+	}
+	u, err := url.Parse(c.Ingress.UpstreamURL)
+	switch {
+	case c.Ingress.UpstreamURL == "":
+		fail("ingress.upstream_url", "required when server.internal_listen is set, e.g. http://orglane:8080")
+	case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") ||
+		u.RawQuery != "" || u.Fragment != "" || u.User != nil:
+		fail("ingress.upstream_url", "%q must be an http:// or https:// URL without a path, e.g. http://orglane:8080", c.Ingress.UpstreamURL)
+	}
+	if c.Ingress.Mode == IngressLocal {
+		// Traefik serves plain HTTP: browsers reach http://<workspace host>.
+		if c.Domain.Scheme != "http" {
+			fail("domain.scheme", "must be http in local ingress mode (no TLS), got %q", c.Domain.Scheme)
+		}
+		return
+	}
+	if c.Ingress.Mode != IngressDomain {
+		return
+	}
+	if c.Domain.Scheme != "https" {
+		fail("domain.scheme", "must be https in domain ingress mode, got %q", c.Domain.Scheme)
+	}
+	if c.Environment != Production {
+		fail("environment", "must be %q in domain ingress mode: a public workspace is a production instance", Production)
+	}
+	if c.Ingress.CertResolver == "" {
+		fail("ingress.cert_resolver", "required in domain mode")
+	}
+	host := c.Domain.WorkspaceHost
+	switch {
+	case strings.Contains(host, ":"):
+		fail("domain.workspace_host", "%q must not carry a port in domain ingress mode (HTTPS is served on 443)", host)
+	case host == "localhost" || strings.HasSuffix(host, ".localhost"):
+		fail("domain.workspace_host", "%q cannot get a public certificate: use ingress.mode %q on localhost", host, IngressLocal)
+	}
+}
+
 func (c *Config) validateEndpoint(setting, raw string, fail func(string, string, ...any)) {
 	u, err := url.Parse(raw)
 	switch {
@@ -512,6 +612,14 @@ func (c *Config) validateEndpoint(setting, raw string, fail func(string, string,
 	default:
 		fail(setting, "%q must use https (http is allowed in development)", raw)
 	}
+}
+
+// WorkspaceHostname returns the workspace host without a port.
+func (c *Config) WorkspaceHostname() string {
+	if host, _, err := net.SplitHostPort(c.Domain.WorkspaceHost); err == nil {
+		return host
+	}
+	return c.Domain.WorkspaceHost
 }
 
 // ServiceHost returns the host of a company service, e.g. ServiceHost("git")
