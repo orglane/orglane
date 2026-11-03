@@ -33,6 +33,10 @@ const (
 	// PurposeProfileFields encrypts values of sensitive profile fields
 	// (ADR 0015).
 	PurposeProfileFields Purpose = "orglane/v1/profile-fields"
+	// PurposeImportStaging encrypts all uploaded import cells and preview snapshots.
+	PurposeImportStaging Purpose = "orglane/v1/import-staging"
+	// PurposeImportIdentifiers hashes low-entropy external identifiers without dictionary disclosure.
+	PurposeImportIdentifiers Purpose = "orglane/v1/import-external-identifiers"
 	// PurposeEmailSettings encrypts the SMTP password in the email settings.
 	PurposeEmailSettings Purpose = "orglane/v1/email-settings"
 	// PurposeEmailOutbox encrypts queued emails (they carry invitation links).

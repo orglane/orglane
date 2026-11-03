@@ -1,0 +1,4 @@
+username,work_email,contact_email,display_name,title,teams,role,manager_email,external_id,employee_code
+ada,ada@acme.test,ada@home.test,Ada Lovelace,Engineer,Platform,member,,employee-1,classified-ada
+grace,grace@acme.test,grace@home.test,Grace Hopper,Admiral,Platform;Research,member,,employee-2,classified-grace
+linus,linus@acme.test,linus@home.test,Linus Example,Engineer,,member,,employee-3,classified-linus

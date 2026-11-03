@@ -87,6 +87,13 @@ func TestContractPermissions(t *testing.T) {
 		"PATCH /api/v1/profile-fields/{fieldId}":          authz.PeopleManage,
 		"GET /api/v1/profile-field-library":               authz.PeopleManage,
 		"POST /api/v1/profile-field-library/{libraryKey}": authz.PeopleManage,
+		// Imports use the same public people-management permission.
+		"GET /api/v1/people-imports/template":         authz.PeopleManage,
+		"POST /api/v1/people-imports":                 authz.PeopleManage,
+		"GET /api/v1/people-imports/{runId}":          authz.PeopleManage,
+		"POST /api/v1/people-imports/{runId}/preview": authz.PeopleManage,
+		"POST /api/v1/people-imports/{runId}/apply":   authz.PeopleManage,
+		"GET /api/v1/people-imports/{runId}/errors":   authz.PeopleManage,
 		// Accepting an invitation is how invited people get credentials.
 		"POST /api/v1/auth/invitation":        authz.Public,
 		"POST /api/v1/auth/invitation/accept": authz.Public,

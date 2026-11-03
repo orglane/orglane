@@ -78,6 +78,21 @@ type PersonUpdate struct {
 
 // CreatePerson adds a person to the directory.
 func (s *Service) CreatePerson(ctx context.Context, actor audit.Actor, in NewPerson) (store.Person, error) {
+	var person store.Person
+	err := s.inTx(ctx, func(q *store.Queries) error {
+		var err error
+		person, err = s.CreatePersonTx(ctx, q, actor, in)
+		return err
+	})
+	if err != nil {
+		return store.Person{}, err
+	}
+	return person, nil
+}
+
+// CreatePersonTx validates and audits creation in the caller's transaction.
+// Callers must roll back on error and commit before returning the person.
+func (s *Service) CreatePersonTx(ctx context.Context, q *store.Queries, actor audit.Actor, in NewPerson) (store.Person, error) {
 	params := store.CreatePersonParams{
 		Status: string(in.Status),
 	}
@@ -110,7 +125,7 @@ func (s *Service) CreatePerson(ctx context.Context, actor audit.Actor, in NewPer
 	}
 
 	var person store.Person
-	err = s.inTx(ctx, func(q *store.Queries) error {
+	err = func() error {
 		var err error
 		if person, err = q.CreatePerson(ctx, params); err != nil {
 			return uniqueViolation(err)
@@ -122,7 +137,7 @@ func (s *Service) CreatePerson(ctx context.Context, actor audit.Actor, in NewPer
 			Metadata: map[string]any{"status": person.Status},
 		})
 		return err
-	})
+	}()
 	if err != nil {
 		return store.Person{}, err
 	}

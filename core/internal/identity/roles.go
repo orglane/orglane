@@ -14,8 +14,9 @@ import (
 	"github.com/orglane/orglane/core/internal/store"
 )
 
-// seedLockID is the transaction-scoped advisory lock serializing role
-// seeding, so instances starting together seed (and audit) once.
+// seedLockID serializes role seeding, role mutations and invitation grant
+// checks. Concurrent starts seed and audit once; grant checks remain valid
+// until their transaction commits (see LockGrantsTx).
 const seedLockID int64 = 0x6f72676c726f6c65 // "orglrole"
 
 // SeedBuiltinRoles makes the built-in roles in the database match
@@ -106,12 +107,23 @@ func seedRole(ctx context.Context, q *store.Queries, want authz.Role) error {
 // AssignRole grants a role to a person.
 func (s *Service) AssignRole(ctx context.Context, actor audit.Actor, personID uuid.UUID, key authz.RoleKey) error {
 	return s.inTx(ctx, func(q *store.Queries) error {
+		if err := LockGrantsTx(ctx, q); err != nil {
+			return err
+		}
+
 		role, err := q.GetRoleByKey(ctx, string(key))
 		if err != nil {
 			return notFound(err, "role")
 		}
 		if _, err := q.GetPersonForUpdate(ctx, personID); err != nil {
 			return notFound(err, "person")
+		}
+		permissions, err := q.ListRolePermissions(ctx, role.ID)
+		if err != nil {
+			return err
+		}
+		if err := AuthorizeGrantTx(ctx, q, actor, personID, permissions); err != nil {
+			return err
 		}
 		n, err := q.AssignPersonRole(ctx, store.AssignPersonRoleParams{PersonID: personID, RoleID: role.ID})
 		if err != nil {
@@ -134,6 +146,10 @@ func (s *Service) AssignRole(ctx context.Context, actor audit.Actor, personID uu
 // the owner role.
 func (s *Service) RemoveRole(ctx context.Context, actor audit.Actor, personID uuid.UUID, key authz.RoleKey) error {
 	return s.inTx(ctx, func(q *store.Queries) error {
+		if err := LockGrantsTx(ctx, q); err != nil {
+			return err
+		}
+
 		person, err := q.GetPersonForUpdate(ctx, personID)
 		if err != nil {
 			return notFound(err, "person")
@@ -141,6 +157,9 @@ func (s *Service) RemoveRole(ctx context.Context, actor audit.Actor, personID uu
 		role, err := q.GetRoleByKey(ctx, string(key))
 		if err != nil {
 			return notFound(err, "role")
+		}
+		if err := AuthorizeGrantTx(ctx, q, actor, personID, nil); err != nil {
+			return err
 		}
 		if key == authz.RoleOwner && Status(person.Status) == StatusActive {
 			if err := ensureOwnerRemains(ctx, q, person); err != nil {

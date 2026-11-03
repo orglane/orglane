@@ -1695,6 +1695,170 @@ paths:
           $ref: "#/components/responses/InternalError"
         "502":
           $ref: "#/components/responses/BadGateway"
+  /api/v1/people-imports/template:
+    get:
+      operationId: getPeopleImportTemplate
+      summary: Download a CSV import template
+      tags: [people-imports]
+      x-orglane-permission: people.manage
+      responses:
+        "200":
+          description: UTF-8 CSV template. Teams are separated by semicolons.
+          content:
+            text/csv:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/people-imports:
+    post:
+      operationId: uploadPeopleImport
+      summary: Upload CSV or XLSX into encrypted staging
+      description: |
+        Maximum 5 MiB, 1000 data rows, 100 columns, 4096 bytes per cell.
+        XLSX expands to at most 32 MiB and 100 ZIP entries; formulas are rejected
+        per row and never evaluated. UTF-8, BOM-marked UTF-16 and Windows-1252
+        CSV are detected. Only the first XLSX sheet is imported.
+        Runs belong to their uploader; source values never appear in responses.
+      tags: [people-imports]
+      x-orglane-permission: people.manage
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Staged import, with column headers and detection metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PeopleImport" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/people-imports/{runId}:
+    parameters:
+      - { name: runId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getPeopleImport
+      summary: Read an import and its persisted decisions and results
+      tags: [people-imports]
+      x-orglane-permission: people.manage
+      responses:
+        "200":
+          description: Import metadata and value-free row decisions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PeopleImport" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/people-imports/{runId}/preview:
+    parameters:
+      - { name: runId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: previewPeopleImport
+      summary: Map columns and persist a preview before applying
+      description: |
+        Mapping JSON is limited to 64 KiB and rejects unknown fields and trailing data.
+        Targets are username, work_email, contact_email, display_name, title,
+        manager_email, teams, role, external_id, and profile.<enabled field key>.
+        Empty cells leave existing values unchanged. Role assigns an additional
+        bundle and requires every target and requested permission; it never
+        replaces existing roles. Unknown teams require createTeams. Matching
+        prioritizes work email, contact email, external ID; disagreeing identities
+        and duplicate input identifiers are conflicts. Preview must be repeated
+        after a stale-row conflict. Skipped row numbers are explicit decisions.
+      tags: [people-imports]
+      x-orglane-permission: people.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PeopleImportMapping" }
+      responses:
+        "200":
+          description: Persisted create, update, skip or conflict decisions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PeopleImport" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/people-imports/{runId}/apply:
+    parameters:
+      - { name: runId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: applyPeopleImport
+      summary: Apply a persisted preview with isolated row transactions
+      description: |
+        Current permissions, identities, definitions and preview versions are
+        revalidated. Failed rows roll back while other rows continue. Repeating
+        apply returns the stored result. Invitations use the existing secure
+        channel and grant ceilings; links and tokens are never staged/exported.
+        Optional email delivery fails the row if the grant requires a link.
+      tags: [people-imports]
+      x-orglane-permission: people.manage
+      responses:
+        "200":
+          description: Applied import results.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PeopleImport" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/people-imports/{runId}/errors:
+    parameters:
+      - { name: runId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: exportPeopleImportErrors
+      summary: Download value-free row errors as safe CSV
+      tags: [people-imports]
+      x-orglane-permission: people.manage
+      responses:
+        "200":
+          description: Row numbers, decisions and fixed error codes only.
+          content:
+            text/csv:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 components:
   securitySchemes:
     bearerAuth:
@@ -1822,6 +1986,52 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/OnboardingStep"
+    PeopleImportMapping:
+      type: object
+      additionalProperties: false
+      required: [columns, createTeams, sendInvitations, skipRows]
+      properties:
+        columns:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [column, target]
+            properties:
+              column: { type: integer, minimum: 0, maximum: 99 }
+              target: { type: string, maxLength: 100 }
+        createTeams: { type: boolean }
+        sendInvitations: { type: boolean }
+        skipRows:
+          type: array
+          maxItems: 1000
+          items: { type: integer, minimum: 2, maximum: 1048576 }
+    PeopleImportRow:
+      type: object
+      required: [row, decision, error, result]
+      properties:
+        row: { type: integer }
+        decision: { type: string, enum: [create, update, skip, conflict] }
+        error: { type: string, description: Fixed error code; never contains a source value. }
+        result: { type: string, enum: [pending, created, updated, skipped, failed] }
+    PeopleImport:
+      type: object
+      required: [id, state, source, encoding, delimiter, headers, mapping, rows, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string, enum: [staged, previewed, applied] }
+        source: { type: string }
+        encoding: { type: string }
+        delimiter: { type: string }
+        headers:
+          type: array
+          items: { type: string }
+        mapping: { $ref: "#/components/schemas/PeopleImportMapping" }
+        rows:
+          type: array
+          items: { $ref: "#/components/schemas/PeopleImportRow" }
+        createdAt: { type: string, format: date-time }
     Problem:
       type: object
       description: RFC 9457 problem details.

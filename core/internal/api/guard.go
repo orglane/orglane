@@ -98,6 +98,9 @@ func (g *routeGuard) enforce(op Operation, next http.Handler) http.Handler {
 		if op.OperationID == "updatePerson" && !validatePersonUpdate(w, r) {
 			return
 		}
+		if op.OperationID == "previewPeopleImport" && !validateImportMapping(w, r) {
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), principal)))
 	})
 }

@@ -83,6 +83,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		WorkspaceURL:  cfg.WorkspaceURL(),
 		Auth:          stack.Auth,
 		Profile:       stack.Profile,
+		Imports:       stack.Imports,
 		Mail:          stack.Mail,
 		WorkEmail:     cfg.WorkEmail,
 		Demo:          dataset,

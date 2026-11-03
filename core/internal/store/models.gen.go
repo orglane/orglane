@@ -154,6 +154,34 @@ type Passkey struct {
 	LastUsedAt   *time.Time
 }
 
+type PeopleImportIdentity struct {
+	Source       string
+	ExternalHash []byte
+	PersonID     uuid.UUID
+}
+
+type PeopleImportRow struct {
+	RunID         uuid.UUID
+	RowNumber     int32
+	PayloadSealed []byte
+	Decision      string
+	ErrorCode     string
+	PreviewSealed []byte
+	Result        string
+}
+
+type PeopleImportRun struct {
+	ID            uuid.UUID
+	CreatedBy     uuid.UUID
+	Source        string
+	Encoding      string
+	Delimiter     string
+	HeadersSealed []byte
+	Mapping       []byte
+	State         string
+	CreatedAt     time.Time
+}
+
 type Person struct {
 	ID                 uuid.UUID
 	Username           string

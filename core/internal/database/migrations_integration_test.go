@@ -18,6 +18,7 @@ import (
 
 // coreTables are the tables the core migrations create.
 var coreTables = []string{
+	"people_import_runs", "people_import_rows", "people_import_identities",
 	"instance_settings",
 	"people", "roles", "role_permissions", "person_roles", "devices", "sessions",
 	"audit_entries",

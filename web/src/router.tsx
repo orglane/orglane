@@ -15,6 +15,7 @@ import { HomePage } from "./routes/home";
 import { InvitationsPage } from "./routes/invitations";
 import { PasskeyOfferPage } from "./routes/passkey-offer";
 import { PeoplePage } from "./routes/people";
+import { PeopleImportPage } from "./routes/people-import";
 import { PersonProfilePage } from "./routes/person-profile";
 import { AppsPage, InboxPage } from "./routes/placeholders";
 import { ProfileFieldsPage } from "./routes/profile-fields";
@@ -184,6 +185,17 @@ const securityRoute = createRoute({
   path: "/settings/security",
   component: SecurityPage,
 });
+const peopleImportRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/people/import",
+  validateSearch: (search: Record<string, unknown>): { runId?: string } => {
+    const runId = str(search.runId);
+    return runId ? { runId } : {};
+  },
+  component: function PeopleImport() {
+    return <PeopleImportPage runId={peopleImportRoute.useSearch().runId} />;
+  },
+});
 const invitationsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/people/invitations",
@@ -231,6 +243,7 @@ export const routeTree = rootRoute.addChildren([
       profileFieldsRoute,
       personProfileRoute,
       invitationsRoute,
+      peopleImportRoute,
       emailSettingsRoute,
     ]),
   ]),

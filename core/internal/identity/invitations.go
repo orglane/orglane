@@ -156,6 +156,9 @@ func (s *Service) Invite(ctx context.Context, actor audit.Actor, in NewInvitatio
 
 	var out IssuedInvitation
 	err = s.inTxWith(ctx, func(tx pgx.Tx, q *store.Queries) error {
+		if err := LockGrantsTx(ctx, q); err != nil {
+			return err
+		}
 		for _, id := range teamIDs {
 			team, err := q.GetTeamForUpdate(ctx, id)
 			if err != nil {
@@ -178,6 +181,9 @@ func (s *Service) Invite(ctx context.Context, actor audit.Actor, in NewInvitatio
 		}
 		if permissions == nil {
 			permissions = []string{}
+		}
+		if err := AuthorizeGrantTx(ctx, q, actor, uuid.Nil, permissions); err != nil {
+			return err
 		}
 		channel := mail.InvitationChannelFor(source, permissions)
 		delivery := invitationDelivery(channel)
@@ -252,6 +258,9 @@ func (s *Service) ResendInvitation(ctx context.Context, actor audit.Actor, id uu
 		if err != nil {
 			return err
 		}
+		if err := AuthorizeGrantTx(ctx, q, actor, person.ID, nil); err != nil {
+			return err
+		}
 		if inv.AcceptedAt != nil || Status(person.Status) != StatusInvited {
 			return ErrInvitationUsed
 		}
@@ -260,6 +269,11 @@ func (s *Service) ResendInvitation(ctx context.Context, actor audit.Actor, id uu
 			return err
 		}
 		channel := mail.InvitationChannelFor(source, permissions)
+		// Imported people may not have a reachable contact destination yet.
+		// Their capability can still be shared through the normal link UI.
+		if person.ContactEmail == nil {
+			channel = mail.ChannelLink
+		}
 		delivery := invitationDelivery(channel)
 		// Reissuing replaces the expiry timestamp. Preserve the old token's
 		// expiry event even when hourly maintenance has not run yet.
@@ -308,6 +322,9 @@ func (s *Service) RevokeInvitation(ctx context.Context, actor audit.Actor, id uu
 	return s.inTx(ctx, func(q *store.Queries) error {
 		person, inv, err := lockInvitation(ctx, q, id)
 		if err != nil {
+			return err
+		}
+		if err := AuthorizeGrantTx(ctx, q, actor, person.ID, nil); err != nil {
 			return err
 		}
 		if inv.AcceptedAt != nil || Status(person.Status) != StatusInvited {
@@ -599,9 +616,12 @@ func (s *Service) workspaceHost() string {
 	return s.invites.WorkspaceURL
 }
 
-// lockInvitation locks the invited person, then the invitation (lock order:
-// person first, see Service).
+// lockInvitation takes the grant lock before the invited person and invitation.
+// The locked grant is revalidated before reissue, revoke or acceptance.
 func lockInvitation(ctx context.Context, q *store.Queries, id uuid.UUID) (store.Person, store.Invitation, error) {
+	if err := LockGrantsTx(ctx, q); err != nil {
+		return store.Person{}, store.Invitation{}, err
+	}
 	inv, err := q.GetInvitation(ctx, id)
 	if err != nil {
 		return store.Person{}, store.Invitation{}, notFound(err, "invitation")
