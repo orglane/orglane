@@ -24,15 +24,18 @@ PNPM          ?= pnpm
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GO_LDFLAGS := -s -w -X main.version=$(VERSION)
 
-# OpenAPI contract and the server code generated from it.
+# OpenAPI contract and the code generated from it: the Go server interface
+# (oapi-codegen) and the TypeScript client types of packages/api-client
+# (openapi-typescript, run by packages/api-client/codegen/generate.mjs).
 API_SPEC        := core/api/openapi.yaml
 API_CODEGEN_CFG := core/api/oapi-codegen.yaml
 API_GENERATED   := core/internal/api/apigen/apigen.gen.go
+API_CLIENT      := @orglane/api-client
 
 # Local development database (deploy/dev/compose.yaml).
 DEV_COMPOSE := docker compose -f deploy/dev/compose.yaml
 
-.PHONY: help bootstrap check-toolchain dev dev-down build build-go build-ts generate check-generate \
+.PHONY: help bootstrap check-toolchain dev dev-down build build-go build-ts generate check-generate check-generate-go check-generate-ts \
 	test test-go test-unit test-integration measure-memory test-ts \
 	lint lint-go lint-ts fmt fmt-go fmt-ts clean
 
@@ -86,12 +89,19 @@ dev: ## Start a local Postgres and run the server on http://localhost:8080
 dev-down: ## Stop the local Postgres (its data stays in a Docker volume)
 	$(DEV_COMPOSE) down
 
-generate: $(OAPI_CODEGEN) ## Regenerate code from the OpenAPI contract
+generate: $(OAPI_CODEGEN) ## Regenerate code from the OpenAPI contract (Go server, TypeScript client)
 	$(OAPI_CODEGEN) -config $(API_CODEGEN_CFG) $(API_SPEC) > $(API_GENERATED)
+	$(PNPM) --silent --filter $(API_CLIENT) run generate
 
-check-generate: $(OAPI_CODEGEN)
+# Fails when generated code no longer matches the contract (part of `make lint`).
+check-generate: check-generate-go check-generate-ts
+
+check-generate-go: $(OAPI_CODEGEN)
 	@$(OAPI_CODEGEN) -config $(API_CODEGEN_CFG) $(API_SPEC) | diff -u $(API_GENERATED) - >/dev/null || \
 		{ echo "error: $(API_GENERATED) is stale, run 'make generate'"; exit 1; }
+
+check-generate-ts:
+	@$(PNPM) --silent --filter $(API_CLIENT) run check-generate
 
 build: build-go build-ts ## Build everything
 
@@ -127,12 +137,12 @@ test-ts:
 
 lint: lint-go lint-ts ## Run all linters and type checks
 
-lint-go: $(GOLANGCI_LINT) check-generate
+lint-go: $(GOLANGCI_LINT) check-generate-go
 	go mod tidy -diff
 	$(GOLANGCI_LINT) run --build-tags integration ./...
 	$(GOLANGCI_LINT) fmt --diff ./...
 
-lint-ts:
+lint-ts: check-generate-ts
 	$(PNPM) run lint
 
 fmt: fmt-go fmt-ts ## Format all code

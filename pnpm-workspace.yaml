@@ -1,6 +1,10 @@
 packages:
   - web
   - packages/*
+  # Code generator for packages/api-client, kept apart so it can pin the
+  # TypeScript 5 compiler API that openapi-typescript needs (the workspace
+  # compiles with TypeScript 7, which has no JS API).
+  - packages/api-client/codegen
 
 # Supply-chain safety: only install package versions published at least one
 # day ago (value in minutes).

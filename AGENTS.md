@@ -28,13 +28,13 @@ Run everything from the repository root. Each target covers both Go and TypeScri
 make bootstrap         # check toolchain, install golangci-lint and oapi-codegen, download Go modules, pnpm install
 make dev               # start a local Postgres (Docker) and run `orglane server` on http://localhost:8080
 make dev-down          # stop the local Postgres
-make generate          # regenerate Go server code from core/api/openapi.yaml
+make generate          # regenerate the Go server code and the TypeScript client from core/api/openapi.yaml
 make build             # go build -> bin/orglane; build all workspace packages
 make test              # Go unit + integration tests (integration only when Docker is available); vitest
 make test-unit         # Go unit tests only
 make test-integration  # Go unit + integration tests (needs Docker)
 make measure-memory    # idle RSS of the server against Postgres (warning only, needs Docker)
-make lint              # stale generated code check, go mod tidy check, golangci-lint, Biome, tsc --noEmit
+make lint              # stale generated code check (Go and TypeScript), go mod tidy check, golangci-lint, Biome, tsc --noEmit
 make fmt               # go mod tidy, golangci-lint fmt (gofmt + goimports), biome check --write
 make help              # list targets
 ```
@@ -53,7 +53,7 @@ Configuration is a YAML file (`-config` or `ORGLANE_CONFIG`) plus `ORGLANE_*` en
 
 ### API changes
 
-The API is contract-first. Change `core/api/openapi.yaml` first, then run `make generate` and implement the generated `StrictServerInterface` in `core/internal/api`. Every operation must declare `x-orglane-permission` (a permission from `core/internal/authz`, or `public`); the server refuses to start and the tests fail otherwise. Add tests for allowed and denied access. Product endpoints live under `/api/v1`; errors are RFC 9457 problem details. Changes to `core/api/**` and `core/migrations/**` are high risk.
+The API is contract-first. Change `core/api/openapi.yaml` first, then run `make generate` (it regenerates the Go server interface and the TypeScript client in `packages/api-client`) and implement the generated `StrictServerInterface` in `core/internal/api`. Commit the regenerated files: `make lint` fails when either is stale. Every operation must declare `x-orglane-permission` (a permission from `core/internal/authz`, or `public`); the server refuses to start and the tests fail otherwise. Add tests for allowed and denied access. Product endpoints live under `/api/v1`; errors are RFC 9457 problem details. Changes to `core/api/**` and `core/migrations/**` are high risk.
 
 ## Read first
 
@@ -91,6 +91,7 @@ orglane/
 ├── pnpm-workspace.yaml   # workspace members: web/, packages/*
 ├── web/                  # React + Vite, embedded into the core binary (AGPL-3.0-or-later)
 ├── packages/             # shared TypeScript packages (Apache-2.0, see packages/LICENSE)
+│   ├── api-client/       # typed API client and React Query hooks, generated from the OpenAPI contract
 │   └── ui-tokens/        # design tokens
 ├── deploy/               # Compose files, install script
 ├── demo/                 # "Acme" demo dataset

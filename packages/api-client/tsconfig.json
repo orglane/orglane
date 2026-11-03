@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The client runs wherever the Fetch API exists (browsers, React Native, Node).
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    // Node types are for the tests only; tsconfig.build.json drops them.
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

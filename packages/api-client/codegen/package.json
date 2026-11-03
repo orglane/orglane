@@ -1,0 +1,12 @@
+{
+  "name": "@orglane/api-client-codegen",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Generates the @orglane/api-client types from the OpenAPI contract (core/api/openapi.yaml).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "dependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

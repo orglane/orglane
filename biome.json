@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!**/*.md"]
+    "includes": ["**", "!**/*.md", "!packages/api-client/src/generated"]
   },
   "formatter": {
     "enabled": true,
