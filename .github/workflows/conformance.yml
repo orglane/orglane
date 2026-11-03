@@ -1,0 +1,64 @@
+# OpenID Conformance Suite (ADR 0003): runs `make conformance` (the
+# oidcc-config and oidcc-basic certification plans, see
+# tests/conformance/README.md) against a Linux build of the checked-out ref
+# and uploads the suite's exported results (HTML and JSON logs per plan).
+#
+# The job fails on any failure, warning or skip that is not listed in
+# tests/conformance/expected-failures.json or expected-skips.json.
+#
+# Not part of pull request CI: a run takes a few minutes and pulls the
+# suite's images. Start it by hand with
+#   gh workflow run conformance.yml --ref <branch>
+# It also runs weekly on main (see the schedule below for the cost). Scheduled
+# runs use the default branch's copy of this file.
+#
+# Security: no secrets and a read-only token. Everything under test runs in
+# Docker with throwaway credentials and certificates. Third-party actions are
+# pinned by commit SHA.
+
+name: Conformance
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly on main. Measured: a run takes about 3 minutes (2 minutes 50 for
+    # `make conformance`: build, image pulls, 38 test modules), so about
+    # 16 billed minutes a month, under 1% of the free plan's 2,000.
+    - cron: "41 5 * * 1"
+
+permissions: {}
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      CONFORMANCE_WORK: ${{ github.workspace }}/.conformance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Only Go is needed (the binary under test is built on the runner).
+      # No cache: a cold build takes under a minute of a 3-minute run.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - run: make conformance
+
+      - name: Upload results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: conformance-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CONFORMANCE_WORK }}/results/
+          if-no-files-found: warn
+          retention-days: 30

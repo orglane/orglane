@@ -1,10 +1,13 @@
 # OpenID Conformance Suite against a local Orglane (`make conformance`, see
 # README.md). Not for production: fixed credentials, throwaway certificates.
 #
+# run.sh names the project (one per work directory, so runs from different
+# worktrees can run side by side) and sets CONFORMANCE_TRUSTED_PROXY. Nothing
+# here is fixed per host: no published ports, no fixed subnet.
+#
 # Network names:
 #   op.orglane.test         Orglane behind a TLS proxy (the OpenID Provider)
 #   localhost.emobix.co.uk  the suite's nginx (its public name in dev mode)
-name: orglane-conformance
 
 x-suite-version: &suite-version release-v5.3.4
 
@@ -35,8 +38,9 @@ services:
       ORGLANE_IDENTITY_MASTER_SECRET: conformance-only-master-secret-0123456789
       # Every sign-in comes from the suite's browser.
       ORGLANE_IDENTITY_SIGN_IN_IP_LIMIT: "10000"
-      # Only the TLS proxy may name the client in X-Forwarded-For.
-      ORGLANE_SERVER_TRUSTED_PROXIES: 172.31.250.10/32
+      # Only the TLS proxy may name the client in X-Forwarded-For. run.sh
+      # starts the proxy first and passes its address (<ip>/32).
+      ORGLANE_SERVER_TRUSTED_PROXIES: ${CONFORMANCE_TRUSTED_PROXY:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,12 +55,10 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${CONFORMANCE_WORK:?}/certs:/certs:ro
-    depends_on:
-      orglane:
-        condition: service_healthy
+    # No depends_on: the proxy starts before Orglane (see run.sh) and answers
+    # 502 until Orglane is up.
     networks:
       default:
-        ipv4_address: 172.31.250.10
         aliases: [op.orglane.test]
 
   mongodb:
@@ -98,6 +100,8 @@ services:
         aliases: [localhost.emobix.co.uk]
 
   runner:
+    # Tagged, so concurrent projects share one build and `down` keeps it.
+    image: orglane-conformance-runner:local
     build:
       dockerfile_inline: |
         FROM python:3.13-alpine
@@ -113,10 +117,3 @@ services:
       CONFORMANCE_SERVER_MTLS: https://localhost.emobix.co.uk:8444/
       CONFORMANCE_DEV_MODE: "1"
       PYTHONUNBUFFERED: "1"
-
-networks:
-  default:
-    ipam:
-      config:
-        # Fixed, so the proxy has a known address to trust.
-        - subnet: 172.31.250.0/24

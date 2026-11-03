@@ -47,7 +47,7 @@ make help              # list targets
 
 Run `make fmt && make lint && make test` before committing. Language-specific sub-targets exist too (`lint-go`, `test-ts`, ...).
 
-CI (`.github/workflows/ci.yml`) runs the same targets: `make lint`, `make test`, `make build` and `make security`. The trusted Policy workflow (`.github/workflows/policy.yml`, default branch only) then labels the pull request with its `risk/*` tier and sets a `merge-gate` status that says whether it may be merged without a maintainer (ADR 0017). An AI approval must name the head commit SHA (`Codex review: APPROVE for <sha>`). Before merging, verify with `go run ./tools/ci policy -pr <number>` from an up-to-date `main`. See [tools/ci/README.md](tools/ci/README.md).
+CI (`.github/workflows/ci.yml`) runs the same targets: `make lint`, `make test`, `make build` and `make security`. The trusted Policy workflow (`.github/workflows/policy.yml`, default branch only) then labels the pull request with its `risk/*` tier and sets a `merge-gate` status that says whether it may be merged without a maintainer (ADR 0017). An AI approval must name the head commit SHA (`Codex review: APPROVE for <sha>`). Before merging, verify with `go run ./tools/ci policy -pr <number>` from an up-to-date `main`. See [tools/ci/README.md](tools/ci/README.md). The OpenID Conformance Suite runs in its own workflow (`.github/workflows/conformance.yml`): by hand with `gh workflow run conformance.yml --ref <branch>` and weekly on main (see [tests/conformance/README.md](tests/conformance/README.md)).
 
 ### Integration tests
 

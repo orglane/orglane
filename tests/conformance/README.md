@@ -13,7 +13,7 @@ Everything runs in Docker (`compose.yaml`), so it needs Docker, Go, `git` and `o
 2. Starts the suite's published images (server, nginx, MongoDB).
 3. Creates the owner with the setup token and registers two OIDC clients with `orglane cli oidc-client add`.
 4. Writes the suite configuration (`make_config.py`): static clients, and browser automation that fills in Orglane's sign-in form at `/oidc/login`.
-5. Runs the plans with the suite's own `scripts/run-test-plan.py` and exports the results to `.conformance/results`.
+5. Runs the plans with the suite's own `scripts/run-test-plan.py` and exports the results to `.conformance/results`: one zip per plan with the JSON logs (signed, from the runner) and, in `html/`, one with the HTML report (`export_html.py`, also after a failed run).
 
 The run fails on any failure, warning or skip that is not listed, with its reason, in `expected-failures.json` or `expected-skips.json`:
 
@@ -30,4 +30,12 @@ The run fails on any failure, warning or skip that is not listed, with its reaso
 
 Last result (suite release-v5.3.4): 36 modules, 1722 conditions passed, 0 failures, the 5 expected warnings above. `oidcc-server-rotate-keys` is not part of these plans (it has to be started by hand after rotating keys); rotation is covered by `TestSigningKeyRotation` in `core/internal/identity/web`.
 
-`KEEP=1 make conformance` leaves the containers running; stop them with `docker compose -p orglane-conformance down -v`. PKCE, refresh token rotation, passkeys and the other parts of #6 that the plans above do not cover are tested by the Go integration tests in `core/internal/identity/web`.
+## CI
+
+The `Conformance` workflow (`.github/workflows/conformance.yml`) runs `make conformance` on `ubuntu-latest` and uploads `.conformance/results` (the suite's JSON and HTML export per plan) as the `conformance-results-*` artifact. It is not part of pull request CI. Start it for any branch with `gh workflow run conformance.yml --ref <branch>`; it also runs weekly on main. The job fails on the same conditions as a local run.
+
+## Concurrent runs
+
+Each run uses its own Compose project, `orglane-conformance-<checksum of the work directory>`, with its own containers, volumes and network. Docker picks the subnet, and Orglane trusts `X-Forwarded-For` only from the proxy address Docker assigned in that run. Nothing publishes host ports. So runs from different worktrees (or with different `CONFORMANCE_WORK` directories) can run at the same time. Start-up and cleanup only touch that run's project. A run removes its project on exit, also after a failure or Ctrl-C, and the next run in the same work directory removes anything a killed run left behind. A second run in a work directory that is in use is refused: the work directory holds a `.lock` while a run is active.
+
+`KEEP=1 make conformance` leaves the containers running and prints the `docker compose -p orglane-conformance-<n> down -v` command that stops them. PKCE, refresh token rotation, passkeys and the other parts of #6 that the plans above do not cover are tested by the Go integration tests in `core/internal/identity/web`.
