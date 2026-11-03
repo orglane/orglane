@@ -36,6 +36,25 @@ func TestAcme(t *testing.T) {
 	if owner := d.Owner(); owner.Username != d.DefaultUsername || owner.Role != demo.RoleOwner {
 		t.Errorf("Owner() = %+v, default %q", owner, d.DefaultUsername)
 	}
+	// 4-6 teams with realistic memberships: every team has a lead and
+	// members, and everyone belongs to at least one team.
+	if len(d.Teams) < 4 || len(d.Teams) > 6 {
+		t.Errorf("%d teams, want 4-6", len(d.Teams))
+	}
+	inTeam := map[string]bool{}
+	for _, team := range d.Teams {
+		if len(team.Leads) == 0 || len(team.Members) == 0 || team.Description == "" {
+			t.Errorf("team %s: needs a description, a lead and members", team.Slug)
+		}
+		for _, u := range append(team.Leads, team.Members...) {
+			inTeam[u] = true
+		}
+	}
+	for _, p := range d.People {
+		if !inTeam[p.Username] {
+			t.Errorf("%s belongs to no team", p.Username)
+		}
+	}
 }
 
 // TestAvatarsAreGenerated fails when the committed SVG avatars differ from
@@ -84,24 +103,35 @@ func TestLoadRejectsInvalidDatasets(t *testing.T) {
 	person := func(username, email, role string) string {
 		return "  - {username: " + username + ", display_name: X Y, work_email: " + email + ", title: T, role: " + role + "}\n"
 	}
+	owner := person("ann", "ann@acme.example", "owner")
 	for name, tc := range map[string]struct {
-		meta, people, want string
+		meta, people, teams, want string
 	}{
-		"no owner":         {meta, person("ann", "ann@acme.example", "admin"), "exactly one person must be the owner"},
-		"two owners":       {meta, person("ann", "ann@acme.example", "owner") + person("bob", "bob@acme.example", "owner"), "exactly one"},
-		"duplicate user":   {meta, person("ann", "ann@acme.example", "owner") + person("ann", "ann2@acme.example", "member"), "duplicate username"},
-		"duplicate email":  {meta, person("ann", "ann@acme.example", "owner") + person("bob", "ANN@acme.example", "member"), "duplicate work_email"},
-		"foreign domain":   {meta, person("ann", "ann@evil.example", "owner"), "company domain"},
-		"unknown role":     {meta, person("ann", "ann@acme.example", "owner") + person("bob", "bob@acme.example", "root"), "role must be"},
-		"default missing":  {strings.Replace(meta, "ann", "zed", 1), person("ann", "ann@acme.example", "owner"), "default_username"},
-		"unknown field":    {meta + "flavor: red\n", person("ann", "ann@acme.example", "owner"), "flavor"},
-		"missing avatar":   {meta, "  - {username: ann, display_name: A B, work_email: ann@acme.example, role: owner, avatar: avatars/ann.svg}\n", "avatar"},
-		"avatar traversal": {meta, "  - {username: ann, display_name: A B, work_email: ann@acme.example, role: owner, avatar: ../x.svg}\n", "inside the dataset"},
+		"team without slug":    {meta, owner, "  - {name: A, leads: [ann]}\n", "slug must be set"},
+		"team slug upper case": {meta, owner, "  - {slug: Core, name: A}\n", "lower case"},
+		"duplicate team":       {meta, owner, "  - {slug: a, name: A}\n  - {slug: a, name: B}\n", "duplicate slug"},
+		"team without name":    {meta, owner, "  - {slug: a}\n", "name is required"},
+		"unknown team member":  {meta, owner, "  - {slug: a, name: A, members: [zed]}\n", `"zed" is not a person`},
+		"lead and member":      {meta, owner, "  - {slug: a, name: A, leads: [ann], members: [ann]}\n", "more than once"},
+		"unknown team field":   {meta, owner, "  - {slug: a, name: A, owner: ann}\n", "owner"},
+		"no owner":             {meta, person("ann", "ann@acme.example", "admin"), "", "exactly one person must be the owner"},
+		"two owners":           {meta, person("ann", "ann@acme.example", "owner") + person("bob", "bob@acme.example", "owner"), "", "exactly one"},
+		"duplicate user":       {meta, person("ann", "ann@acme.example", "owner") + person("ann", "ann2@acme.example", "member"), "", "duplicate username"},
+		"duplicate email":      {meta, person("ann", "ann@acme.example", "owner") + person("bob", "ANN@acme.example", "member"), "", "duplicate work_email"},
+		"foreign domain":       {meta, person("ann", "ann@evil.example", "owner"), "", "company domain"},
+		"unknown role":         {meta, person("ann", "ann@acme.example", "owner") + person("bob", "bob@acme.example", "root"), "", "role must be"},
+		"default missing":      {strings.Replace(meta, "ann", "zed", 1), person("ann", "ann@acme.example", "owner"), "", "default_username"},
+		"unknown field":        {meta + "flavor: red\n", person("ann", "ann@acme.example", "owner"), "", "flavor"},
+		"missing avatar":       {meta, "  - {username: ann, display_name: A B, work_email: ann@acme.example, role: owner, avatar: avatars/ann.svg}\n", "", "avatar"},
+		"avatar traversal":     {meta, "  - {username: ann, display_name: A B, work_email: ann@acme.example, role: owner, avatar: ../x.svg}\n", "", "inside the dataset"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fsys := fstest.MapFS{
 				"dataset.yaml": {Data: []byte(tc.meta)},
 				"people.yaml":  {Data: []byte("people:\n" + tc.people)},
+			}
+			if tc.teams != "" {
+				fsys["teams.yaml"] = &fstest.MapFile{Data: []byte("teams:\n" + tc.teams)}
 			}
 			_, err := demo.LoadFS("test", fsys)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {

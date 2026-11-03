@@ -8,9 +8,10 @@ Demo datasets: human-readable, versioned fixture files used by demo mode, screen
 |---|---|
 | `acme/dataset.yaml` | Version, company name and email domain, the default person for one-click sign-in (the Owner) |
 | `acme/people.yaml` | 14 people: username, display name, work email, title, role (1 Owner, 2 Admins, the rest Members) and avatar |
+| `acme/teams.yaml` | Six teams with descriptions, memberships and leads, including co-leads on Platform |
 | `acme/avatars/*.svg` | Initials avatars, generated with `go generate ./demo` (a test fails when they are stale) |
 
-Work emails use `acme-robotics.example`, a domain reserved for documentation (RFC 2606). Every person is active and has no password. Teams (M1) and profile fields will be added as new files (`teams.yaml`, ...) and keys; bump `version` when the dataset changes in a way loaders or tests must know about.
+Work emails use `acme-robotics.example`, a domain reserved for documentation (RFC 2606). Every person is active and has no password. Profile fields will be added as new files and keys; bump `version` when the dataset changes in a way loaders or tests must know about.
 
 ## Demo mode
 
@@ -25,7 +26,7 @@ Or run the binary directly against an **empty** database:
 orglane server --demo -config orglane.yaml   # or demo.enabled: true / ORGLANE_DEMO_ENABLED=true
 ```
 
-On an empty database the server loads the dataset through the identity service (every person, role and avatar gets its audit entry), skips the first-run setup token and logs a `DEMO MODE` banner. Restarts keep the data. The server **refuses to start** in demo mode on a database that already has people that were not loaded as a demo.
+On an empty database the server loads the dataset through the identity service (every person, role, avatar, team and membership gets its audit entry), skips the first-run setup token and logs a `DEMO MODE` banner. Restarts keep the data. An older demo dataset is completed idempotently when its version increases, keeping existing people, team details and archived teams. The server **refuses to start** in demo mode on a database that already has people that were not loaded as a demo.
 
 In demo mode:
 

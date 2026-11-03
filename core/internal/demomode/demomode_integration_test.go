@@ -185,12 +185,48 @@ func TestPrepareLoadsEmptyDatabase(t *testing.T) {
 		t.Fatalf("IsDemo = %+v, %v, %v", marker, ok, err)
 	}
 
+	// Teams with their leads and members.
+	memberships := 0
+	for _, want := range e.dataset.Teams {
+		team, err := e.stack.Identity.GetTeamBySlug(ctx, want.Slug)
+		if err != nil || team.Name != want.Name || team.Description == nil || *team.Description != want.Description {
+			t.Fatalf("team %s: %+v, %v", want.Slug, team, err)
+		}
+		members, err := e.stack.Identity.TeamMembers(ctx, team.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roles := map[string]string{}
+		for _, m := range members {
+			roles[m.Person.Username] = m.Role
+		}
+		for _, u := range want.Leads {
+			if roles[u] != "lead" {
+				t.Errorf("team %s: %s is %q, want lead", want.Slug, u, roles[u])
+			}
+		}
+		for _, u := range want.Members {
+			if roles[u] != "member" {
+				t.Errorf("team %s: %s is %q, want member", want.Slug, u, roles[u])
+			}
+		}
+		if len(members) != len(want.Leads)+len(want.Members) {
+			t.Errorf("team %s: %d members, want %d", want.Slug, len(members), len(want.Leads)+len(want.Members))
+		}
+		memberships += len(members)
+	}
+	if res.Teams != len(e.dataset.Teams) || len(e.dataset.Teams) == 0 {
+		t.Errorf("Prepare loaded %d teams, dataset has %d", res.Teams, len(e.dataset.Teams))
+	}
+
 	// Everything was written through the identity service, with audit
 	// entries by the demo actor.
 	for action, want := range map[audit.Action]int{
 		audit.PersonCreated:      n,
 		audit.PersonRoleAssigned: n,
 		audit.PersonAvatarSet:    n,
+		audit.TeamCreated:        len(e.dataset.Teams),
+		audit.TeamMemberAdded:    memberships,
 		audit.InstanceDemoLoaded: 1,
 	} {
 		if got := e.count(`SELECT count(*) FROM audit_entries WHERE action = $1 AND actor_kind = 'system' AND user_agent = 'orglane-demo'`, string(action)); got != want {
@@ -267,6 +303,59 @@ func TestPrepareResumesInterruptedLoad(t *testing.T) {
 	}
 	if n := e.count("SELECT count(*) FROM audit_entries WHERE action = 'person.created'"); n != len(e.dataset.People) {
 		t.Fatalf("%d person.created entries, want one per person", n)
+	}
+}
+
+// TestPrepareUpgradesOlderDataset: a database loaded from an older version
+// of the dataset (people, no teams) gets what the new version adds on the
+// next start, once.
+func TestPrepareUpgradesOlderDataset(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	older := *e.dataset
+	older.Version, older.Teams = e.dataset.Version-1, nil
+	if res, err := demomode.Prepare(ctx, e.pool, e.stack.Identity, &older); err != nil || !res.Loaded {
+		t.Fatalf("Prepare(older) = %+v, %v", res, err)
+	}
+	if n := e.count("SELECT count(*) FROM teams"); n != 0 {
+		t.Fatalf("the older dataset loaded %d teams", n)
+	}
+	// Someone offboarded a team member in the demo meanwhile.
+	offboarded, err := e.stack.Identity.GetPersonByUsername(ctx, e.dataset.Teams[0].Members[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.stack.Identity.SetPersonStatus(ctx, audit.System, offboarded.ID, identity.StatusOffboarded); err != nil {
+		t.Fatal(err)
+	}
+
+	if res := e.prepare(); !res.Loaded {
+		t.Fatal("Prepare did not complete the load from the older version")
+	}
+	if n := e.count("SELECT count(*) FROM teams"); n != len(e.dataset.Teams) {
+		t.Fatalf("%d teams after the upgrade, want %d", n, len(e.dataset.Teams))
+	}
+	if n := e.count("SELECT count(*) FROM people"); n != len(e.dataset.People) {
+		t.Fatalf("%d people after the upgrade, want %d", n, len(e.dataset.People))
+	}
+	if n := e.count("SELECT count(*) FROM team_memberships WHERE person_id = $1", offboarded.ID); n != 0 {
+		t.Fatalf("the offboarded person joined %d teams", n)
+	}
+	marker, ok, err := demomode.IsDemo(ctx, e.pool)
+	if err != nil || !ok || marker.Version != e.dataset.Version || marker.State != "loaded" {
+		t.Fatalf("IsDemo = %+v, %v, %v", marker, ok, err)
+	}
+	if n := e.count("SELECT count(*) FROM audit_entries WHERE action = 'instance.demo_loaded'"); n != 2 {
+		t.Fatalf("%d instance.demo_loaded entries, want 2 (load and upgrade)", n)
+	}
+
+	// The next start changes nothing.
+	before := e.count("SELECT count(*) FROM audit_entries")
+	if res := e.prepare(); res.Loaded {
+		t.Fatal("Prepare loaded again after the upgrade")
+	}
+	if after := e.count("SELECT count(*) FROM audit_entries"); after != before {
+		t.Fatalf("Prepare after the upgrade wrote %d audit entries", after-before)
 	}
 }
 

@@ -52,6 +52,8 @@ type Dataset struct {
 	DefaultUsername string
 	// People in file order.
 	People []Person
+	// Teams in file order.
+	Teams []Team
 
 	fsys fs.FS
 }
@@ -76,6 +78,17 @@ type Person struct {
 	Avatar string `yaml:"avatar"`
 }
 
+// Team is a team of a dataset.
+type Team struct {
+	Slug        string `yaml:"slug"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	// Leads and Members are usernames of dataset people. A person is either
+	// a lead or a member of a team, not both.
+	Leads   []string `yaml:"leads"`
+	Members []string `yaml:"members"`
+}
+
 type datasetFile struct {
 	Version         int     `yaml:"version"`
 	Company         Company `yaml:"company"`
@@ -84,6 +97,10 @@ type datasetFile struct {
 
 type peopleFile struct {
 	People []Person `yaml:"people"`
+}
+
+type teamsFile struct {
+	Teams []Team `yaml:"teams"`
 }
 
 // Load returns the embedded dataset with the given name.
@@ -111,12 +128,22 @@ func LoadFS(name string, fsys fs.FS) (*Dataset, error) {
 	if err := decodeStrict(fsys, "people.yaml", &people); err != nil {
 		return nil, err
 	}
+	// teams.yaml is optional.
+	var teams teamsFile
+	if _, err := fs.Stat(fsys, "teams.yaml"); err == nil {
+		if err := decodeStrict(fsys, "teams.yaml", &teams); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("demo: %w", err)
+	}
 	d := &Dataset{
 		Name:            name,
 		Version:         meta.Version,
 		Company:         meta.Company,
 		DefaultUsername: meta.DefaultUsername,
 		People:          people.People,
+		Teams:           teams.Teams,
 		fsys:            fsys,
 	}
 	if err := d.check(); err != nil {
@@ -193,12 +220,43 @@ func (d *Dataset) check() error {
 	if owners != 1 {
 		errs = append(errs, fmt.Errorf("exactly one person must be the owner, found %d", owners))
 	}
+	errs = append(errs, d.checkTeams(usernames)...)
 	if p, ok := d.Person(d.DefaultUsername); !ok {
 		errs = append(errs, fmt.Errorf("default_username %q is not a person of the dataset", d.DefaultUsername))
 	} else if p.Role != RoleOwner {
 		errs = append(errs, fmt.Errorf("default_username %q must be the owner", d.DefaultUsername))
 	}
 	return errors.Join(errs...)
+}
+
+// checkTeams validates the teams against the dataset's usernames.
+func (d *Dataset) checkTeams(usernames map[string]bool) []error {
+	var errs []error
+	slugs := map[string]bool{}
+	for i, t := range d.Teams {
+		at := fmt.Sprintf("teams[%d] (%s)", i, t.Slug)
+		switch {
+		case t.Slug == "" || t.Slug != strings.ToLower(t.Slug):
+			errs = append(errs, fmt.Errorf("%s: slug must be set and lower case", at))
+		case slugs[t.Slug]:
+			errs = append(errs, fmt.Errorf("%s: duplicate slug", at))
+		}
+		slugs[t.Slug] = true
+		if strings.TrimSpace(t.Name) == "" {
+			errs = append(errs, fmt.Errorf("%s: name is required", at))
+		}
+		seen := map[string]bool{}
+		for _, u := range slices.Concat(t.Leads, t.Members) {
+			if !usernames[u] {
+				errs = append(errs, fmt.Errorf("%s: %q is not a person of the dataset", at, u))
+			}
+			if seen[u] {
+				errs = append(errs, fmt.Errorf("%s: %q is listed more than once", at, u))
+			}
+			seen[u] = true
+		}
+	}
+	return errs
 }
 
 // Person returns the person with the given username.

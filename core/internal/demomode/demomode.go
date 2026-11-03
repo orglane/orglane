@@ -2,8 +2,9 @@
 // or demo.enabled in the configuration): it loads a demo dataset (package
 // demo) into an empty instance and remembers that the instance is a demo.
 //
-// The dataset is loaded through the identity service, so every person, role
-// and avatar is created like any other, with its audit entry; the actor is
+// The dataset is loaded through the identity service, so every person, role,
+// avatar, team and team membership is created like any other, with its
+// audit entry; the actor is
 // the system with the user agent "orglane-demo". Demo mode never touches a
 // database that holds anything else: Prepare refuses a database that has
 // people but was not loaded as a demo.
@@ -11,7 +12,10 @@
 // The instance setting "demo" marks a demo database. It is written in two
 // steps, "loading" before the first person and "loaded" with an
 // instance.demo_loaded audit entry at the end, so a load interrupted by a
-// crash is completed on the next start instead of being refused.
+// crash is completed on the next start instead of being refused. The marker
+// records the dataset version: a database loaded from an older version of
+// the dataset gets what the newer version adds (for example teams) on the
+// next start, the same way an interrupted load is completed.
 package demomode
 
 import (
@@ -20,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -66,19 +71,22 @@ type Result struct {
 	Loaded bool
 	// People is how many people the dataset has.
 	People int
+	// Teams is how many teams the dataset has.
+	Teams int
 }
 
 // Prepare makes the database a demo of dataset d: on an empty database it
 // loads the dataset; on a database loaded earlier it does nothing (finishing
-// an interrupted load if needed); on any other database it returns
-// ErrNotEmpty. The built-in roles must be seeded first.
+// an interrupted load, or completing a load from an older dataset version,
+// if needed); on any other database it returns ErrNotEmpty. The built-in
+// roles must be seeded first.
 func Prepare(ctx context.Context, pool *pgxpool.Pool, svc *identity.Service, d *demo.Dataset) (Result, error) {
 	marker, err := claim(ctx, pool, d)
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{People: len(d.People)}
-	if marker.State == stateLoaded {
+	res := Result{People: len(d.People), Teams: len(d.Teams)}
+	if current(marker, d) {
 		return res, nil
 	}
 	if err := load(ctx, svc, d); err != nil {
@@ -165,7 +173,7 @@ func finish(ctx context.Context, pool *pgxpool.Pool, d *demo.Dataset) error {
 		if err != nil {
 			return err
 		}
-		if ok && m.State == stateLoaded {
+		if ok && current(m, d) {
 			return nil // finished by a concurrent start
 		}
 		if err := putMarker(ctx, q, Marker{Dataset: d.Name, Version: d.Version, State: stateLoaded}); err != nil {
@@ -174,16 +182,24 @@ func finish(ctx context.Context, pool *pgxpool.Pool, d *demo.Dataset) error {
 		_, err = audit.Record(ctx, q, audit.Entry{
 			Actor:    Actor,
 			Action:   audit.InstanceDemoLoaded,
-			Metadata: map[string]any{"dataset": d.Name, "version": d.Version, "people": len(d.People)},
+			Metadata: map[string]any{"dataset": d.Name, "version": d.Version, "people": len(d.People), "teams": len(d.Teams)},
 		})
 		return err
 	})
 }
 
+// current reports whether the marker says dataset d is fully loaded.
+func current(m Marker, d *demo.Dataset) bool {
+	return m.State == stateLoaded && m.Version >= d.Version
+}
+
 // load creates what is missing of the dataset, so it can resume an
-// interrupted load: people that exist are kept, roles are assigned
-// idempotently and avatars are set only where none exists.
+// interrupted load or complete a load from an older dataset version: people
+// and teams that exist are kept, roles and team memberships are set
+// idempotently and avatars are set only where none exists. Archived teams
+// are left alone.
 func load(ctx context.Context, svc *identity.Service, d *demo.Dataset) error {
+	ids := make(map[string]uuid.UUID, len(d.People))
 	for _, p := range d.People {
 		person, err := svc.GetPersonByUsername(ctx, p.Username)
 		if errors.Is(err, identity.ErrNotFound) {
@@ -202,6 +218,7 @@ func load(ctx context.Context, svc *identity.Service, d *demo.Dataset) error {
 		if err != nil {
 			return fmt.Errorf("person %s: %w", p.Username, err)
 		}
+		ids[p.Username] = person.ID
 		if err := svc.AssignRole(ctx, Actor, person.ID, authz.RoleKey(p.Role)); err != nil {
 			return fmt.Errorf("person %s: role %s: %w", p.Username, p.Role, err)
 		}
@@ -221,5 +238,43 @@ func load(ctx context.Context, svc *identity.Service, d *demo.Dataset) error {
 			return fmt.Errorf("person %s: avatar: %w", p.Username, err)
 		}
 	}
+	for _, t := range d.Teams {
+		if err := loadTeam(ctx, svc, t, ids); err != nil {
+			return fmt.Errorf("team %s: %w", t.Slug, err)
+		}
+	}
 	return nil
+}
+
+func loadTeam(ctx context.Context, svc *identity.Service, t demo.Team, ids map[string]uuid.UUID) error {
+	team, err := svc.GetTeamBySlug(ctx, t.Slug)
+	if errors.Is(err, identity.ErrNotFound) {
+		team, err = svc.CreateTeam(ctx, Actor, identity.NewTeam{Slug: t.Slug, Name: t.Name, Description: t.Description})
+		if errors.Is(err, identity.ErrSlugTaken) {
+			// Created by a concurrent start in the meantime.
+			team, err = svc.GetTeamBySlug(ctx, t.Slug)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if team.ArchivedAt != nil {
+		return nil
+	}
+	set := func(usernames []string, role identity.TeamRole) error {
+		for _, u := range usernames {
+			_, err := svc.SetTeamMember(ctx, Actor, team.ID, ids[u], role)
+			if errors.Is(err, identity.ErrPersonOffboarded) {
+				continue // offboarded in the demo in the meantime
+			}
+			if err != nil {
+				return fmt.Errorf("%s %s: %w", role, u, err)
+			}
+		}
+		return nil
+	}
+	if err := set(t.Leads, identity.TeamRoleLead); err != nil {
+		return err
+	}
+	return set(t.Members, identity.TeamRoleMember)
 }

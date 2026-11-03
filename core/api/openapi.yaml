@@ -535,6 +535,293 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/people/{personId}/teams:
+    get:
+      operationId: listPersonTeams
+      summary: A person's teams
+      description: |
+        The teams a person belongs to, with their role in each, sorted by
+        name. Archived teams are not included. Any signed-in person may read
+        it.
+      tags: [teams]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PersonId"
+      responses:
+        "200":
+          description: The person's teams.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonTeamList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/teams:
+    get:
+      operationId: listTeams
+      summary: List teams
+      description: |
+        The teams with their member counts, sorted by name. Archived teams
+        are included only with `archived=true`. Any signed-in person may read
+        it. Not paginated yet.
+      tags: [teams]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: archived
+          in: query
+          required: false
+          description: Include archived teams.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: The teams.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createTeam
+      summary: Create a team
+      tags: [teams]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTeamRequest"
+      responses:
+        "201":
+          description: The team was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Team"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/teams/{teamId}:
+    get:
+      operationId: getTeam
+      summary: A team
+      description: Returns a team, archived or not. Any signed-in person may read it.
+      tags: [teams]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: The team.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Team"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      operationId: updateTeam
+      summary: Change a team
+      description: |
+        Changes the given fields; omitted fields stay unchanged. Archived
+        teams cannot be changed (409).
+      tags: [teams]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTeamRequest"
+      responses:
+        "200":
+          description: The changed team.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Team"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/teams/{teamId}/archive:
+    post:
+      operationId: archiveTeam
+      summary: Archive a team
+      description: |
+        Archives a team. It keeps its slug, members and history, becomes
+        read-only and no longer appears in team lists (unless asked for) or
+        a person's teams. Archiving an archived team changes nothing. A team
+        with active child teams cannot be archived (409).
+      tags: [teams]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: The archived team.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Team"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/teams/{teamId}/members:
+    get:
+      operationId: listTeamMembers
+      summary: A team's members
+      description: |
+        The members of a team, leads first, then by display name. Offboarded
+        people are not listed. Archived teams keep their members. Any
+        signed-in person may read it.
+      tags: [teams]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "200":
+          description: The members.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamMemberList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/teams/{teamId}/members/{personId}:
+    put:
+      operationId: setTeamMember
+      summary: Add a member or set their role
+      description: |
+        Adds the person to the team with the given role, or changes the role
+        of a member: `lead` makes them a team lead, `member` makes a lead a
+        regular member again. A team may have any number of leads. Setting
+        the role a member already has changes nothing. Offboarded people
+        cannot be added, and archived teams cannot change (409).
+      tags: [teams]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/PersonId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetTeamMemberRequest"
+      responses:
+        "200":
+          description: The membership.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamMembership"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      operationId: removeTeamMember
+      summary: Remove a member
+      description: |
+        Removes the person from the team. Removing someone who is not a
+        member changes nothing. Archived teams cannot change (409).
+      tags: [teams]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TeamId"
+        - $ref: "#/components/parameters/PersonId"
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /api/v1/demo:
     get:
       operationId: getDemo
@@ -599,6 +886,21 @@ components:
       type: apiKey
       in: cookie
       name: __Host-orglane_session
+  parameters:
+    TeamId:
+      name: teamId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PersonId:
+      name: personId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   responses:
     BadRequest:
       description: The request is invalid.
@@ -960,8 +1262,7 @@ components:
           description: The job title, if set.
           example: Chief Executive Officer
         status:
-          type: string
-          enum: [invited, active, suspended]
+          $ref: "#/components/schemas/PersonStatus"
         roles:
           type: array
           items:
@@ -971,6 +1272,10 @@ components:
           type: string
           description: Path of the avatar image (`GET /api/v1/people/{personId}/avatar`), if the person has one.
           example: /api/v1/people/0192b7a0-0000-7000-8000-000000000000/avatar
+    PersonStatus:
+      type: string
+      enum: [invited, active, suspended]
+      description: "`invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people are not listed."
     PersonList:
       type: object
       required: [items]
@@ -979,6 +1284,170 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Person"
+    Team:
+      type: object
+      required: [id, slug, name, memberCount, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          description: Identifies the team in URLs and, later, in provider mappings. Unique across all teams, archived ones included.
+          example: platform
+        name:
+          type: string
+          example: Platform
+        description:
+          type: string
+          description: What the team does, if set.
+          example: Robot software, firmware and the fleet cloud.
+        parentId:
+          type: string
+          format: uuid
+          description: The parent team, if any (prepared for the org chart).
+        memberCount:
+          type: integer
+          description: How many people are in the team (offboarded people not counted).
+          example: 4
+        archivedAt:
+          type: string
+          format: date-time
+          description: When the team was archived. Archived teams are read-only.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    TeamList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Team"
+    CreateTeamRequest:
+      type: object
+      required: [name, slug]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          example: Platform
+        slug:
+          type: string
+          maxLength: 63
+          description: 1-63 characters of a-z, 0-9 and `-`, starting and ending with a letter or digit; normalized to lower case.
+          example: platform
+        description:
+          type: string
+          maxLength: 1000
+        parentId:
+          type: string
+          format: uuid
+          description: The parent team. It must be an active team.
+    UpdateTeamRequest:
+      type: object
+      description: The fields to change; omitted fields stay unchanged.
+      properties:
+        name:
+          type: string
+          maxLength: 100
+        slug:
+          type: string
+          maxLength: 63
+        description:
+          type: string
+          maxLength: 1000
+          description: An empty string removes the description.
+        parentId:
+          type: string
+          description: The ID of the new parent team (an active team, not this team or one below it), or an empty string to remove the parent.
+    SetTeamMemberRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/TeamRole"
+    TeamRole:
+      type: string
+      enum: [member, lead]
+      x-enum-varnames: [TeamRoleMember, TeamRoleLead]
+      description: A person's role in a team. A team may have any number of leads, including none.
+    TeamMembership:
+      type: object
+      required: [teamId, personId, role, joinedAt]
+      properties:
+        teamId:
+          type: string
+          format: uuid
+        personId:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/TeamRole"
+        joinedAt:
+          type: string
+          format: date-time
+    TeamMember:
+      type: object
+      required: [person, role, joinedAt]
+      properties:
+        person:
+          $ref: "#/components/schemas/PersonCard"
+        role:
+          $ref: "#/components/schemas/TeamRole"
+        joinedAt:
+          type: string
+          format: date-time
+    TeamMemberList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TeamMember"
+    PersonCard:
+      type: object
+      description: A person as shown in lists of other things, such as a team's members.
+      required: [id, username, displayName, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+          example: priya.raman
+        displayName:
+          type: string
+          example: Priya Raman
+        title:
+          type: string
+          example: Senior Robotics Engineer
+        status:
+          $ref: "#/components/schemas/PersonStatus"
+        avatarUrl:
+          type: string
+          description: Path of the avatar image, if the person has one.
+    PersonTeam:
+      type: object
+      required: [team, role]
+      properties:
+        team:
+          $ref: "#/components/schemas/Team"
+        role:
+          $ref: "#/components/schemas/TeamRole"
+    PersonTeamList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PersonTeam"
     DemoInfo:
       type: object
       required: [dataset, company, defaultUsername, people]

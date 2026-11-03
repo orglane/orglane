@@ -1,4 +1,4 @@
-// Package identity is the domain layer for people, roles, devices and
+// Package identity is the domain layer for people, roles, teams, devices and
 // sessions (ADR 0003, 0004, 0012).
 //
 // Every change to these entities goes through Service, which runs it in a
@@ -63,13 +63,15 @@ func (e *LockedError) Error() string {
 	return fmt.Sprintf("identity: account is locked, retry after %s", e.RetryAfter)
 }
 
-// Service changes and reads people, roles, devices and sessions.
+// Service changes and reads people, roles, teams, devices and sessions.
 //
 // Concurrent changes are serialized with row locks taken in one order:
 // the person, then the device, then sessions; the owner role row is locked
 // after the person when the last-owner rule applies. Keeping that order
 // avoids deadlocks between, for example, suspending a person and revoking
-// one of their devices.
+// one of their devices. Team changes lock the team before anything else;
+// changes that can affect the team hierarchy take an advisory lock first
+// (teams.go).
 type Service struct {
 	pool     *pgxpool.Pool
 	hasher   *crypto.PasswordHasher

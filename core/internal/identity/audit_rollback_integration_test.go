@@ -57,6 +57,16 @@ func (f *rollbackFixture) person(t *testing.T, username string, status identity.
 	return createPerson(t, f.svc, username, status).ID
 }
 
+// team creates the fixture's team and returns its ID.
+func (f *rollbackFixture) team(t *testing.T) uuid.UUID {
+	t.Helper()
+	team, err := f.svc.CreateTeam(f.ctx, admin, identity.NewTeam{Slug: "platform", Name: "Platform"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return team.ID
+}
+
 // device registers a web device with n sessions and returns the device and
 // session IDs.
 func (f *rollbackFixture) device(t *testing.T, personID uuid.UUID, sessions int) (uuid.UUID, []uuid.UUID) {
@@ -206,6 +216,77 @@ func auditRollbackCases() []auditRollbackCase {
 				// Removing the owner role also takes the last-owner check's
 				// lock on the owner role.
 				return func() error { return f.svc.RemoveRole(f.ctx, admin, alice, authz.RoleOwner) }
+			},
+		},
+
+		// Teams.
+		{
+			name:   "create team",
+			reject: rejectAction(audit.TeamCreated),
+			prepare: func(_ *testing.T, f *rollbackFixture) func() error {
+				return func() error {
+					_, err := f.svc.CreateTeam(f.ctx, admin, identity.NewTeam{Slug: "platform", Name: "Platform"})
+					return err
+				}
+			},
+		},
+		{
+			name:   "update team",
+			reject: rejectAction(audit.TeamUpdated),
+			prepare: func(t *testing.T, f *rollbackFixture) func() error {
+				team := f.team(t)
+				name := "Platform Engineering"
+				return func() error {
+					_, err := f.svc.UpdateTeam(f.ctx, admin, team, identity.TeamUpdate{Name: &name})
+					return err
+				}
+			},
+		},
+		{
+			name:   "archive team",
+			reject: rejectAction(audit.TeamArchived),
+			prepare: func(t *testing.T, f *rollbackFixture) func() error {
+				team := f.team(t)
+				return func() error { _, err := f.svc.ArchiveTeam(f.ctx, admin, team); return err }
+			},
+		},
+		{
+			name:   "add team member",
+			reject: rejectAction(audit.TeamMemberAdded),
+			prepare: func(t *testing.T, f *rollbackFixture) func() error {
+				team := f.team(t)
+				alice := f.person(t, "alice", identity.StatusActive)
+				return func() error {
+					_, err := f.svc.SetTeamMember(f.ctx, admin, team, alice, identity.TeamRoleMember)
+					return err
+				}
+			},
+		},
+		{
+			name:   "make team lead",
+			reject: rejectAction(audit.TeamMemberRoleChanged),
+			prepare: func(t *testing.T, f *rollbackFixture) func() error {
+				team := f.team(t)
+				alice := f.person(t, "alice", identity.StatusActive)
+				if _, err := f.svc.SetTeamMember(f.ctx, admin, team, alice, identity.TeamRoleMember); err != nil {
+					t.Fatal(err)
+				}
+				return func() error {
+					_, err := f.svc.SetTeamMember(f.ctx, admin, team, alice, identity.TeamRoleLead)
+					return err
+				}
+			},
+		},
+		{
+			name:   "remove team member",
+			reject: rejectAction(audit.TeamMemberRemoved),
+			prepare: func(t *testing.T, f *rollbackFixture) func() error {
+				team := f.team(t)
+				alice := f.person(t, "alice", identity.StatusActive)
+				if _, err := f.svc.SetTeamMember(f.ctx, admin, team, alice, identity.TeamRoleLead); err != nil {
+					t.Fatal(err)
+				}
+				return func() error { return f.svc.RemoveTeamMember(f.ctx, admin, team, alice) }
 			},
 		},
 

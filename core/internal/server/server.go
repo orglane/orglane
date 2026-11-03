@@ -205,7 +205,7 @@ func prepareDemo(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, st
 		return nil, fmt.Errorf("demo mode: %w", err)
 	}
 	if res.Loaded {
-		logger.InfoContext(ctx, "loaded the demo dataset", "dataset", dataset.Name, "version", dataset.Version, "people", res.People)
+		logger.InfoContext(ctx, "loaded the demo dataset", "dataset", dataset.Name, "version", dataset.Version, "people", res.People, "teams", res.Teams)
 	}
 	logger.WarnContext(ctx, "DEMO MODE: this instance runs the "+dataset.Company.Name+" demo dataset. Anyone who can reach it can sign in as any demo person, including the owner, with one click. Do not store real data here",
 		"dataset", dataset.Name, "workspace_url", cfg.WorkspaceURL(), "sign_in", "POST /api/v1/demo/sign-in")

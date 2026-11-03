@@ -1,5 +1,5 @@
 import { Link, Outlet } from "@tanstack/react-router";
-import { House, Inbox, LayoutGrid, type LucideIcon, Users } from "lucide-react";
+import { House, Inbox, LayoutGrid, type LucideIcon, Users, UsersRound } from "lucide-react";
 import { defineMessages, FormattedMessage, type MessageDescriptor, useIntl } from "react-intl";
 
 import { workspaceHost } from "@/lib/brand";
@@ -12,13 +12,14 @@ export const navMessages = defineMessages({
   home: { id: "nav.home", defaultMessage: "Home" },
   inbox: { id: "nav.inbox", defaultMessage: "Inbox" },
   people: { id: "nav.people", defaultMessage: "People" },
+  teams: { id: "nav.teams", defaultMessage: "Teams" },
   apps: { id: "nav.apps", defaultMessage: "Apps" },
   main: { id: "nav.main", defaultMessage: "Main" },
   skip: { id: "nav.skipToContent", defaultMessage: "Skip to content" },
 });
 
 interface NavItem {
-  to: "/" | "/inbox" | "/people" | "/apps";
+  to: "/" | "/inbox" | "/people" | "/teams" | "/apps";
   label: MessageDescriptor;
   icon: LucideIcon;
 }
@@ -27,6 +28,7 @@ const items: NavItem[] = [
   { to: "/", label: navMessages.home, icon: House },
   { to: "/inbox", label: navMessages.inbox, icon: Inbox },
   { to: "/people", label: navMessages.people, icon: Users },
+  { to: "/teams", label: navMessages.teams, icon: UsersRound },
   { to: "/apps", label: navMessages.apps, icon: LayoutGrid },
 ];
 
@@ -95,7 +97,7 @@ export function AppShell() {
 
       <nav
         aria-label={intl.formatMessage(navMessages.main)}
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t bg-canvas/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t bg-canvas/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
       >
         {items.map(({ to, label, icon: Icon }) => (
           <Link
