@@ -86,7 +86,8 @@ func TestEditableSMTPUsesSafeChannelForCustomGrants(t *testing.T) {
 	// assumed to be the complete authority of every SMTP configurator.
 	e.exec("INSERT INTO roles (key, name) VALUES ('sensitive_custom', 'Sensitive custom')")
 	e.exec("INSERT INTO role_permissions (role_id, permission) SELECT id, $1 FROM roles WHERE key = 'sensitive_custom'", string(authz.PeopleSensitiveRead))
-	for _, role := range []string{"owner", "admin", "sensitive_custom"} {
+	var privilegedIDs [3]uuid.UUID
+	for i, role := range []string{"owner", "admin", "sensitive_custom"} {
 		r := owner.req("POST", "/api/v1/invitations", map[string]string{"displayName": "Privileged Invite", "contactEmail": role + "@example.test", "username": role + "_invite", "role": role})
 		expectStatus(t, r, http.StatusCreated)
 		var issued issuedJSON
@@ -94,12 +95,25 @@ func TestEditableSMTPUsesSafeChannelForCustomGrants(t *testing.T) {
 		if issued.Link == nil || issued.Invitation.Delivery != "link" || issued.Invitation.Email != nil {
 			t.Fatalf("%s grant exposed to editable SMTP", role)
 		}
+		privilegedIDs[i] = issued.Invitation.ID
 		// Privileged copy-links stay usable with editable SMTP configured.
 		expectStatus(t, e.browser().req("POST", "/api/v1/auth/invitation/accept", map[string]string{"token": tokenOf(t, *issued.Link), "password": ownerPassword}), http.StatusOK)
 	}
 	member := owner.invite("Ordinary Member", "ordinary@example.test", "ordinary")
 	if member.Link != nil || member.Invitation.Delivery != "email" {
 		t.Fatal("ordinary email invitation regressed")
+	}
+	var queued int
+	if err := e.pool.QueryRow(t.Context(), `
+		SELECT count(*)
+		FROM invitations AS i
+		JOIN email_outbox AS e ON e.id = i.email_id
+		WHERE i.id IN ($1, $2, $3, $4) AND e.status = 'queued'
+	`, privilegedIDs[0], privilegedIDs[1], privilegedIDs[2], member.Invitation.ID).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Fatalf("queued outbox rows = %d, want 1 (only the ordinary member invitation)", queued)
 	}
 	if messages := mp.Messages(t, "owner@example.test"); len(messages) != 0 {
 		t.Fatal("privileged invitation reached editable SMTP")
