@@ -11,7 +11,7 @@ import (
 )
 
 // Value limits. Long text matches the database constraint
-// (core/migrations/00006_profile_fields.sql).
+// (core/migrations/00007_profile_fields.sql).
 const (
 	maxTextLength     = 200
 	maxLongTextLength = 2000

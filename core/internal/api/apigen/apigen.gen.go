@@ -571,7 +571,7 @@ type ProfileField struct {
 	RequiredAtOnboarding bool                `json:"requiredAtOnboarding"`
 	Section              ProfileFieldSection `json:"section"`
 
-	// Sensitive Values are encrypted at rest, readable only by the person and holders of `people.sensitive.read`, and every read is audited.
+	// Sensitive Values are encrypted at rest, readable only by holders of `people.sensitive.read`, and every read is audited.
 	Sensitive bool `json:"sensitive"`
 
 	// Type How values are validated and stored: `text` (one line, at most 200
@@ -662,7 +662,7 @@ type ProfileFieldSection string
 // `user@instance`).
 type ProfileFieldType string
 
-// ProfileFieldUpdate The settings to change; omitted ones stay.
+// ProfileFieldUpdate The settings to change; omitted ones stay. Declassifying sensitive values or changing their select options also requires people.sensitive.read, and reads of existing sensitive values are audited.
 type ProfileFieldUpdate struct {
 	Archived *bool `json:"archived,omitempty"`
 

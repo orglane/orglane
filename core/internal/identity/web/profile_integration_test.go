@@ -119,12 +119,12 @@ func TestProfileFieldsAPI(t *testing.T) {
 	maxProfile := "/api/v1/people/" + maxPerson.ID.String() + "/profile"
 	r = member.req("PATCH", maxProfile, map[string]any{"values": []map[string]any{
 		{"key": "telegram", "value": "@max_tg"}, {"key": "birthday", "value": "1991-07-04"},
-		{"key": "office", "value": "lisbon"}, {"key": "emergency_contact", "value": "Mom"},
+		{"key": "office", "value": "lisbon"},
 	}})
 	expectStatus(t, r, http.StatusOK)
 	var p apiProfile
 	r.json(t, &p)
-	if got := p.values(); got["telegram"] != "max_tg" || got["birthday"] != "1991-07-04" || got["office"] != "lisbon" || got["emergency_contact"] != "Mom" {
+	if got := p.values(); got["telegram"] != "max_tg" || got["birthday"] != "1991-07-04" || got["office"] != "lisbon" || got["emergency_contact"] != "" {
 		t.Errorf("own profile after the change: %v", got)
 	}
 	expectStatus(t, member.req("PATCH", maxProfile, map[string]any{"values": []map[string]any{{"key": "birthday", "value": "July 4th"}}}), http.StatusBadRequest)
@@ -132,6 +132,47 @@ func TestProfileFieldsAPI(t *testing.T) {
 		map[string]any{"values": []map[string]any{{"key": "telegram", "value": "mia_tg"}}}), http.StatusForbidden)
 	expectStatus(t, anonymous.req("GET", maxProfile, nil), http.StatusUnauthorized)
 	expectStatus(t, member.req("GET", "/api/v1/people/0190f3c4-0000-7000-8000-000000000001/profile", nil), http.StatusNotFound)
+
+	// Sensitive fields require the scope even for the person themselves.
+	expectStatus(t, member.req("PATCH", maxProfile, map[string]any{"values": []map[string]any{{"key": "emergency_contact", "value": "Mom"}}}), http.StatusBadRequest)
+	expectStatus(t, owner.req("PATCH", maxProfile, map[string]any{"values": []map[string]any{{"key": "emergency_contact", "value": "Mom"}}}), http.StatusOK)
+
+	// An admin cannot declassify or edit a sensitive value without its scope.
+	var sensitiveID string
+	for _, item := range lib.Items {
+		if item.Key == "emergency_contact" {
+			sensitiveID = item.Field.ID
+		}
+	}
+	if sensitiveID == "" {
+		t.Fatal("missing sensitive field")
+	}
+	for _, body := range []map[string]any{{"sensitive": false}, {"sensitive": false, "visibility": "everyone"}} {
+		expectStatus(t, admin.req("PATCH", "/api/v1/profile-fields/"+sensitiveID, body), http.StatusForbidden)
+	}
+	// Type is immutable, and visibility changes cannot bypass sensitivity.
+	r = admin.req("PATCH", "/api/v1/profile-fields/"+sensitiveID, map[string]any{"visibility": "everyone", "type": "text"})
+	expectStatus(t, r, http.StatusOK)
+	var definition struct {
+		Type      string `json:"type"`
+		Sensitive bool   `json:"sensitive"`
+	}
+	r.json(t, &definition)
+	if definition.Type != "long_text" || !definition.Sensitive {
+		t.Errorf("sensitive definition changed: %+v", definition)
+	}
+	expectStatus(t, admin.req("PATCH", maxProfile, map[string]any{"values": []map[string]any{{"key": "emergency_contact", "value": "Probe"}}}), http.StatusBadRequest)
+	for _, b := range []*browser{admin, member} {
+		r := b.req("PATCH", maxProfile, map[string]any{"values": []map[string]any{}})
+		expectStatus(t, r, http.StatusOK)
+		var response apiProfile
+		r.json(t, &response)
+		for _, entry := range response.Fields {
+			if entry.Field.Key == "emergency_contact" {
+				t.Error("update response leaked sensitive field")
+			}
+		}
+	}
 
 	// What each caller sees of Max's profile.
 	for name, tc := range map[string]struct {

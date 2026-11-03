@@ -41,7 +41,7 @@ func TestDecide(t *testing.T) {
 	}
 
 	sensitive := Field{Key: "s", Visibility: VisibilityEveryone, EditableBy: EditableBySelf, Sensitive: true}
-	for i, want := range []bool{true, false, false, false, true} {
+	for i, want := range []bool{false, false, false, false, true} {
 		vc := viewers[i]
 		if got := decide(sensitive, vc.v, vc.rel).see; got != want {
 			t.Errorf("sensitive field, %s: see = %v, want %v", vc.name, got, want)

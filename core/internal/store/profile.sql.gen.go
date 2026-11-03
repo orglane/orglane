@@ -40,7 +40,7 @@ type CreateProfileFieldParams struct {
 	Sensitive            bool
 }
 
-// Profile fields and their values (core/migrations/00006_profile_fields.sql).
+// Profile fields and their values (core/migrations/00007_profile_fields.sql).
 // Written only by package profile.
 func (q *Queries) CreateProfileField(ctx context.Context, arg CreateProfileFieldParams) (ProfileField, error) {
 	row := q.db.QueryRow(ctx, createProfileField,

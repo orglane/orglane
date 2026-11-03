@@ -25,6 +25,7 @@ var coreTables = []string{
 	"oidc_clients", "oidc_auth_requests", "oidc_refresh_tokens", "oidc_access_tokens", "signing_keys",
 	"person_avatars",
 	"teams", "team_memberships",
+	"profile_fields", "profile_field_values",
 }
 
 func newGoose(t *testing.T, pool *pgxpool.Pool) *goose.Provider {

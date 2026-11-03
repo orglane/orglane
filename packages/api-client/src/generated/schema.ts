@@ -419,14 +419,14 @@ export interface paths {
          *
          *     - Visibility `everyone`: every signed-in person; `team`: people who
          *       share a team with the person; `admins`: only holders of
-         *       `people.manage`. The person always sees their own fields.
-         *     - Sensitive fields are listed only for the person and holders of
+         *       `people.manage`. The person sees their own non-sensitive fields.
+         *     - Sensitive fields are listed only for holders of
          *       `people.sensitive.read`; every response containing a sensitive
          *       value is recorded in the audit log.
          *     - Values the person hid are shown only to them and holders of
          *       `people.manage`.
-         *     - Birthdays show day and month (`--MM-DD`) to everyone except the
-         *       person and holders of `people.sensitive.read`.
+         *     - Non-sensitive birthdays show day and month (`--MM-DD`) to everyone
+         *       except the person and holders of `people.sensitive.read`.
          *
          *     Offboarded people are not found, except by holders of
          *     `people.manage`.
@@ -878,7 +878,7 @@ export interface components {
             editableBy: components["schemas"]["ProfileFieldEditor"];
             /** @description The person may hide their value from everyone except holders of `people.manage`. */
             userCanHide: boolean;
-            /** @description Values are encrypted at rest, readable only by the person and holders of `people.sensitive.read`, and every read is audited. */
+            /** @description Values are encrypted at rest, readable only by holders of `people.sensitive.read`, and every read is audited. */
             sensitive: boolean;
             /** @description Order within the section, ascending. */
             position: number;
@@ -911,7 +911,7 @@ export interface components {
             key?: string;
             label: string;
         };
-        /** @description The settings to change; omitted ones stay. */
+        /** @description The settings to change; omitted ones stay. Declassifying sensitive values or changing their select options also requires people.sensitive.read, and reads of existing sensitive values are audited. */
         ProfileFieldUpdate: {
             label?: string;
             /** @description Replaces the options of a select field. Keep an option's key to keep its values. */

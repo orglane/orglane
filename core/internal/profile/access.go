@@ -39,7 +39,7 @@ type access struct {
 // it.
 //
 //   - Archived fields are nobody's business.
-//   - Sensitive fields: only the person and holders of
+//   - Sensitive fields: only holders of
 //     people.sensitive.read; every read is audited (by the caller).
 //   - Visibility: "everyone" is every signed-in person; "team" is people
 //     sharing a team with the person; "admins" is nobody else. The person
@@ -55,7 +55,7 @@ func decide(f Field, v Viewer, rel relation) access {
 	if f.Archived {
 		return access{}
 	}
-	if f.Sensitive && !rel.self && !v.ReadSensitive {
+	if f.Sensitive && !v.ReadSensitive {
 		return access{}
 	}
 	var see bool

@@ -24,6 +24,7 @@ import (
 	"github.com/orglane/orglane/core/internal/database"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/profile"
+	"github.com/orglane/orglane/tests/auditfault"
 	"github.com/orglane/orglane/tests/pgtest"
 )
 
@@ -201,7 +202,7 @@ func TestVisibilityMatrix(t *testing.T) {
 	e.library("tshirt_size")       // admins
 	e.library("emergency_contact") // admins, sensitive
 	e.field(profile.NewField{Label: "Desk", Type: profile.TypeText, Visibility: profile.VisibilityEveryone, Sensitive: true})
-	e.set(subject, subject.PersonID,
+	e.set(sensitiveAdmin, subject.PersonID,
 		"telegram", "@subject_tg", "phone", "+49 30 1234567", "tshirt_size", "m",
 		"emergency_contact", "Sam, +49 30 7654321", "desk", "B-12")
 
@@ -210,7 +211,7 @@ func TestVisibilityMatrix(t *testing.T) {
 		"emergency_contact": "Sam, +49 30 7654321", "desk": "B-12",
 	}
 	want := map[string]map[string]string{
-		"self":            all,
+		"self":            {"telegram": "subject_tg", "phone": "+49301234567", "tshirt_size": "m"},
 		"teammate":        {"telegram": "subject_tg", "phone": "+49301234567"},
 		"other member":    {"telegram": "subject_tg"},
 		"admin":           {"telegram": "subject_tg", "phone": "+49301234567", "tshirt_size": "m"},
@@ -232,7 +233,7 @@ func TestVisibilityMatrix(t *testing.T) {
 	}
 	telegram := fields[slices.IndexFunc(fields, func(f profile.Field) bool { return f.Key == "telegram" })]
 	archive := true
-	if _, err := e.profile.UpdateField(t.Context(), system, telegram.ID, profile.FieldUpdate{Archived: &archive}); err != nil {
+	if _, err := e.profile.UpdateField(t.Context(), system, profile.Viewer{ReadSensitive: true}, telegram.ID, profile.FieldUpdate{Archived: &archive}); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.view(sensitiveAdmin, subject.PersonID); got["telegram"] != "" || len(got) != 4 {
@@ -320,7 +321,7 @@ func TestUserHide(t *testing.T) {
 	fields, _ := e.profile.Fields(t.Context(), false)
 	tg := fields[slices.IndexFunc(fields, func(f profile.Field) bool { return f.Key == "telegram" })]
 	no := false
-	if _, err := e.profile.UpdateField(t.Context(), system, tg.ID, profile.FieldUpdate{UserCanHide: &no}); err != nil {
+	if _, err := e.profile.UpdateField(t.Context(), system, profile.Viewer{ReadSensitive: true}, tg.ID, profile.FieldUpdate{UserCanHide: &no}); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.view(other, subject.PersonID); got["telegram"] != "" {
@@ -342,7 +343,7 @@ func TestSensitiveValuesAreEncrypted(t *testing.T) {
 	owner.ManagePeople, owner.ReadSensitive = true, true
 	ec := e.library("emergency_contact")
 	const contact = "Sam Doe, +49 30 7654321"
-	e.set(subject, subject.PersonID, "emergency_contact", contact)
+	e.set(owner, subject.PersonID, "emergency_contact", contact)
 	e.set(owner, second.PersonID, "emergency_contact", "Someone else")
 
 	raw := func(person uuid.UUID) (value *string, sealed []byte) {
@@ -380,13 +381,13 @@ func TestSensitiveValuesAreEncrypted(t *testing.T) {
 	// Turning sensitivity off decrypts the values in place; on encrypts
 	// them again.
 	off, on := false, true
-	if _, err := e.profile.UpdateField(t.Context(), system, ec.ID, profile.FieldUpdate{Sensitive: &off}); err != nil {
+	if _, err := e.profile.UpdateField(t.Context(), system, profile.Viewer{ReadSensitive: true}, ec.ID, profile.FieldUpdate{Sensitive: &off}); err != nil {
 		t.Fatal(err)
 	}
 	if value, sealed := raw(subject.PersonID); value == nil || *value != contact || sealed != nil {
 		t.Errorf("after turning sensitivity off: value=%v sealed=%x", value, sealed)
 	}
-	if _, err := e.profile.UpdateField(t.Context(), system, ec.ID, profile.FieldUpdate{Sensitive: &on}); err != nil {
+	if _, err := e.profile.UpdateField(t.Context(), system, profile.Viewer{ReadSensitive: true}, ec.ID, profile.FieldUpdate{Sensitive: &on}); err != nil {
 		t.Fatal(err)
 	}
 	if value, sealed := raw(subject.PersonID); value != nil || len(sealed) == 0 {
@@ -418,7 +419,7 @@ func TestSensitiveReadsAreAudited(t *testing.T) {
 	if n := e.auditCount(audit.PersonSensitiveFieldsRead, subject.PersonID); n != 0 {
 		t.Fatalf("%d sensitive read entries without a sensitive value", n)
 	}
-	e.set(subject, subject.PersonID, "emergency_contact", "Sam")
+	e.set(owner, subject.PersonID, "emergency_contact", "Sam")
 	before := e.auditCount(audit.PersonSensitiveFieldsRead, subject.PersonID) // the response to the change itself
 	if before != 1 {
 		t.Fatalf("the change's response was audited %d times, want 1", before)
@@ -430,7 +431,7 @@ func TestSensitiveReadsAreAudited(t *testing.T) {
 	if n := e.auditCount(audit.PersonSensitiveFieldsRead, subject.PersonID); n != before {
 		t.Errorf("reads without the sensitive value were audited: %d", n-before)
 	}
-	// Every read of the value is: the owner's twice, the person's own once.
+	// Every authorized read is audited; even self needs sensitive access.
 	e.view(owner, subject.PersonID)
 	e.view(owner, subject.PersonID)
 	md := e.lastAuditMetadata(audit.PersonSensitiveFieldsRead, subject.PersonID)
@@ -438,8 +439,8 @@ func TestSensitiveReadsAreAudited(t *testing.T) {
 		t.Errorf("audit entry metadata: %v", md)
 	}
 	e.view(subject, subject.PersonID)
-	if n := e.auditCount(audit.PersonSensitiveFieldsRead, subject.PersonID); n != before+3 {
-		t.Errorf("sensitive reads audited %d times, want %d", n-before, 3)
+	if n := e.auditCount(audit.PersonSensitiveFieldsRead, subject.PersonID); n != before+2 {
+		t.Errorf("sensitive reads audited %d times, want %d", n-before, 2)
 	}
 	// The entries never hold the value.
 	var leaked int
@@ -491,6 +492,27 @@ func TestBirthdayYear(t *testing.T) {
 			t.Errorf("%s: other dates keep their year: %q", name, got)
 		}
 	}
+	// Marking birthday sensitive removes even self access without the scope.
+	birthday := e.library("birthday")
+	if _, err := e.profile.UpdateField(t.Context(), actorOf(owner), owner, birthday.ID, profile.FieldUpdate{Sensitive: new(true)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, viewer := range []profile.Viewer{subject, member, admin} {
+		if _, ok := e.entry(viewer, subject.PersonID, "birthday"); ok {
+			t.Error("sensitive birthday bypassed permission gate")
+		}
+	}
+	if entry, ok := e.entry(owner, subject.PersonID, "birthday"); !ok || entry.Value != "1990-03-14" {
+		t.Errorf("authorized sensitive birthday: %+v", entry)
+	}
+}
+
+func TestOrdinaryBirthdayReadsDoNotAuditSensitiveValues(t *testing.T) {
+	e := newEnv(t)
+	subject := e.person("subject")
+	e.library("birthday")
+	e.set(subject, subject.PersonID, "birthday", "1990-03-14")
+	e.view(subject, subject.PersonID)
 	// Birthdays are not sensitive: reading them is not audited.
 	if n := e.auditCount(audit.PersonSensitiveFieldsRead, subject.PersonID); n != 0 {
 		t.Errorf("birthday reads audited: %d", n)
@@ -500,6 +522,7 @@ func TestBirthdayYear(t *testing.T) {
 func TestValidationPerType(t *testing.T) {
 	e := newEnv(t)
 	subject := e.person("subject")
+	subject.ReadSensitive = true // exercise validation of every type, including sensitive long text
 	e.library("telegram")
 	e.library("github")
 	e.library("phone")
@@ -604,8 +627,12 @@ func TestEditRules(t *testing.T) {
 	if err := change(admin, "emergency_contact", "x"); !errors.Is(err, profile.ErrInvalid) {
 		t.Errorf("an admin without people.sensitive.read changes a sensitive field: err = %v", err)
 	}
-	if err := change(subject, "emergency_contact", "Sam"); err != nil {
-		t.Errorf("the person changes their sensitive field: %v", err)
+	if err := change(subject, "emergency_contact", "Sam"); !errors.Is(err, profile.ErrInvalid) {
+		t.Errorf("self without sensitive-read changes sensitive field: %v", err)
+	}
+	// Ordinary self edits remain available and audited.
+	if err := change(subject, "telegram", "subject_tg"); err != nil {
+		t.Fatal(err)
 	}
 	en, _ := e.entry(subject, subject.PersonID, "start_date")
 	if en.Value != "2024-01-15" || en.Editable {
@@ -617,11 +644,11 @@ func TestEditRules(t *testing.T) {
 
 	// Changes are audited with field keys only.
 	md := e.lastAuditMetadata(audit.PersonProfileUpdated, subject.PersonID)
-	if !slices.Equal(anyStrings(md["fields"]), []string{"emergency_contact"}) || md["@actor"] != subject.PersonID.String() {
+	if !slices.Equal(anyStrings(md["fields"]), []string{"telegram"}) || md["@actor"] != subject.PersonID.String() {
 		t.Errorf("profile update audit: %v", md)
 	}
 	before := e.auditCount(audit.PersonProfileUpdated, subject.PersonID)
-	if err := change(subject, "emergency_contact", " Sam "); err != nil { // same value after normalization
+	if err := change(subject, "telegram", " subject_tg "); err != nil { // same value after normalization
 		t.Fatal(err)
 	}
 	if n := e.auditCount(audit.PersonProfileUpdated, subject.PersonID); n != before {
@@ -661,11 +688,11 @@ func TestFieldDefinitions(t *testing.T) {
 
 	// Options in use cannot be removed; others can, and labels change.
 	e.set(subject, subject.PersonID, "office_location", "lisbon")
-	_, err := e.profile.UpdateField(ctx, system, office.ID, profile.FieldUpdate{Options: &[]profile.Option{{Key: "berlin", Label: "Berlin"}}})
+	_, err := e.profile.UpdateField(ctx, system, profile.Viewer{ReadSensitive: true}, office.ID, profile.FieldUpdate{Options: &[]profile.Option{{Key: "berlin", Label: "Berlin"}}})
 	if !errors.Is(err, profile.ErrOptionInUse) {
 		t.Errorf("removing an option in use: err = %v", err)
 	}
-	updated, err := e.profile.UpdateField(ctx, system, office.ID, profile.FieldUpdate{
+	updated, err := e.profile.UpdateField(ctx, system, profile.Viewer{ReadSensitive: true}, office.ID, profile.FieldUpdate{
 		Label:   new("Office"),
 		Options: &[]profile.Option{{Key: "lisbon", Label: "Lisboa"}, {Label: "Porto"}},
 	})
@@ -682,11 +709,11 @@ func TestFieldDefinitions(t *testing.T) {
 
 	// Library fields keep their label and options, but settings change.
 	shirt := e.library("tshirt_size")
-	if _, err := e.profile.UpdateField(ctx, system, shirt.ID, profile.FieldUpdate{Label: new("Shirt")}); !errors.Is(err, profile.ErrInvalid) {
+	if _, err := e.profile.UpdateField(ctx, system, profile.Viewer{ReadSensitive: true}, shirt.ID, profile.FieldUpdate{Label: new("Shirt")}); !errors.Is(err, profile.ErrInvalid) {
 		t.Errorf("renaming a library field: err = %v", err)
 	}
 	vis := profile.VisibilityEveryone
-	if f, err := e.profile.UpdateField(ctx, system, shirt.ID, profile.FieldUpdate{Visibility: &vis, Position: new(0)}); err != nil || f.Visibility != vis || f.Position != 0 {
+	if f, err := e.profile.UpdateField(ctx, system, profile.Viewer{ReadSensitive: true}, shirt.ID, profile.FieldUpdate{Visibility: &vis, Position: new(0)}); err != nil || f.Visibility != vis || f.Position != 0 {
 		t.Errorf("changing library field settings: %+v, %v", f, err)
 	}
 	if _, _, err := e.profile.EnableLibraryField(ctx, system, "favorite_color"); !errors.Is(err, profile.ErrNotFound) {
@@ -695,14 +722,14 @@ func TestFieldDefinitions(t *testing.T) {
 	if _, created, err := e.profile.EnableLibraryField(ctx, system, "tshirt_size"); err != nil || created {
 		t.Errorf("enabling an enabled field: created=%v err=%v", created, err)
 	}
-	if _, err := e.profile.UpdateField(ctx, system, uuid.New(), profile.FieldUpdate{}); !errors.Is(err, profile.ErrNotFound) {
+	if _, err := e.profile.UpdateField(ctx, system, profile.Viewer{ReadSensitive: true}, uuid.New(), profile.FieldUpdate{}); !errors.Is(err, profile.ErrNotFound) {
 		t.Errorf("unknown field: err = %v", err)
 	}
 
 	// Listing: by section, then position; archived only on request.
 	e.library("telegram")
 	archive := true
-	if _, err := e.profile.UpdateField(ctx, system, updated.ID, profile.FieldUpdate{Archived: &archive}); err != nil {
+	if _, err := e.profile.UpdateField(ctx, system, profile.Viewer{ReadSensitive: true}, updated.ID, profile.FieldUpdate{Archived: &archive}); err != nil {
 		t.Fatal(err)
 	}
 	active, _ := e.profile.Fields(ctx, false)
@@ -722,5 +749,88 @@ func TestFieldDefinitions(t *testing.T) {
 	}
 	if n := e.auditCount(audit.ProfileFieldCreated, office.ID); n != 1 {
 		t.Errorf("field creation audited %d times", n)
+	}
+}
+
+// Definition changes must never let people.manage bypass the sensitive scope.
+func TestSensitiveDeclassificationRequiresPermission(t *testing.T) {
+	e := newEnv(t)
+	subject := e.person("subject")
+	admin := e.person("admin")
+	admin.ManagePeople = true
+	owner := e.person("owner")
+	owner.ManagePeople, owner.ReadSensitive = true, true
+	field := e.field(profile.NewField{Label: "Private choice", Type: profile.TypeSelect, Sensitive: true, Options: []profile.Option{{Key: "a", Label: "A"}, {Key: "b", Label: "B"}}})
+	e.set(owner, subject.PersonID, field.Key, "a")
+	off := false
+	if _, err := e.profile.UpdateField(t.Context(), actorOf(admin), admin, field.ID, profile.FieldUpdate{Sensitive: &off}); !errors.Is(err, profile.ErrForbidden) {
+		t.Fatalf("declassification without sensitive scope: %v", err)
+	}
+	options := []profile.Option{{Key: "b", Label: "B"}}
+	if _, err := e.profile.UpdateField(t.Context(), actorOf(admin), admin, field.ID, profile.FieldUpdate{Options: &options}); !errors.Is(err, profile.ErrForbidden) {
+		t.Fatalf("sensitive option probe: %v", err)
+	}
+	everyone := profile.VisibilityEveryone
+	if _, err := e.profile.UpdateField(t.Context(), actorOf(admin), admin, field.ID, profile.FieldUpdate{Visibility: &everyone}); err != nil {
+		t.Fatal(err)
+	}
+	for _, viewer := range []profile.Viewer{subject, admin} {
+		if got := e.view(viewer, subject.PersonID); len(got) != 0 {
+			t.Errorf("unauthorized viewer sees sensitive values: %v", got)
+		}
+		if _, err := e.profile.UpdateProfile(t.Context(), actorOf(viewer), viewer, subject.PersonID, []profile.Change{{Key: field.Key, Value: new("b")}}); !errors.Is(err, profile.ErrInvalid) {
+			t.Errorf("unauthorized write: %v", err)
+		}
+	}
+	before := e.auditCount(audit.PersonSensitiveFieldsRead, subject.PersonID)
+	if _, err := e.profile.UpdateField(t.Context(), actorOf(owner), owner, field.ID, profile.FieldUpdate{Options: &options, Sensitive: &off}); !errors.Is(err, profile.ErrOptionInUse) {
+		t.Fatalf("authorized option conflict: %v", err)
+	}
+	if count := e.auditCount(audit.PersonSensitiveFieldsRead, subject.PersonID); count != before+1 {
+		t.Errorf("conflict read audited %d times", count-before)
+	}
+	if value := e.view(owner, subject.PersonID)[field.Key]; value != "a" {
+		t.Errorf("conflict changed sensitive value: %q", value)
+	}
+	before = e.auditCount(audit.PersonSensitiveFieldsRead, subject.PersonID)
+	if _, err := e.profile.UpdateField(t.Context(), actorOf(owner), owner, field.ID, profile.FieldUpdate{Sensitive: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if count := e.auditCount(audit.PersonSensitiveFieldsRead, subject.PersonID); count != before+1 {
+		t.Errorf("declassification read audited %d times", count-before)
+	}
+	if got := e.view(admin, subject.PersonID)[field.Key]; got != "a" {
+		t.Errorf("authorized declassification: %q", got)
+	}
+}
+
+func TestSensitiveReadRequiresCommittedAudit(t *testing.T) {
+	e := newEnv(t)
+	subject := e.person("subject")
+	owner := e.person("owner")
+	owner.ManagePeople, owner.ReadSensitive = true, true
+	field := e.library("emergency_contact")
+	e.set(owner, subject.PersonID, field.Key, "Sam")
+	fault := auditfault.Inject(t, e.pool, "NEW.action = '"+string(audit.PersonSensitiveFieldsRead)+"'", 1)
+	entries, err := e.profile.Profile(t.Context(), actorOf(owner), owner, subject.PersonID)
+	if !auditfault.Is(err) || entries != nil {
+		t.Fatalf("sensitive read with rejected audit returned entries=%v err=%v", entries, err)
+	}
+	if _, err := e.profile.UpdateField(t.Context(), actorOf(owner), owner, field.ID, profile.FieldUpdate{Sensitive: new(false)}); !auditfault.Is(err) {
+		t.Fatalf("declassification without committed read audit: %v", err)
+	}
+	var sensitive, ciphertext bool
+	if err := e.pool.QueryRow(t.Context(), `SELECT f.sensitive, v.value IS NULL AND v.value_sealed IS NOT NULL FROM profile_fields f JOIN profile_field_values v ON v.field_id = f.id WHERE f.id = $1 AND v.person_id = $2`, field.ID, subject.PersonID).Scan(&sensitive, &ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	if !sensitive || !ciphertext {
+		t.Error("rejected declassification changed stored sensitivity or encryption")
+	}
+	if hits := fault.Hits(); hits != 2 {
+		t.Errorf("audit failure reached %d times, want 2", hits)
+	}
+	fault.Remove()
+	if got := e.view(owner, subject.PersonID)[field.Key]; got != "Sam" {
+		t.Errorf("authorized audited read: %q", got)
 	}
 }

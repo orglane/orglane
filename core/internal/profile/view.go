@@ -63,7 +63,7 @@ func (s *Service) Profile(ctx context.Context, actor audit.Actor, viewer Viewer,
 		if person.Status == "offboarded" && !viewer.ManagePeople {
 			return fmt.Errorf("%w: person", ErrNotFound)
 		}
-		rows, err := q.ListProfileFields(ctx)
+		rows, err := q.ListActiveProfileFieldsForShare(ctx)
 		if err != nil {
 			return fmt.Errorf("profile: list fields: %w", err)
 		}

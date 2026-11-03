@@ -133,7 +133,7 @@ func (s *server) UpdateProfileField(ctx context.Context, req apigen.UpdateProfil
 	if err != nil {
 		return nil, err
 	}
-	_, actor, err := s.viewer(ctx)
+	viewer, actor, err := s.viewer(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ func (s *server) UpdateProfileField(ctx context.Context, req apigen.UpdateProfil
 		opts := options(b.Options)
 		in.Options = &opts
 	}
-	f, err := svc.UpdateField(ctx, actor, req.FieldId, in)
+	f, err := svc.UpdateField(ctx, actor, viewer, req.FieldId, in)
 	if err != nil {
 		return nil, profileError(err)
 	}

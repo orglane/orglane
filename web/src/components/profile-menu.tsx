@@ -1,8 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import { ChevronsUpDown, Languages, LogOut, ShieldCheck } from "lucide-react";
 import { defineMessage, defineMessages, FormattedMessage, useIntl } from "react-intl";
-
 import { languageName, useLocale } from "@/i18n";
+import { fieldMessages } from "@/lib/profile-fields";
 import { useMe, useSignOut } from "@/lib/session";
 import { type ThemeChoice, useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -86,6 +86,18 @@ export function ProfileMenu({ variant }: { variant: "sidebar" | "compact" }) {
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
+          <DropdownMenuItem asChild>
+            <Link to="/people/$personId" params={{ personId: id }}>
+              <FormattedMessage {...fieldMessages.myProfile} />
+            </Link>
+          </DropdownMenuItem>
+          {me.permissions.includes("people.manage") && (
+            <DropdownMenuItem asChild>
+              <Link to="/settings/profile-fields">
+                <FormattedMessage {...fieldMessages.title} />
+              </Link>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem asChild>
             <Link to="/settings/security">
               <ShieldCheck />

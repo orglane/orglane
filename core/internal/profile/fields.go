@@ -193,8 +193,9 @@ func (s *Service) EnableLibraryField(ctx context.Context, actor audit.Actor, key
 }
 
 // UpdateField changes a field definition.
-func (s *Service) UpdateField(ctx context.Context, actor audit.Actor, id uuid.UUID, in FieldUpdate) (Field, error) {
+func (s *Service) UpdateField(ctx context.Context, actor audit.Actor, viewer Viewer, id uuid.UUID, in FieldUpdate) (Field, error) {
 	var f Field
+	var validationErr error
 	err := s.inTx(ctx, func(q *store.Queries) error {
 		row, err := q.GetProfileFieldForUpdate(ctx, id)
 		if err != nil {
@@ -204,11 +205,27 @@ func (s *Service) UpdateField(ctx context.Context, actor audit.Actor, id uuid.UU
 		if err != nil {
 			return err
 		}
+		// Changing sensitivity or removing select options reads existing
+		// values. Definition management alone must not reveal or declassify
+		// sensitive values.
+		if current.Sensitive && !viewer.ReadSensitive && ((in.Sensitive != nil && !*in.Sensitive) || in.Options != nil) {
+			return fmt.Errorf("%w: changing sensitive values requires people.sensitive.read", ErrForbidden)
+		}
 		f, err = s.update(ctx, q, actor, current, in)
+		if errors.Is(err, ErrOptionInUse) {
+			// No definition or value was changed: commit the read audits even
+			// when the result is a conflict. Whether an option is in use is
+			// information about a sensitive value too.
+			validationErr = err
+			return nil
+		}
 		return err
 	})
 	if err != nil {
 		return Field{}, err
+	}
+	if validationErr != nil {
+		return Field{}, validationErr
 	}
 	return f, nil
 }
@@ -320,7 +337,7 @@ func (s *Service) update(ctx context.Context, q *store.Queries, actor audit.Acto
 	}
 
 	if next.Sensitive != current.Sensitive || len(removedOptions) > 0 {
-		if err := s.rewriteValues(ctx, q, current, next, removedOptions); err != nil {
+		if err := s.rewriteValues(ctx, q, actor, current, next, removedOptions); err != nil {
 			return Field{}, err
 		}
 	}
@@ -361,24 +378,40 @@ func (s *Service) update(ctx context.Context, q *store.Queries, actor audit.Acto
 // rewriteValues moves the field's values into or out of encryption when its
 // sensitivity changes, and refuses to remove options that are in use. The
 // field row is locked by the caller, so no value changes meanwhile.
-func (s *Service) rewriteValues(ctx context.Context, q *store.Queries, current, next Field, removedOptions []string) error {
+func (s *Service) rewriteValues(ctx context.Context, q *store.Queries, actor audit.Actor, current, next Field, removedOptions []string) error {
 	rows, err := q.ListValuesOfFieldForUpdate(ctx, current.ID)
 	if err != nil {
 		return fmt.Errorf("profile: load values: %w", err)
 	}
-	for _, row := range rows {
+	values := make([]string, len(rows))
+	optionInUse := false
+	for i, row := range rows {
 		value, err := s.open(row)
 		if err != nil {
 			return err
 		}
-		if slices.Contains(removedOptions, value) {
-			return fmt.Errorf("%w: %q", ErrOptionInUse, value)
+		values[i] = value
+		if current.Sensitive {
+			if _, err := audit.Record(ctx, q, audit.Entry{
+				Actor: actor, Action: audit.PersonSensitiveFieldsRead,
+				Target:   audit.Target{Kind: audit.TargetPerson, ID: row.PersonID.String()},
+				Metadata: map[string]any{"fields": []string{current.Key}},
+			}); err != nil {
+				return err
+			}
 		}
-		if next.Sensitive == current.Sensitive {
-			continue
-		}
-		if err := s.put(ctx, q, next, row.PersonID, value, row.Hidden); err != nil {
-			return err
+		optionInUse = optionInUse || slices.Contains(removedOptions, value)
+	}
+	// Validate every value before writing any of them. UpdateField can then
+	// commit just the read audits when an option is in use.
+	if optionInUse {
+		return ErrOptionInUse
+	}
+	if next.Sensitive != current.Sensitive {
+		for i, row := range rows {
+			if err := s.put(ctx, q, next, row.PersonID, values[i], row.Hidden); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
