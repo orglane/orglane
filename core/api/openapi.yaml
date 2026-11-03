@@ -1721,7 +1721,8 @@ components:
         How values are validated and stored: `text` (one line, at most 200
         characters), `long_text` (at most 2000 characters), `date`
         (`YYYY-MM-DD`), `select` (an option key), `phone` (E.164, such as
-        `+442079460958`), `url` (http or https), `handle` (an account name
+        `+442079460958`), `url` (http or https, at most 2000 Unicode
+        characters), `handle` (an account name
         on the service of `handleKind`, without `@`; Mastodon:
         `user@instance`).
     ProfileFieldHandleKind:

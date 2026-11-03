@@ -109,6 +109,29 @@ test("admin configures fields; members see only authorized values and no birth y
   await expect(telegram.getByText("Hidden from others", { exact: true })).toBeVisible();
   await viewerPage.reload();
   await expect(viewerPage.getByTestId("profile-value-telegram")).toHaveText("—");
+  // Disabling further hiding must still let the subject show an existing hidden value.
+  await page.goto(`${instance.url}/settings/profile-fields`);
+  const telegramSettings = page
+    .getByRole("listitem")
+    .filter({ has: page.getByRole("heading", { name: "Telegram", exact: true }) });
+  await telegramSettings.getByText("Settings", { exact: true }).click();
+  await telegramSettings.getByText("Advanced settings", { exact: true }).click();
+  await telegramSettings.getByLabel("People can hide their value").uncheck();
+  await telegramSettings.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(telegramSettings.getByRole("status")).toContainText("Saved");
+  await page.goto(`${instance.url}/people/${member.person.id}`);
+  await expect(page.getByLabel("Hide from others")).toHaveCount(0);
+  await memberPage.reload();
+  const unhide = memberPage
+    .getByRole("listitem")
+    .filter({ has: memberPage.getByRole("heading", { name: "Telegram", exact: true }) })
+    .getByLabel("Hide from others");
+  await expect(unhide).toBeChecked();
+  await unhide.uncheck();
+  await expect(memberPage.getByText("Hidden from others", { exact: true })).toHaveCount(0);
+  await expect(unhide).toHaveCount(0);
+  await viewerPage.reload();
+  await expect(viewerPage.getByTestId("profile-value-telegram")).toHaveText("priya_updated");
   await viewerPage.goto(`${instance.url}/settings/profile-fields`);
   await expect(viewerPage.getByRole("alert")).toContainText("permission to manage people");
   await Promise.all([ownerContext.close(), memberContext.close(), viewerContext.close()]);

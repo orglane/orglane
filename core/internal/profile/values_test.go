@@ -174,3 +174,33 @@ func TestLibrary(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeURLStorageBoundaries(t *testing.T) {
+	const prefix = "https://example.com/"
+	field := Field{Key: "website", Type: TypeURL}
+	for _, tc := range []struct {
+		name, character string
+		length          int
+		valid           bool
+	}{
+		{"ASCII 2000", "a", 2000, true},
+		{"ASCII 2001", "a", 2001, false},
+		{"ASCII 2048", "a", 2048, false},
+		{"Unicode 2000", "界", 2000, true},
+		{"Unicode 2001", "界", 2001, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value := prefix + strings.Repeat(tc.character, tc.length-len(prefix))
+			got, err := field.normalize(value)
+			if tc.valid {
+				if err != nil || got != value {
+					t.Errorf("valid %d-character URL rejected: %v", tc.length, err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrInvalid) {
+				t.Errorf("%d-character URL accepted: %v", tc.length, err)
+			}
+		})
+	}
+}

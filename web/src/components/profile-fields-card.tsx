@@ -16,6 +16,7 @@ import {
   profileKey,
   sectionMessages,
 } from "@/lib/profile-fields";
+import { useMe } from "@/lib/session";
 
 function ProfileValue({
   entry,
@@ -27,6 +28,7 @@ function ProfileValue({
   const intl = useIntl();
   const api = useApi();
   const client = useQueryClient();
+  const self = useMe().person.id === personId;
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
   const [pendingHidden, setPendingHidden] = useState<boolean | undefined>(undefined);
@@ -126,7 +128,7 @@ function ProfileValue({
                       : "text"
               }
               required={entry.yearHidden && !!entry.value}
-              maxLength={field.type === "text" ? 200 : undefined}
+              maxLength={field.type === "text" ? 200 : field.type === "url" ? 2000 : undefined}
               autoFocus
             />
           )}
@@ -158,7 +160,7 @@ function ProfileValue({
           </div>
         </form>
       )}
-      {entry.hideable && entry.value && (
+      {self && (entry.hideable || entry.hidden) && entry.value && (
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"

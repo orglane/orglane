@@ -401,6 +401,150 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/people/{personId}/teams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A person's teams
+         * @description The teams a person belongs to, with their role in each, sorted by
+         *     name. Archived teams are not included. Any signed-in person may read
+         *     it.
+         */
+        get: operations["listPersonTeams"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/teams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List teams
+         * @description The teams with their member counts, sorted by name. Archived teams
+         *     are included only with `archived=true`. Any signed-in person may read
+         *     it. Not paginated yet.
+         */
+        get: operations["listTeams"];
+        put?: never;
+        /** Create a team */
+        post: operations["createTeam"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/teams/{teamId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A team
+         * @description Returns a team, archived or not. Any signed-in person may read it.
+         */
+        get: operations["getTeam"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change a team
+         * @description Changes the given fields; omitted fields stay unchanged. Archived
+         *     teams cannot be changed (409).
+         */
+        patch: operations["updateTeam"];
+        trace?: never;
+    };
+    "/api/v1/teams/{teamId}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive a team
+         * @description Archives a team. It keeps its slug, members and history, becomes
+         *     read-only and no longer appears in team lists (unless asked for) or
+         *     a person's teams. Archiving an archived team changes nothing. A team
+         *     with active child teams cannot be archived (409).
+         */
+        post: operations["archiveTeam"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/teams/{teamId}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A team's members
+         * @description The members of a team, leads first, then by display name. Offboarded
+         *     people are not listed. Archived teams keep their members. Any
+         *     signed-in person may read it.
+         */
+        get: operations["listTeamMembers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/teams/{teamId}/members/{personId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add a member or set their role
+         * @description Adds the person to the team with the given role, or changes the role
+         *     of a member: `lead` makes them a team lead, `member` makes a lead a
+         *     regular member again. A team may have any number of leads. Setting
+         *     the role a member already has changes nothing. Offboarded people
+         *     cannot be added, and archived teams cannot change (409).
+         */
+        put: operations["setTeamMember"];
+        post?: never;
+        /**
+         * Remove a member
+         * @description Removes the person from the team. Removing someone who is not a
+         *     member changes nothing. Archived teams cannot change (409).
+         */
+        delete: operations["removeTeamMember"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/people/{personId}/profile": {
         parameters: {
             query?: never;
@@ -808,8 +952,7 @@ export interface components {
              * @example Chief Executive Officer
              */
             title?: string;
-            /** @enum {string} */
-            status: "invited" | "active" | "suspended";
+            status: components["schemas"]["PersonStatus"];
             /** @description Keys of the roles the person holds, e.g. `owner`, `admin`, `member` (ADR 0004). The UI translates built-in roles by key. */
             roles: string[];
             /**
@@ -818,14 +961,129 @@ export interface components {
              */
             avatarUrl?: string;
         };
+        /**
+         * @description `invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people are not listed.
+         * @enum {string}
+         */
+        PersonStatus: "invited" | "active" | "suspended";
         PersonList: {
             items: components["schemas"]["Person"][];
+        };
+        Team: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description Identifies the team in URLs and, later, in provider mappings. Unique across all teams, archived ones included.
+             * @example platform
+             */
+            slug: string;
+            /** @example Platform */
+            name: string;
+            /**
+             * @description What the team does, if set.
+             * @example Robot software, firmware and the fleet cloud.
+             */
+            description?: string;
+            /**
+             * Format: uuid
+             * @description The parent team, if any (prepared for the org chart).
+             */
+            parentId?: string;
+            /**
+             * @description How many people are in the team (offboarded people not counted).
+             * @example 4
+             */
+            memberCount: number;
+            /**
+             * Format: date-time
+             * @description When the team was archived. Archived teams are read-only.
+             */
+            archivedAt?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        TeamList: {
+            items: components["schemas"]["Team"][];
+        };
+        CreateTeamRequest: {
+            /** @example Platform */
+            name: string;
+            /**
+             * @description 1-63 characters of a-z, 0-9 and `-`, starting and ending with a letter or digit; normalized to lower case.
+             * @example platform
+             */
+            slug: string;
+            description?: string;
+            /**
+             * Format: uuid
+             * @description The parent team. It must be an active team.
+             */
+            parentId?: string;
+        };
+        /** @description The fields to change; omitted fields stay unchanged. */
+        UpdateTeamRequest: {
+            name?: string;
+            slug?: string;
+            /** @description An empty string removes the description. */
+            description?: string;
+            /** @description The ID of the new parent team (an active team, not this team or one below it), or an empty string to remove the parent. */
+            parentId?: string;
+        };
+        SetTeamMemberRequest: {
+            role: components["schemas"]["TeamRole"];
+        };
+        /**
+         * @description A person's role in a team. A team may have any number of leads, including none.
+         * @enum {string}
+         */
+        TeamRole: "member" | "lead";
+        TeamMembership: {
+            /** Format: uuid */
+            teamId: string;
+            /** Format: uuid */
+            personId: string;
+            role: components["schemas"]["TeamRole"];
+            /** Format: date-time */
+            joinedAt: string;
+        };
+        TeamMember: {
+            person: components["schemas"]["PersonCard"];
+            role: components["schemas"]["TeamRole"];
+            /** Format: date-time */
+            joinedAt: string;
+        };
+        TeamMemberList: {
+            items: components["schemas"]["TeamMember"][];
+        };
+        /** @description A person as shown in lists of other things, such as a team's members. */
+        PersonCard: {
+            /** Format: uuid */
+            id: string;
+            /** @example priya.raman */
+            username: string;
+            /** @example Priya Raman */
+            displayName: string;
+            /** @example Senior Robotics Engineer */
+            title?: string;
+            status: components["schemas"]["PersonStatus"];
+            /** @description Path of the avatar image, if the person has one. */
+            avatarUrl?: string;
+        };
+        PersonTeam: {
+            team: components["schemas"]["Team"];
+            role: components["schemas"]["TeamRole"];
+        };
+        PersonTeamList: {
+            items: components["schemas"]["PersonTeam"][];
         };
         /**
          * @description How values are validated and stored: `text` (one line, at most 200
          *     characters), `long_text` (at most 2000 characters), `date`
          *     (`YYYY-MM-DD`), `select` (an option key), `phone` (E.164, such as
-         *     `+442079460958`), `url` (http or https), `handle` (an account name
+         *     `+442079460958`), `url` (http or https, at most 2000 Unicode
+         *     characters), `handle` (an account name
          *     on the service of `handleKind`, without `@`; Mastodon:
          *     `user@instance`).
          * @enum {string}
@@ -1098,7 +1356,10 @@ export interface components {
             };
         };
     };
-    parameters: never;
+    parameters: {
+        TeamId: string;
+        PersonId: string;
+    };
     requestBodies: never;
     headers: never;
     pathItems: never;
@@ -1600,6 +1861,254 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listPersonTeams: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The person's teams. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonTeamList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listTeams: {
+        parameters: {
+            query?: {
+                /** @description Include archived teams. */
+                archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The teams. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    createTeam: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTeamRequest"];
+            };
+        };
+        responses: {
+            /** @description The team was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Team"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getTeam: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                teamId: components["parameters"]["TeamId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The team. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Team"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    updateTeam: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                teamId: components["parameters"]["TeamId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTeamRequest"];
+            };
+        };
+        responses: {
+            /** @description The changed team. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Team"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    archiveTeam: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                teamId: components["parameters"]["TeamId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The archived team. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Team"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listTeamMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                teamId: components["parameters"]["TeamId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The members. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamMemberList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    setTeamMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                teamId: components["parameters"]["TeamId"];
+                personId: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetTeamMemberRequest"];
+            };
+        };
+        responses: {
+            /** @description The membership. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamMembership"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    removeTeamMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                teamId: components["parameters"]["TeamId"];
+                personId: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             500: components["responses"]["InternalError"];
         };
     };

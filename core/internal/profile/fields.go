@@ -212,9 +212,9 @@ func (s *Service) UpdateField(ctx context.Context, actor audit.Actor, viewer Vie
 			return fmt.Errorf("%w: changing sensitive values requires people.sensitive.read", ErrForbidden)
 		}
 		f, err = s.update(ctx, q, actor, current, in)
-		if errors.Is(err, ErrOptionInUse) {
+		if errors.Is(err, ErrOptionInUse) || errors.Is(err, ErrInvalid) {
 			// No definition or value was changed: commit the read audits even
-			// when the result is a conflict. Whether an option is in use is
+			// when validation rejects it. Whether an option is in use is
 			// information about a sensitive value too.
 			validationErr = err
 			return nil
@@ -399,6 +399,12 @@ func (s *Service) rewriteValues(ctx context.Context, q *store.Queries, actor aud
 			}); err != nil {
 				return err
 			}
+		}
+		// Validate older stored values before any rewrite. In particular,
+		// encrypted URLs accepted by an earlier limit must not fail a
+		// plaintext database constraint during declassification.
+		if _, err := current.normalize(value); err != nil {
+			return err
 		}
 		optionInUse = optionInUse || slices.Contains(removedOptions, value)
 	}

@@ -15,7 +15,7 @@ import (
 const (
 	maxTextLength     = 200
 	maxLongTextLength = 2000
-	maxURLLength      = 2048
+	maxURLLength      = 2000
 	minYear           = 1900
 	maxYear           = 2100
 )
@@ -40,7 +40,8 @@ var (
 //   - phone: international format, stored as E.164 (+ and 7-15 digits;
 //     spaces, dashes, dots and parentheses are dropped, a leading 00
 //     becomes +);
-//   - url: an absolute http or https URL without credentials;
+//   - url: an absolute http or https URL without credentials, at most
+//     2000 Unicode characters (the plaintext storage limit);
 //   - handle: the account name on the handle's service, without a leading
 //     @ (Mastodon: user@instance).
 func (f Field) normalize(raw string) (string, error) {
@@ -86,7 +87,7 @@ func (f Field) normalize(raw string) (string, error) {
 		}
 	case TypeURL:
 		u, err := url.Parse(v)
-		if err != nil || len(v) > maxURLLength || hasControl(v, false) || strings.ContainsAny(v, " \t") ||
+		if err != nil || utf8.RuneCountInString(v) > maxURLLength || hasControl(v, false) || strings.ContainsAny(v, " \t") ||
 			(u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Opaque != "" {
 			return "", bad("must be an http or https address, such as https://example.com")
 		}

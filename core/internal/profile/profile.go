@@ -154,8 +154,8 @@ type Field struct {
 func (f Field) birthday() bool { return f.Library && f.Key == "birthday" }
 
 // Teams tells whether two people share a team, for VisibilityTeam. The
-// teams of #23 implement it; until they are wired in, NoTeams treats nobody
-// as a teammate.
+// identity service implements it for active team memberships. Without an
+// injected resolver, NoTeams treats nobody as a teammate.
 type Teams interface {
 	SharesTeam(ctx context.Context, a, b uuid.UUID) (bool, error)
 }

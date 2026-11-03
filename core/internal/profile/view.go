@@ -56,66 +56,74 @@ func (s *Service) Profile(ctx context.Context, actor audit.Actor, viewer Viewer,
 	}
 	var entries []Entry
 	err := s.inTx(ctx, func(q *store.Queries) error {
-		person, err := q.GetPerson(ctx, personID)
-		if err != nil {
-			return notFound(err, "person")
-		}
-		if person.Status == "offboarded" && !viewer.ManagePeople {
-			return fmt.Errorf("%w: person", ErrNotFound)
-		}
-		rows, err := q.ListActiveProfileFieldsForShare(ctx)
-		if err != nil {
-			return fmt.Errorf("profile: list fields: %w", err)
-		}
-		fields := make([]Field, 0, len(rows))
-		for _, row := range rows {
-			f, err := fieldFrom(row)
-			if err != nil {
-				return err
-			}
-			fields = append(fields, f)
-		}
-		sortFields(fields)
-		values, err := s.values(ctx, q, personID)
-		if err != nil {
-			return err
-		}
-
-		var sensitive []string
-		entries = make([]Entry, 0, len(fields))
-		for _, f := range fields {
-			acc := decide(f, viewer, rel)
-			if !acc.see {
-				continue
-			}
-			e := Entry{Field: f, Editable: acc.edit, Hideable: acc.hide}
-			if row, ok := values[f.ID]; ok && (!row.Hidden || acc.seeHidden) {
-				if e.Value, err = s.open(row); err != nil {
-					return err
-				}
-				e.Hidden = row.Hidden
-				if f.Sensitive {
-					sensitive = append(sensitive, f.Key)
-				}
-				if f.Type == TypeDate && !acc.fullDate {
-					e.Value, e.YearHidden = maskYear(e.Value), true
-				}
-			}
-			entries = append(entries, e)
-		}
-		if len(sensitive) == 0 {
-			return nil
-		}
-		_, err = audit.Record(ctx, q, audit.Entry{
-			Actor:    actor,
-			Action:   audit.PersonSensitiveFieldsRead,
-			Target:   audit.Target{Kind: audit.TargetPerson, ID: personID.String()},
-			Metadata: map[string]any{"fields": sensitive},
-		})
+		var err error
+		entries, err = s.profileView(ctx, q, actor, viewer, personID, rel)
 		return err
 	})
 	if err != nil {
 		return nil, err
+	}
+	return entries, nil
+}
+
+// profileView applies the same disclosure policy and read auditing to GET
+// and update responses, using their caller's transaction. Entries are only
+// disclosed after that transaction (including every read audit) commits.
+func (s *Service) profileView(ctx context.Context, q *store.Queries, actor audit.Actor, viewer Viewer, personID uuid.UUID, rel relation) ([]Entry, error) {
+	person, err := q.GetPerson(ctx, personID)
+	if err != nil {
+		return nil, notFound(err, "person")
+	}
+	if person.Status == "offboarded" && !viewer.ManagePeople {
+		return nil, fmt.Errorf("%w: person", ErrNotFound)
+	}
+	rows, err := q.ListActiveProfileFieldsForShare(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("profile: list fields: %w", err)
+	}
+	fields := make([]Field, 0, len(rows))
+	for _, row := range rows {
+		f, err := fieldFrom(row)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, f)
+	}
+	sortFields(fields)
+	values, err := s.values(ctx, q, personID)
+	if err != nil {
+		return nil, err
+	}
+	var sensitive []string
+	entries := make([]Entry, 0, len(fields))
+	for _, f := range fields {
+		acc := decide(f, viewer, rel)
+		if !acc.see {
+			continue
+		}
+		e := Entry{Field: f, Editable: acc.edit, Hideable: acc.hide}
+		if row, ok := values[f.ID]; ok && (!row.Hidden || acc.seeHidden) {
+			if e.Value, err = s.open(row); err != nil {
+				return nil, err
+			}
+			e.Hidden = row.Hidden
+			if f.Sensitive {
+				sensitive = append(sensitive, f.Key)
+			}
+			if f.Type == TypeDate && !acc.fullDate {
+				e.Value, e.YearHidden = maskYear(e.Value), true
+			}
+		}
+		entries = append(entries, e)
+	}
+	if len(sensitive) > 0 {
+		if _, err := audit.Record(ctx, q, audit.Entry{
+			Actor: actor, Action: audit.PersonSensitiveFieldsRead,
+			Target:   audit.Target{Kind: audit.TargetPerson, ID: personID.String()},
+			Metadata: map[string]any{"fields": sensitive},
+		}); err != nil {
+			return nil, err
+		}
 	}
 	return entries, nil
 }
@@ -125,12 +133,14 @@ func (s *Service) Profile(ctx context.Context, actor audit.Actor, viewer Viewer,
 // audit entry lists the changed field keys, never the values. Only the
 // person and holders of people.manage change a profile; fields the viewer
 // cannot see are unknown (ErrInvalid), and fields they see but may not
-// change are ErrForbidden.
+// change are ErrForbidden. The mutation, its sensitive reads and the
+// authorized response are committed in one transaction.
 func (s *Service) UpdateProfile(ctx context.Context, actor audit.Actor, viewer Viewer, personID uuid.UUID, changes []Change) ([]Entry, error) {
 	rel := relation{self: viewer.PersonID == personID}
 	if !rel.self && !viewer.ManagePeople {
 		return nil, fmt.Errorf("%w: only the person and admins change a profile", ErrForbidden)
 	}
+	var entries []Entry
 	err := s.inTx(ctx, func(q *store.Queries) error {
 		person, err := q.GetPersonForUpdate(ctx, personID)
 		if err != nil {
@@ -156,8 +166,11 @@ func (s *Service) UpdateProfile(ctx context.Context, actor audit.Actor, viewer V
 			return err
 		}
 
+		// Validate the entire batch using definitions and hiding metadata
+		// before opening any value or writing any change. Rejected edits
+		// therefore never decrypt sensitive values.
 		seen := make(map[string]bool, len(changes))
-		var changed []string
+		prepared := make([]Change, 0, len(changes))
 		for _, c := range changes {
 			f, ok := byKey[c.Key]
 			acc := decide(f, viewer, rel)
@@ -168,24 +181,17 @@ func (s *Service) UpdateProfile(ctx context.Context, actor audit.Actor, viewer V
 				return invalid("values", "field %q appears twice", c.Key)
 			}
 			seen[c.Key] = true
-
-			row, has := values[f.ID]
-			current, hidden := "", false
-			if has {
-				if current, err = s.open(row); err != nil {
-					return err
-				}
-				hidden = row.Hidden
-			}
-			next, nextHidden := current, hidden
 			if c.Value != nil {
 				if !acc.edit {
 					return fmt.Errorf("%w: %s is not editable by you", ErrForbidden, c.Key)
 				}
-				if next, err = f.normalize(*c.Value); err != nil {
+				value, err := f.normalize(*c.Value)
+				if err != nil {
 					return err
 				}
+				c.Value = &value
 			}
+			hidden := values[f.ID].Hidden
 			if c.Hidden != nil && *c.Hidden != hidden {
 				switch {
 				case !rel.self:
@@ -193,8 +199,41 @@ func (s *Service) UpdateProfile(ctx context.Context, actor audit.Actor, viewer V
 				case *c.Hidden && !acc.hide:
 					return fmt.Errorf("%w: %s cannot be hidden", ErrForbidden, c.Key)
 				}
+			}
+			if c.Value == nil && (c.Hidden == nil || *c.Hidden == hidden) {
+				continue
+			}
+			prepared = append(prepared, c)
+		}
+
+		var changed []string
+		for _, c := range prepared {
+			f := byKey[c.Key]
+			row, has := values[f.ID]
+			current, hidden := "", false
+			if has {
+				if current, err = s.open(row); err != nil {
+					return err
+				}
+				if f.Sensitive {
+					if _, err := audit.Record(ctx, q, audit.Entry{
+						Actor: actor, Action: audit.PersonSensitiveFieldsRead,
+						Target:   audit.Target{Kind: audit.TargetPerson, ID: personID.String()},
+						Metadata: map[string]any{"fields": []string{f.Key}},
+					}); err != nil {
+						return err
+					}
+				}
+				hidden = row.Hidden
+			}
+			next, nextHidden := current, hidden
+			if c.Value != nil {
+				next = *c.Value
+			}
+			if c.Hidden != nil {
 				nextHidden = *c.Hidden
 			}
+
 			switch {
 			case next == "" && !has:
 				continue // nothing to clear (hiding needs a value)
@@ -211,21 +250,23 @@ func (s *Service) UpdateProfile(ctx context.Context, actor audit.Actor, viewer V
 			}
 			changed = append(changed, f.Key)
 		}
-		if len(changed) == 0 {
-			return nil
+		if len(changed) > 0 {
+			if _, err := audit.Record(ctx, q, audit.Entry{
+				Actor: actor, Action: audit.PersonProfileUpdated,
+				Target:   audit.Target{Kind: audit.TargetPerson, ID: personID.String()},
+				Metadata: map[string]any{"fields": changed},
+			}); err != nil {
+				return err
+			}
 		}
-		_, err = audit.Record(ctx, q, audit.Entry{
-			Actor:    actor,
-			Action:   audit.PersonProfileUpdated,
-			Target:   audit.Target{Kind: audit.TargetPerson, ID: personID.String()},
-			Metadata: map[string]any{"fields": changed},
-		})
+		// A failure auditing the response must roll back the mutation too.
+		entries, err = s.profileView(ctx, q, actor, viewer, personID, rel)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.Profile(ctx, actor, viewer, personID)
+	return entries, nil
 }
 
 func (s *Service) values(ctx context.Context, q *store.Queries, personID uuid.UUID) (map[uuid.UUID]store.ProfileFieldValue, error) {

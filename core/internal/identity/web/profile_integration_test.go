@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/authz"
+	"github.com/orglane/orglane/core/internal/identity"
 )
 
 type apiField struct {
@@ -236,4 +239,47 @@ func (e *env) signedIn(email string) *browser {
 	b := e.browser()
 	b.signIn(email)
 	return b
+}
+
+// This exercises production NewStack wiring, not a directly injected resolver.
+func TestProfileTeamVisibilityUsesProductionResolver(t *testing.T) {
+	e := newEnv(t)
+	owner := e.browser()
+	e.setupOwner(owner)
+	subject := e.createMember("subject")
+	teammate := e.createMember("teammate")
+	outsider := e.createMember("outsider")
+	team, err := e.stack.Identity.CreateTeam(t.Context(), audit.System, identity.NewTeam{Slug: "platform", Name: "Platform"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uuid.UUID{subject.ID, teammate.ID} {
+		if _, err := e.stack.Identity.SetTeamMember(t.Context(), audit.System, team.ID, id, identity.TeamRoleMember); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expectStatus(t, owner.req("POST", "/api/v1/profile-fields", map[string]any{"label": "Team note", "type": "text", "visibility": "team"}), http.StatusCreated)
+	path := "/api/v1/people/" + subject.ID.String() + "/profile"
+	expectStatus(t, owner.req("PATCH", path, map[string]any{"values": []map[string]any{{"key": "team_note", "value": "Shared team value"}}}), http.StatusOK)
+	reader := e.signedIn(teammate.WorkEmail)
+	var visible apiProfile
+	response := reader.req("GET", path, nil)
+	expectStatus(t, response, http.StatusOK)
+	response.json(t, &visible)
+	if visible.values()["team_note"] != "Shared team value" {
+		t.Error("production stack did not expose team value to an actual teammate")
+	}
+	response = e.signedIn(outsider.WorkEmail).req("GET", path, nil)
+	expectStatus(t, response, http.StatusOK)
+	response.json(t, &visible)
+	if _, ok := visible.values()["team_note"]; ok {
+		t.Error("production stack exposed team field to outsider")
+	}
+	expectStatus(t, owner.req("POST", "/api/v1/teams/"+team.ID.String()+"/archive", nil), http.StatusOK)
+	response = reader.req("GET", path, nil)
+	expectStatus(t, response, http.StatusOK)
+	response.json(t, &visible)
+	if _, ok := visible.values()["team_note"]; ok {
+		t.Error("production stack grants team field visibility through archived team")
+	}
 }

@@ -30,21 +30,11 @@ import (
 
 func TestMain(m *testing.M) { pgtest.Main(m) }
 
-// teams is a fixed set of team memberships standing in for the teams of
-// #23: two people share a team when they are in the same group.
-type teams map[uuid.UUID]string
-
-func (t teams) SharesTeam(_ context.Context, a, b uuid.UUID) (bool, error) {
-	ta, ok := t[a]
-	return ok && ta == t[b], nil
-}
-
 type env struct {
 	t        *testing.T
 	pool     *pgxpool.Pool
 	identity *identity.Service
 	profile  *profile.Service
-	teams    teams
 	keyring  *crypto.Keyring
 }
 
@@ -69,10 +59,10 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tm := teams{}
+	identityService := identity.NewService(pool)
 	return &env{
-		t: t, pool: pool, identity: identity.NewService(pool), teams: tm, keyring: keyring,
-		profile: profile.NewService(pool, keyring, profile.WithTeams(tm)),
+		t: t, pool: pool, identity: identityService, keyring: keyring,
+		profile: profile.NewService(pool, keyring, profile.WithTeams(identityService)),
 	}
 }
 
@@ -193,9 +183,8 @@ func TestVisibilityMatrix(t *testing.T) {
 	admin.ManagePeople = true
 	sensitiveAdmin := e.person("owner")
 	sensitiveAdmin.ManagePeople, sensitiveAdmin.ReadSensitive = true, true
-	e.teams[subject.PersonID] = "platform"
-	e.teams[teammate.PersonID] = "platform"
-	e.teams[other.PersonID] = "sales"
+	e.team("platform", subject, teammate)
+	e.team("sales", other)
 
 	e.library("telegram")          // everyone
 	e.library("phone")             // team
@@ -832,5 +821,68 @@ func TestSensitiveReadRequiresCommittedAudit(t *testing.T) {
 	fault.Remove()
 	if got := e.view(owner, subject.PersonID)[field.Key]; got != "Sam" {
 		t.Errorf("authorized audited read: %q", got)
+	}
+}
+
+func (e *env) team(slug string, members ...profile.Viewer) uuid.UUID {
+	e.t.Helper()
+	team, err := e.identity.CreateTeam(e.t.Context(), system, identity.NewTeam{Slug: slug, Name: slug})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	for _, person := range members {
+		if _, err := e.identity.SetTeamMember(e.t.Context(), system, team.ID, person.PersonID, identity.TeamRoleMember); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	return team.ID
+}
+
+func TestTeamVisibilityUsesActiveMemberships(t *testing.T) {
+	e := newEnv(t)
+	subject := e.person("subject")
+	teammate := e.person("teammate")
+	outsider := e.person("outsider")
+	admin := e.person("admin")
+	admin.ManagePeople = true
+	first := e.team("first", subject, teammate)
+	second := e.team("second", subject, teammate)
+	e.team("other", outsider)
+	field := e.field(profile.NewField{Label: "Team note", Type: profile.TypeText, Visibility: profile.VisibilityTeam})
+	e.set(subject, subject.PersonID, field.Key, "Shared with my teams")
+	if got := e.view(teammate, subject.PersonID)[field.Key]; got != "Shared with my teams" {
+		t.Error("active teammate cannot see team field")
+	}
+	if _, ok := e.entry(outsider, subject.PersonID, field.Key); ok {
+		t.Error("other member sees team field")
+	}
+	if _, err := e.identity.ArchiveTeam(t.Context(), system, first); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.view(teammate, subject.PersonID)[field.Key]; got != "Shared with my teams" {
+		t.Error("archiving one team hid a field still shared through another active team")
+	}
+	if err := e.identity.RemoveTeamMember(t.Context(), system, second, teammate.PersonID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.entry(teammate, subject.PersonID, field.Key); ok {
+		t.Error("removed teammate still sees team field through an archived team")
+	}
+	if _, err := e.identity.SetTeamMember(t.Context(), system, second, teammate.PersonID, identity.TeamRoleMember); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.view(teammate, subject.PersonID)[field.Key]; got != "Shared with my teams" {
+		t.Error("restored active membership did not restore visibility")
+	}
+	if _, err := e.identity.ArchiveTeam(t.Context(), system, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.entry(teammate, subject.PersonID, field.Key); ok {
+		t.Error("archived memberships still grant team field visibility")
+	}
+	for _, viewer := range []profile.Viewer{subject, admin} {
+		if got := e.view(viewer, subject.PersonID)[field.Key]; got != "Shared with my teams" {
+			t.Error("self/admin visibility incorrectly depends on active team membership")
+		}
 	}
 }
