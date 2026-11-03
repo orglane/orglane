@@ -57,11 +57,13 @@ type Action string
 // Actions. Names are "<target kind>.<past tense verb>" and never change once
 // released, because entries reference them by name.
 const (
-	PersonCreated       Action = "person.created"
-	PersonUpdated       Action = "person.updated"
-	PersonStatusChanged Action = "person.status_changed"
-	PersonRoleAssigned  Action = "person.role_assigned"
-	PersonRoleRemoved   Action = "person.role_removed"
+	// OnboardingWelcomeFinished records finishing welcome, without marking optional steps complete.
+	OnboardingWelcomeFinished Action = "person.onboarding_welcome_finished"
+	PersonCreated             Action = "person.created"
+	PersonUpdated             Action = "person.updated"
+	PersonStatusChanged       Action = "person.status_changed"
+	PersonRoleAssigned        Action = "person.role_assigned"
+	PersonRoleRemoved         Action = "person.role_removed"
 	// PersonAvatarSet: a person's avatar was set or replaced.
 	PersonAvatarSet Action = "person.avatar_set"
 	// PersonAvatarRemoved: a person's avatar was removed.

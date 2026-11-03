@@ -46,6 +46,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/onboarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My current onboarding checklist
+         * @description Completion is derived from current data and authorized profile fields; values are never returned.
+         */
+        get: operations["getMyOnboarding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/onboarding/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finish welcome, leaving optional steps for later
+         * @description Idempotent; rejects incomplete required steps the person can actually perform. Does not mark optional steps complete.
+         */
+        post: operations["finishMyOnboarding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/people/{personId}/onboarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View onboarding progress for one person
+         * @description Requires people.manage. Profile progress includes only fields visible to this caller; sensitive completion is scoped and audited like profile reads. Never returns field names or values.
+         */
+        get: operations["getPersonOnboarding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/version": {
         parameters: {
             query?: never;
@@ -968,6 +1028,25 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        OnboardingStep: {
+            /** @description Stable namespaced employee step ID; built-ins use profile, profile-admin, avatar and passkey. */
+            id: string;
+            title: string;
+            description: string;
+            /** @description Required steps always have a usable authorized action for the subject. */
+            required: boolean;
+            /** @description Actual current completion; skipping an optional step never completes it. */
+            complete: boolean;
+            /** @description Authorized local action link for the caller; absent for an action they cannot perform. */
+            actionUrl?: string;
+        };
+        OnboardingProgress: {
+            /** Format: uuid */
+            personId: string;
+            /** @description Only disclosed for self. True after an accepted invitation until welcome is finished. */
+            welcomePending: boolean;
+            steps: components["schemas"]["OnboardingStep"][];
+        };
         /** @description RFC 9457 problem details. */
         Problem: {
             /**
@@ -1120,6 +1199,8 @@ export interface components {
             sessionExpiresAt: string;
         };
         Me: {
+            /** @description An invited person has not yet finished welcome; optional setup and ordinary sign-in are preserved. */
+            welcomePending?: boolean;
             person: components["schemas"]["PersonSummary"];
             /** @description The permissions the caller holds (ADR 0004). */
             permissions: string[];
@@ -1860,6 +1941,76 @@ export interface operations {
                     "application/json": components["schemas"]["Health"];
                 };
             };
+        };
+    };
+    getMyOnboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current checklist. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingProgress"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    finishMyOnboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Welcome finished. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getPersonOnboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Caller-visible progress, which may differ from the person's own view. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingProgress"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     getVersion: {

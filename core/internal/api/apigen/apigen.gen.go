@@ -697,6 +697,9 @@ type Me struct {
 	Permissions []string      `json:"permissions"`
 	Person      PersonSummary `json:"person"`
 	Session     *Session      `json:"session,omitempty"`
+
+	// WelcomePending An invited person has not yet finished welcome; optional setup and ordinary sign-in are preserved.
+	WelcomePending *bool `json:"welcomePending,omitempty"`
 }
 
 // NewProfileField defines model for NewProfileField.
@@ -740,6 +743,32 @@ type NewProfileFieldOption struct {
 	// Key Derived from the label when omitted.
 	Key   *string `json:"key,omitempty"`
 	Label string  `json:"label"`
+}
+
+// OnboardingProgress defines model for OnboardingProgress.
+type OnboardingProgress struct {
+	PersonId openapi_types.UUID `json:"personId"`
+	Steps    []OnboardingStep   `json:"steps"`
+
+	// WelcomePending Only disclosed for self. True after an accepted invitation until welcome is finished.
+	WelcomePending bool `json:"welcomePending"`
+}
+
+// OnboardingStep defines model for OnboardingStep.
+type OnboardingStep struct {
+	// ActionUrl Authorized local action link for the caller; absent for an action they cannot perform.
+	ActionUrl *string `json:"actionUrl,omitempty"`
+
+	// Complete Actual current completion; skipping an optional step never completes it.
+	Complete    bool   `json:"complete"`
+	Description string `json:"description"`
+
+	// Id Stable namespaced employee step ID; built-ins use profile, profile-admin, avatar and passkey.
+	Id string `json:"id"`
+
+	// Required Required steps always have a usable authorized action for the subject.
+	Required bool   `json:"required"`
+	Title    string `json:"title"`
 }
 
 // OrglaneDiscovery defines model for OrglaneDiscovery.
@@ -1459,6 +1488,12 @@ type ServerInterface interface {
 	// GetMe The signed-in person
 	// (GET /api/v1/me)
 	GetMe(w http.ResponseWriter, r *http.Request)
+	// GetMyOnboarding My current onboarding checklist
+	// (GET /api/v1/me/onboarding)
+	GetMyOnboarding(w http.ResponseWriter, r *http.Request)
+	// FinishMyOnboarding Finish welcome, leaving optional steps for later
+	// (POST /api/v1/me/onboarding/finish)
+	FinishMyOnboarding(w http.ResponseWriter, r *http.Request)
 	// DismissPasskeyOffer Skip the passkey offer
 	// (POST /api/v1/me/passkey-offer/dismiss)
 	DismissPasskeyOffer(w http.ResponseWriter, r *http.Request)
@@ -1495,6 +1530,9 @@ type ServerInterface interface {
 	// UploadPersonAvatar Upload a raster avatar for self or with people.manage
 	// (PUT /api/v1/people/{personId}/avatar)
 	UploadPersonAvatar(w http.ResponseWriter, r *http.Request, personId PersonId)
+	// GetPersonOnboarding View onboarding progress for one person
+	// (GET /api/v1/people/{personId}/onboarding)
+	GetPersonOnboarding(w http.ResponseWriter, r *http.Request, personId PersonId)
 	// GetPersonProfile A person's profile fields
 	// (GET /api/v1/people/{personId}/profile)
 	GetPersonProfile(w http.ResponseWriter, r *http.Request, personId openapi_types.UUID)
@@ -1851,6 +1889,34 @@ func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request)
 	handler.ServeHTTP(w, r)
 }
 
+// GetMyOnboarding operation middleware
+func (siw *ServerInterfaceWrapper) GetMyOnboarding(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMyOnboarding(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// FinishMyOnboarding operation middleware
+func (siw *ServerInterfaceWrapper) FinishMyOnboarding(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.FinishMyOnboarding(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // DismissPasskeyOffer operation middleware
 func (siw *ServerInterfaceWrapper) DismissPasskeyOffer(w http.ResponseWriter, r *http.Request) {
 
@@ -2187,6 +2253,32 @@ func (siw *ServerInterfaceWrapper) UploadPersonAvatar(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UploadPersonAvatar(w, r, personId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPersonOnboarding operation middleware
+func (siw *ServerInterfaceWrapper) GetPersonOnboarding(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "personId" -------------
+	var personId PersonId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "personId", r.PathValue("personId"), &personId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "personId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPersonOnboarding(w, r, personId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2828,6 +2920,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealthz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/readyz", wrapper.GetReadyz)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/me/onboarding", wrapper.GetMyOnboarding)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/me/onboarding/finish", wrapper.FinishMyOnboarding)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people/{personId}/onboarding", wrapper.GetPersonOnboarding)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/version", wrapper.GetVersion)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/instance", wrapper.GetInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/.well-known/orglane", wrapper.GetOrglaneDiscovery)
@@ -4328,6 +4423,138 @@ func (response GetMe500ApplicationProblemPlusJSONResponse) VisitGetMeResponse(w 
 	return err
 }
 
+type GetMyOnboardingRequestObject struct {
+}
+
+type GetMyOnboardingResponseObject interface {
+	VisitGetMyOnboardingResponse(w http.ResponseWriter) error
+}
+
+type GetMyOnboarding200JSONResponse OnboardingProgress
+
+func (response GetMyOnboarding200JSONResponse) VisitGetMyOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMyOnboarding401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetMyOnboarding401ApplicationProblemPlusJSONResponse) VisitGetMyOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMyOnboarding500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetMyOnboarding500ApplicationProblemPlusJSONResponse) VisitGetMyOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type FinishMyOnboardingRequestObject struct {
+}
+
+type FinishMyOnboardingResponseObject interface {
+	VisitFinishMyOnboardingResponse(w http.ResponseWriter) error
+}
+
+type FinishMyOnboarding204Response struct {
+}
+
+func (response FinishMyOnboarding204Response) VisitFinishMyOnboardingResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type FinishMyOnboarding401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response FinishMyOnboarding401ApplicationProblemPlusJSONResponse) VisitFinishMyOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type FinishMyOnboarding403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response FinishMyOnboarding403ApplicationProblemPlusJSONResponse) VisitFinishMyOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type FinishMyOnboarding409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response FinishMyOnboarding409ApplicationProblemPlusJSONResponse) VisitFinishMyOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type FinishMyOnboarding500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response FinishMyOnboarding500ApplicationProblemPlusJSONResponse) VisitFinishMyOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type DismissPasskeyOfferRequestObject struct {
 }
 
@@ -5328,6 +5555,92 @@ type UploadPersonAvatar500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response UploadPersonAvatar500ApplicationProblemPlusJSONResponse) VisitUploadPersonAvatarResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonOnboardingRequestObject struct {
+	PersonId PersonId `json:"personId"`
+}
+
+type GetPersonOnboardingResponseObject interface {
+	VisitGetPersonOnboardingResponse(w http.ResponseWriter) error
+}
+
+type GetPersonOnboarding200JSONResponse OnboardingProgress
+
+func (response GetPersonOnboarding200JSONResponse) VisitGetPersonOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonOnboarding401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonOnboarding401ApplicationProblemPlusJSONResponse) VisitGetPersonOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonOnboarding403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonOnboarding403ApplicationProblemPlusJSONResponse) VisitGetPersonOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonOnboarding404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonOnboarding404ApplicationProblemPlusJSONResponse) VisitGetPersonOnboardingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonOnboarding500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonOnboarding500ApplicationProblemPlusJSONResponse) VisitGetPersonOnboardingResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -7335,6 +7648,12 @@ type StrictServerInterface interface {
 	// GetMe The signed-in person
 	// (GET /api/v1/me)
 	GetMe(ctx context.Context, request GetMeRequestObject) (GetMeResponseObject, error)
+	// GetMyOnboarding My current onboarding checklist
+	// (GET /api/v1/me/onboarding)
+	GetMyOnboarding(ctx context.Context, request GetMyOnboardingRequestObject) (GetMyOnboardingResponseObject, error)
+	// FinishMyOnboarding Finish welcome, leaving optional steps for later
+	// (POST /api/v1/me/onboarding/finish)
+	FinishMyOnboarding(ctx context.Context, request FinishMyOnboardingRequestObject) (FinishMyOnboardingResponseObject, error)
 	// DismissPasskeyOffer Skip the passkey offer
 	// (POST /api/v1/me/passkey-offer/dismiss)
 	DismissPasskeyOffer(ctx context.Context, request DismissPasskeyOfferRequestObject) (DismissPasskeyOfferResponseObject, error)
@@ -7371,6 +7690,9 @@ type StrictServerInterface interface {
 	// UploadPersonAvatar Upload a raster avatar for self or with people.manage
 	// (PUT /api/v1/people/{personId}/avatar)
 	UploadPersonAvatar(ctx context.Context, request UploadPersonAvatarRequestObject) (UploadPersonAvatarResponseObject, error)
+	// GetPersonOnboarding View onboarding progress for one person
+	// (GET /api/v1/people/{personId}/onboarding)
+	GetPersonOnboarding(ctx context.Context, request GetPersonOnboardingRequestObject) (GetPersonOnboardingResponseObject, error)
 	// GetPersonProfile A person's profile fields
 	// (GET /api/v1/people/{personId}/profile)
 	GetPersonProfile(ctx context.Context, request GetPersonProfileRequestObject) (GetPersonProfileResponseObject, error)
@@ -7969,6 +8291,54 @@ func (sh *strictHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetMyOnboarding operation middleware
+func (sh *strictHandler) GetMyOnboarding(w http.ResponseWriter, r *http.Request) {
+	var request GetMyOnboardingRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMyOnboarding(ctx, request.(GetMyOnboardingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMyOnboarding")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMyOnboardingResponseObject); ok {
+		if err := validResponse.VisitGetMyOnboardingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// FinishMyOnboarding operation middleware
+func (sh *strictHandler) FinishMyOnboarding(w http.ResponseWriter, r *http.Request) {
+	var request FinishMyOnboardingRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.FinishMyOnboarding(ctx, request.(FinishMyOnboardingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "FinishMyOnboarding")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(FinishMyOnboardingResponseObject); ok {
+		if err := validResponse.VisitFinishMyOnboardingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // DismissPasskeyOffer operation middleware
 func (sh *strictHandler) DismissPasskeyOffer(w http.ResponseWriter, r *http.Request) {
 	var request DismissPasskeyOfferRequestObject
@@ -8281,6 +8651,32 @@ func (sh *strictHandler) UploadPersonAvatar(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UploadPersonAvatarResponseObject); ok {
 		if err := validResponse.VisitUploadPersonAvatarResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetPersonOnboarding operation middleware
+func (sh *strictHandler) GetPersonOnboarding(w http.ResponseWriter, r *http.Request, personId PersonId) {
+	var request GetPersonOnboardingRequestObject
+
+	request.PersonId = personId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPersonOnboarding(ctx, request.(GetPersonOnboardingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPersonOnboarding")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetPersonOnboardingResponseObject); ok {
+		if err := validResponse.VisitGetPersonOnboardingResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -42,7 +42,13 @@ export class SessionGuard {
         this.signedIn = true;
       } else if (me === null && this.signedIn) {
         // Not inside the cache's own notification: let the query settle.
-        setTimeout(() => void this.end("expired"), 0);
+        setTimeout(() => {
+          // Another 401 may have ended the session while this was queued, or
+          // a new sign-in may already have replaced the null current person.
+          if (this.signedIn && this.queryClient.getQueryData(meKey) === null) {
+            void this.end("expired");
+          }
+        }, 0);
       }
     });
   }

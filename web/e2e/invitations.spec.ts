@@ -31,6 +31,8 @@ test("invite without email, copy a link, accept and skip the passkey offer", asy
   await page.getByRole("button", { name: "Accept invitation", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Sign in faster with a passkey" })).toBeVisible();
   await page.getByRole("button", { name: "Skip for now" }).click();
+  await expect(page.getByRole("heading", { name: "Welcome to your workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Skip optional steps and continue" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Maya");
   await page.goto(`${instance.url}/teams`);
   await page.getByRole("link", { name: /Platform/ }).click();
@@ -103,5 +105,7 @@ test("configure SMTP, see delivery failure, fix it and accept the emailed link",
   await page.getByLabel("Password", { exact: true }).fill(owner.password);
   await page.getByRole("button", { name: "Accept invitation", exact: true }).click();
   await page.getByRole("button", { name: "Skip for now" }).click();
+  await expect(page.getByRole("heading", { name: "Welcome to your workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Skip optional steps and continue" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Ravi");
 });

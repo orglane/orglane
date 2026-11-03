@@ -76,6 +76,69 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Health"
+  /api/v1/me/onboarding:
+    get:
+      operationId: getMyOnboarding
+      summary: My current onboarding checklist
+      description: Completion is derived from current data and authorized profile fields; values are never returned.
+      tags: [onboarding]
+      x-orglane-permission: authenticated
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current checklist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingProgress"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/me/onboarding/finish:
+    post:
+      operationId: finishMyOnboarding
+      summary: Finish welcome, leaving optional steps for later
+      description: Idempotent; rejects incomplete required steps the person can actually perform. Does not mark optional steps complete.
+      tags: [onboarding]
+      x-orglane-permission: authenticated
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      responses:
+        "204":
+          description: Welcome finished.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/people/{personId}/onboarding:
+    get:
+      operationId: getPersonOnboarding
+      summary: View onboarding progress for one person
+      description: Requires people.manage. Profile progress includes only fields visible to this caller; sensitive completion is scoped and audited like profile reads. Never returns field names or values.
+      tags: [onboarding]
+      x-orglane-permission: people.manage
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PersonId"
+      responses:
+        "200":
+          description: Caller-visible progress, which may differ from the person's own view.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingProgress"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /api/v1/version:
     get:
       operationId: getVersion
@@ -1725,6 +1788,40 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   schemas:
+    OnboardingStep:
+      type: object
+      required: [id, title, description, required, complete]
+      properties:
+        id:
+          type: string
+          description: Stable namespaced employee step ID; built-ins use profile, profile-admin, avatar and passkey.
+        title:
+          type: string
+        description:
+          type: string
+        required:
+          type: boolean
+          description: Required steps always have a usable authorized action for the subject.
+        complete:
+          type: boolean
+          description: Actual current completion; skipping an optional step never completes it.
+        actionUrl:
+          type: string
+          description: Authorized local action link for the caller; absent for an action they cannot perform.
+    OnboardingProgress:
+      type: object
+      required: [personId, welcomePending, steps]
+      properties:
+        personId:
+          type: string
+          format: uuid
+        welcomePending:
+          type: boolean
+          description: Only disclosed for self. True after an accepted invitation until welcome is finished.
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/OnboardingStep"
     Problem:
       type: object
       description: RFC 9457 problem details.
@@ -1928,6 +2025,9 @@ components:
       type: object
       required: [person, permissions, passkeyOffer]
       properties:
+        welcomePending:
+          type: boolean
+          description: An invited person has not yet finished welcome; optional setup and ordinary sign-in are preserved.
         person:
           $ref: "#/components/schemas/PersonSummary"
         permissions:

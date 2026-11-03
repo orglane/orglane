@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { AppShell } from "./components/app-shell";
 import { type Api, meQuery, setupStatusQuery } from "./lib/api";
-import { safeRedirect } from "./lib/utils";
+import { safeRedirect, welcomeDestination } from "./lib/utils";
 import { AcceptInvitationPage } from "./routes/accept-invitation";
 import { EmailSettingsPage } from "./routes/email-settings";
 import { HomePage } from "./routes/home";
@@ -23,6 +23,7 @@ import { SetupPage } from "./routes/setup";
 import { SignInPage, type SignInSearch } from "./routes/sign-in";
 import { ErrorPage, NotFoundPage, PendingPage } from "./routes/status";
 import { TeamPage, TeamsPage } from "./routes/teams";
+import { WelcomePage } from "./routes/welcome";
 
 /**
  * Renders the signed-in part of the app only while there is a session: when
@@ -132,6 +133,18 @@ const passkeyOfferRoute = createRoute({
   },
 });
 
+const welcomeRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/welcome",
+  validateSearch: (search: Record<string, unknown>): { redirect?: string } => {
+    const target = welcomeDestination(search.redirect);
+    return target === "/" ? {} : { redirect: target };
+  },
+  component: function Welcome() {
+    return <WelcomePage redirect={welcomeRoute.useSearch().redirect} />;
+  },
+});
+
 const shellRoute = createRoute({
   getParentRoute: () => authedRoute,
   id: "shell",
@@ -206,6 +219,7 @@ export const routeTree = rootRoute.addChildren([
   inviteRoute,
   authedRoute.addChildren([
     passkeyOfferRoute,
+    welcomeRoute,
     shellRoute.addChildren([
       homeRoute,
       inboxRoute,

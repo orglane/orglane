@@ -60,6 +60,11 @@ func TestContractPermissions(t *testing.T) {
 		// self or people.manage, with admin-only identity/reporting fields.
 		"PATCH /api/v1/people/{personId}":      authz.Authenticated,
 		"PUT /api/v1/people/{personId}/avatar": authz.Authenticated,
+		// Onboarding self-service and permissioned per-person progress.
+		"GET /api/v1/me/onboarding":                authz.Authenticated,
+		"POST /api/v1/me/onboarding/finish":        authz.Authenticated,
+		"GET /api/v1/people/{personId}/onboarding": authz.PeopleManage,
+		// Every signed-in person can read the directory.
 		"GET /api/v1/people":                   authz.Authenticated,
 		"GET /api/v1/people/{personId}/avatar": authz.Authenticated,
 		// Every signed-in person can read teams; managing them is people
