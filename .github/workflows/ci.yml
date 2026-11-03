@@ -48,6 +48,9 @@ jobs:
         with:
           fetch-depth: 2 # the merge commit and its base parent
           persist-credentials: false
+      # Run even for docs-only PRs whose full lint job is skipped.
+      - name: Reject committed PR review assets
+        run: make lint-pr-assets
       - id: tool
         uses: ./.github/actions/ci-tool
       - id: classify

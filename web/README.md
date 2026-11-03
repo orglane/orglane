@@ -13,7 +13,7 @@ The Orglane web UI: a React + Vite single-page app, embedded into the core binar
 
 ## Screens
 
-First-run setup (`/setup`), sign-in (`/sign-in`, password and passkey), the passkey offer (`/welcome/passkey`), the app shell with Home, Inbox, People and Apps, Sign-in & security (`/settings/security`: passkeys and sessions) and the profile menu (theme, language, sign-out). Screenshots: [`docs/screenshots`](../docs/screenshots).
+First-run setup (`/setup`), sign-in (`/sign-in`, password and passkey), the passkey offer (`/welcome/passkey`), the app shell with Home, Inbox, People and Apps, Sign-in & security (`/settings/security`: passkeys and sessions) and the profile menu (theme, language, sign-out). Review captures are uploaded to PRs; see [evidence policy](../CONTRIBUTING.md#ui-review-evidence).
 
 ## Serving and security
 
@@ -77,4 +77,4 @@ make test-e2e                           # Playwright: needs Docker and Playwrigh
 
 The end-to-end tests (`e2e/`) build the binary with the UI, start PostgreSQL in Docker and give every test its own database and `orglane server` on localhost. They cover first-run setup → passkey offer → Skip → shell → sign-out → sign-in, passkey registration and sign-in with Chromium's virtual WebAuthn authenticator (CDP), sign-in for an OIDC application, a session revoked elsewhere while a page is open (focus refetch → sign-in → back), caching and security headers, and that no request leaves the origin or violates the CSP. `make test` runs them when Docker and Chromium are available (`pnpm --filter @orglane/web exec playwright install chromium`) and prints a warning otherwise.
 
-`ORGLANE_SCREENSHOTS=1 pnpm --filter @orglane/web test:e2e screenshots` refreshes the screenshots in `docs/screenshots`.
+`ORGLANE_SCREENSHOTS=1 pnpm --filter @orglane/web test:e2e screenshots` writes review captures to ignored `.github/pr-assets/web/`. The directory/profile matrix in `people.spec.ts` always writes to `.github/pr-assets/directory/`. Upload evidence to the PR; do not commit it.

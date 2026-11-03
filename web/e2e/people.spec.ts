@@ -142,7 +142,7 @@ test("demo directory and profile screenshots at 1440, 768 and 360 in both themes
       })
     ).ok(),
   ).toBeTruthy();
-  const directory = `${repo}docs/screenshots/people-directory`;
+  const directory = `${repo}.github/pr-assets/directory`;
   mkdirSync(directory, { recursive: true });
   for (const width of [1440, 768, 360]) {
     await page.setViewportSize({ width, height: width === 360 ? 900 : 1000 });

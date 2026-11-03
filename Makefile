@@ -259,7 +259,11 @@ test-website-if-available:
 		$(MAKE) --no-print-directory test-website; \
 	fi
 
-lint: lint-go lint-ts lint-sh ## Run all linters and type checks
+lint: lint-pr-assets lint-go lint-ts lint-sh ## Run all linters and type checks
+
+.PHONY: lint-pr-assets
+lint-pr-assets:
+	@sh tools/ci/check-pr-assets.sh
 
 lint-go: $(GOLANGCI_LINT) check-generate-go
 	go mod tidy -diff

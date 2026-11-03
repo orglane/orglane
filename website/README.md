@@ -2,7 +2,7 @@
 
 The project's website on **orglane.app**: the landing page and the installer at `orglane.app/install.sh` ([ADR 0018](../docs/adr/0018-domain-model.md): `orglane.app` hosts only the project's own sites and services, never company data). Licensed under AGPL-3.0-or-later.
 
-A static site built with [Astro](https://astro.build) into `website/dist` and deployed to GitHub Pages. It ships no framework runtime: the only script is the copy button of the install commands (progressive enhancement; the page works without JavaScript). No external fonts, trackers, CDNs or cookies: the system font stack and the colors of [`@orglane/ui-tokens`](../packages/ui-tokens), light and dark following `prefers-color-scheme`. Screenshots: [`docs/screenshots/website-*.png`](../docs/screenshots).
+A static site built with [Astro](https://astro.build) into `website/dist` and deployed to GitHub Pages. It ships no framework runtime: the only script is the copy button of the install commands (progressive enhancement; the page works without JavaScript). No external fonts, trackers, CDNs or cookies: the system font stack and the colors of [`@orglane/ui-tokens`](../packages/ui-tokens), light and dark following `prefers-color-scheme`. Review captures are uploaded to PRs; see [evidence policy](../CONTRIBUTING.md#ui-review-evidence).
 
 ## Development
 
@@ -13,7 +13,7 @@ make test-website    # build, then the Playwright tests against `astro preview`
 pnpm --filter @orglane/website test   # unit tests (Vitest, part of make test)
 ```
 
-`make test` runs the Playwright tests when Playwright's Chromium is installed (`pnpm --filter @orglane/web exec playwright install chromium`). `ORGLANE_SCREENSHOTS=1 make test-website` refreshes the screenshots.
+`make test` runs the Playwright tests when Playwright's Chromium is installed (`pnpm --filter @orglane/web exec playwright install chromium`). `ORGLANE_SCREENSHOTS=1 make test-website` writes review captures to ignored `.github/pr-assets/website/`. Upload evidence to the PR; do not commit it.
 
 | Path | Contents |
 |---|---|
