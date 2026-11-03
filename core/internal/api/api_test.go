@@ -319,3 +319,29 @@ func TestDiscoveryDemoFlag(t *testing.T) {
 		}
 	}
 }
+
+// TestWebUIGetsOnlyUnclaimedPaths checks that the web UI (SPA fallback)
+// never shadows the API, the probes or discovery.
+func TestWebUIGetsOnlyUnclaimedPaths(t *testing.T) {
+	ui := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Web-UI", "1")
+		w.WriteHeader(http.StatusOK)
+	})
+	h := newTestHandler(t, Options{WebUI: ui, Version: "v1.2.3"})
+	for _, p := range []string{"/", "/sign-in", "/settings/security", "/assets/index-abc.js"} {
+		if rec := do(t, h, p, ""); rec.Header().Get("X-Web-UI") != "1" {
+			t.Errorf("GET %s did not reach the web UI: %d %s", p, rec.Code, rec.Body)
+		}
+	}
+	if rec := do(t, h, "/api/v1/version", ""); rec.Code != http.StatusOK || rec.Header().Get("X-Web-UI") != "" {
+		t.Errorf("GET /api/v1/version = %d (web UI: %q)", rec.Code, rec.Header().Get("X-Web-UI"))
+	}
+	if rec := do(t, h, "/healthz", ""); rec.Code != http.StatusOK || rec.Header().Get("X-Web-UI") != "" {
+		t.Errorf("GET /healthz = %d", rec.Code)
+	}
+	rec := do(t, h, "/api/v1/nope", "")
+	if rec.Code != http.StatusNotFound || rec.Header().Get("X-Web-UI") != "" {
+		t.Fatalf("unknown API path = %d (web UI: %q)", rec.Code, rec.Header().Get("X-Web-UI"))
+	}
+	decodeProblem(t, rec)
+}

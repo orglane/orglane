@@ -89,6 +89,27 @@ jobs:
         with:
           cache-key: test
           save-cache: ${{ github.event_name == 'push' }}
+      # The web end-to-end tests (part of make test) drive Playwright's
+      # Chromium. Its version is the @playwright/test pinned in the lockfile;
+      # the browser is cached per version (saved on main only, like the other
+      # caches), the system libraries are installed every run.
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(pnpm --silent --filter @orglane/web exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      - name: Restore the Playwright browser cache
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Restore and save the Playwright browser cache
+        if: github.event_name == 'push'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Chromium for the web end-to-end tests
+        run: pnpm --filter @orglane/web exec playwright install --with-deps chromium
       - run: make test
 
   build:

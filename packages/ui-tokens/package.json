@@ -7,19 +7,25 @@
   "type": "module",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./tokens.css": "./tokens.css"
   },
   "files": [
-    "dist"
+    "dist",
+    "tokens.css"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "check-generate": "node scripts/generate-css.ts --check",
+    "generate": "node scripts/generate-css.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
+    "@types/node": "26.6.6",
     "typescript": "7.0.2",
     "vitest": "5.0.2"
   }

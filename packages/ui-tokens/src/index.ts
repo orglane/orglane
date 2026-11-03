@@ -1,17 +1,20 @@
 /**
- * Placeholder for the Orglane design tokens. The real token set (colors,
- * typography, spacing, radii) is defined by the web skeleton work; this
- * module only exists so the TypeScript toolchain has something to build,
- * lint and test.
+ * Orglane design tokens, shared by the web and mobile apps: a palette,
+ * semantic colors for the light and dark themes, typography, spacing, radii,
+ * shadows and motion. The web consumes them as CSS custom properties
+ * (`@orglane/ui-tokens/tokens.css`); the mobile app reads the values below.
  */
 
-/** Prefix of every CSS custom property emitted for Orglane tokens. */
-export const cssVarPrefix = "orglane";
-
-/** Returns the CSS `var()` reference for a token, e.g. `var(--orglane-radius-md)`. */
-export function cssVar(token: string): string {
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(token)) {
-    throw new Error(`invalid token name: ${JSON.stringify(token)}`);
-  }
-  return `var(--${cssVarPrefix}-${token})`;
-}
+export { contrastRatio, luminance, parseHex } from "./contrast.ts";
+export { cssVar, cssVarPrefix, kebab, shadowCss, toCss } from "./css.ts";
+export { palette } from "./palette.ts";
+export {
+  durations,
+  radii,
+  type ShadowLayer,
+  type ShadowName,
+  shadows,
+  spacing,
+  typography,
+} from "./scales.ts";
+export { type ThemeColors, type ThemeName, themes } from "./themes.ts";

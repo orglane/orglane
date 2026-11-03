@@ -54,12 +54,16 @@ type Options struct {
 	// are the operations marked x-orglane-permission: demo served; without
 	// it their routes are not registered at all.
 	Demo *demo.Dataset
+	// WebUI serves the web app for every path not handled otherwise (SPA
+	// fallback). Without it such paths answer 404.
+	WebUI http.Handler
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
 }
 
 // NewHandler returns the HTTP handler for the whole contract: the health
-// probes and everything under /api/v1. It fails if any operation lacks a
+// probes and everything under /api/v1, plus the OpenID Provider and the web
+// UI when configured. It fails if any operation lacks a
 // valid permission or if the generated routes and the contract disagree.
 func NewHandler(opts Options) (http.Handler, error) {
 	return newHandler(specpkg.Spec, opts)
@@ -117,6 +121,10 @@ func newHandler(spec []byte, opts Options) (http.Handler, error) {
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusNotFound, "")
 	})
+
+	if opts.WebUI != nil {
+		mux.Handle("/", opts.WebUI)
+	}
 
 	var handler http.Handler = mux
 	if opts.Auth != nil {

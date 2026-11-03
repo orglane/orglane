@@ -10,7 +10,6 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,16 +26,31 @@ import (
 // /oidc/authorize sends the browser to /oidc/login?authRequest=<id>. With a
 // valid session that satisfies the request (no prompt=login, within
 // max_age) the request completes at once and the browser continues to the
-// client. Otherwise the person signs in: with prompt=none the client gets
-// login_required instead.
+// client. With prompt=none the client gets login_required instead.
+// Otherwise the browser goes to the web UI's sign-in screen
+// (SignInPath?authRequest=<id>), which signs the person in through the API
+// (password or passkey) and then returns to /oidc/login, where the new
+// session completes the request.
 //
-// The sign-in form here is a minimal server-rendered fallback until the web
-// UI (#8) takes over the page; it is what automated OIDC tests (the OpenID
-// Conformance Suite) drive. It supports password sign-in only, and its text
-// is English until the web UI's i18n catalogs exist.
+// Browsers that cannot run the web UI (no JavaScript modules, such as the
+// HtmlUnit browser of the OpenID Conformance Suite) get a basic form on the
+// same screen that posts to /oidc/login: a password sign-in that completes
+// the request directly, or returns to the sign-in screen with an error code
+// (SignInError*).
 
-// OIDCHandler serves the OIDC protocol endpoints, the login page and the
-// session-ending wrapper around the end_session endpoint.
+// SignInPath is the web UI's sign-in route.
+const SignInPath = "/sign-in"
+
+// Error codes of the basic sign-in form, in the error query parameter of
+// SignInPath.
+const (
+	SignInErrorCredentials = "credentials"
+	SignInErrorLimited     = "limited"
+	SignInErrorFailed      = "failed"
+)
+
+// OIDCHandler serves the OIDC protocol endpoints, the sign-in handoff and
+// the session-ending wrapper around the end_session endpoint.
 func (a *Auth) OIDCHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(oidcop.PathDiscovery, a.provider)
@@ -93,21 +107,28 @@ func (a *Auth) loginPage(w http.ResponseWriter, r *http.Request) {
 		a.provider.AuthRequestError(w, r, req, oidcop.ErrLoginRequired())
 		return
 	}
-	a.renderForm(w, http.StatusOK, loginForm{AuthRequest: id, Email: req.LoginHint()})
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, a.SignInURL(id, req.LoginHint()), http.StatusSeeOther) //nolint:gosec // the workspace origin, not an open redirect
 }
 
-// sessionSatisfies reports whether an existing session may answer the
-// request without a new sign-in.
-func sessionSatisfies(s store.Session, req *oidcop.AuthRequest) bool {
-	if req.PromptLogin() {
-		return false
-	}
-	if maxAge, ok := req.MaxAge(); ok && time.Since(s.CreatedAt) > maxAge {
-		return false
-	}
-	return true
+// SignInURL returns the web UI's sign-in screen for an auth request, with
+// the client's login_hint to prefill the email.
+func (a *Auth) SignInURL(authRequest, loginHint string) string {
+	return a.signInURL(authRequest, loginHint, "")
 }
 
+func (a *Auth) signInURL(authRequest, email, errorCode string) string {
+	v := url.Values{"authRequest": {authRequest}}
+	if email != "" {
+		v.Set("email", email)
+	}
+	if errorCode != "" {
+		v.Set("error", errorCode)
+	}
+	return a.origin + SignInPath + "?" + v.Encode()
+}
+
+// loginSubmit handles the basic sign-in form (see above).
 func (a *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
@@ -115,46 +136,63 @@ func (a *Auth) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		a.renderError(w, http.StatusBadRequest, "The form could not be read.")
 		return
 	}
-	id := r.PostForm.Get("authRequest")
-	form := loginForm{AuthRequest: id, Email: r.PostForm.Get("email")}
+	id, email := r.PostForm.Get("authRequest"), r.PostForm.Get("email")
 	req, err := a.provider.AuthRequest(ctx, id)
 	if err != nil {
 		a.renderError(w, http.StatusBadRequest, "This sign-in link has expired. Go back to the application and try again.")
 		return
 	}
+	back := func(code string) {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, a.signInURL(id, email, code), http.StatusSeeOther) //nolint:gosec // the workspace origin, not an open redirect
+	}
 	if err := a.AllowSignIn(ctx, r, identity.AuthPassword); err != nil {
-		var limited *ErrRateLimited
-		if errors.As(err, &limited) {
-			w.Header().Set("Retry-After", retryAfterSeconds(limited.RetryAfter))
-		}
-		form.Error = "Too many sign-in attempts. Wait a few minutes and try again."
-		a.renderForm(w, http.StatusTooManyRequests, form)
+		back(SignInErrorLimited)
 		return
 	}
-	person, err := a.identity.VerifyPassword(ctx, a.Actor(r, uuid.Nil), form.Email, r.PostForm.Get("password"))
+	person, err := a.identity.VerifyPassword(ctx, a.Actor(r, uuid.Nil), email, r.PostForm.Get("password"))
 	var locked *identity.LockedError
 	switch {
 	case errors.As(err, &locked):
-		w.Header().Set("Retry-After", retryAfterSeconds(locked.RetryAfter))
-		form.Error = "Too many failed attempts for this account. Wait a few minutes and try again."
-		a.renderForm(w, http.StatusTooManyRequests, form)
+		back(SignInErrorLimited)
 		return
 	case errors.Is(err, identity.ErrInvalidCredentials):
-		form.Error = "The email or password is incorrect."
-		a.renderForm(w, http.StatusUnauthorized, form)
+		back(SignInErrorCredentials)
 		return
 	case err != nil:
 		a.logger.ErrorContext(ctx, "password sign-in", "error", err)
-		a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
+		back(SignInErrorFailed)
 		return
 	}
 	signedIn, err := a.SignIn(w, r, person, identity.AuthPassword)
-	if err != nil {
+	if errors.Is(err, identity.ErrInactive) {
+		back(SignInErrorCredentials)
+		return
+	} else if err != nil {
 		a.logger.ErrorContext(ctx, "start session", "error", err)
-		a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
+		back(SignInErrorFailed)
 		return
 	}
 	a.complete(w, r, req, signedIn.Session)
+}
+
+// sessionSatisfies reports whether an existing session may answer the
+// request without a new sign-in. A session started after the request is
+// the fresh authentication the request asked for: the sign-in screen
+// creates one and comes back here. An older one is enough unless the
+// client asked for a new sign-in (prompt=login, which zitadel also
+// expresses as max_age=0) or the session is older than max_age.
+func sessionSatisfies(s store.Session, req *oidcop.AuthRequest) bool {
+	if s.CreatedAt.After(req.CreatedAt()) {
+		return true
+	}
+	if req.PromptLogin() {
+		return false
+	}
+	if maxAge, ok := req.MaxAge(); ok && time.Since(s.CreatedAt) > maxAge {
+		return false
+	}
+	return true
 }
 
 // complete records the person for the request and continues the flow.
@@ -309,23 +347,9 @@ func (c *errorCapture) Write(b []byte) (int, error) {
 	return c.ResponseWriter.Write(b)
 }
 
-func retryAfterSeconds(d time.Duration) string {
-	return strconv.Itoa(int(max(d.Round(time.Second), time.Second) / time.Second))
-}
-
 type logoutForm struct {
 	Next string
 	Sig  string
-}
-
-type loginForm struct {
-	AuthRequest string
-	Email       string
-	Error       string
-}
-
-func (a *Auth) renderForm(w http.ResponseWriter, status int, f loginForm) {
-	render(w, status, loginTemplate, f)
 }
 
 func (a *Auth) renderError(w http.ResponseWriter, status int, message string) {
@@ -343,23 +367,6 @@ func render(w http.ResponseWriter, status int, t *template.Template, data any) {
 const pageStyle = `body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem;color:#1a1a1a}
 label{display:block;margin:1rem 0 .25rem}input{width:100%;padding:.5rem;box-sizing:border-box}
 button{margin-top:1.5rem;padding:.6rem 1.2rem}.error{color:#b00020}`
-
-var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in · Orglane</title><style>` + pageStyle + `</style></head>
-<body><main>
-<h1>Sign in</h1>
-{{if .Error}}<p class="error" id="error" role="alert">{{.Error}}</p>{{end}}
-<form method="post" action="/oidc/login">
-<input type="hidden" name="authRequest" value="{{.AuthRequest}}">
-<label for="email">Work email</label>
-<input id="email" name="email" type="email" autocomplete="username" required value="{{.Email}}">
-<label for="password">Password</label>
-<input id="password" name="password" type="password" autocomplete="current-password" required>
-<button id="submit" type="submit">Sign in</button>
-</form>
-</main></body></html>
-`))
 
 var logoutTemplate = template.Must(template.New("logout").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">

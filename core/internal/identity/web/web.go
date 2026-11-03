@@ -1,7 +1,8 @@
 // Package web is the browser side of identity: session and device cookies,
 // CSRF protection, the client IP behind trusted proxies, per-IP sign-in rate
 // limiting, the API authenticator (session cookie or OIDC bearer token) and
-// the OIDC login page.
+// the browser side of OIDC sign-in (the handoff to the web UI's sign-in
+// screen).
 //
 // Cookies are host-only (no Domain attribute, ADR 0018), HttpOnly and
 // SameSite=Lax. Over HTTPS they carry the __Host- prefix and Secure; in the
@@ -362,8 +363,8 @@ func (a *Auth) Authenticate(r *http.Request) (*authz.Principal, error) {
 
 // RejectCrossOrigin wraps next and answers 403 to state-changing requests
 // whose Origin header names another origin. It guards the unauthenticated
-// sign-in endpoints against login CSRF; authenticated requests are checked
-// more strictly by Authenticate.
+// sign-in form against login CSRF; authenticated requests are checked more
+// strictly by Authenticate.
 func (a *Auth) RejectCrossOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !safeMethod(r.Method) && a.CrossOrigin(r) {

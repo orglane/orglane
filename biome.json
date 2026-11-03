@@ -7,7 +7,15 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!**/*.md", "!packages/api-client/src/generated"]
+    "includes": [
+      "**",
+      "!**/*.md",
+      "!packages/api-client/src/generated",
+      "!packages/ui-tokens/tokens.css",
+      "!web/dist",
+      "!web/test-results",
+      "!web/playwright-report"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -32,6 +40,21 @@
       "source": {
         "organizeImports": "on"
       }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["web/src/**/*.tsx", "!web/src/**/*.test.tsx"],
+      "plugins": [
+        "./web/lint/no-hardcoded-jsx-text.grit",
+        "./web/lint/no-hardcoded-jsx-attribute.grit",
+        "./web/lint/no-hardcoded-jsx-string.grit"
+      ]
+    }
+  ],
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
     }
   }
 }

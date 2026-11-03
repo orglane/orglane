@@ -1,0 +1,8 @@
+// User-facing text in JSX must come from the i18n catalogs (web/src/i18n).
+// Use <FormattedMessage {...messages.x} /> or intl.formatMessage(messages.x).
+language js
+
+JsxText() as $text where {
+  $text <: r"(?s).*\p{L}.*",
+  register_diagnostic(span=$text, message="Hard-coded text in JSX. User-facing strings go through the i18n catalog: <FormattedMessage {...messages.x} /> or intl.formatMessage(...).", severity="error")
+}

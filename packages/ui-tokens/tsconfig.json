@@ -1,4 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src"]
+  "compilerOptions": {
+    // Sources import each other with .ts extensions so that Node runs the
+    // generator script directly (type stripping); tsc rewrites them to .js.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    // Node types are for the tests and the generator only; tsconfig.build.json drops them.
+    "types": ["node"]
+  },
+  "include": ["src", "scripts"]
 }

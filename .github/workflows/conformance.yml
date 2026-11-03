@@ -45,12 +45,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # Only Go is needed (the binary under test is built on the runner).
-      # No cache: a cold build takes under a minute of a 3-minute run.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # Go, Node.js and pnpm: the binary under test embeds the web UI, whose
+      # sign-in screen the suite drives (tests/conformance/run.sh builds both).
+      - uses: ./.github/actions/setup
         with:
-          go-version-file: go.mod
-          cache: false
+          cache-key: conformance
 
       - run: make conformance
 

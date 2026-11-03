@@ -5,7 +5,9 @@
 #   oidcc-config-certification-test-plan
 #   oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]
 #
-# Everything runs in Docker (see compose.yaml): PostgreSQL, Orglane (a Linux
+# The web UI is built first (pnpm) and embedded into the binary, because the
+# suite signs in on its sign-in screen. Everything else runs in Docker (see
+# compose.yaml): PostgreSQL, Orglane (a Linux
 # build of this checkout) behind a TLS proxy as https://op.orglane.test, and
 # the suite (server, nginx, MongoDB) from its published images. The script
 # creates the first owner and two OIDC clients, writes the suite
@@ -79,6 +81,9 @@ trap 'exit 143' TERM
 
 log "Compose project $PROJECT, work directory $CONFORMANCE_WORK"
 mkdir -p "$CONFORMANCE_WORK/certs" "$CONFORMANCE_WORK/results"
+
+log "Building the web UI"
+(cd "$ROOT" && pnpm --silent --filter @orglane/web build)
 
 log "Building orglane for linux/$(docker version --format '{{.Server.Arch}}')"
 (cd "$ROOT" && GOOS=linux GOARCH="$(docker version --format '{{.Server.Arch}}')" CGO_ENABLED=0 \

@@ -1,0 +1,149 @@
+@import "tailwindcss";
+@import "@orglane/ui-tokens/tokens.css";
+
+/* The theme class on <html> (set by public/theme-init.js before first paint) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Tailwind reads the design tokens (packages/ui-tokens) through these
+   variables, so utilities such as bg-primary or rounded-lg follow the theme. */
+@theme inline {
+  --font-sans: var(--orglane-font-sans);
+  --font-mono: var(--orglane-font-mono);
+
+  --text-xs: var(--orglane-text-xs);
+  --text-xs--line-height: var(--orglane-text-xs-line-height);
+  --text-sm: var(--orglane-text-sm);
+  --text-sm--line-height: var(--orglane-text-sm-line-height);
+  --text-base: var(--orglane-text-base);
+  --text-base--line-height: var(--orglane-text-base-line-height);
+  --text-lg: var(--orglane-text-lg);
+  --text-lg--line-height: var(--orglane-text-lg-line-height);
+  --text-xl: var(--orglane-text-xl);
+  --text-xl--line-height: var(--orglane-text-xl-line-height);
+  --text-2xl: var(--orglane-text-2xl);
+  --text-2xl--line-height: var(--orglane-text-2xl-line-height);
+  --text-3xl: var(--orglane-text-3xl);
+  --text-3xl--line-height: var(--orglane-text-3xl-line-height);
+
+  --font-weight-normal: var(--orglane-font-weight-regular);
+  --font-weight-medium: var(--orglane-font-weight-medium);
+  --font-weight-semibold: var(--orglane-font-weight-semibold);
+  --font-weight-bold: var(--orglane-font-weight-bold);
+  --tracking-tight: var(--orglane-tracking-tight);
+
+  --spacing: var(--orglane-spacing);
+
+  --radius-xs: var(--orglane-radius-xs);
+  --radius-sm: var(--orglane-radius-sm);
+  --radius-md: var(--orglane-radius-md);
+  --radius-lg: var(--orglane-radius-lg);
+  --radius-xl: var(--orglane-radius-xl);
+
+  --shadow-xs: var(--orglane-shadow-xs);
+  --shadow-sm: var(--orglane-shadow-sm);
+  --shadow-md: var(--orglane-shadow-md);
+  --shadow-lg: var(--orglane-shadow-lg);
+
+  --color-background: var(--orglane-color-background);
+  --color-foreground: var(--orglane-color-foreground);
+  --color-canvas: var(--orglane-color-canvas);
+  --color-canvas-foreground: var(--orglane-color-canvas-foreground);
+  --color-surface: var(--orglane-color-surface);
+  --color-surface-foreground: var(--orglane-color-surface-foreground);
+  --color-popover: var(--orglane-color-popover);
+  --color-popover-foreground: var(--orglane-color-popover-foreground);
+  --color-muted: var(--orglane-color-muted);
+  --color-muted-foreground: var(--orglane-color-muted-foreground);
+  --color-accent: var(--orglane-color-accent);
+  --color-accent-foreground: var(--orglane-color-accent-foreground);
+  --color-border: var(--orglane-color-border);
+  --color-input: var(--orglane-color-input);
+  --color-ring: var(--orglane-color-ring);
+  --color-primary: var(--orglane-color-primary);
+  --color-primary-foreground: var(--orglane-color-primary-foreground);
+  --color-primary-subtle: var(--orglane-color-primary-subtle);
+  --color-primary-subtle-foreground: var(--orglane-color-primary-subtle-foreground);
+  --color-secondary: var(--orglane-color-secondary);
+  --color-secondary-foreground: var(--orglane-color-secondary-foreground);
+  --color-destructive: var(--orglane-color-destructive);
+  --color-destructive-foreground: var(--orglane-color-destructive-foreground);
+  --color-destructive-subtle: var(--orglane-color-destructive-subtle);
+  --color-destructive-subtle-foreground: var(--orglane-color-destructive-subtle-foreground);
+  --color-success-subtle: var(--orglane-color-success-subtle);
+  --color-success-subtle-foreground: var(--orglane-color-success-subtle-foreground);
+  --color-warning-subtle: var(--orglane-color-warning-subtle);
+  --color-warning-subtle-foreground: var(--orglane-color-warning-subtle-foreground);
+
+  --animate-fade-in: fade-in 200ms ease-out;
+  --animate-pop-in: pop-in 140ms ease-out;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    min-height: 100dvh;
+  }
+  ::selection {
+    background-color: var(--color-primary-subtle);
+    color: var(--color-primary-subtle-foreground);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      /* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over component styles */
+      animation-duration: 1ms !important;
+      /* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over component styles */
+      transition-duration: 1ms !important;
+    }
+  }
+}
+
+/* The soft brand glow behind the sign-in and setup screens. */
+.auth-backdrop {
+  background-color: var(--color-canvas);
+  background-image:
+    radial-gradient(
+      60rem 30rem at 50% -10rem,
+      color-mix(in srgb, var(--color-primary) 14%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      40rem 20rem at 100% 100%,
+      color-mix(in srgb, var(--color-primary) 6%, transparent),
+      transparent 70%
+    );
+}

@@ -9,10 +9,10 @@
 
 Everything runs in Docker (`compose.yaml`), so it needs Docker, Go, `git` and `openssl`, and takes a few minutes once the images are pulled:
 
-1. Builds `orglane` for Linux from this checkout and starts it with PostgreSQL, behind a Caddy TLS proxy as `https://op.orglane.test` (a throwaway CA, trusted by the suite only).
+1. Builds the web UI and `orglane` for Linux from this checkout and starts it with PostgreSQL, behind a Caddy TLS proxy as `https://op.orglane.test` (a throwaway CA, trusted by the suite only).
 2. Starts the suite's published images (server, nginx, MongoDB).
 3. Creates the owner with the setup token and registers two OIDC clients with `orglane cli oidc-client add`.
-4. Writes the suite configuration (`make_config.py`): static clients, and browser automation that fills in Orglane's sign-in form at `/oidc/login`.
+4. Writes the suite configuration (`make_config.py`): static clients, and browser automation that fills in Orglane's sign-in screen at `/sign-in`. The suite's HtmlUnit browser runs no JavaScript modules, so it gets the web UI's basic sign-in form (see [web/README.md](../../web/README.md#sign-in-for-applications-oidc)).
 5. Runs the plans with the suite's own `scripts/run-test-plan.py` and exports the results to `.conformance/results`: one zip per plan with the JSON logs (signed, from the runner) and, in `html/`, one with the HTML report (`export_html.py`, also after a failed run).
 
 The run fails on any failure, warning or skip that is not listed, with its reason, in `expected-failures.json` or `expected-skips.json`:

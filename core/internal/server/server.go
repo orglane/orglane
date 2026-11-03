@@ -19,7 +19,9 @@ import (
 	"github.com/orglane/orglane/core/internal/demomode"
 	"github.com/orglane/orglane/core/internal/identity/web"
 	"github.com/orglane/orglane/core/internal/jobs"
+	"github.com/orglane/orglane/core/internal/webui"
 	"github.com/orglane/orglane/demo"
+	webapp "github.com/orglane/orglane/web"
 )
 
 // Run starts the server and blocks until ctx is canceled (SIGINT/SIGTERM in
@@ -62,6 +64,14 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		return fmt.Errorf("start job queue: %w", err)
 	}
 
+	ui, err := webui.New(webapp.Dist())
+	if err != nil {
+		return errors.Join(err, jobClient.Stop(context.WithoutCancel(ctx)))
+	}
+	if !ui.Built() {
+		logger.WarnContext(ctx, "this binary has no web UI; build it with `make build`")
+	}
+
 	handler, err := api.NewHandler(api.Options{
 		Version:       version,
 		BaseDomain:    cfg.Domain.Base,
@@ -73,6 +83,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			{Name: "database", Check: pool.Ping},
 			{Name: "migrations", Check: migrator.Check},
 		},
+		WebUI:  ui,
 		Logger: logger,
 	})
 	if err != nil {

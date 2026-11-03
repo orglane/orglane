@@ -1,0 +1,8 @@
+// String literals rendered as JSX children ({"text"}) are user-facing text too.
+language js
+
+JsxExpressionChild(expression=$expr) where {
+  $expr <: JsStringLiteralExpression(),
+  $expr <: r"(?s).*\p{L}.*",
+  register_diagnostic(span=$expr, message="Hard-coded text in JSX. User-facing strings go through the i18n catalog.", severity="error")
+}

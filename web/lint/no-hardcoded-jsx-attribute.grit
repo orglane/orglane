@@ -1,0 +1,11 @@
+// Attributes people read or hear (labels, titles, placeholders, alt text)
+// must come from the i18n catalogs, not string literals.
+language js
+
+JsxAttribute(name=$name, initializer=$init) where {
+  $name <: r"^(?:aria-label|aria-description|aria-placeholder|aria-roledescription|aria-valuetext|title|placeholder|alt|label)$",
+  $init <: JsxAttributeInitializerClause(value=$value),
+  $value <: JsxString(),
+  $value <: r"(?s).*\p{L}.*",
+  register_diagnostic(span=$value, message="Hard-coded user-facing attribute. Use intl.formatMessage(...) from the i18n catalog.", severity="error")
+}

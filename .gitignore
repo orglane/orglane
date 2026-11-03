@@ -1,6 +1,13 @@
 # Build output
 /bin/
 dist/
+# web/dist is embedded into the binary (go:embed) and must exist before the
+# first build; only its placeholder is committed.
+!/web/dist/
+/web/dist/*
+!/web/dist/.gitkeep
+/web/test-results/
+/web/playwright-report/
 
 # Pinned developer tools installed by `make bootstrap`
 /.bin/

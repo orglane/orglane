@@ -20,6 +20,7 @@ import (
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/crypto"
 	"github.com/orglane/orglane/core/internal/identity"
+	"github.com/orglane/orglane/core/internal/identity/web"
 )
 
 const redirectURI = "https://app.acme.test/callback"
@@ -79,6 +80,9 @@ func (b *browser) follow(r response) response {
 		if u.Host != workspaceHost {
 			return r // back at the client
 		}
+		if u.Path == web.SignInPath {
+			return r // the web UI's sign-in screen
+		}
 		r = b.req("GET", u.String(), nil)
 	}
 	b.e.t.Fatal("too many redirects")
@@ -118,15 +122,34 @@ func clientRedirect(t *testing.T, r response) url.Values {
 	return u.Query()
 }
 
-// loginForm submits the fallback login form shown for an auth request.
-func (b *browser) loginForm(page response, email, password string) response {
-	b.e.t.Helper()
-	if page.StatusCode != http.StatusOK || !strings.Contains(string(page.body), `name="authRequest"`) {
-		b.e.t.Fatalf("expected the login form, got %d: %s", page.StatusCode, page.body)
+// signInURL returns the auth request of a redirect to the web UI's
+// sign-in screen, or "" for any other response.
+func signInRedirect(r response) (authRequest string, query url.Values) {
+	loc, err := url.Parse(r.Header.Get("Location"))
+	if r.StatusCode != http.StatusSeeOther || err != nil || loc.Path != web.SignInPath {
+		return "", nil
 	}
-	authRequest := page.Request.URL.Query().Get("authRequest")
-	r := b.req("POST", "/oidc/login", url.Values{"authRequest": {authRequest}, "email": {email}, "password": {password}})
-	return b.follow(r)
+	return loc.Query().Get("authRequest"), loc.Query()
+}
+
+// signInScreen does what the web UI's sign-in screen does for an auth
+// request: sign in as the owner through the API, then return to /oidc/login, which
+// completes the request. It returns the failed sign-in response, or where
+// the flow ends.
+func (b *browser) signInScreen(page response, password string) response {
+	b.e.t.Helper()
+	authRequest, _ := signInRedirect(page)
+	if authRequest == "" {
+		b.e.t.Fatalf("expected a redirect to the sign-in screen, got %d %q: %s", page.StatusCode, page.Header.Get("Location"), page.body)
+	}
+	r := b.req("POST", "/api/v1/auth/sign-in", map[string]string{"email": ownerEmail, "password": password})
+	if r.StatusCode != http.StatusOK {
+		return r
+	}
+	var res signInResult
+	r.json(b.e.t, &res)
+	b.csrf = res.CsrfToken
+	return b.follow(b.req("GET", "/oidc/login?authRequest="+url.QueryEscape(authRequest), nil))
 }
 
 type tokenResponse struct {
@@ -190,9 +213,9 @@ func TestOIDCCodeFlowWithPKCE(t *testing.T) {
 	b := e.browser()
 	p := newPKCE()
 	page := b.authorize(authParams("mobile", p))
-	r := b.loginForm(page, ownerEmail, "wrong password!")
+	r := b.signInScreen(page, "wrong password!")
 	expectStatus(t, r, http.StatusUnauthorized)
-	r = b.loginForm(page, ownerEmail, ownerPassword)
+	r = b.signInScreen(page, ownerPassword)
 	q := clientRedirect(t, r)
 	if q.Get("state") != "state-123" || q.Get("code") == "" {
 		t.Fatalf("callback = %v", q)
@@ -289,6 +312,43 @@ func TestOIDCCodeFlowWithPKCE(t *testing.T) {
 	}
 }
 
+// TestBasicSignInForm covers the form for browsers that cannot run the web
+// UI (the conformance suite's): it posts to /oidc/login and returns to the
+// sign-in screen with an error code, or completes the request.
+func TestBasicSignInForm(t *testing.T) {
+	e := newEnv(t)
+	e.setupOwner(e.browser())
+	e.registerClient(identity.NewOIDCClient{ID: "app", Public: true})
+
+	b := e.browser()
+	page := b.authorize(authParams("app", newPKCE()))
+	authRequest, _ := signInRedirect(page)
+	if authRequest == "" {
+		t.Fatalf("expected the sign-in screen, got %d", page.StatusCode)
+	}
+	post := func(password string, headers ...string) response {
+		return b.req("POST", "/oidc/login", url.Values{"authRequest": {authRequest}, "email": {ownerEmail}, "password": {password}}, headers...)
+	}
+
+	// Login CSRF: posts from another origin are refused.
+	expectStatus(t, post(ownerPassword, "Origin", "https://evil.example"), http.StatusForbidden)
+
+	r := post("wrong password!")
+	id, q := signInRedirect(r)
+	if id != authRequest || q.Get("error") != web.SignInErrorCredentials || q.Get("email") != ownerEmail || len(r.Cookies()) > 0 {
+		t.Fatalf("wrong password = %d %q (cookies %v)", r.StatusCode, r.Header.Get("Location"), r.Cookies())
+	}
+
+	q = clientRedirect(t, b.follow(post(ownerPassword)))
+	if q.Get("code") == "" || q.Get("state") != "state-123" {
+		t.Fatalf("callback = %v", q)
+	}
+	// An unknown or finished request is an error page, not a redirect.
+	if r := post(ownerPassword); r.StatusCode != http.StatusBadRequest || !strings.Contains(string(r.body), "expired") {
+		t.Fatalf("reused auth request = %d %s", r.StatusCode, r.body)
+	}
+}
+
 func TestOIDCAuthorizationRules(t *testing.T) {
 	e := newEnv(t)
 	e.setupOwner(e.browser())
@@ -319,7 +379,7 @@ func TestOIDCAuthorizationRules(t *testing.T) {
 
 	// A confidential client authenticates with its secret (no PKCE needed).
 	page := b.authorize(authParams("forgejo", pkce{}))
-	q := clientRedirect(t, b.loginForm(page, ownerEmail, ownerPassword))
+	q := clientRedirect(t, b.signInScreen(page, ownerPassword))
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {q.Get("code")}, "redirect_uri": {redirectURI}}
 	if status, tr := b.token(form, "forgejo", "wrong-secret"); status != http.StatusUnauthorized && status != http.StatusBadRequest || tr.AccessToken != "" {
 		t.Fatalf("wrong client secret = %d %+v", status, tr)
@@ -335,18 +395,27 @@ func TestOIDCAuthorizationRules(t *testing.T) {
 	if q := clientRedirect(t, b.authorize(authParams("spa", p, "prompt", "none"))); q.Get("code") == "" {
 		t.Fatalf("prompt=none with a session = %v", q)
 	}
-	if r := b.authorize(authParams("spa", p, "prompt", "login")); !strings.Contains(string(r.body), `name="password"`) {
-		t.Fatalf("prompt=login did not ask to sign in: %d %s", r.StatusCode, r.body)
+	r := b.authorize(authParams("spa", p, "prompt", "login", "login_hint", ownerEmail))
+	authRequest, signInQuery := signInRedirect(r)
+	if authRequest == "" || signInQuery.Get("email") != ownerEmail {
+		t.Fatalf("prompt=login did not ask to sign in (with the login hint): %d %q %s", r.StatusCode, r.Header.Get("Location"), r.body)
+	}
+	// The existing session still does not answer it; a new sign-in does.
+	if again, _ := signInRedirect(b.follow(b.req("GET", "/oidc/login?authRequest="+url.QueryEscape(authRequest), nil))); again != authRequest {
+		t.Fatal("prompt=login was answered by the session that existed before the request")
+	}
+	if q := clientRedirect(t, b.signInScreen(r, ownerPassword)); q.Get("code") == "" {
+		t.Fatalf("prompt=login after signing in again = %v", q)
 	}
 	time.Sleep(1100 * time.Millisecond)
-	if r := b.authorize(authParams("spa", p, "max_age", "1")); !strings.Contains(string(r.body), `name="password"`) {
+	if r := b.authorize(authParams("spa", p, "max_age", "1")); func() bool { id, _ := signInRedirect(r); return id == "" }() {
 		t.Fatalf("max_age=1 with an older session did not ask to sign in: %d", r.StatusCode)
 	}
 
 	// Revoking an access token at the revocation endpoint is immediate.
 	api := e.browser()
 	expectStatus(t, api.req("GET", "/api/v1/me", nil, bearer(tr.AccessToken)...), http.StatusOK)
-	r := b.req("POST", "/oidc/revoke", url.Values{"token": {tr.AccessToken}, "token_type_hint": {"access_token"}},
+	r = b.req("POST", "/oidc/revoke", url.Values{"token": {tr.AccessToken}, "token_type_hint": {"access_token"}},
 		"Origin", "", "Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("forgejo:"+secret)))
 	expectStatus(t, r, http.StatusOK)
 	expectStatus(t, api.req("GET", "/api/v1/me", nil, bearer(tr.AccessToken)...), http.StatusUnauthorized)

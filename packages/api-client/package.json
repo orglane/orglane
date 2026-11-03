@@ -7,10 +7,12 @@
   "type": "module",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./react": {
+      "source": "./src/react.ts",
       "types": "./dist/react.d.ts",
       "default": "./dist/react.js"
     }

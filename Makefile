@@ -41,6 +41,8 @@ API_SPEC        := core/api/openapi.yaml
 API_CODEGEN_CFG := core/api/oapi-codegen.yaml
 API_GENERATED   := core/internal/api/apigen/apigen.gen.go
 API_CLIENT      := @orglane/api-client
+UI_TOKENS       := @orglane/ui-tokens
+WEB             := @orglane/web
 
 # sqlc query layer: core/internal/store/queries/*.sql against core/migrations.
 SQLC_CFG := core/internal/store/sqlc.yaml
@@ -52,7 +54,7 @@ DEMO_DB     := orglane_demo
 DEMO_DB_URL := postgres://orglane:orglane@127.0.0.1:5432/$(DEMO_DB)?sslmode=disable
 
 .PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts generate check-generate check-generate-go check-generate-ts \
-	test test-go test-unit test-integration measure-memory conformance test-ts \
+	test test-go test-unit test-integration measure-memory conformance test-ts test-e2e test-e2e-if-available \
 	lint lint-go lint-ts fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
 help: ## Show available targets
@@ -137,6 +139,8 @@ generate: $(OAPI_CODEGEN) $(SQLC) ## Regenerate code from the OpenAPI contract (
 	$(OAPI_CODEGEN) -config $(API_CODEGEN_CFG) $(API_SPEC) > $(API_GENERATED)
 	$(SQLC) generate -f $(SQLC_CFG)
 	$(PNPM) --silent --filter $(API_CLIENT) run generate
+	$(PNPM) --silent --filter $(UI_TOKENS) run generate
+	$(PNPM) --silent --filter $(WEB) run i18n:extract
 
 # Fails when generated code no longer matches the contract or the SQL queries
 # (part of `make lint`).
@@ -150,8 +154,13 @@ check-generate-go: $(OAPI_CODEGEN) $(SQLC)
 
 check-generate-ts:
 	@$(PNPM) --silent --filter $(API_CLIENT) run check-generate
+	@$(PNPM) --silent --filter $(UI_TOKENS) run check-generate
+	@$(PNPM) --silent --filter $(WEB) run i18n:check
 
-build: build-go build-ts ## Build everything
+# The web UI (web/dist) is embedded into the binary, so it is built first.
+build: ## Build everything (the binary embeds the web UI)
+	$(MAKE) --no-print-directory build-ts
+	$(MAKE) --no-print-directory build-go
 
 build-go:
 	go build -trimpath -ldflags '$(GO_LDFLAGS)' -o bin/orglane ./core/cmd/orglane
@@ -159,7 +168,7 @@ build-go:
 build-ts:
 	$(PNPM) run build
 
-test: test-go test-ts ## Run all tests
+test: test-go test-ts test-e2e-if-available ## Run all tests (integration and e2e when Docker and Chromium are available)
 
 # Integration tests (build tag "integration") need Docker; without it only
 # unit tests run.
@@ -185,6 +194,22 @@ conformance: ## Run the OpenID Conformance Suite against a local server (needs D
 
 test-ts:
 	$(PNPM) run test
+
+# Playwright end-to-end tests of the web UI against a real server and
+# PostgreSQL (web/e2e). Needs Docker and Playwright's Chromium
+# (`pnpm --filter @orglane/web exec playwright install chromium`).
+test-e2e: ## Run the web end-to-end tests (needs Docker and Playwright's Chromium)
+	$(PNPM) --silent --filter $(WEB) run build
+	$(PNPM) --silent --filter $(WEB) run test:e2e
+
+test-e2e-if-available:
+	@if ! docker info >/dev/null 2>&1; then \
+		echo "warning: Docker is not available, skipping the web end-to-end tests"; \
+	elif ! $(PNPM) --silent --filter $(WEB) exec node e2e/chromium-installed.mjs; then \
+		echo "warning: Playwright's Chromium is not installed, skipping the web end-to-end tests (pnpm --filter $(WEB) exec playwright install chromium)"; \
+	else \
+		$(MAKE) --no-print-directory test-e2e; \
+	fi
 
 lint: lint-go lint-ts ## Run all linters and type checks
 
@@ -227,4 +252,6 @@ fmt-ts:
 
 clean: ## Remove build output and installed tools
 	rm -rf bin .bin
-	find packages web -name dist -type d -prune -exec rm -rf {} + 2>/dev/null || true
+	find packages -name dist -type d -prune -exec rm -rf {} + 2>/dev/null || true
+	find web/dist -mindepth 1 ! -name .gitkeep -exec rm -rf {} + 2>/dev/null || true
+	rm -rf web/test-results web/playwright-report

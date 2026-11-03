@@ -111,6 +111,9 @@ func (a *AuthRequest) MaxAge() (time.Duration, bool) {
 	return time.Duration(*a.row.MaxAgeSeconds) * time.Second, true
 }
 
+// CreatedAt returns when the client started the request.
+func (a *AuthRequest) CreatedAt() time.Time { return a.row.CreatedAt }
+
 // LoginHint returns the login_hint parameter (an email, typically).
 func (a *AuthRequest) LoginHint() string { return a.row.LoginHint }
 

@@ -2,7 +2,8 @@
 
 The clients are registered with `orglane cli oidc-client add`; their IDs and
 secrets come from the environment. The browser section drives Orglane's
-fallback sign-in form (/oidc/login) the way a person would.
+sign-in screen (the web UI at /sign-in, where /oidc/login sends the browser)
+the way a person would.
 """
 
 import json
@@ -15,7 +16,7 @@ PASSWORD = os.environ["OWNER_PASSWORD"]
 login = {
     "task": "Login",
     "optional": True,
-    "match": OP + "/oidc/login*",
+    "match": OP + "/sign-in*",
     "commands": [
         ["text", "id", "email", EMAIL],
         ["text", "id", "password", PASSWORD],

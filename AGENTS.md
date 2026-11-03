@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project status
 
-Pre-alpha. The monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the M0 data model (people, roles, devices, sessions, audit log) and identity (embedded OpenID Provider, password and passkey sign-in, sessions) are in place; the web app is next (see [ROADMAP.md](ROADMAP.md)).
+Pre-alpha. The monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the M0 data model (people, roles, devices, sessions, audit log), identity (embedded OpenID Provider, password and passkey sign-in, sessions) and the web skeleton (React SPA embedded into the binary, design tokens, i18n) are in place (see [ROADMAP.md](ROADMAP.md)).
 
 ## Toolchain
 
@@ -32,11 +32,12 @@ make dev               # start a local Postgres (Docker) and run `orglane server
 make dev-down          # stop the local Postgres
 make demo              # demo mode: local Postgres + `orglane server --demo` with the "Acme Robotics" dataset (own database)
 make demo-reset        # drop the demo database
-make generate          # regenerate the Go server code and the TypeScript client from core/api/openapi.yaml, and the sqlc query layer
-make build             # go build -> bin/orglane; build all workspace packages
-make test              # Go unit + integration tests (integration only when Docker is available); vitest
+make generate          # regenerate the Go server code and the TypeScript client from core/api/openapi.yaml, the sqlc query layer, tokens.css and the English i18n catalog
+make build             # build all workspace packages (incl. the web UI), then go build -> bin/orglane with the UI embedded
+make test              # Go unit + integration tests (integration only when Docker is available); vitest; web e2e (when Docker and Chromium are available)
 make test-unit         # Go unit tests only
 make test-integration  # Go unit + integration tests (needs Docker)
+make test-e2e          # Playwright end-to-end tests of the web UI against a real server (needs Docker and Playwright's Chromium)
 make measure-memory    # idle RSS of the server against Postgres (warning only, needs Docker)
 make conformance       # OpenID Conformance Suite against a local server (Docker)
 make lint              # stale generated code check (Go and TypeScript), go mod tidy check, golangci-lint, Biome, tsc --noEmit
@@ -87,7 +88,7 @@ Add a new goose migration in `core/migrations` (never edit an applied one) with 
 - **No new core infrastructure dependencies** (Redis, brokers, search engines, Node.js servers, JVMs) without an ADR. See [ADR 0009](docs/adr/0009-resource-philosophy.md).
 - **Tests use real services** (Postgres, Forgejo, ...) via containers for integration tests. Don't mock provider APIs in integration tests.
 - **Never weaken tests to make CI pass.** Removing assertions, skipping tests or changing the golden scenario is a high-risk change that needs a maintainer.
-- **i18n:** user-facing strings go through the i18n catalogs, never hard-coded.
+- **i18n:** user-facing strings go through the i18n catalogs, never hard-coded (`make lint` checks JSX; see [web/README.md](web/README.md)).
 - **Security:** never commit secrets. Treat webhook payloads, imported files and module input as untrusted.
 - **Commits:** Conventional Commits; one logical change per PR; PRs are squash-merged.
 - **Keep it boring:** prefer the standard library and well-known, maintained dependencies. Check that dependency licenses are compatible with AGPL-3.0 (server) or Apache-2.0 (apps, SDKs).
