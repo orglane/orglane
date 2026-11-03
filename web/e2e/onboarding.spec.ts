@@ -61,11 +61,19 @@ test("invited person completes required profile, skips optional steps, and progr
     .filter({ has: employee.getByRole("heading", { name: "Office", exact: true }) });
   await field.getByRole("button", { name: "Edit", exact: true }).click();
   await field.getByLabel("Office", { exact: true }).fill("Lisbon");
-  await field.getByRole("button", { name: "Save", exact: true }).click();
+  await field.getByLabel("Office", { exact: true }).press("Tab");
+  await expect(field.getByRole("button", { name: "Save", exact: true })).toBeFocused();
+  await employee.keyboard.press("Enter");
   await expect(employee.getByTestId("onboarding-profile")).toContainText("Complete · Required");
   await expect(
     employee.getByRole("button", { name: "Skip optional steps and continue" }),
   ).toBeEnabled();
+  await expect(
+    employee.getByRole("button", { name: "Skip optional steps and continue" }),
+  ).toBeFocused();
+  const completion = employee.getByTestId("onboarding-profile").getByRole("status");
+  await expect(completion).toHaveText("Complete · Required");
+  await expect(completion).toHaveAttribute("aria-live", "polite");
   await employee.screenshot({
     path: test.info().outputPath("onboarding-welcome-complete.png"),
     fullPage: true,

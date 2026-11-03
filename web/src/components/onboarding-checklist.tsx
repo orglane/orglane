@@ -26,7 +26,13 @@ export function OnboardingSteps({ steps }: { steps: Schema<"OnboardingStep">[] }
           <li key={step.id} className="py-4" data-testid={`onboarding-${step.id}`}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="font-medium">{title}</h3>
-              <span className="text-muted-foreground text-sm">
+              <span
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                aria-label={title}
+                className="text-muted-foreground text-sm"
+              >
                 <FormattedMessage {...(step.complete ? m.complete : m.incomplete)} />
                 {" · "}
                 <FormattedMessage {...(step.required ? m.required : m.optional)} />

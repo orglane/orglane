@@ -22,9 +22,11 @@ import { useMe } from "@/lib/session";
 function ProfileValue({
   entry,
   personId,
+  onSaved,
 }: {
   entry: Schema<"ProfileFieldValue">;
   personId: string;
+  onSaved?: (() => void) | undefined;
 }) {
   const intl = useIntl();
   const api = useApi();
@@ -43,11 +45,12 @@ function ProfileValue({
           body: { values: [value] },
         }),
       ),
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
       client.setQueryData(profileKey(personId), result);
-      void client.invalidateQueries({ queryKey: onboardingKey });
       setEditing(false);
       setPendingHidden(undefined);
+      await client.invalidateQueries({ queryKey: onboardingKey });
+      onSaved?.();
     },
     onError: () => setPendingHidden(undefined),
   });
@@ -186,9 +189,12 @@ function ProfileValue({
 export function ProfileFieldsCard({
   personId,
   requiredOnly = false,
+  onSaved,
 }: {
   personId: string;
   requiredOnly?: boolean;
+  /** Runs after a successful user save and current checklist refresh. */
+  onSaved?: (() => void) | undefined;
 }) {
   const intl = useIntl();
   const api = useApi();
@@ -239,7 +245,12 @@ export function ProfileFieldsCard({
               {fields
                 .filter((e) => e.field.section === section)
                 .map((entry) => (
-                  <ProfileValue key={entry.field.id} entry={entry} personId={personId} />
+                  <ProfileValue
+                    key={entry.field.id}
+                    entry={entry}
+                    personId={personId}
+                    onSaved={onSaved}
+                  />
                 ))}
             </ul>
           </section>

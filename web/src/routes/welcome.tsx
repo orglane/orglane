@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
 import { AuthLayout } from "@/components/auth-layout";
 import { OnboardingSteps } from "@/components/onboarding-checklist";
@@ -20,7 +21,10 @@ export function WelcomePage({ redirect }: { redirect?: string | undefined }) {
   const me = useMe();
   const client = useQueryClient();
   const navigate = useNavigate();
-  const progress = useQuery(onboardingQuery(api));
+  const checklist = onboardingQuery(api);
+  const progress = useQuery(checklist);
+  const continueButton = useRef<HTMLButtonElement>(null);
+  const [focusContinue, setFocusContinue] = useState(false);
   useDocumentTitle(intl.formatMessage(m.welcome));
   const finish = useMutation({
     mutationFn: () => call(api.client.POST("/api/v1/me/onboarding/finish")),
@@ -34,6 +38,19 @@ export function WelcomePage({ redirect }: { redirect?: string | undefined }) {
     },
   });
   const requiredIncomplete = progress.data?.steps.some((s) => s.required && !s.complete) ?? true;
+  useEffect(() => {
+    if (!focusContinue) return;
+    // Only a successful user save requests focus, never an initial/background
+    // completion read. Wait for the enabled button to exist in the committed UI.
+    setFocusContinue(false);
+    if (!requiredIncomplete) continueButton.current?.focus();
+  }, [focusContinue, requiredIncomplete]);
+  const profileSaved = () => {
+    const current = client.getQueryData(checklist.queryKey);
+    if (current && !current.steps.some((step) => step.required && !step.complete)) {
+      setFocusContinue(true);
+    }
+  };
   return (
     <AuthLayout>
       <div className="space-y-6 rounded-xl border bg-surface p-6 shadow-lg sm:p-8">
@@ -59,12 +76,15 @@ export function WelcomePage({ redirect }: { redirect?: string | undefined }) {
         {progress.data && (
           <>
             <OnboardingSteps steps={progress.data.steps} />
-            {requiredIncomplete && <ProfileFieldsCard personId={me.person.id} requiredOnly />}
+            {requiredIncomplete && (
+              <ProfileFieldsCard personId={me.person.id} requiredOnly onSaved={profileSaved} />
+            )}
             {finish.error && <Alert>{errorMessage(intl, finish.error, { 409: m.changed })}</Alert>}
             <p className="text-muted-foreground text-sm">
               <FormattedMessage {...m.requiredHint} />
             </p>
             <Button
+              ref={continueButton}
               className="w-full"
               disabled={requiredIncomplete}
               loading={finish.isPending}

@@ -10,6 +10,8 @@ Required profile completion uses `profile.Service.Profile` and its centralized v
 
 Migration 00011 stores only `person_onboarding.welcome_finished_at`. Pending welcome is derived from an accepted invitation without a finished record. Setup and ordinary sign-in retain their normal routes, OIDC continuation is unchanged, and the existing optional passkey offer retains Skip. An interrupted invited welcome resumes after another sign-in. Finishing checks current actionable requirements, commits the marker and audit atomically, and is idempotent. Later requirement or profile changes update the checklist without restarting finished welcome. Optional setup can continue from Home. Welcome keeps a safe original workspace destination when sign-in had one.
 
+After a successful user save completes the required checklist, welcome transfers keyboard focus to the enabled Continue button after the current progress refresh. Initial and background reads do not request focus. Each checklist status remains a stable polite, atomic live region so completion changes can be announced.
+
 The UI uses the existing components, tokens and English i18n catalog. Welcome embeds the required-field editor, Home shows the checklist, and authorized administrators see progress on the existing person page. Design polish is deferred; screenshots and the real invited-person Playwright scenario support independent UX review.
 
 ## Verification coverage
