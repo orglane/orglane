@@ -30,9 +30,10 @@
 # and the distroless final stage has no RUN step. QEMU is only used to
 # smoke-test the arm64 image. Layers are cached in the GitHub Actions cache.
 #
-# Signing: keyless cosign signatures are recorded in Sigstore's public
-# transparency log (Rekor), which would publish the repository and workflow
-# names. So the image is signed only once the repository is public.
+# Signing: the image is signed with keyless cosign. The signatures are
+# recorded in Sigstore's public transparency log (Rekor), which publishes the
+# repository and workflow names, so signing is skipped when the repository is
+# private (for example a private mirror) to avoid disclosing them.
 #
 # Security: no pull request code runs here. Each job declares its own minimal
 # permissions; the token pushes only to this repository's package. The tag
@@ -68,7 +69,7 @@ jobs:
     permissions:
       contents: read
       packages: write # push to ghcr.io/<repository>
-      id-token: write # keyless cosign signing (only once the repository is public)
+      id-token: write # keyless cosign signing (skipped when the repository is private)
     env:
       PLATFORMS: linux/amd64,linux/arm64
     outputs:

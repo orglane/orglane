@@ -1,0 +1,26 @@
+# CodeRabbit review settings. Schema: https://coderabbit.ai/integrations/schema.v2.json
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: chill
+  # Pull requests to the default branch (main) are reviewed automatically.
+  auto_review:
+    enabled: true
+  # Generated code and binary artifacts: review their sources instead
+  # (core/api/openapi.yaml, core/internal/store/queries, package.json files,
+  # web/website changes).
+  path_filters:
+    - "!core/internal/api/apigen/**"
+    - "!core/internal/store/*.gen.go"
+    - "!packages/api-client/src/generated/**"
+    - "!pnpm-lock.yaml"
+    - "!docs/screenshots/**"
+  path_instructions:
+    - path: "**"
+      instructions: >-
+        Review against AGENTS.md (ground rules, risk tiers, conventions) and the
+        accepted ADRs in docs/adr/: flag changes that contradict an accepted ADR,
+        endpoints without an x-orglane-permission or without allowed and denied
+        access tests, hard-coded user-facing strings that bypass the i18n
+        catalogs, and weakened or skipped tests.
