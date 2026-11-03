@@ -30,6 +30,9 @@ const (
 	PurposeOIDCTokens Purpose = "orglane/v1/oidc-tokens" //nolint:gosec // a derivation label, not a credential
 	// PurposeCSRF signs CSRF tokens bound to a session.
 	PurposeCSRF Purpose = "orglane/v1/csrf"
+	// PurposeProfileFields encrypts values of sensitive profile fields
+	// (ADR 0015).
+	PurposeProfileFields Purpose = "orglane/v1/profile-fields"
 )
 
 // keySize is the size of every derived key (256 bits).

@@ -6,13 +6,14 @@ import {
   Outlet,
   redirect,
 } from "@tanstack/react-router";
-
 import { AppShell } from "./components/app-shell";
 import { type Api, meQuery, setupStatusQuery } from "./lib/api";
 import { safeRedirect } from "./lib/utils";
 import { HomePage } from "./routes/home";
 import { PasskeyOfferPage } from "./routes/passkey-offer";
+import { PersonProfilePage } from "./routes/person-profile";
 import { AppsPage, InboxPage, PeoplePage } from "./routes/placeholders";
+import { ProfileFieldsPage } from "./routes/profile-fields";
 import { SecurityPage } from "./routes/security";
 import { SetupPage } from "./routes/setup";
 import { SignInPage, type SignInSearch } from "./routes/sign-in";
@@ -161,6 +162,19 @@ const securityRoute = createRoute({
   component: SecurityPage,
 });
 
+const profileFieldsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings/profile-fields",
+  component: ProfileFieldsPage,
+});
+const personProfileRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/people/$personId",
+  component: function PersonProfile() {
+    return <PersonProfilePage personId={personProfileRoute.useParams().personId} />;
+  },
+});
+
 export const routeTree = rootRoute.addChildren([
   setupRoute,
   signInRoute,
@@ -174,6 +188,8 @@ export const routeTree = rootRoute.addChildren([
       teamRoute,
       appsRoute,
       securityRoute,
+      profileFieldsRoute,
+      personProfileRoute,
     ]),
   ]),
 ]);

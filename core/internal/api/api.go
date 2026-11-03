@@ -19,6 +19,7 @@ import (
 	"github.com/orglane/orglane/core/internal/api/apigen"
 	"github.com/orglane/orglane/core/internal/authz"
 	"github.com/orglane/orglane/core/internal/identity/web"
+	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/demo"
 )
 
@@ -50,6 +51,9 @@ type Options struct {
 	// Auth serves sign-in, sessions and passkeys. Without it those
 	// operations fail with 500 and every non-public operation is denied.
 	Auth *web.Auth
+	// Profile serves profile fields (ADR 0015). Without it those operations
+	// fail with 500.
+	Profile *profile.Service
 	// Demo is the dataset of demo mode, nil outside demo mode. Only with it
 	// are the operations marked x-orglane-permission: demo served; without
 	// it their routes are not registered at all.

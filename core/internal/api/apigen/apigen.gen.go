@@ -97,6 +97,129 @@ func (e PersonStatus) Valid() bool {
 	}
 }
 
+// Defines values for ProfileFieldEditor.
+const (
+	ProfileFieldEditorAdmins ProfileFieldEditor = "admins"
+	ProfileFieldEditorSelf   ProfileFieldEditor = "self"
+)
+
+// Valid indicates whether the value is a known member of the ProfileFieldEditor enum.
+func (e ProfileFieldEditor) Valid() bool {
+	switch e {
+	case ProfileFieldEditorAdmins:
+		return true
+	case ProfileFieldEditorSelf:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProfileFieldHandleKind.
+const (
+	Github   ProfileFieldHandleKind = "github"
+	Gitlab   ProfileFieldHandleKind = "gitlab"
+	Mastodon ProfileFieldHandleKind = "mastodon"
+	Telegram ProfileFieldHandleKind = "telegram"
+	X        ProfileFieldHandleKind = "x"
+)
+
+// Valid indicates whether the value is a known member of the ProfileFieldHandleKind enum.
+func (e ProfileFieldHandleKind) Valid() bool {
+	switch e {
+	case Github:
+		return true
+	case Gitlab:
+		return true
+	case Mastodon:
+		return true
+	case Telegram:
+		return true
+	case X:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProfileFieldSection.
+const (
+	Contacts ProfileFieldSection = "contacts"
+	Custom   ProfileFieldSection = "custom"
+	Hr       ProfileFieldSection = "hr"
+	Personal ProfileFieldSection = "personal"
+)
+
+// Valid indicates whether the value is a known member of the ProfileFieldSection enum.
+func (e ProfileFieldSection) Valid() bool {
+	switch e {
+	case Contacts:
+		return true
+	case Custom:
+		return true
+	case Hr:
+		return true
+	case Personal:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProfileFieldType.
+const (
+	Date     ProfileFieldType = "date"
+	Handle   ProfileFieldType = "handle"
+	LongText ProfileFieldType = "long_text"
+	Phone    ProfileFieldType = "phone"
+	Select   ProfileFieldType = "select"
+	Text     ProfileFieldType = "text"
+	Url      ProfileFieldType = "url"
+)
+
+// Valid indicates whether the value is a known member of the ProfileFieldType enum.
+func (e ProfileFieldType) Valid() bool {
+	switch e {
+	case Date:
+		return true
+	case Handle:
+		return true
+	case LongText:
+		return true
+	case Phone:
+		return true
+	case Select:
+		return true
+	case Text:
+		return true
+	case Url:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProfileFieldVisibility.
+const (
+	ProfileFieldVisibilityAdmins   ProfileFieldVisibility = "admins"
+	ProfileFieldVisibilityEveryone ProfileFieldVisibility = "everyone"
+	ProfileFieldVisibilityTeam     ProfileFieldVisibility = "team"
+)
+
+// Valid indicates whether the value is a known member of the ProfileFieldVisibility enum.
+func (e ProfileFieldVisibility) Valid() bool {
+	switch e {
+	case ProfileFieldVisibilityAdmins:
+		return true
+	case ProfileFieldVisibilityEveryone:
+		return true
+	case ProfileFieldVisibilityTeam:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionAuthMethods.
 const (
 	SessionAuthMethodsDemo     SessionAuthMethods = "demo"
@@ -268,6 +391,49 @@ type Me struct {
 	Session     *Session      `json:"session,omitempty"`
 }
 
+// NewProfileField defines model for NewProfileField.
+type NewProfileField struct {
+	// EditableBy `self`: the person and holders of `people.manage`; `admins`: holders of `people.manage` only.
+	EditableBy *ProfileFieldEditor     `json:"editableBy,omitempty"`
+	HandleKind *ProfileFieldHandleKind `json:"handleKind,omitempty"`
+
+	// Key Lower case a-z, 0-9 and `_`, starting with a letter. Derived from the label when omitted. Library keys are reserved.
+	//
+	// Example: office
+	Key *string `json:"key,omitempty"`
+
+	// Label Example: Office
+	Label string `json:"label"`
+
+	// Options Required for select fields.
+	Options              *[]NewProfileFieldOption `json:"options,omitempty"`
+	RequiredAtOnboarding *bool                    `json:"requiredAtOnboarding,omitempty"`
+	Section              *ProfileFieldSection     `json:"section,omitempty"`
+	Sensitive            *bool                    `json:"sensitive,omitempty"`
+
+	// Type How values are validated and stored: `text` (one line, at most 200
+	// characters), `long_text` (at most 2000 characters), `date`
+	// (`YYYY-MM-DD`), `select` (an option key), `phone` (E.164, such as
+	// `+442079460958`), `url` (http or https, at most 2000 Unicode
+	// characters), `handle` (an account name
+	// on the service of `handleKind`, without `@`; Mastodon:
+	// `user@instance`).
+	Type        ProfileFieldType `json:"type"`
+	UserCanHide *bool            `json:"userCanHide,omitempty"`
+
+	// Visibility Who sees the values besides the person and holders of
+	// `people.manage`: every signed-in person, people sharing a team with
+	// the person, or nobody else.
+	Visibility *ProfileFieldVisibility `json:"visibility,omitempty"`
+}
+
+// NewProfileFieldOption defines model for NewProfileFieldOption.
+type NewProfileFieldOption struct {
+	// Key Derived from the label when omitted.
+	Key   *string `json:"key,omitempty"`
+	Label string  `json:"label"`
+}
+
 // OrglaneDiscovery defines model for OrglaneDiscovery.
 type OrglaneDiscovery struct {
 	// ApiBaseUrl The base URL of this API.
@@ -387,6 +553,17 @@ type PersonList struct {
 	Items []Person `json:"items"`
 }
 
+// PersonProfile defines model for PersonProfile.
+type PersonProfile struct {
+	Fields   []ProfileFieldValue `json:"fields"`
+	PersonId openapi_types.UUID  `json:"personId"`
+}
+
+// PersonProfileUpdate defines model for PersonProfileUpdate.
+type PersonProfileUpdate struct {
+	Values []ProfileFieldValueChange `json:"values"`
+}
+
 // PersonStatus `invited`: added, has not signed in yet; `active`: can sign in; `suspended`: temporarily blocked. Offboarded people are not listed.
 type PersonStatus string
 
@@ -433,6 +610,199 @@ type Problem struct {
 	// Example: about:blank
 	Type string `json:"type"`
 }
+
+// ProfileField defines model for ProfileField.
+type ProfileField struct {
+	Archived bool `json:"archived"`
+
+	// EditableBy `self`: the person and holders of `people.manage`; `admins`: holders of `people.manage` only.
+	EditableBy ProfileFieldEditor      `json:"editableBy"`
+	HandleKind *ProfileFieldHandleKind `json:"handleKind,omitempty"`
+	Id         openapi_types.UUID      `json:"id"`
+
+	// Key Example: telegram
+	Key string `json:"key"`
+
+	// Label The English label (library fields) or the admin's label (custom fields).
+	//
+	// Example: Telegram
+	Label string `json:"label"`
+
+	// Library True for fields from the library. Their key is the library key; clients translate the label by it.
+	Library bool `json:"library"`
+
+	// Options The choices of a select field; empty for other types.
+	Options []ProfileFieldOption `json:"options"`
+
+	// Position Order within the section, ascending.
+	Position             int                 `json:"position"`
+	RequiredAtOnboarding bool                `json:"requiredAtOnboarding"`
+	Section              ProfileFieldSection `json:"section"`
+
+	// Sensitive Values are encrypted at rest, readable only by holders of `people.sensitive.read`, and every read is audited.
+	Sensitive bool `json:"sensitive"`
+
+	// Type How values are validated and stored: `text` (one line, at most 200
+	// characters), `long_text` (at most 2000 characters), `date`
+	// (`YYYY-MM-DD`), `select` (an option key), `phone` (E.164, such as
+	// `+442079460958`), `url` (http or https, at most 2000 Unicode
+	// characters), `handle` (an account name
+	// on the service of `handleKind`, without `@`; Mastodon:
+	// `user@instance`).
+	Type ProfileFieldType `json:"type"`
+
+	// UserCanHide The person may hide their value from everyone except holders of `people.manage`.
+	UserCanHide bool `json:"userCanHide"`
+
+	// Visibility Who sees the values besides the person and holders of
+	// `people.manage`: every signed-in person, people sharing a team with
+	// the person, or nobody else.
+	Visibility ProfileFieldVisibility `json:"visibility"`
+}
+
+// ProfileFieldEditor `self`: the person and holders of `people.manage`; `admins`: holders of `people.manage` only.
+type ProfileFieldEditor string
+
+// ProfileFieldHandleKind defines model for ProfileFieldHandleKind.
+type ProfileFieldHandleKind string
+
+// ProfileFieldLibrary defines model for ProfileFieldLibrary.
+type ProfileFieldLibrary struct {
+	Items []ProfileFieldLibraryEntry `json:"items"`
+}
+
+// ProfileFieldLibraryEntry defines model for ProfileFieldLibraryEntry.
+type ProfileFieldLibraryEntry struct {
+	// EditableBy `self`: the person and holders of `people.manage`; `admins`: holders of `people.manage` only.
+	EditableBy ProfileFieldEditor      `json:"editableBy"`
+	Field      *ProfileField           `json:"field,omitempty"`
+	HandleKind *ProfileFieldHandleKind `json:"handleKind,omitempty"`
+
+	// Key Example: birthday
+	Key string `json:"key"`
+
+	// Label The English label; clients translate it by key.
+	//
+	// Example: Birthday
+	Label     string               `json:"label"`
+	Options   []ProfileFieldOption `json:"options"`
+	Section   ProfileFieldSection  `json:"section"`
+	Sensitive bool                 `json:"sensitive"`
+
+	// Type How values are validated and stored: `text` (one line, at most 200
+	// characters), `long_text` (at most 2000 characters), `date`
+	// (`YYYY-MM-DD`), `select` (an option key), `phone` (E.164, such as
+	// `+442079460958`), `url` (http or https, at most 2000 Unicode
+	// characters), `handle` (an account name
+	// on the service of `handleKind`, without `@`; Mastodon:
+	// `user@instance`).
+	Type        ProfileFieldType `json:"type"`
+	UserCanHide bool             `json:"userCanHide"`
+
+	// Visibility Who sees the values besides the person and holders of
+	// `people.manage`: every signed-in person, people sharing a team with
+	// the person, or nobody else.
+	Visibility ProfileFieldVisibility `json:"visibility"`
+}
+
+// ProfileFieldList defines model for ProfileFieldList.
+type ProfileFieldList struct {
+	Items []ProfileField `json:"items"`
+}
+
+// ProfileFieldOption defines model for ProfileFieldOption.
+type ProfileFieldOption struct {
+	// Key Stored as the value. Derived from the label when omitted on create.
+	//
+	// Example: berlin
+	Key string `json:"key"`
+
+	// Label Example: Berlin
+	Label string `json:"label"`
+}
+
+// ProfileFieldSection defines model for ProfileFieldSection.
+type ProfileFieldSection string
+
+// ProfileFieldType How values are validated and stored: `text` (one line, at most 200
+// characters), `long_text` (at most 2000 characters), `date`
+// (`YYYY-MM-DD`), `select` (an option key), `phone` (E.164, such as
+// `+442079460958`), `url` (http or https, at most 2000 Unicode
+// characters), `handle` (an account name
+// on the service of `handleKind`, without `@`; Mastodon:
+// `user@instance`).
+type ProfileFieldType string
+
+// ProfileFieldUpdate The settings to change; omitted ones stay. Declassifying sensitive values or changing their select options also requires people.sensitive.read, and reads of existing sensitive values are audited.
+type ProfileFieldUpdate struct {
+	Archived *bool `json:"archived,omitempty"`
+
+	// EditableBy `self`: the person and holders of `people.manage`; `admins`: holders of `people.manage` only.
+	EditableBy *ProfileFieldEditor `json:"editableBy,omitempty"`
+	Label      *string             `json:"label,omitempty"`
+
+	// Options Replaces the options of a select field. Keep an option's key to keep its values.
+	Options              *[]NewProfileFieldOption `json:"options,omitempty"`
+	Position             *int                     `json:"position,omitempty"`
+	RequiredAtOnboarding *bool                    `json:"requiredAtOnboarding,omitempty"`
+	Section              *ProfileFieldSection     `json:"section,omitempty"`
+	Sensitive            *bool                    `json:"sensitive,omitempty"`
+	UserCanHide          *bool                    `json:"userCanHide,omitempty"`
+
+	// Visibility Who sees the values besides the person and holders of
+	// `people.manage`: every signed-in person, people sharing a team with
+	// the person, or nobody else.
+	Visibility *ProfileFieldVisibility `json:"visibility,omitempty"`
+}
+
+// ProfileFieldValue defines model for ProfileFieldValue.
+type ProfileFieldValue struct {
+	// Editable The caller may set or clear the value.
+	Editable bool         `json:"editable"`
+	Field    ProfileField `json:"field"`
+
+	// Hidden The person hid the value from others (reported only to those who still see it).
+	Hidden bool `json:"hidden"`
+
+	// Hideable The caller (the person) may hide the value.
+	Hideable bool `json:"hideable"`
+
+	// Value The value, absent when unset or hidden from the caller. Dates are
+	// `YYYY-MM-DD`; a birthday without its year is `--MM-DD`. Select
+	// fields hold an option key.
+	//
+	//
+	// Example: --03-14
+	Value *string `json:"value,omitempty"`
+
+	// YearHidden The value is a birthday shown without its year.
+	YearHidden bool `json:"yearHidden"`
+}
+
+// ProfileFieldValueChange defines model for ProfileFieldValueChange.
+type ProfileFieldValueChange struct {
+	// Hidden Hide (true) or show (false) the value; only the person, and hiding only when the field allows it.
+	Hidden *bool `json:"hidden,omitempty"`
+
+	// Key The field key.
+	//
+	// Example: telegram
+	Key string `json:"key"`
+
+	// Value The new value; an empty string clears it; omit to leave it.
+	// Validated by the field type (see `ProfileFieldType`) and stored
+	// normalized (for example a phone number in E.164, a handle
+	// without `@`).
+	//
+	//
+	// Example: maya_okafor
+	Value *string `json:"value,omitempty"`
+}
+
+// ProfileFieldVisibility Who sees the values besides the person and holders of
+// `people.manage`: every signed-in person, people sharing a team with
+// the person, or nobody else.
+type ProfileFieldVisibility string
 
 // Session defines model for Session.
 type Session struct {
@@ -609,6 +979,11 @@ type TooManyRequests = Problem
 // Unauthorized RFC 9457 problem details.
 type Unauthorized = Problem
 
+// ListProfileFieldsParams defines parameters for ListProfileFields.
+type ListProfileFieldsParams struct {
+	IncludeArchived *bool `form:"includeArchived,omitempty" json:"includeArchived,omitempty"`
+}
+
 // ListTeamsParams defines parameters for ListTeams.
 type ListTeamsParams struct {
 	// Archived Include archived teams.
@@ -629,6 +1004,15 @@ type SignInAsDemoPersonJSONRequestBody = DemoSignInRequest
 
 // AddMyPasskeyJSONRequestBody defines body for AddMyPasskey for application/json ContentType.
 type AddMyPasskeyJSONRequestBody = AddPasskeyRequest
+
+// UpdatePersonProfileJSONRequestBody defines body for UpdatePersonProfile for application/json ContentType.
+type UpdatePersonProfileJSONRequestBody = PersonProfileUpdate
+
+// CreateProfileFieldJSONRequestBody defines body for CreateProfileField for application/json ContentType.
+type CreateProfileFieldJSONRequestBody = NewProfileField
+
+// UpdateProfileFieldJSONRequestBody defines body for UpdateProfileField for application/json ContentType.
+type UpdateProfileFieldJSONRequestBody = ProfileFieldUpdate
 
 // CreateTeamJSONRequestBody defines body for CreateTeam for application/json ContentType.
 type CreateTeamJSONRequestBody = CreateTeamRequest
@@ -701,9 +1085,30 @@ type ServerInterface interface {
 	// GetPersonAvatar A person's avatar image
 	// (GET /api/v1/people/{personId}/avatar)
 	GetPersonAvatar(w http.ResponseWriter, r *http.Request, personId openapi_types.UUID)
+	// GetPersonProfile A person's profile fields
+	// (GET /api/v1/people/{personId}/profile)
+	GetPersonProfile(w http.ResponseWriter, r *http.Request, personId openapi_types.UUID)
+	// UpdatePersonProfile Change a person's profile fields
+	// (PATCH /api/v1/people/{personId}/profile)
+	UpdatePersonProfile(w http.ResponseWriter, r *http.Request, personId openapi_types.UUID)
 	// ListPersonTeams A person's teams
 	// (GET /api/v1/people/{personId}/teams)
 	ListPersonTeams(w http.ResponseWriter, r *http.Request, personId PersonId)
+	// ListProfileFieldLibrary The library of ready-made profile fields
+	// (GET /api/v1/profile-field-library)
+	ListProfileFieldLibrary(w http.ResponseWriter, r *http.Request)
+	// EnableLibraryProfileField Turn on a library field
+	// (POST /api/v1/profile-field-library/{libraryKey})
+	EnableLibraryProfileField(w http.ResponseWriter, r *http.Request, libraryKey string)
+	// ListProfileFields List profile field definitions
+	// (GET /api/v1/profile-fields)
+	ListProfileFields(w http.ResponseWriter, r *http.Request, params ListProfileFieldsParams)
+	// CreateProfileField Create a custom profile field
+	// (POST /api/v1/profile-fields)
+	CreateProfileField(w http.ResponseWriter, r *http.Request)
+	// UpdateProfileField Change a profile field definition
+	// (PATCH /api/v1/profile-fields/{fieldId})
+	UpdateProfileField(w http.ResponseWriter, r *http.Request, fieldId openapi_types.UUID)
 	// ListTeams List teams
 	// (GET /api/v1/teams)
 	ListTeams(w http.ResponseWriter, r *http.Request, params ListTeamsParams)
@@ -1064,6 +1469,58 @@ func (siw *ServerInterfaceWrapper) GetPersonAvatar(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// GetPersonProfile operation middleware
+func (siw *ServerInterfaceWrapper) GetPersonProfile(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "personId" -------------
+	var personId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "personId", r.PathValue("personId"), &personId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "personId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPersonProfile(w, r, personId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdatePersonProfile operation middleware
+func (siw *ServerInterfaceWrapper) UpdatePersonProfile(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "personId" -------------
+	var personId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "personId", r.PathValue("personId"), &personId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "personId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdatePersonProfile(w, r, personId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListPersonTeams operation middleware
 func (siw *ServerInterfaceWrapper) ListPersonTeams(w http.ResponseWriter, r *http.Request) {
 
@@ -1081,6 +1538,119 @@ func (siw *ServerInterfaceWrapper) ListPersonTeams(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListPersonTeams(w, r, personId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListProfileFieldLibrary operation middleware
+func (siw *ServerInterfaceWrapper) ListProfileFieldLibrary(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListProfileFieldLibrary(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// EnableLibraryProfileField operation middleware
+func (siw *ServerInterfaceWrapper) EnableLibraryProfileField(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "libraryKey" -------------
+	var libraryKey string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "libraryKey", r.PathValue("libraryKey"), &libraryKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "libraryKey", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.EnableLibraryProfileField(w, r, libraryKey)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListProfileFields operation middleware
+func (siw *ServerInterfaceWrapper) ListProfileFields(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListProfileFieldsParams
+
+	// ------------- Optional query parameter "includeArchived" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "includeArchived", r.URL.Query(), &params.IncludeArchived, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "includeArchived"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "includeArchived", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListProfileFields(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateProfileField operation middleware
+func (siw *ServerInterfaceWrapper) CreateProfileField(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateProfileField(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateProfileField operation middleware
+func (siw *ServerInterfaceWrapper) UpdateProfileField(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "fieldId" -------------
+	var fieldId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "fieldId", r.PathValue("fieldId"), &fieldId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "fieldId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateProfileField(w, r, fieldId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1503,6 +2073,13 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/teams/{teamId}/members", wrapper.ListTeamMembers)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/teams/{teamId}/members/{personId}", wrapper.RemoveTeamMember)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/v1/teams/{teamId}/members/{personId}", wrapper.SetTeamMember)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people/{personId}/profile", wrapper.GetPersonProfile)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/api/v1/people/{personId}/profile", wrapper.UpdatePersonProfile)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/profile-fields", wrapper.ListProfileFields)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/profile-fields", wrapper.CreateProfileField)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/api/v1/profile-fields/{fieldId}", wrapper.UpdateProfileField)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/profile-field-library", wrapper.ListProfileFieldLibrary)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/profile-field-library/{libraryKey}", wrapper.EnableLibraryProfileField)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/demo", wrapper.GetDemo)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/demo/sign-in", wrapper.SignInAsDemoPerson)
 
@@ -2923,6 +3500,195 @@ func (response GetPersonAvatar500ApplicationProblemPlusJSONResponse) VisitGetPer
 	return err
 }
 
+type GetPersonProfileRequestObject struct {
+	PersonId openapi_types.UUID `json:"personId"`
+}
+
+type GetPersonProfileResponseObject interface {
+	VisitGetPersonProfileResponse(w http.ResponseWriter) error
+}
+
+type GetPersonProfile200JSONResponse PersonProfile
+
+func (response GetPersonProfile200JSONResponse) VisitGetPersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonProfile401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonProfile401ApplicationProblemPlusJSONResponse) VisitGetPersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonProfile403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonProfile403ApplicationProblemPlusJSONResponse) VisitGetPersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonProfile404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonProfile404ApplicationProblemPlusJSONResponse) VisitGetPersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPersonProfile500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetPersonProfile500ApplicationProblemPlusJSONResponse) VisitGetPersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePersonProfileRequestObject struct {
+	PersonId openapi_types.UUID `json:"personId"`
+	Body     *UpdatePersonProfileJSONRequestBody
+}
+
+type UpdatePersonProfileResponseObject interface {
+	VisitUpdatePersonProfileResponse(w http.ResponseWriter) error
+}
+
+type UpdatePersonProfile200JSONResponse PersonProfile
+
+func (response UpdatePersonProfile200JSONResponse) VisitUpdatePersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePersonProfile400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePersonProfile400ApplicationProblemPlusJSONResponse) VisitUpdatePersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePersonProfile401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePersonProfile401ApplicationProblemPlusJSONResponse) VisitUpdatePersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePersonProfile403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePersonProfile403ApplicationProblemPlusJSONResponse) VisitUpdatePersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePersonProfile404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePersonProfile404ApplicationProblemPlusJSONResponse) VisitUpdatePersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdatePersonProfile500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response UpdatePersonProfile500ApplicationProblemPlusJSONResponse) VisitUpdatePersonProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListPersonTeamsRequestObject struct {
 	PersonId PersonId `json:"personId"`
 }
@@ -2982,6 +3748,482 @@ type ListPersonTeams500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response ListPersonTeams500ApplicationProblemPlusJSONResponse) VisitListPersonTeamsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListProfileFieldLibraryRequestObject struct {
+}
+
+type ListProfileFieldLibraryResponseObject interface {
+	VisitListProfileFieldLibraryResponse(w http.ResponseWriter) error
+}
+
+type ListProfileFieldLibrary200JSONResponse ProfileFieldLibrary
+
+func (response ListProfileFieldLibrary200JSONResponse) VisitListProfileFieldLibraryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListProfileFieldLibrary401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListProfileFieldLibrary401ApplicationProblemPlusJSONResponse) VisitListProfileFieldLibraryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListProfileFieldLibrary403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ListProfileFieldLibrary403ApplicationProblemPlusJSONResponse) VisitListProfileFieldLibraryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListProfileFieldLibrary500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ListProfileFieldLibrary500ApplicationProblemPlusJSONResponse) VisitListProfileFieldLibraryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EnableLibraryProfileFieldRequestObject struct {
+	LibraryKey string `json:"libraryKey"`
+}
+
+type EnableLibraryProfileFieldResponseObject interface {
+	VisitEnableLibraryProfileFieldResponse(w http.ResponseWriter) error
+}
+
+type EnableLibraryProfileField200JSONResponse ProfileField
+
+func (response EnableLibraryProfileField200JSONResponse) VisitEnableLibraryProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EnableLibraryProfileField201JSONResponse ProfileField
+
+func (response EnableLibraryProfileField201JSONResponse) VisitEnableLibraryProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EnableLibraryProfileField401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response EnableLibraryProfileField401ApplicationProblemPlusJSONResponse) VisitEnableLibraryProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EnableLibraryProfileField403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response EnableLibraryProfileField403ApplicationProblemPlusJSONResponse) VisitEnableLibraryProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EnableLibraryProfileField404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response EnableLibraryProfileField404ApplicationProblemPlusJSONResponse) VisitEnableLibraryProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EnableLibraryProfileField409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response EnableLibraryProfileField409ApplicationProblemPlusJSONResponse) VisitEnableLibraryProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EnableLibraryProfileField500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response EnableLibraryProfileField500ApplicationProblemPlusJSONResponse) VisitEnableLibraryProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListProfileFieldsRequestObject struct {
+	Params ListProfileFieldsParams
+}
+
+type ListProfileFieldsResponseObject interface {
+	VisitListProfileFieldsResponse(w http.ResponseWriter) error
+}
+
+type ListProfileFields200JSONResponse ProfileFieldList
+
+func (response ListProfileFields200JSONResponse) VisitListProfileFieldsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListProfileFields401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListProfileFields401ApplicationProblemPlusJSONResponse) VisitListProfileFieldsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListProfileFields403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ListProfileFields403ApplicationProblemPlusJSONResponse) VisitListProfileFieldsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListProfileFields500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ListProfileFields500ApplicationProblemPlusJSONResponse) VisitListProfileFieldsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateProfileFieldRequestObject struct {
+	Body *CreateProfileFieldJSONRequestBody
+}
+
+type CreateProfileFieldResponseObject interface {
+	VisitCreateProfileFieldResponse(w http.ResponseWriter) error
+}
+
+type CreateProfileField201JSONResponse ProfileField
+
+func (response CreateProfileField201JSONResponse) VisitCreateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateProfileField400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response CreateProfileField400ApplicationProblemPlusJSONResponse) VisitCreateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateProfileField401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response CreateProfileField401ApplicationProblemPlusJSONResponse) VisitCreateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateProfileField403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response CreateProfileField403ApplicationProblemPlusJSONResponse) VisitCreateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateProfileField409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response CreateProfileField409ApplicationProblemPlusJSONResponse) VisitCreateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateProfileField500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response CreateProfileField500ApplicationProblemPlusJSONResponse) VisitCreateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateProfileFieldRequestObject struct {
+	FieldId openapi_types.UUID `json:"fieldId"`
+	Body    *UpdateProfileFieldJSONRequestBody
+}
+
+type UpdateProfileFieldResponseObject interface {
+	VisitUpdateProfileFieldResponse(w http.ResponseWriter) error
+}
+
+type UpdateProfileField200JSONResponse ProfileField
+
+func (response UpdateProfileField200JSONResponse) VisitUpdateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateProfileField400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateProfileField400ApplicationProblemPlusJSONResponse) VisitUpdateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateProfileField401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateProfileField401ApplicationProblemPlusJSONResponse) VisitUpdateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateProfileField403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateProfileField403ApplicationProblemPlusJSONResponse) VisitUpdateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateProfileField404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateProfileField404ApplicationProblemPlusJSONResponse) VisitUpdateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateProfileField409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateProfileField409ApplicationProblemPlusJSONResponse) VisitUpdateProfileFieldResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateProfileField500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateProfileField500ApplicationProblemPlusJSONResponse) VisitUpdateProfileFieldResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -3898,9 +5140,30 @@ type StrictServerInterface interface {
 	// GetPersonAvatar A person's avatar image
 	// (GET /api/v1/people/{personId}/avatar)
 	GetPersonAvatar(ctx context.Context, request GetPersonAvatarRequestObject) (GetPersonAvatarResponseObject, error)
+	// GetPersonProfile A person's profile fields
+	// (GET /api/v1/people/{personId}/profile)
+	GetPersonProfile(ctx context.Context, request GetPersonProfileRequestObject) (GetPersonProfileResponseObject, error)
+	// UpdatePersonProfile Change a person's profile fields
+	// (PATCH /api/v1/people/{personId}/profile)
+	UpdatePersonProfile(ctx context.Context, request UpdatePersonProfileRequestObject) (UpdatePersonProfileResponseObject, error)
 	// ListPersonTeams A person's teams
 	// (GET /api/v1/people/{personId}/teams)
 	ListPersonTeams(ctx context.Context, request ListPersonTeamsRequestObject) (ListPersonTeamsResponseObject, error)
+	// ListProfileFieldLibrary The library of ready-made profile fields
+	// (GET /api/v1/profile-field-library)
+	ListProfileFieldLibrary(ctx context.Context, request ListProfileFieldLibraryRequestObject) (ListProfileFieldLibraryResponseObject, error)
+	// EnableLibraryProfileField Turn on a library field
+	// (POST /api/v1/profile-field-library/{libraryKey})
+	EnableLibraryProfileField(ctx context.Context, request EnableLibraryProfileFieldRequestObject) (EnableLibraryProfileFieldResponseObject, error)
+	// ListProfileFields List profile field definitions
+	// (GET /api/v1/profile-fields)
+	ListProfileFields(ctx context.Context, request ListProfileFieldsRequestObject) (ListProfileFieldsResponseObject, error)
+	// CreateProfileField Create a custom profile field
+	// (POST /api/v1/profile-fields)
+	CreateProfileField(ctx context.Context, request CreateProfileFieldRequestObject) (CreateProfileFieldResponseObject, error)
+	// UpdateProfileField Change a profile field definition
+	// (PATCH /api/v1/profile-fields/{fieldId})
+	UpdateProfileField(ctx context.Context, request UpdateProfileFieldRequestObject) (UpdateProfileFieldResponseObject, error)
 	// ListTeams List teams
 	// (GET /api/v1/teams)
 	ListTeams(ctx context.Context, request ListTeamsRequestObject) (ListTeamsResponseObject, error)
@@ -4499,6 +5762,65 @@ func (sh *strictHandler) GetPersonAvatar(w http.ResponseWriter, r *http.Request,
 	}
 }
 
+// GetPersonProfile operation middleware
+func (sh *strictHandler) GetPersonProfile(w http.ResponseWriter, r *http.Request, personId openapi_types.UUID) {
+	var request GetPersonProfileRequestObject
+
+	request.PersonId = personId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPersonProfile(ctx, request.(GetPersonProfileRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPersonProfile")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetPersonProfileResponseObject); ok {
+		if err := validResponse.VisitGetPersonProfileResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdatePersonProfile operation middleware
+func (sh *strictHandler) UpdatePersonProfile(w http.ResponseWriter, r *http.Request, personId openapi_types.UUID) {
+	var request UpdatePersonProfileRequestObject
+
+	request.PersonId = personId
+
+	var body UpdatePersonProfileJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdatePersonProfile(ctx, request.(UpdatePersonProfileRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdatePersonProfile")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdatePersonProfileResponseObject); ok {
+		if err := validResponse.VisitUpdatePersonProfileResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListPersonTeams operation middleware
 func (sh *strictHandler) ListPersonTeams(w http.ResponseWriter, r *http.Request, personId PersonId) {
 	var request ListPersonTeamsRequestObject
@@ -4518,6 +5840,146 @@ func (sh *strictHandler) ListPersonTeams(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListPersonTeamsResponseObject); ok {
 		if err := validResponse.VisitListPersonTeamsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListProfileFieldLibrary operation middleware
+func (sh *strictHandler) ListProfileFieldLibrary(w http.ResponseWriter, r *http.Request) {
+	var request ListProfileFieldLibraryRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListProfileFieldLibrary(ctx, request.(ListProfileFieldLibraryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListProfileFieldLibrary")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListProfileFieldLibraryResponseObject); ok {
+		if err := validResponse.VisitListProfileFieldLibraryResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// EnableLibraryProfileField operation middleware
+func (sh *strictHandler) EnableLibraryProfileField(w http.ResponseWriter, r *http.Request, libraryKey string) {
+	var request EnableLibraryProfileFieldRequestObject
+
+	request.LibraryKey = libraryKey
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.EnableLibraryProfileField(ctx, request.(EnableLibraryProfileFieldRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "EnableLibraryProfileField")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(EnableLibraryProfileFieldResponseObject); ok {
+		if err := validResponse.VisitEnableLibraryProfileFieldResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListProfileFields operation middleware
+func (sh *strictHandler) ListProfileFields(w http.ResponseWriter, r *http.Request, params ListProfileFieldsParams) {
+	var request ListProfileFieldsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListProfileFields(ctx, request.(ListProfileFieldsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListProfileFields")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListProfileFieldsResponseObject); ok {
+		if err := validResponse.VisitListProfileFieldsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateProfileField operation middleware
+func (sh *strictHandler) CreateProfileField(w http.ResponseWriter, r *http.Request) {
+	var request CreateProfileFieldRequestObject
+
+	var body CreateProfileFieldJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateProfileField(ctx, request.(CreateProfileFieldRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateProfileField")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateProfileFieldResponseObject); ok {
+		if err := validResponse.VisitCreateProfileFieldResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateProfileField operation middleware
+func (sh *strictHandler) UpdateProfileField(w http.ResponseWriter, r *http.Request, fieldId openapi_types.UUID) {
+	var request UpdateProfileFieldRequestObject
+
+	request.FieldId = fieldId
+
+	var body UpdateProfileFieldJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateProfileField(ctx, request.(UpdateProfileFieldRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateProfileField")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateProfileFieldResponseObject); ok {
+		if err := validResponse.VisitUpdateProfileFieldResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

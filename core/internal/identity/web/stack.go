@@ -16,12 +16,15 @@ import (
 	"github.com/orglane/orglane/core/internal/crypto"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/identity/oidcop"
+	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/core/internal/store"
 )
 
-// Stack is the identity subsystem wired from the configuration.
+// Stack is the identity subsystem wired from the configuration, with the
+// profile fields of people (they share the master secret's keyring).
 type Stack struct {
 	Identity *identity.Service
+	Profile  *profile.Service
 	Keys     *oidcop.KeyManager
 	Provider *oidcop.Provider
 	Auth     *Auth
@@ -106,7 +109,7 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	if err != nil {
 		return nil, err
 	}
-	return &Stack{Identity: svc, Keys: keys, Provider: provider, Auth: auth}, nil
+	return &Stack{Identity: svc, Profile: profile.NewService(pool, keyring, profile.WithTeams(svc)), Keys: keys, Provider: provider, Auth: auth}, nil
 }
 
 // Maintain rotates the signing key when due and deletes expired sign-in and

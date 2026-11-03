@@ -67,6 +67,21 @@ const (
 	// PersonAvatarRemoved: a person's avatar was removed.
 	PersonAvatarRemoved Action = "person.avatar_removed"
 
+	// PersonProfileUpdated: values of a person's profile fields were set,
+	// cleared, hidden or shown. The entry lists the field keys, never the
+	// values.
+	PersonProfileUpdated Action = "person.profile_updated"
+	// PersonSensitiveFieldsRead: values of sensitive profile fields of a
+	// person were read (ADR 0015). The entry lists the field keys.
+	PersonSensitiveFieldsRead Action = "person.sensitive_fields_read"
+
+	// ProfileFieldCreated: a profile field was defined (custom, or enabled
+	// from the library).
+	ProfileFieldCreated Action = "profile_field.created"
+	// ProfileFieldUpdated: a profile field definition changed, including
+	// archiving and restoring it. The entry lists the changed settings.
+	ProfileFieldUpdated Action = "profile_field.updated"
+
 	RoleCreated            Action = "role.created"
 	RoleUpdated            Action = "role.updated"
 	RolePermissionsChanged Action = "role.permissions_changed"
@@ -135,6 +150,8 @@ const (
 	TargetSigningKey TargetKind = "signing_key"
 	TargetOIDCClient TargetKind = "oidc_client"
 	TargetOIDCGrant  TargetKind = "oidc_grant"
+	// TargetProfileField is a profile field definition.
+	TargetProfileField TargetKind = "profile_field"
 )
 
 // Target is the object an action applies to. The zero Target means the

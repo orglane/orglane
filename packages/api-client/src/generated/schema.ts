@@ -545,6 +545,144 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/people/{personId}/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * A person's profile fields
+         * @description The person's profile fields as the caller may see them (ADR 0015), by
+         *     section and position: every field the caller may see, with its value
+         *     when set and visible to the caller. The rules are applied by the
+         *     server for every response; clients never filter.
+         *
+         *     - Visibility `everyone`: every signed-in person; `team`: people who
+         *       share a team with the person; `admins`: only holders of
+         *       `people.manage`. The person sees their own non-sensitive fields.
+         *     - Sensitive fields are listed only for holders of
+         *       `people.sensitive.read`; every response containing a sensitive
+         *       value is recorded in the audit log.
+         *     - Values the person hid are shown only to them and holders of
+         *       `people.manage`.
+         *     - Non-sensitive birthdays show day and month (`--MM-DD`) to everyone
+         *       except the person and holders of `people.sensitive.read`.
+         *
+         *     Offboarded people are not found, except by holders of
+         *     `people.manage`.
+         */
+        get: operations["getPersonProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change a person's profile fields
+         * @description Sets, clears, hides or shows values of the person's profile fields,
+         *     all or nothing, and returns the profile as `GET` does. Only the
+         *     person and holders of `people.manage` change a profile: the person
+         *     changes fields editable by `self` and hides fields that allow it;
+         *     holders of `people.manage` change every field they can see. Values
+         *     are validated by type (see `ProfileFieldValueChange`). The audit log
+         *     records which fields changed, never the values.
+         */
+        patch: operations["updatePersonProfile"];
+        trace?: never;
+    };
+    "/api/v1/profile-fields": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List profile field definitions
+         * @description The profile field definitions by section and position. Archived
+         *     fields only with `includeArchived=true`.
+         */
+        get: operations["listProfileFields"];
+        put?: never;
+        /** Create a custom profile field */
+        post: operations["createProfileField"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/profile-fields/{fieldId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change a profile field definition
+         * @description Changes the given settings; the key and type never change, and
+         *     library fields also keep their label and options. Making a field
+         *     sensitive encrypts its existing values (and back). Archiving hides
+         *     the field and its values everywhere; restoring brings them back.
+         *     Removing a select option that is someone's value answers 409.
+         */
+        patch: operations["updateProfileField"];
+        trace?: never;
+    };
+    "/api/v1/profile-field-library": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The library of ready-made profile fields
+         * @description Ready-made fields (Telegram, phone, birthday, T-shirt size, ...) with
+         *     their default settings and, when turned on before, the field.
+         */
+        get: operations["listProfileFieldLibrary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/profile-field-library/{libraryKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Turn on a library field
+         * @description Creates the field from the library entry with its defaults (201), or
+         *     restores it when it was archived (200). Turn it off by archiving the
+         *     field (`PATCH /api/v1/profile-fields/{fieldId}`).
+         */
+        post: operations["enableLibraryProfileField"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/demo": {
         parameters: {
             query?: never;
@@ -939,6 +1077,175 @@ export interface components {
         };
         PersonTeamList: {
             items: components["schemas"]["PersonTeam"][];
+        };
+        /**
+         * @description How values are validated and stored: `text` (one line, at most 200
+         *     characters), `long_text` (at most 2000 characters), `date`
+         *     (`YYYY-MM-DD`), `select` (an option key), `phone` (E.164, such as
+         *     `+442079460958`), `url` (http or https, at most 2000 Unicode
+         *     characters), `handle` (an account name
+         *     on the service of `handleKind`, without `@`; Mastodon:
+         *     `user@instance`).
+         * @enum {string}
+         */
+        ProfileFieldType: "text" | "long_text" | "date" | "select" | "phone" | "url" | "handle";
+        /** @enum {string} */
+        ProfileFieldHandleKind: "telegram" | "github" | "gitlab" | "x" | "mastodon";
+        /** @enum {string} */
+        ProfileFieldSection: "contacts" | "personal" | "hr" | "custom";
+        /**
+         * @description Who sees the values besides the person and holders of
+         *     `people.manage`: every signed-in person, people sharing a team with
+         *     the person, or nobody else.
+         * @enum {string}
+         */
+        ProfileFieldVisibility: "everyone" | "team" | "admins";
+        /**
+         * @description `self`: the person and holders of `people.manage`; `admins`: holders of `people.manage` only.
+         * @enum {string}
+         */
+        ProfileFieldEditor: "self" | "admins";
+        ProfileFieldOption: {
+            /**
+             * @description Stored as the value. Derived from the label when omitted on create.
+             * @example berlin
+             */
+            key: string;
+            /** @example Berlin */
+            label: string;
+        };
+        ProfileField: {
+            /** Format: uuid */
+            id: string;
+            /** @example telegram */
+            key: string;
+            /** @description True for fields from the library. Their key is the library key; clients translate the label by it. */
+            library: boolean;
+            /**
+             * @description The English label (library fields) or the admin's label (custom fields).
+             * @example Telegram
+             */
+            label: string;
+            type: components["schemas"]["ProfileFieldType"];
+            handleKind?: components["schemas"]["ProfileFieldHandleKind"];
+            /** @description The choices of a select field; empty for other types. */
+            options: components["schemas"]["ProfileFieldOption"][];
+            section: components["schemas"]["ProfileFieldSection"];
+            visibility: components["schemas"]["ProfileFieldVisibility"];
+            requiredAtOnboarding: boolean;
+            editableBy: components["schemas"]["ProfileFieldEditor"];
+            /** @description The person may hide their value from everyone except holders of `people.manage`. */
+            userCanHide: boolean;
+            /** @description Values are encrypted at rest, readable only by holders of `people.sensitive.read`, and every read is audited. */
+            sensitive: boolean;
+            /** @description Order within the section, ascending. */
+            position: number;
+            archived: boolean;
+        };
+        ProfileFieldList: {
+            items: components["schemas"]["ProfileField"][];
+        };
+        NewProfileField: {
+            /**
+             * @description Lower case a-z, 0-9 and `_`, starting with a letter. Derived from the label when omitted. Library keys are reserved.
+             * @example office
+             */
+            key?: string;
+            /** @example Office */
+            label: string;
+            type: components["schemas"]["ProfileFieldType"];
+            handleKind?: components["schemas"]["ProfileFieldHandleKind"];
+            /** @description Required for select fields. */
+            options?: components["schemas"]["NewProfileFieldOption"][];
+            section?: components["schemas"]["ProfileFieldSection"];
+            visibility?: components["schemas"]["ProfileFieldVisibility"];
+            requiredAtOnboarding?: boolean;
+            editableBy?: components["schemas"]["ProfileFieldEditor"];
+            userCanHide?: boolean;
+            sensitive?: boolean;
+        };
+        NewProfileFieldOption: {
+            /** @description Derived from the label when omitted. */
+            key?: string;
+            label: string;
+        };
+        /** @description The settings to change; omitted ones stay. Declassifying sensitive values or changing their select options also requires people.sensitive.read, and reads of existing sensitive values are audited. */
+        ProfileFieldUpdate: {
+            label?: string;
+            /** @description Replaces the options of a select field. Keep an option's key to keep its values. */
+            options?: components["schemas"]["NewProfileFieldOption"][];
+            section?: components["schemas"]["ProfileFieldSection"];
+            visibility?: components["schemas"]["ProfileFieldVisibility"];
+            requiredAtOnboarding?: boolean;
+            editableBy?: components["schemas"]["ProfileFieldEditor"];
+            userCanHide?: boolean;
+            sensitive?: boolean;
+            position?: number;
+            archived?: boolean;
+        };
+        ProfileFieldLibraryEntry: {
+            /** @example birthday */
+            key: string;
+            /**
+             * @description The English label; clients translate it by key.
+             * @example Birthday
+             */
+            label: string;
+            type: components["schemas"]["ProfileFieldType"];
+            handleKind?: components["schemas"]["ProfileFieldHandleKind"];
+            options: components["schemas"]["ProfileFieldOption"][];
+            section: components["schemas"]["ProfileFieldSection"];
+            visibility: components["schemas"]["ProfileFieldVisibility"];
+            editableBy: components["schemas"]["ProfileFieldEditor"];
+            userCanHide: boolean;
+            sensitive: boolean;
+            field?: components["schemas"]["ProfileField"];
+        };
+        ProfileFieldLibrary: {
+            items: components["schemas"]["ProfileFieldLibraryEntry"][];
+        };
+        ProfileFieldValue: {
+            field: components["schemas"]["ProfileField"];
+            /**
+             * @description The value, absent when unset or hidden from the caller. Dates are
+             *     `YYYY-MM-DD`; a birthday without its year is `--MM-DD`. Select
+             *     fields hold an option key.
+             * @example --03-14
+             */
+            value?: string;
+            /** @description The person hid the value from others (reported only to those who still see it). */
+            hidden: boolean;
+            /** @description The value is a birthday shown without its year. */
+            yearHidden: boolean;
+            /** @description The caller may set or clear the value. */
+            editable: boolean;
+            /** @description The caller (the person) may hide the value. */
+            hideable: boolean;
+        };
+        PersonProfile: {
+            /** Format: uuid */
+            personId: string;
+            fields: components["schemas"]["ProfileFieldValue"][];
+        };
+        ProfileFieldValueChange: {
+            /**
+             * @description The field key.
+             * @example telegram
+             */
+            key: string;
+            /**
+             * @description The new value; an empty string clears it; omit to leave it.
+             *     Validated by the field type (see `ProfileFieldType`) and stored
+             *     normalized (for example a phone number in E.164, a handle
+             *     without `@`).
+             * @example maya_okafor
+             */
+            value?: string;
+            /** @description Hide (true) or show (false) the value; only the person, and hiding only when the field allows it. */
+            hidden?: boolean;
+        };
+        PersonProfileUpdate: {
+            values: components["schemas"]["ProfileFieldValueChange"][];
         };
         DemoInfo: {
             /**
@@ -1797,6 +2104,208 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getPersonProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The profile. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonProfile"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    updatePersonProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PersonProfileUpdate"];
+            };
+        };
+        responses: {
+            /** @description The changed profile. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonProfile"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listProfileFields: {
+        parameters: {
+            query?: {
+                includeArchived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The fields. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileFieldList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    createProfileField: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewProfileField"];
+            };
+        };
+        responses: {
+            /** @description The field was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileField"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    updateProfileField: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                fieldId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileFieldUpdate"];
+            };
+        };
+        responses: {
+            /** @description The changed field. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileField"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listProfileFieldLibrary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The library. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileFieldLibrary"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    enableLibraryProfileField: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                libraryKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The field existed and is turned on. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileField"];
+                };
+            };
+            /** @description The field was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileField"];
+                };
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];

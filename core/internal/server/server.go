@@ -81,6 +81,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		WorkspaceHost: cfg.Domain.WorkspaceHost,
 		WorkspaceURL:  cfg.WorkspaceURL(),
 		Auth:          stack.Auth,
+		Profile:       stack.Profile,
 		Demo:          dataset,
 		ReadinessChecks: []api.ReadinessCheck{
 			{Name: "database", Check: pool.Ping},

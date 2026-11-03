@@ -28,6 +28,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -411,8 +413,24 @@ func TestLocalMode(t *testing.T) {
 	if err != nil || len(migrations) == 0 {
 		t.Fatalf("list migrations: %v", err)
 	}
-	if got := b.psql("SELECT max(version_id) FROM goose_db_version WHERE is_applied"); got != fmt.Sprint(len(migrations)) {
-		t.Errorf("applied migration version = %q, want %d", got, len(migrations))
+	// Versions need not be contiguous while independent migration changes
+	// are developed. Check the exact applied set, not the file count.
+	versions := make([]int, 0, len(migrations))
+	for _, file := range migrations {
+		prefix, _, _ := strings.Cut(filepath.Base(file), "_")
+		version, err := strconv.Atoi(prefix)
+		if err != nil {
+			t.Fatalf("migration version in %s: %v", file, err)
+		}
+		versions = append(versions, version)
+	}
+	slices.Sort(versions)
+	wantVersions := make([]string, 0, len(versions))
+	for _, version := range versions {
+		wantVersions = append(wantVersions, strconv.Itoa(version))
+	}
+	if got, want := b.psql("SELECT string_agg(version_id::text, ',' ORDER BY version_id) FROM goose_db_version WHERE is_applied AND version_id > 0"), strings.Join(wantVersions, ","); got != want {
+		t.Errorf("applied migration versions = %q, want %q", got, want)
 	}
 	if got := b.psql("SELECT count(*) > 0 AND bool_and(uuid_extract_version(id) = 7) FROM roles WHERE builtin"); got != "t" {
 		t.Errorf("built-in roles seeded with UUIDv7 keys = %q, want t", got)

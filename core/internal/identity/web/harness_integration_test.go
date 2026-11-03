@@ -114,7 +114,7 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 	}
 	handler, err := api.NewHandler(api.Options{
 		Version: "test", BaseDomain: cfg.Domain.Base, WorkspaceHost: workspaceHost, WorkspaceURL: cfg.WorkspaceURL(),
-		Auth: stack.Auth, Logger: logger,
+		Auth: stack.Auth, Profile: stack.Profile, Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)
