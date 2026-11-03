@@ -33,6 +33,9 @@ revalidates identities, grants, field definitions and versions. A stale row fail
 and must be previewed again in a new run. Applied runs are immutable; repeated
 apply returns the saved result.
 
+CSV row numbers are the physical starting lines, including blank lines and
+quoted multiline cells; XLSX uses the original worksheet row numbers.
+
 Limits: 64 KiB for strict mapping JSON, 5 MiB upload, 32 MiB total actual ZIP expansion, 100 ZIP entries,
 1000 data rows, 100 columns and 4096 bytes per cell. CSV supports UTF-8,
 BOM-marked UTF-16 and Windows-1252, and detects comma, semicolon, tab or pipe.

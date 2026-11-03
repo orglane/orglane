@@ -95,3 +95,39 @@ func TestSafeCSVAndValueFreeExport(t *testing.T) {
 		t.Fatalf("export=%q", got)
 	}
 }
+
+func TestCSVPhysicalStartLines(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/physical-lines.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, text string }{
+		{name: "LF", text: string(fixture)},
+		{name: "CRLF", text: strings.ReplaceAll(string(fixture), "\n", "\r\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := (FileSource{}).Read(strings.NewReader(tc.text))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(data.Rows) != 3 {
+				t.Fatalf("records=%d", len(data.Rows))
+			}
+			for i, line := range []int{3, 6, 8} {
+				if data.Rows[i].Number != line {
+					t.Fatalf("record%d starts at%d,want physical line%d", i, data.Rows[i].Number, line)
+				}
+			}
+			if data.Rows[0].Cells[2] != "Alpha\nExample" || data.Rows[1].Error != "column_count" {
+				t.Fatalf("multiline/error parsing changed: %+v", data.Rows)
+			}
+		})
+	}
+}
+
+func TestCSVPhysicalLineLimit(t *testing.T) {
+	input := "username\n" + strings.Repeat("\n", 1048576) + "someone\n"
+	if _, err := (FileSource{}).Read(strings.NewReader(input)); !errors.Is(err, ErrFile) {
+		t.Fatalf("oversized source line number: %v", err)
+	}
+}

@@ -482,3 +482,21 @@ func TestStableTeamResolutionAndSharedAutoCreation(t *testing.T) {
 		}
 	})
 }
+
+func TestCSVPhysicalLinesSurviveStagingAndExport(t *testing.T) {
+	f := newFixture(t)
+	run := f.preview(f.upload("physical-lines.csv"), mapping("username", "work_email", "display_name"))
+	assertDecision(t, run, "create", "conflict", "create")
+	for i, line := range []int{3, 6, 8} {
+		if run.Rows[i].Row != line {
+			t.Fatalf("preview row=%d,want original line%d", run.Rows[i].Row, line)
+		}
+	}
+	run = f.apply(run)
+	if run.Rows[0].Result != "created" || run.Rows[1].Result != "failed" || run.Rows[2].Result != "created" {
+		t.Fatalf("row isolation=%+v", run.Rows)
+	}
+	if got := peopleimport.ErrorsCSV(run); got != "row,decision,error,result\n6,conflict,column_count,failed\n" {
+		t.Fatalf("error export source line=%q", got)
+	}
+}

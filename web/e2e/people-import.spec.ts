@@ -126,6 +126,9 @@ test("mapping controls stay frozen while a preview response is pending", async (
     await expect.poll(() => reached).toBe(true);
     await expect(page.getByLabel("Column 2", { exact: true })).toBeDisabled();
     await expect(
+      page.getByRole("button", { name: "Preview changes", exact: true }),
+    ).toHaveAttribute("aria-busy", "true");
+    await expect(
       page.getByRole("checkbox", { name: "Create teams that do not exist" }),
     ).toBeDisabled();
     await expect(
@@ -168,6 +171,10 @@ test("skip controls stay frozen while an apply response is pending", async ({
     const skip = page.getByRole("checkbox", { name: "Skip row 2", exact: true });
     await expect(skip).toBeDisabled();
     await expect(skip).not.toBeChecked();
+    await expect(page.getByRole("button", { name: "Apply import", exact: true })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
     await expect(page.getByRole("button", { name: "Edit mapping", exact: true })).toBeDisabled();
   } finally {
     release?.();
@@ -176,4 +183,85 @@ test("skip controls stay frozen while an apply response is pending", async ({
   await expect(page.getByRole("status")).toContainText(
     "Finished: 50 created, 0 updated, 0 skipped, 0 failed.",
   );
+});
+
+const controlledProblem = (status: number) => ({
+  status,
+  contentType: "application/problem+json",
+  body: JSON.stringify({ type: "about:blank", title: "Controlled request failure", status }),
+});
+
+test("recovery clears superseded apply errors and preserves a new failed request", async ({
+  page,
+  instance,
+  webauthn: _,
+}) => {
+  await mappedImport(page, instance);
+  await page.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "50 rows: 50 create, 0 update, 0 skip, 0 conflict.",
+  );
+  const applyPath = "**/api/v1/people-imports/*/apply";
+  await page.route(applyPath, (route) => route.fulfill(controlledProblem(409)));
+  await page.getByRole("button", { name: "Apply import", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("needs a new preview");
+
+  await page.getByRole("button", { name: "Edit mapping", exact: true }).click();
+  await page.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Review changes", exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+
+  // A later failure is current and must remain visible until actual recovery.
+  await page.getByRole("button", { name: "Apply import", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("needs a new preview");
+  await page.unroute(applyPath);
+  await page.getByRole("button", { name: "Edit mapping", exact: true }).click();
+  await page.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: "Apply import", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Finished: 50 created, 0 updated, 0 skipped, 0 failed.",
+  );
+});
+
+test("recovery clears superseded download errors while fresh request failures remain", async ({
+  page,
+  instance,
+  webauthn: _,
+}) => {
+  await setUp(page, instance);
+  await page.getByRole("button", { name: "Skip for now" }).click();
+  await page.goto(`${instance.url}/people/import`);
+  const templatePath = "**/api/v1/people-imports/template";
+  await page.route(templatePath, (route) => route.fulfill(controlledProblem(503)));
+  await page.getByRole("button", { name: "Download CSV template", exact: true }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await page.unroute(templatePath);
+  await page.getByLabel("CSV or XLSX file").setInputFiles(fifty);
+  await page.getByRole("button", { name: "Upload file", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Map columns" })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByLabel("Column 2", { exact: true }).selectOption("work_email");
+  await page.getByRole("checkbox", { name: "Create teams that do not exist" }).check();
+
+  const previewPath = "**/api/v1/people-imports/*/preview";
+  await page.route(previewPath, (route) => route.fulfill(controlledProblem(400)));
+  await page.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await page.unroute(previewPath);
+  await page.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Review changes", exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: "Apply import", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Finished: 50 created, 0 updated, 0 skipped, 0 failed.",
+  );
+
+  const exportPath = "**/api/v1/people-imports/*/errors";
+  await page.route(exportPath, (route) => route.fulfill(controlledProblem(503)));
+  await page.getByRole("button", { name: "Download error report", exact: true }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await page.getByRole("button", { name: "Import another file", exact: true }).click();
+  await expect(page.getByLabel("CSV or XLSX file")).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });

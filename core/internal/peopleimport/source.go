@@ -43,7 +43,7 @@ type Dataset struct {
 	Delimiter string
 }
 
-// Record holds one source row; Number includes the header row.
+// Record holds one source row; Number is its original CSV start line or XLSX row.
 type Record struct {
 	Number int
 	Cells  []string
@@ -129,7 +129,7 @@ func readCSV(b []byte) (Dataset, error) {
 		return Dataset{}, ErrFile
 	}
 	out := Dataset{Headers: headers, Encoding: enc, Delimiter: string(delim)}
-	for n := 2; ; n++ {
+	for {
 		row, e := r.Read()
 		if e == io.EOF {
 			break
@@ -140,7 +140,11 @@ func readCSV(b []byte) (Dataset, error) {
 		if len(out.Rows) >= MaxRows || len(row) > MaxColumns {
 			return Dataset{}, ErrFile
 		}
-		rec := Record{Number: n, Cells: row}
+		line, _ := r.FieldPos(0)
+		if line > 1048576 {
+			return Dataset{}, ErrFile
+		}
+		rec := Record{Number: line, Cells: row}
 		if len(row) != len(headers) {
 			rec.Error = "column_count"
 		}

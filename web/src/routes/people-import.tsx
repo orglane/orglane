@@ -252,6 +252,9 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
           headers: { "Content-Type": "application/octet-stream" },
         }),
       );
+      preview.reset();
+      apply.reset();
+      download.reset();
       queryClient.setQueryData(["people-import", next.id], next);
       setRun(next);
       setMapping({
@@ -272,6 +275,8 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
           body: mapping,
         }),
       );
+      apply.reset();
+      download.reset();
       queryClient.setQueryData(["people-import", next.id], next);
       setRun(next);
       setEditing(false);
@@ -392,6 +397,8 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
               />
               <Button
                 disabled={!file || file.size > 5 * 1024 * 1024 || busy}
+                loading={upload.isPending}
+                aria-label={intl.formatMessage(messages.upload)}
                 onClick={() => upload.mutate()}
               >
                 <FormattedMessage {...messages.upload} />
@@ -466,6 +473,8 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
               </p>
               <Button
                 disabled={busy || mapping.columns.length === 0}
+                loading={preview.isPending}
+                aria-label={intl.formatMessage(messages.preview)}
                 onClick={() => preview.mutate()}
               >
                 <FormattedMessage {...messages.preview} />
@@ -570,6 +579,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
                       upload.reset();
                       preview.reset();
                       apply.reset();
+                      download.reset();
                       void navigate({ to: "/people/import", search: {}, replace: true });
                     }}
                   >
@@ -579,11 +589,21 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
               ) : (
                 <div className="flex flex-wrap gap-3">
                   {needsPreview ? (
-                    <Button disabled={busy} onClick={() => preview.mutate()}>
+                    <Button
+                      disabled={busy}
+                      loading={preview.isPending}
+                      aria-label={intl.formatMessage(messages.preview)}
+                      onClick={() => preview.mutate()}
+                    >
                       <FormattedMessage {...messages.preview} />
                     </Button>
                   ) : (
-                    <Button disabled={busy || noApply} onClick={() => apply.mutate()}>
+                    <Button
+                      disabled={busy || noApply}
+                      loading={apply.isPending}
+                      aria-label={intl.formatMessage(messages.apply)}
+                      onClick={() => apply.mutate()}
+                    >
                       <FormattedMessage {...messages.apply} />
                     </Button>
                   )}
