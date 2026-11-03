@@ -1,0 +1,33 @@
+services:
+  app:
+    image: leantime/leantime:3.13.2
+    ports: ["127.0.0.1:18106:8080"]
+    environment:
+      LEAN_DB_HOST: db
+      LEAN_DB_USER: leantime
+      LEAN_DB_PASSWORD: research
+      LEAN_DB_DATABASE: leantime
+      LEAN_APP_URL: http://localhost:18106
+      LEAN_SESSION_PASSWORD: research-only-session-0123456789012345
+    volumes:
+      - userfiles:/var/www/html/userfiles
+      - publicfiles:/var/www/html/public/userfiles
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: research-root
+      MYSQL_DATABASE: leantime
+      MYSQL_USER: leantime
+      MYSQL_PASSWORD: research
+    volumes: ["db:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 3s
+      retries: 60
+volumes:
+  userfiles:
+  publicfiles:
+  db:

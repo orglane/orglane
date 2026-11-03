@@ -1,0 +1,16 @@
+# Official all-in-one image; database included in its memory measurement.
+services:
+  app:
+    image: openproject/openproject:17.9.6
+    ports: ["127.0.0.1:18107:80"]
+    environment:
+      OPENPROJECT_HOST__NAME: localhost:18107
+      OPENPROJECT_HTTPS: "false"
+      OPENPROJECT_SECRET_KEY_BASE: research-only-session-01234567890123456789012345678901234567890123456789
+      OPENPROJECT_DEFAULT__LANGUAGE: en
+    volumes:
+      - pgdata:/var/openproject/pgdata
+      - assets:/var/openproject/assets
+volumes:
+  pgdata:
+  assets:

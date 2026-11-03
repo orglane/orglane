@@ -1,0 +1,19 @@
+# Minimal standalone deployment; built-in identity provider, local TLS only.
+services:
+  app:
+    image: opencloudeu/opencloud-rolling:9.0.0
+    user: "0:0"
+    entrypoint: /bin/sh
+    command: ["-c", "opencloud init || true; opencloud server"]
+    ports: ["127.0.0.1:18104:9200"]
+    environment:
+      OC_URL: https://localhost:18104
+      OC_INSECURE: "true"
+      IDM_ADMIN_PASSWORD: research-pass-1
+      PROXY_ENABLE_BASIC_AUTH: "true"
+    volumes:
+      - config:/etc/opencloud
+      - data:/var/lib/opencloud
+volumes:
+  config:
+  data:
