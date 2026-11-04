@@ -204,8 +204,21 @@ fetch() {
 	fi
 }
 
+# one_line <value>: no line breaks or other control characters. A value with
+# a newline would add lines to .env, and grep checks each line on its own.
+one_line() {
+	case $1 in
+	*[[:cntrl:]]*) return 1 ;;
+	esac
+}
+
+# matches <ERE> <value>: the whole value, one line, matches the expression.
+matches() {
+	one_line "$2" && printf '%s\n' "$2" | grep -Eq "$1"
+}
+
 valid_hostname() {
-	printf '%s' "$1" | grep -Eq '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+	matches '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$' "$1"
 }
 
 valid_port() {
@@ -215,8 +228,13 @@ valid_port() {
 	[ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
 
+# valid_edge_prefix <a.b.c>: the first three octets of an IPv4 /24.
+valid_edge_prefix() {
+	matches '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){2}$' "$1"
+}
+
 valid_ipv4() {
-	printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+	matches '^([0-9]{1,3}\.){3}[0-9]{1,3}$' "$1"
 }
 
 # env_get <file> <key>: the value of KEY= in an env file (last one wins).
@@ -442,7 +460,7 @@ choose_domain() {
 		ACME_EMAIL=$ANSWER
 	fi
 	if [ -n "$ACME_EMAIL" ]; then
-		printf '%s' "$ACME_EMAIL" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' ||
+		matches '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' "$ACME_EMAIL" ||
 			die "invalid email: '$ACME_EMAIL'"
 	fi
 }
@@ -459,7 +477,7 @@ choose_acme_ca() {
 	*) ACME_CA=$OPT_ACME_CA ;;
 	esac
 	# No characters that Compose would interpolate in .env.
-	printf '%s' "$ACME_CA" | grep -Eq '^https://[A-Za-z0-9._~:/?=&%-]+$' ||
+	matches '^https://[A-Za-z0-9._~:/?=&%-]+$' "$ACME_CA" ||
 		die "invalid --acme-ca '$OPT_ACME_CA': use production, staging or an https:// ACME directory URL"
 	if [ "$ACME_CA" = "$LE_STAGING" ]; then
 		warn "Let's Encrypt staging: browsers don't trust its certificates. Switch with --acme-ca production"
@@ -509,7 +527,7 @@ resolve_release() {
 			[ -n "$VERSION" ] || die "could not read the latest release from the GitHub API"
 		fi
 	fi
-	printf '%s' "$VERSION" | grep -Eq '^([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?|custom)$' ||
+	matches '^([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?|custom)$' "$VERSION" ||
 		die "invalid version: '$VERSION' (example: 0.1.0)"
 	if [ -n "$OPT_IMAGE" ]; then
 		IMAGE=$OPT_IMAGE
@@ -563,6 +581,7 @@ install_bundle() {
 passthrough() {
 	eval "val=\${$1:-}"
 	if [ -z "$val" ] && [ "$EXISTING" = 1 ]; then val=$(env_get "$ENV_FILE" "$1"); fi
+	one_line "$val" || die "invalid $1: it must be a single line"
 	if [ -n "$val" ]; then printf '%s=%s\n' "$1" "$val"; fi
 }
 
@@ -881,12 +900,23 @@ wait_certificate() {
 start_bundle() {
 	step "Starting Orglane"
 	log=$WORK/compose-up.log
-	# The status of the compose command, not of tee.
+	# The status of the compose command, not of tee. The group runs in a
+	# subshell under set -e: without the || it would exit before writing the
+	# status.
 	{
-		dc up --detach --wait --wait-timeout 300 --remove-orphans 2>&1
-		echo "$?" >"$WORK/compose-up.status"
+		st=0
+		dc up --detach --wait --wait-timeout 300 --remove-orphans 2>&1 || st=$?
+		echo "$st" >"$WORK/compose-up.status"
 	} | tee "$log" >&2
-	if [ "$(cat "$WORK/compose-up.status")" != 0 ]; then
+	if [ "$(cat "$WORK/compose-up.status" 2>/dev/null || echo 1)" != 0 ]; then
+		# A taken subnet, depending on the Docker version and the clash: "Pool
+		# overlaps with other one on this address space" (invalid pool
+		# request), "networks have overlapping IPv4", "failed to allocate
+		# gateway (...): Address already in use".
+		if grep -Eqi 'overlap|invalid pool request|failed to allocate gateway' "$log"; then
+			edge=$(env_get "$ENV_FILE" ORGLANE_EDGE_NETWORK_PREFIX)
+			die "the network Orglane needs, ${edge:-10.231.0}.0/24, overlaps with another Docker network or a network of this computer ('docker network ls' and 'docker network inspect' show them). Run the installer again with a free one in ORGLANE_EDGE_NETWORK_PREFIX (the first three octets), e.g. 'curl -fsSL https://orglane.app/install.sh | ORGLANE_EDGE_NETWORK_PREFIX=10.232.0 sh' with your options"
+		fi
 		if grep -Eq 'address already in use|port is already allocated' "$log"; then
 			die "a port Orglane needs is in use by another program. Stop it, or choose another one with --http-port (local and demo modes)"
 		fi
@@ -980,6 +1010,22 @@ cmd_install() {
 	fi
 	HTTP_PUBLISH=${HTTP_PUBLISH:-$DEFAULT_HTTP_PUBLISH}
 	HTTPS_PUBLISH=${HTTPS_PUBLISH:-$DEFAULT_HTTPS_PUBLISH}
+	# Settings from the environment go into .env as they are: one line each.
+	for v in ORGLANE_HTTP_PUBLISH ORGLANE_HTTPS_PUBLISH ORGLANE_EDGE_NETWORK_PREFIX COMPOSE_PROJECT_NAME COMPOSE_FILE; do
+		eval "val=\${$v:-}"
+		one_line "$val" || die "invalid $v: it must be a single line"
+	done
+	# The prefix this run writes: from the environment, else the one kept in
+	# .env (which may have been edited by hand).
+	edge=${ORGLANE_EDGE_NETWORK_PREFIX:-}
+	edge_from='the environment'
+	if [ -z "$edge" ] && [ "$EXISTING" = 1 ]; then
+		edge=$(env_get "$ENV_FILE" ORGLANE_EDGE_NETWORK_PREFIX)
+		edge_from=$ENV_FILE
+	fi
+	if [ -n "$edge" ] && ! valid_edge_prefix "$edge"; then
+		die "invalid ORGLANE_EDGE_NETWORK_PREFIX '$edge' in $edge_from: give the first three octets of a free /24, e.g. 10.232.0"
+	fi
 
 	check_resources
 	size_postgres
@@ -1169,6 +1215,7 @@ main() {
 				val=$2
 				shift
 			fi
+			one_line "$val" || die "invalid $opt: the value must be a single line"
 			;;
 		esac
 		case $opt in
