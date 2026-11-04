@@ -59,7 +59,7 @@ sh install.sh --mode local --managed --yes                                 # a n
 `enable-managed` keeps the installed version (unless `--version` is given; the agent must have the core's version) and the secrets, then:
 
 - writes `COMPOSE_PROFILES=managed`, which starts the `agent` service, and `ORGLANE_INSTALL_MANAGED=true`. Later re-runs and upgrades keep managed services enabled;
-- **pins the agent image by digest:** it pulls `ghcr.io/orglane/orglane-agent:<version>`, reads the digest the registry gives for that tag (the multi-arch index) and writes `ORGLANE_AGENT_IMAGE=ghcr.io/orglane/orglane-agent:<version>@sha256:<digest>`. If the image can't be pulled or no digest can be resolved, it stops and changes nothing; it never writes a bare tag. `--agent-image` names another image; one that exists only on this machine (built with `docker build --target agent -t orglane-agent:dev .`, no registry digest) is used as it is, like `--image` for the core, with a warning;
+- **pins the agent image by digest:** it pulls `ghcr.io/orglane/orglane-agent:<version>`, reads the digest the registry gives for that tag (the multi-arch index) and writes `ORGLANE_AGENT_IMAGE=ghcr.io/orglane/orglane-agent:<version>@sha256:<digest>`. If the image can't be pulled or no digest can be resolved, it stops and changes nothing; it never writes a bare tag. `--agent-image` names another image; one that exists only on this machine (built with `make image-agent` or `docker build --target agent -t orglane-agent:dev .`, no registry digest) is used as it is, like `--image` for the core, with a warning;
 - writes `ORGLANE_AGENT_PUBLISH_ADDRESS`, where services publish their own ports (Forgejo SSH): `127.0.0.1` in local and demo mode, every interface (`0.0.0.0`) in domain mode, where those ports must also be open in the firewalls;
 - creates `instances/` (mode 700) in the data directory and runs `docker compose up --wait`, which waits until the agent answers its healthcheck.
 
@@ -231,6 +231,17 @@ docker compose up -d --wait
 curl http://localhost/readyz                  # local mode
 docker compose logs orglane | grep setup_token   # one-time token to create the owner at http://localhost
 ```
+
+With managed services (`make image-agent` builds `orglane-agent:dev`; or `sh deploy/install.sh --source . --image orglane:dev --agent-image orglane-agent:dev --managed`), add to `.env` and run `docker compose up -d --wait` again:
+
+```sh
+ORGLANE_AGENT_SECRET=<openssl rand -hex 32>
+COMPOSE_PROFILES=managed
+ORGLANE_AGENT_IMAGE=orglane-agent:dev
+ORGLANE_DOMAIN_BASE=orglane.localhost         # local mode: not localhost (see Managed services)
+```
+
+and create `$ORGLANE_DATA_DIR/instances` (mode 700) first. Build both images from the same commit: the core works with an agent of its own version only.
 
 For a domain, set the domain-mode variables in `.env`, point DNS for the workspace host at the server, open ports 80 and 443, and run `docker compose up -d --wait`. Traefik requests the certificate on its first poll of the core (HTTP-01 challenge on port 80).
 

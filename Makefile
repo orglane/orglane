@@ -59,10 +59,12 @@ DEV_COMPOSE := docker compose -f deploy/dev/compose.yaml
 DEMO_DB     := orglane_demo
 DEMO_DB_URL := postgres://orglane:orglane@127.0.0.1:5432/$(DEMO_DB)?sslmode=disable
 
-# Core container image built by `make image` (Dockerfile).
+# Core container image built by `make image` (Dockerfile), and the agent
+# image built by `make image-agent` (Dockerfile target agent).
 IMAGE ?= orglane:dev
+AGENT_IMAGE ?= orglane-agent:dev
 
-.PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image website website-dev generate check-generate check-generate-go check-generate-ts \
+.PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image image-agent website website-dev generate check-generate check-generate-go check-generate-ts \
 	test test-go test-unit test-integration test-compose test-install measure-memory conformance test-ts test-e2e test-e2e-if-available test-website test-website-if-available \
 	lint lint-go lint-ts lint-sh fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
@@ -179,6 +181,9 @@ build-ts:
 
 image: ## Build the core container image (IMAGE, default orglane:dev)
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
+
+image-agent: ## Build the agent image for managed services (AGENT_IMAGE, default orglane-agent:dev)
+	docker build --build-arg VERSION=$(VERSION) --target agent -t $(AGENT_IMAGE) .
 
 # The orglane.app website (website/, Astro): a static site in website/dist
 # that serves deploy/install.sh at /install.sh. Deployed to GitHub Pages by
