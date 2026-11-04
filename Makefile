@@ -224,7 +224,7 @@ test-integration: ## Run Go unit and integration tests (needs Docker)
 	$(MAKE) --no-print-directory test-install
 
 test-compose: ## Start the Compose bundle (local mode, domain mode with Pebble) and test it (needs Docker)
-	go test -count=1 -tags integration -v ./tests/compose/
+	go test -race -count=1 -tags integration -v ./tests/compose/
 
 test-install: ## Run the installer end to end: local, demo and domain mode with Pebble (needs Docker)
 	go test -count=1 -tags integration -v ./tests/install/
