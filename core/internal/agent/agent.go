@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,6 +51,12 @@ type Options struct {
 
 	// runner replaces the Docker CLI in unit tests.
 	runner runner
+	// diskFree replaces the free-space check in unit tests.
+	diskFree func(path string) uint64
+	// crashAt names the point where the agent stops as if it crashed
+	// (checkpoint); tests set it, agenttest builds read
+	// ORGLANE_AGENT_TEST_CRASH_AT.
+	crashAt string
 }
 
 // Agent is a running agent.
@@ -66,10 +73,14 @@ type Agent struct {
 	now          func() time.Time
 	instancesDir string
 	stateDir     string
+	diskFree     func(path string) uint64
+	crashAt      string
+	crashed      atomic.Bool
 
 	mu        sync.Mutex
 	instances map[string]*instance
 	ctx       context.Context // set by Run; workers start only after it
+	stop      context.CancelFunc
 	wg        sync.WaitGroup
 }
 
@@ -80,14 +91,17 @@ type instance struct {
 	files sync.Mutex
 	// wake triggers a reconcile; the worker serializes them.
 	wake chan struct{}
+	// decision wakes an upgrade that awaits its confirmation.
+	decision chan struct{}
 
 	// Guarded by Agent.mu.
 	started      bool
 	eventTimer   *time.Timer
 	lastEventRun time.Time
-	busy         bool   // a reconcile runs
-	busyKind     string // the operation kind that runs, if any
-	lastError    string // error code of the last failed reconcile
+	busy         bool      // a reconcile runs
+	busyKind     string    // the operation kind that runs, if any
+	lastError    string    // error code of the last failed reconcile
+	snapshotOp   uuid.UUID // a requested manual snapshot, uuid.Nil if none
 }
 
 // New prepares an agent: it derives the transport key and creates the data
@@ -111,6 +125,12 @@ func New(opts Options) (*Agent, error) {
 	}
 	if opts.EventMinInterval <= 0 {
 		opts.EventMinInterval = time.Minute
+	}
+	if opts.diskFree == nil {
+		opts.diskFree = diskFree
+	}
+	if opts.crashAt == "" {
+		opts.crashAt = testCrashAt()
 	}
 	if opts.runner == nil {
 		bin := opts.DockerBinary
@@ -137,6 +157,8 @@ func New(opts Options) (*Agent, error) {
 		docker:       opts.runner,
 		bootID:       bootID,
 		now:          opts.Now,
+		diskFree:     opts.diskFree,
+		crashAt:      opts.crashAt,
 		instancesDir: filepath.Join(dataDir, "instances"),
 		instances:    map[string]*instance{},
 	}
@@ -156,8 +178,14 @@ func New(opts Options) (*Agent, error) {
 	if err := a.ops.load(); err != nil {
 		return nil, fmt.Errorf("agent: load operations: %w", err)
 	}
+	if err := a.removeAllPartialSnapshots(); err != nil {
+		return nil, fmt.Errorf("agent: remove partial snapshots: %w", err)
+	}
 	if err := a.recoverOperations(); err != nil {
 		return nil, fmt.Errorf("agent: recover operations: %w", err)
+	}
+	if a.crashAt != "" {
+		a.log.Warn("test crash hook armed", "at", a.crashAt)
 	}
 	return a, nil
 }
@@ -177,7 +205,7 @@ func (a *Agent) Serve(ctx context.Context, ln net.Listener) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	a.mu.Lock()
-	a.ctx = ctx
+	a.ctx, a.stop = ctx, cancel
 	a.mu.Unlock()
 
 	srv := &http.Server{
@@ -209,6 +237,10 @@ func (a *Agent) Serve(ctx context.Context, ln net.Listener) error {
 	defer done()
 	err = errors.Join(err, ignoreClosed(srv.Shutdown(shutdownCtx)))
 	a.wg.Wait()
+	if a.crashed.Load() {
+		a.log.Warn("agent stopped by the test crash hook")
+		return errors.Join(err, errCrashed)
+	}
 	a.log.Info("agent stopped")
 	return err
 }
@@ -233,7 +265,7 @@ func (a *Agent) instance(key string) *instance {
 func (a *Agent) instanceLocked(key string) *instance {
 	in, ok := a.instances[key]
 	if !ok {
-		in = &instance{key: key, wake: make(chan struct{}, 1)}
+		in = &instance{key: key, wake: make(chan struct{}, 1), decision: make(chan struct{}, 1)}
 		a.instances[key] = in
 	}
 	return in
@@ -306,6 +338,7 @@ func (a *Agent) periodic(ctx context.Context) {
 			if err := a.ops.prune(); err != nil {
 				a.log.Warn("prune operations", "error", err)
 			}
+			a.cleanAllMovedAside()
 			a.wakeAll()
 		}
 	}
@@ -395,20 +428,30 @@ func (a *Agent) renderContext(key string) packages.RenderContext {
 }
 
 // recoverOperations handles operations a previous process left unfinished:
-// an apply or remove of a generation that is still pending runs again, any
-// other is failed as interrupted.
+// an upgrade or restore with a journal is left to journal recovery
+// (recoverJournal); an apply, remove or upgrade of a generation that is
+// still pending runs again; any other is failed as interrupted.
 func (a *Agent) recoverOperations() error {
 	var errs []error
 	for _, op := range a.ops.unfinished() {
 		requeue := false
 		if agentapi.KeyPattern.MatchString(op.Instance) {
-			st, err := loadState(a.instanceDir(op.Instance))
+			dir := a.instanceDir(op.Instance)
+			j, err := readJournal(dir)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if j != nil && j.Operation == op.ID && !j.RollbackFailed {
+				continue
+			}
+			st, err := loadState(dir)
 			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				errs = append(errs, err)
 				continue
 			}
-			requeue = st != nil && st.pending() && st.desired.Generation == op.Generation &&
-				(op.Kind == agentapi.KindApply || op.Kind == agentapi.KindRemove)
+			requeue = st != nil && j == nil && st.pending() && st.desired.Generation == op.Generation &&
+				(op.Kind == agentapi.KindApply || op.Kind == agentapi.KindRemove || op.Kind == agentapi.KindUpgrade)
 		}
 		_, err := a.ops.update(op.ID, func(o *agentapi.Operation) {
 			if requeue {
@@ -420,4 +463,40 @@ func (a *Agent) recoverOperations() error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// removeAllPartialSnapshots deletes every incomplete snapshot on start.
+func (a *Agent) removeAllPartialSnapshots() error {
+	keys, err := a.keys()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, k := range keys {
+		errs = append(errs, a.removePartialSnapshots(k, uuid.Nil))
+	}
+	return errors.Join(errs...)
+}
+
+// cleanAllMovedAside deletes data moved aside by rollbacks and restores
+// more than 7 days ago, except for instances with a journal (a running or
+// failed rollback still needs it).
+func (a *Agent) cleanAllMovedAside() {
+	keys, err := a.keys()
+	if err != nil {
+		a.log.Warn("list instances", "error", err)
+		return
+	}
+	for _, k := range keys {
+		in := a.instance(k)
+		in.files.Lock()
+		j, err := readJournal(a.instanceDir(k))
+		in.files.Unlock()
+		if err != nil || j != nil {
+			continue
+		}
+		if err := a.cleanMovedAside(k, false); err != nil {
+			a.log.Warn("remove moved-aside data", "instance", k, "error", err)
+		}
+	}
 }

@@ -34,6 +34,9 @@ type runner interface {
 	// tail keeps only the last limit bytes of standard output (logs) and
 	// reports whether earlier output was dropped; see tailBuffer.text.
 	tail(ctx context.Context, limit int, args ...string) (stdout []byte, truncated bool, stderr []byte, err error)
+	// pipe streams standard input from stdin (nil for none) and standard
+	// output to stdout without a bound (database dumps and restores).
+	pipe(ctx context.Context, stdin io.Reader, stdout io.Writer, args ...string) (stderr []byte, err error)
 	stream(ctx context.Context, args ...string) (io.ReadCloser, func() error, error)
 }
 
@@ -63,10 +66,10 @@ func (d *dockerCLI) command(ctx context.Context, args []string) *exec.Cmd {
 // exec runs a command, writing standard output to stdout, and returns the
 // end of standard error. Output is drained to its end, never buffered
 // without bound.
-func (d *dockerCLI) exec(ctx context.Context, stdin []byte, stdout io.Writer, args []string) ([]byte, error) {
+func (d *dockerCLI) exec(ctx context.Context, stdin io.Reader, stdout io.Writer, args []string) ([]byte, error) {
 	cmd := d.command(ctx, args)
 	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
+		cmd.Stdin = stdin
 	}
 	stderr := newTailBuffer(maxStderr)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -77,7 +80,11 @@ func (d *dockerCLI) exec(ctx context.Context, stdin []byte, stdout io.Writer, ar
 
 func (d *dockerCLI) run(ctx context.Context, stdin []byte, args ...string) ([]byte, []byte, error) {
 	out := &capBuffer{limit: maxCommandOutput}
-	stderr, err := d.exec(ctx, stdin, out, args)
+	var in io.Reader
+	if stdin != nil {
+		in = bytes.NewReader(stdin)
+	}
+	stderr, err := d.exec(ctx, in, out, args)
 	if err == nil && out.overflow {
 		err = errOutputTooLarge
 	}
@@ -89,6 +96,13 @@ func (d *dockerCLI) tail(ctx context.Context, limit int, args ...string) ([]byte
 	stderr, err := d.exec(ctx, nil, out, args)
 	text, truncated := out.text()
 	return text, truncated, stderr, err
+}
+
+func (d *dockerCLI) pipe(ctx context.Context, stdin io.Reader, stdout io.Writer, args ...string) ([]byte, error) {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	return d.exec(ctx, stdin, stdout, args)
 }
 
 func (d *dockerCLI) stream(ctx context.Context, args ...string) (io.ReadCloser, func() error, error) {
@@ -163,8 +177,22 @@ func (c compose) up(ctx context.Context, timeout time.Duration) error {
 	return err
 }
 
-func (c compose) stop(ctx context.Context) error {
-	_, err := c.do(ctx, "stop")
+func (c compose) stop(ctx context.Context, services ...string) error {
+	_, err := c.do(ctx, append([]string{"stop"}, services...)...)
+	return err
+}
+
+// pull pulls the images of a staged project that are not present yet.
+// Images are pinned by digest, so a present image is the right one.
+func (c compose) pull(ctx context.Context, file, env string) error {
+	_, err := c.doFiles(ctx, file, env, "pull", "--quiet", "--policy", "missing")
+	return err
+}
+
+// start starts the project's containers without waiting (upgrade
+// switching; verifying waits with up).
+func (c compose) start(ctx context.Context) error {
+	_, err := c.do(ctx, "up", "--detach", "--remove-orphans")
 	return err
 }
 
@@ -268,6 +296,49 @@ func (p postgres) exec(ctx context.Context, sql string, secrets []string) error 
 		"psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", p.user, "-d", "postgres", "-f", "-")
 	if err != nil {
 		return &commandError{args: "exec psql", err: err, stderr: truncate(redact(stderr, secrets))}
+	}
+	return nil
+}
+
+// query runs one SQL statement from standard input and returns its
+// unaligned, tuples-only output.
+func (p postgres) query(ctx context.Context, sql string) (string, error) {
+	id, err := p.container(ctx)
+	if err != nil {
+		return "", err
+	}
+	out, stderr, err := p.r.run(ctx, []byte(sql), "exec", "-i", id,
+		"psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-U", p.user, "-d", "postgres", "-f", "-")
+	if err != nil {
+		return "", &commandError{args: "exec psql", err: err, stderr: truncate(stderr)}
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// dump writes a custom-format pg_dump of a database to w.
+func (p postgres) dump(ctx context.Context, database string, w io.Writer) error {
+	id, err := p.container(ctx)
+	if err != nil {
+		return err
+	}
+	stderr, err := p.r.pipe(ctx, nil, w, "exec", id, "pg_dump", "-U", p.user, "-Fc", "-d", database)
+	if err != nil {
+		return &commandError{args: "exec pg_dump", err: err, stderr: truncate(stderr)}
+	}
+	return nil
+}
+
+// restore runs pg_restore of a custom-format dump from r into an empty
+// database, as role, so every restored object is owned by it.
+func (p postgres) restore(ctx context.Context, database, role string, r io.Reader) error {
+	id, err := p.container(ctx)
+	if err != nil {
+		return err
+	}
+	stderr, err := p.r.pipe(ctx, r, nil, "exec", "-i", id, "pg_restore", "-U", p.user, "-d", database,
+		"--no-owner", "--role="+role, "--exit-on-error", "--single-transaction")
+	if err != nil {
+		return &commandError{args: "exec pg_restore", err: err, stderr: truncate(stderr)}
 	}
 	return nil
 }

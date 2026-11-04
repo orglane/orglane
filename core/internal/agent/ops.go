@@ -153,11 +153,11 @@ func (s *opStore) find(instance string, match func(*agentapi.Operation) bool) (a
 	return *best, true
 }
 
-// forGeneration returns the newest apply or remove operation of a
+// forGeneration returns the newest apply, remove or upgrade operation of a
 // generation.
 func (s *opStore) forGeneration(instance string, gen int64) (agentapi.Operation, bool) {
 	return s.find(instance, func(op *agentapi.Operation) bool {
-		return op.Generation == gen && (op.Kind == agentapi.KindApply || op.Kind == agentapi.KindRemove)
+		return op.Generation == gen && (op.Kind == agentapi.KindApply || op.Kind == agentapi.KindRemove || op.Kind == agentapi.KindUpgrade)
 	})
 }
 

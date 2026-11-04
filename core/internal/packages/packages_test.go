@@ -66,7 +66,7 @@ func testContext(t *testing.T) RenderContext {
 
 func TestRegistryLoadsAgenttest(t *testing.T) {
 	got := testRegistry(t).List()
-	want := []agentapi.PackageRef{{ID: "agenttest", Version: "1.0.0-1"}}
+	want := []agentapi.PackageRef{{ID: "agenttest", Version: "1.0.0-1"}, {ID: "agenttest", Version: "2.0.0-1"}, {ID: "agenttest", Version: "3.0.0-1"}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("List() = %v, want %v", got, want)
 	}

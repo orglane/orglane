@@ -51,14 +51,42 @@ func (a *Agent) postgres() postgres {
 // operation for a pending, unblocked desired spec moves current toward
 // desired.
 func (a *Agent) reconcile(ctx context.Context, in *instance) {
+	if a.crashed.Load() {
+		return
+	}
 	dir := a.instanceDir(in.key)
 	in.files.Lock()
 	st, err := loadState(dir)
+	var j *journal
+	if err == nil {
+		j, err = readJournal(dir)
+	}
 	in.files.Unlock()
 	if err != nil {
 		a.log.Error("read instance state", "instance", in.key, "error", err)
 		return
 	}
+
+	// An upgrade or restore journal comes first: recover it and stop
+	// (docs/specs/agent.md "Reconcile loop").
+	if j != nil {
+		if j.RollbackFailed {
+			a.setLastError(in, agentapi.CodeRollbackFailed)
+			return
+		}
+		a.setBusyKind(in, j.Kind)
+		code := a.recoverJournal(ctx, in, st, j)
+		a.clearBusy(in, code)
+		a.wakeIfSettled(in)
+		return
+	}
+	if id := a.takeSnapshotRequest(in); id != uuid.Nil {
+		a.setBusyKind(in, agentapi.KindSnapshot)
+		a.clearBusy(in, a.manualSnapshot(ctx, in, st, id))
+		a.wake(in.key) // pending work runs next
+		return
+	}
+
 	var target *agentapi.Spec
 	var op *agentapi.Operation
 	switch {
@@ -67,10 +95,17 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 		o, ok := a.ops.forGeneration(in.key, target.Generation)
 		if !ok || o.Terminal() {
 			// A retry after a failure, or an operation pruned meanwhile.
-			if o, err = a.ops.create(in.key, opKind(target), target.Generation); err != nil {
+			if o, err = a.ops.create(in.key, opKind(target, st.current), target.Generation); err != nil {
 				a.log.Error("create operation", "instance", in.key, "error", err)
 				return
 			}
+		}
+		if isUpgrade(st) {
+			a.setBusyKind(in, agentapi.KindUpgrade)
+			code := a.upgrade(ctx, in, st, o)
+			a.clearBusy(in, code)
+			a.wakeIfSettled(in)
+			return
 		}
 		op = &o
 	case st.current != nil:
@@ -177,6 +212,43 @@ func (a *Agent) record(key string, st *instanceState, target *agentapi.Spec, isO
 	return writeJSON(filepath.Join(dir, blockedFile), blocked)
 }
 
+func (a *Agent) setBusyKind(in *instance, kind string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	in.busy, in.busyKind = true, kind
+}
+
+func (a *Agent) setLastError(in *instance, code string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	in.lastError = code
+}
+
+// takeSnapshotRequest returns and clears a requested manual snapshot.
+func (a *Agent) takeSnapshotRequest(in *instance) uuid.UUID {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	id := in.snapshotOp
+	in.snapshotOp = uuid.Nil
+	return id
+}
+
+// wakeIfSettled reconciles the instance again once its journal is gone, so
+// a newer accepted spec applies after an upgrade or restore. A journal that
+// stays (a commit or exposure to retry, a failed rollback) waits for the
+// next trigger instead of looping.
+func (a *Agent) wakeIfSettled(in *instance) {
+	if a.crashed.Load() {
+		return
+	}
+	in.files.Lock()
+	j, err := readJournal(a.instanceDir(in.key))
+	in.files.Unlock()
+	if err == nil && j == nil {
+		a.wake(in.key)
+	}
+}
+
 func (a *Agent) setBusy(in *instance, op *agentapi.Operation) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -248,16 +320,8 @@ func (a *Agent) converge(ctx context.Context, in *instance, target, prev *agenta
 	}
 
 	setPhase(agentapi.PhaseStarting)
-	timeout := pkg.Manifest.Health.StartTimeout
-	upCtx, cancel := context.WithTimeout(ctx, timeout+2*time.Minute)
-	started := a.now()
-	err = c.up(upCtx, timeout)
-	cancel()
-	if err != nil {
-		if a.now().Sub(started) >= timeout {
-			return failed(agentapi.CodeHealthTimeout, err)
-		}
-		return failed(agentapi.CodeComposeFailed, err)
+	if err := a.upWait(ctx, c, pkg.Manifest.Health.StartTimeout); err != nil {
+		return err
 	}
 
 	// Configure hooks run whenever the running render differs from the last
@@ -508,6 +572,14 @@ func (a *Agent) status(ctx context.Context, key string) (agentapi.InstanceStatus
 	in := a.instance(key)
 	in.files.Lock()
 	st, err := loadState(a.instanceDir(key))
+	var j *journal
+	var snapshots []agentapi.Snapshot
+	if err == nil {
+		j, err = readJournal(a.instanceDir(key))
+	}
+	if err == nil && st.id != uuid.Nil {
+		snapshots, err = a.listSnapshots(key)
+	}
 	in.files.Unlock()
 	if err != nil {
 		return agentapi.InstanceStatus{}, false, err
@@ -517,7 +589,7 @@ func (a *Agent) status(ctx context.Context, key string) (agentapi.InstanceStatus
 	}
 	out := agentapi.InstanceStatus{
 		Key: key, InstanceID: st.id, Services: []agentapi.ServiceStatus{},
-		BlockedGenerations: st.blocked.list(),
+		BlockedGenerations: st.blocked.list(), Snapshots: len(snapshots),
 	}
 	if st.desired != nil {
 		out.AcceptedGeneration = st.desired.Generation
@@ -547,6 +619,12 @@ func (a *Agent) status(ctx context.Context, key string) (agentapi.InstanceStatus
 	}
 
 	switch {
+	case j != nil && j.RollbackFailed:
+		out.Phase = agentapi.PhaseFailed
+	case j != nil && (j.Phase == agentapi.PhaseRollingBack || j.Phase == agentapi.PhaseRestored):
+		out.Phase = agentapi.PhaseRollingBack
+	case j != nil || (busy && busyKind == agentapi.KindUpgrade):
+		out.Phase = agentapi.PhaseUpgrading
 	case busy && busyKind == agentapi.KindRemove:
 		out.Phase = agentapi.PhaseRemoving
 	case busy && busyKind != "" && cur == nil:

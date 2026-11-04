@@ -47,6 +47,11 @@ func (r *recordingRunner) tail(ctx context.Context, _ int, args ...string) ([]by
 	return out, false, stderr, err
 }
 
+func (r *recordingRunner) pipe(ctx context.Context, _ io.Reader, _ io.Writer, args ...string) ([]byte, error) {
+	_, stderr, err := r.run(ctx, nil, args...)
+	return stderr, err
+}
+
 func (r *recordingRunner) stream(context.Context, ...string) (io.ReadCloser, func() error, error) {
 	return nil, nil, errors.New("no docker")
 }
@@ -138,8 +143,13 @@ func TestRouteTable(t *testing.T) {
 		"GET /v1/instances",
 		"GET /v1/instances/{key}",
 		"PUT /v1/instances/{key}",
-		"GET /v1/instances/{key}/logs",
+		"POST /v1/instances/{key}/snapshots",
+		"GET /v1/instances/{key}/snapshots",
+		"POST /v1/instances/{key}/restore",
 		"GET /v1/operations/{id}",
+		"POST /v1/operations/{id}/confirm",
+		"POST /v1/operations/{id}/abort",
+		"GET /v1/instances/{key}/logs",
 	}
 	if got := Routes(); !slices.Equal(got, want) {
 		t.Fatalf("Routes() = %v, want exactly %v", got, want)
@@ -159,8 +169,9 @@ func TestNoCommandEndpoints(t *testing.T) {
 		{http.MethodPost, "/v1/instances/git"},
 		{http.MethodPost, "/v1/instances/git/exec"},
 		{http.MethodPut, "/v1/instances/git/compose"},
-		{http.MethodPost, "/v1/instances/git/snapshots"},
-		{http.MethodPost, "/v1/instances/git/restore"},
+		{http.MethodPut, "/v1/instances/git/snapshots"},
+		{http.MethodDelete, "/v1/instances/git/snapshots"},
+		{http.MethodPost, "/v1/instances/git/snapshots/x/exec"},
 		{http.MethodDelete, "/v1/instances/git"},
 		{http.MethodPut, "/v1/images/busybox"},
 		{http.MethodPost, "/v1/operations/" + uuid.NewString() + "/confirm"},
@@ -170,6 +181,14 @@ func TestNoCommandEndpoints(t *testing.T) {
 		rec := serve(h, req)
 		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s = %d, want 404 or 405", c.method, c.path, rec.Code)
+		}
+	}
+	// The snapshot and restore endpoints take no command, image or path:
+	// such fields are refused.
+	for _, path := range []string{"/v1/instances/git/snapshots", "/v1/instances/git/restore"} {
+		req, _ := signed(t, key, http.MethodPost, path, []byte(`{"reason":"manual","command":["sh","-c","id"],"image":"alpine"}`), now)
+		if rec := serve(h, req); rec.Code != http.StatusBadRequest {
+			t.Errorf("POST %s with a command = %d, want 400", path, rec.Code)
 		}
 	}
 	if n := rr.count(); n != 0 {
@@ -419,24 +438,61 @@ func TestPutSemantics(t *testing.T) {
 	}
 }
 
-func TestPutRefusesVersionChange(t *testing.T) {
+func TestPutVersionChange(t *testing.T) {
 	now := time.Now()
 	a, _ := newTestAgent(t, func() time.Time { return now })
 	if rec := put(t, a, now, "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusAccepted {
 		t.Fatal(rec.Body)
 	}
-	// Pretend 0.9.0-1 runs.
-	running := testSpec(1)
-	running.Package.Version = "0.9.0-1"
-	if err := writeSpec(filepath.Join(a.instancesDir, "git", currentFile), running); err != nil {
-		t.Fatal(err)
+	running := func(version string) {
+		t.Helper()
+		s := testSpec(1)
+		s.Package.Version = version
+		if err := writeSpec(filepath.Join(a.instancesDir, "git", currentFile), s); err != nil {
+			t.Fatal(err)
+		}
 	}
-	rec := put(t, a, now, "git", mustJSON(t, testSpec(2)))
-	if p := problemCode(t, rec); rec.Code != http.StatusUnprocessableEntity || p.Code != agentapi.CodeUpgradePathBlocked || p.RequiredVersion != "0.9.0-1" {
-		t.Fatalf("version change: %d %s", rec.Code, rec.Body)
+	versioned := func(gen int64, version string) *agentapi.Spec {
+		s := testSpec(gen)
+		s.Package.Version = version
+		if version != agenttest.Version {
+			s.Settings["fault"] = "none"
+		}
+		return s
+	}
+	running(agenttest.Version)
+
+	// 1.0.0-1 -> 3.0.0-1 skips the required stop 2.0.0-1.
+	rec := put(t, a, now, "git", mustJSON(t, versioned(2, agenttest.Version3)))
+	if p := problemCode(t, rec); rec.Code != http.StatusUnprocessableEntity || p.Code != agentapi.CodeUpgradePathBlocked || p.RequiredVersion != agenttest.Version2 {
+		t.Fatalf("skipping a stop: %d %s", rec.Code, rec.Body)
+	}
+	// An upgrade needs the state running.
+	stopped := versioned(2, agenttest.Version2)
+	stopped.State = agentapi.StateStopped
+	if rec = put(t, a, now, "git", mustJSON(t, stopped)); rec.Code != http.StatusUnprocessableEntity || problemCode(t, rec).Code != agentapi.CodeInvalidInput {
+		t.Fatalf("stopped upgrade: %d %s", rec.Code, rec.Body)
+	}
+	// 1.0.0-1 -> 2.0.0-1 is an upgrade.
+	rec = put(t, a, now, "git", mustJSON(t, versioned(2, agenttest.Version2)))
+	var op agentapi.Operation
+	if rec.Code != http.StatusAccepted || json.Unmarshal(rec.Body.Bytes(), &op) != nil || op.Kind != agentapi.KindUpgrade || op.Generation != 2 {
+		t.Fatalf("upgrade: %d %s", rec.Code, rec.Body)
+	}
+
+	// A downgrade is refused without a stop to name.
+	running(agenttest.Version2)
+	rec = put(t, a, now, "git", mustJSON(t, versioned(3, agenttest.Version)))
+	if p := problemCode(t, rec); rec.Code != http.StatusUnprocessableEntity || p.Code != agentapi.CodeUpgradePathBlocked || p.RequiredVersion != "" {
+		t.Fatalf("downgrade: %d %s", rec.Code, rec.Body)
+	}
+	// The running version is a plain apply (the revert after a rollback).
+	rec = put(t, a, now, "git", mustJSON(t, versioned(3, agenttest.Version2)))
+	if rec.Code != http.StatusAccepted || json.Unmarshal(rec.Body.Bytes(), &op) != nil || op.Kind != agentapi.KindApply {
+		t.Fatalf("revert: %d %s", rec.Code, rec.Body)
 	}
 	// Removal is accepted for any version.
-	remove := testSpec(2)
+	remove := testSpec(4)
 	remove.State, remove.Purge = agentapi.StateAbsent, true
 	if rec := put(t, a, now, "git", mustJSON(t, remove)); rec.Code != http.StatusAccepted {
 		t.Fatalf("remove: %d %s", rec.Code, rec.Body)
@@ -596,8 +652,13 @@ func TestPeerUIDCheck(t *testing.T) {
 	}
 }
 
+// testLogger discards the agent's log; ORGLANE_TEST_AGENT_LOG=1 writes it
+// to the test output.
 func testLogger(t *testing.T) *slog.Logger {
 	t.Helper()
+	if os.Getenv("ORGLANE_TEST_AGENT_LOG") != "" {
+		return slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}
 	return slog.New(slog.DiscardHandler)
 }
 
@@ -651,6 +712,13 @@ func (f fixedRunner) run(context.Context, []byte, ...string) ([]byte, []byte, er
 
 func (f fixedRunner) tail(context.Context, int, ...string) ([]byte, bool, []byte, error) {
 	return []byte(f), false, nil, nil
+}
+
+func (f fixedRunner) pipe(_ context.Context, _ io.Reader, w io.Writer, _ ...string) ([]byte, error) {
+	if w != nil {
+		_, _ = io.WriteString(w, string(f))
+	}
+	return nil, nil
 }
 
 func (f fixedRunner) stream(context.Context, ...string) (io.ReadCloser, func() error, error) {
