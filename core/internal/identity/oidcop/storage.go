@@ -463,8 +463,8 @@ func (s *storage) TerminateSessionFromRequest(ctx context.Context, req *op.EndSe
 // access token arrives as its ID, decrypted from the token. Anything else is
 // a token this provider did not issue.
 func (s *storage) RevokeToken(ctx context.Context, tokenOrID, userID, clientID string) *oidc.Error {
-	if missing, _ := ctx.Value(missingTokenKey{}).(bool); missing {
-		return oidc.ErrInvalidRequest().WithDescription("token missing")
+	if invalid, ok := ctx.Value(invalidTokenParamKey{}).(string); ok {
+		return oidc.ErrInvalidRequest().WithDescription("%s", invalid)
 	}
 	if strings.HasPrefix(tokenOrID, RefreshTokenPrefix) {
 		return s.revokeRefreshToken(ctx, tokenOrID, clientID)
@@ -495,10 +495,17 @@ func (s *storage) RevokeToken(ctx context.Context, tokenOrID, userID, clientID s
 // has a token, which RFC 7009 (section 2.1) requires, and answers 200 as for
 // an unknown token. Its newer op.Server does check, after authenticating the
 // client. checkRevocationToken does the same for op.Revoke: it marks a
-// request without a token, and RevokeToken, which zitadel calls only once
-// the client is authenticated, answers invalid_request (RFC 6749, section
-// 5.2). Client authentication errors keep their answers.
-type missingTokenKey struct{}
+// request whose token parameter is missing, empty or repeated, and
+// RevokeToken, which zitadel calls only once the client is authenticated,
+// answers invalid_request (RFC 6749, section 5.2). Client authentication
+// errors keep their answers.
+//
+// A repeated token is rejected (RFC 6749, section 3.1: parameters must not
+// be included more than once) rather than resolved: zitadel's form decoder
+// takes the last value of r.Form, which lists the body values before the
+// query values, so any choice here could differ from the token zitadel
+// revokes.
+type invalidTokenParamKey struct{}
 
 // checkRevocationToken is an interceptor of the provider's router, so it
 // runs inside its CORS handling. It parses the form of a revocation request,
@@ -510,8 +517,15 @@ func checkRevocationToken(next http.Handler) http.Handler {
 				op.RevocationRequestError(w, r, oidc.ErrInvalidRequest().WithDescription("unable to parse request").WithParent(err))
 				return
 			}
-			if r.Form.Get("token") == "" {
-				r = r.WithContext(context.WithValue(r.Context(), missingTokenKey{}, true))
+			invalid := ""
+			switch tokens := r.Form["token"]; {
+			case len(tokens) > 1:
+				invalid = "token repeated"
+			case len(tokens) == 0 || tokens[0] == "":
+				invalid = "token missing"
+			}
+			if invalid != "" {
+				r = r.WithContext(context.WithValue(r.Context(), invalidTokenParamKey{}, invalid))
 			}
 		}
 		next.ServeHTTP(w, r)

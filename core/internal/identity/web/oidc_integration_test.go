@@ -611,6 +611,85 @@ func TestRevocationRequiresToken(t *testing.T) {
 	}
 }
 
+// TestRevocationRejectsRepeatedToken: a token parameter given more than
+// once, in the body or in the body and the query, is an invalid request
+// (RFC 6749, section 3.1) and revokes nothing. zitadel's form decoder takes
+// the last value and the body comes before the query, so resolving the
+// duplicate could revoke another token than the one checked. A token only
+// in the query is accepted, as before.
+func TestRevocationRejectsRepeatedToken(t *testing.T) {
+	e := newEnv(t)
+	b := e.browser()
+	e.setupOwner(b)
+	e.registerClient(identity.NewOIDCClient{ID: "spa", Public: true})
+	p := newPKCE()
+	api := e.browser()
+	issue := func() string {
+		t.Helper()
+		q := clientRedirect(t, b.authorize(authParams("spa", p)))
+		status, tr := b.token(url.Values{"grant_type": {"authorization_code"}, "code": {q.Get("code")}, "redirect_uri": {redirectURI}, "client_id": {"spa"}, "code_verifier": {p.verifier}})
+		if status != http.StatusOK || tr.AccessToken == "" {
+			t.Fatalf("token exchange = %d %+v", status, tr)
+		}
+		return tr.AccessToken
+	}
+	accepted := func(token string) bool {
+		t.Helper()
+		return api.req("GET", "/api/v1/me", nil, bearer(token)...).StatusCode == http.StatusOK
+	}
+	revoke := func(query, body url.Values) (int, string, string) {
+		t.Helper()
+		target := "/oidc/revoke"
+		if query != nil {
+			target += "?" + query.Encode()
+		}
+		r := b.req("POST", target, body, "Origin", "")
+		var res struct {
+			Error       string `json:"error"`
+			Description string `json:"error_description"`
+		}
+		if len(r.body) > 0 && string(r.body) != "null" {
+			r.json(t, &res)
+		}
+		return r.StatusCode, res.Error, res.Description
+	}
+
+	x, y := issue(), issue()
+	for _, c := range []struct {
+		name        string
+		query, body url.Values
+	}{
+		{"body token, empty query token", url.Values{"token": {""}}, url.Values{"client_id": {"spa"}, "token": {x}}},
+		{"empty body token, query token", url.Values{"token": {x}}, url.Values{"client_id": {"spa"}, "token": {""}}},
+		{"body and query tokens", url.Values{"token": {y}}, url.Values{"client_id": {"spa"}, "token": {x}}},
+		{"two body tokens", nil, url.Values{"client_id": {"spa"}, "token": {x, y}}},
+		{"two query tokens", url.Values{"token": {x, y}}, url.Values{"client_id": {"spa"}}},
+	} {
+		if status, oauthErr, desc := revoke(c.query, c.body); status != http.StatusBadRequest || oauthErr != "invalid_request" || desc != "token repeated" {
+			t.Errorf("%s = %d %q %q, want 400 invalid_request \"token repeated\"", c.name, status, oauthErr, desc)
+		}
+		if !accepted(x) || !accepted(y) {
+			t.Fatalf("%s revoked a token", c.name)
+		}
+	}
+
+	// Client authentication errors still come first.
+	if status, oauthErr, _ := revoke(url.Values{"token": {y}}, url.Values{"token": {x}}); status != http.StatusUnauthorized || oauthErr != "invalid_client" {
+		t.Errorf("repeated token without a client = %d %q, want 401 invalid_client", status, oauthErr)
+	}
+
+	// A token given once, in the query only, is revoked.
+	if status, oauthErr, _ := revoke(url.Values{"token": {x}}, url.Values{"client_id": {"spa"}}); status != http.StatusOK {
+		t.Fatalf("query token = %d %q, want 200", status, oauthErr)
+	}
+	if accepted(x) {
+		t.Fatal("the token revoked from the query is still accepted")
+	}
+	if !accepted(y) {
+		t.Fatal("revoking one token revoked another")
+	}
+}
+
 func TestOIDCEndSession(t *testing.T) {
 	e := newEnv(t)
 	b := e.browser()
