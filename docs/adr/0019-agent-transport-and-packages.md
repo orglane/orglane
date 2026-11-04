@@ -20,10 +20,11 @@ The details live in [docs/specs/agent.md](../specs/agent.md); this ADR records t
 
 **1. The agent is an opt-in service of the Compose bundle, with its own image.**
 
-- Service `agent` in `deploy/compose/compose.yaml`, in the Compose profile `managed`. It is started only when managed services are enabled (`COMPOSE_PROFILES=managed`, set by the installer). Without it the core works and shows managed providers as unavailable.
+- Service `agent` in `deploy/compose/compose.yaml`, in the Compose profile `managed`. It is **off by default** and started only when managed services are enabled (`COMPOSE_PROFILES=managed`, set by `install.sh --managed` or `install.sh enable-managed`). The core cannot start it; without it the core works, shows managed providers as unavailable, and Settings → Apps shows the one-line command that enables them.
 - Image `ghcr.io/orglane/orglane-agent`, a second target of the root `Dockerfile`: the same `orglane` binary (`command: ["agent"]`) plus the Docker CLI and the Compose plugin, pinned by version and checksum. The core image stays free of Docker tooling. Both images are built from the same commit and carry the same version; the core refuses mutating operations against an agent of another version.
 - Only the agent mounts `/var/run/docker.sock`. It runs as root (the socket is root-equivalent anyway; this is stated, not hidden) and with `network_mode: none`: it needs no network, because Docker pulls images and the core reaches it over a Unix socket.
-- It mounts the instances directory at the **same absolute path** as on the host (`${ORGLANE_DATA_DIR}/instances:${ORGLANE_DATA_DIR}/instances`), so bind-mount paths in generated Compose files resolve identically for the Docker daemon.
+- It mounts the instances directory at the **same absolute path** as on the host (`${ORGLANE_DATA_DIR}/instances:${ORGLANE_DATA_DIR}/instances`), so bind-mount paths in generated Compose files resolve identically for the Docker daemon. Each instance directory is bound to the instance's immutable ID; a key is reused only after a purge.
+- Traefik carries the workspace host as a network alias, so managed services reach Orglane by the same name as browsers. Local mode supports managed services with `*.localhost` names (`orglane.localhost`); the bare name `localhost` cannot be redirected inside containers and is not used with managed services.
 
 **2. Transport: HTTP/1.1 over a Unix socket on a shared volume, with HMAC-signed requests and responses.**
 
@@ -35,7 +36,7 @@ The details live in [docs/specs/agent.md](../specs/agent.md); this ADR records t
 **3. The core owns desired state and pushes it; the agent keeps the last applied state and reconciles on its own.**
 
 - The core database is the source of truth. Each managed instance has a desired spec with a monotonically increasing `generation`. The core pushes it (`PUT`, idempotent per generation) through the job queue and polls the resulting operation.
-- The agent persists the last accepted spec next to the instance and reconciles toward it on change, on Docker events for its containers, on start and every 10 minutes. When the core is down, services keep running and the agent keeps repairing drift from its local copy. When the agent is down, services keep running under Docker's restart policy and the core queues its pushes.
+- The agent persists the last accepted spec and the running spec next to the instance. It reconciles the running spec on Docker events for its containers, on start and every 10 minutes, and moves to an accepted newer spec only through an operation. A generation whose upgrade failed or rolled back is blocked and never retried by the agent; the core acknowledges with a revert spec, an admin retries with a new generation. When the core is down, services keep running and the agent keeps repairing drift from its local copy. When the agent is down, services keep running under Docker's restart policy and the core queues its pushes.
 - A periodic core job (every 5 minutes, and whenever the agent's boot ID changes) compares the agent's observed generations with the database and re-pushes what is behind or missing. This makes lost agent state recoverable from the core.
 
 **4. Packages are embedded in the binary; the agent renders them and enforces a policy.**
@@ -51,21 +52,24 @@ The details live in [docs/specs/agent.md](../specs/agent.md); this ADR records t
 - The agent needs no database credentials and no network access. In the cloud, the Kubernetes operator implements the same operations against the regional PostgreSQL (ADR 0006).
 - Managed services reach PostgreSQL through a new internal network (`services`) that PostgreSQL joins and the core does not, so services cannot reach the core's internal listener over it.
 
-**6. Upgrades: snapshot, then switch; any failure, crash or missing confirmation rolls back.**
+**6. Upgrades: start automatically, snapshot, then switch fenced; any failure, crash or missing confirmation rolls back.**
 
-- Order: preflight → pull new images (no downtime yet) → stop the application services → **snapshot** (database dump, data directories, rendered files, image references) → start the new version → package migrations → health check → **confirmation by the core** (provider-level check through the adapter) → commit.
+- Package upgrades start automatically when a new Orglane release embeds a newer package version (ADR 0007: users don't pick versions). Results are visible to admins, who can retry a failed upgrade.
+- Order: preflight → pull new images (no downtime yet) → stop the application services → **snapshot** (database dump, data directories, rendered files, image references) → start the new version **fenced** → package migrations → health check → **confirmation by the core** (provider-level check through the fenced alias) → commit (unfence).
 - A failure at any step after the snapshot, or no confirmation within the package's timeout, rolls back: the new containers stop, the data directories and the database are restored from the snapshot, and the previous version starts with the previous rendered files.
 - The agent writes an upgrade journal before each phase. After a crash or reboot it never resumes forward: an interrupted upgrade that had not committed is rolled back on start.
-- While an instance upgrades, the core routes its host to a maintenance response, so no user writes are made between the snapshot and the commit that a rollback would discard.
+- **Write fence:** until commit, the candidate is rendered without the network alias that Traefik routes to and without published host ports (SSH). No client entry point reaches it, whatever Traefik's state, and the fence survives container and host restarts because it is part of the rendered files. The guarantee is exactly this: no write acknowledged to a client through a declared entry point is lost by a rollback. Work the candidate does on its own (migrations, background jobs) is discarded and redone. The core's maintenance response on the instance's host is only a friendlier answer, not the barrier.
 - A failed upgrade is retried only by an admin, never in a loop.
 
 ## Consequences
 
+- Managed services are opt-in at install time; enabling them is one host command, because only the host can grant the Docker socket.
 - The web-facing core still never touches the Docker socket, and the agent cannot be used as a generic remote shell even by a compromised core: the attack surface is the input schema of each embedded package plus the post-render policy, both of which are testable.
 - Homelab users can read every generated file under `instances/<key>/`, as ADR 0006 promises. Local edits are overwritten on the next reconcile; that is documented.
 - A second image is published per release (`orglane-agent`), and `images.yml` must build and sign it. The installer gets a `--managed` switch and an `enable-managed` subcommand.
 - Supporting a provider version is a code change (a new embedded package version), which matches "Orglane as a distribution" (ADR 0007) but means security fixes in managed services need an Orglane release.
-- Upgrades have downtime (stop → snapshot → start). Online snapshots come with backup hooks in M7.
+- Upgrades have downtime (stop → snapshot → fenced verification → commit). Online snapshots come with backup hooks in M7.
+- Forgejo SSH is a directly published host port (default 2222): SSH has no host name for Traefik to route on.
 - The agent runs as root with the Docker socket. Anyone who controls `ORGLANE_AGENT_SECRET` and the `agent-run` volume can install the embedded packages, nothing else. Anyone with root on the host already controls everything; that is out of scope.
 - No accepted ADR is changed. This ADR refines ADR 0006 (where the agent runs, who pushes) and ADR 0007 (what a snapshot is); the path `/var/lib/orglane/instances/<id>` from ADR 0006 is kept, with `<id>` being the instance key.
 
@@ -79,4 +83,5 @@ The details live in [docs/specs/agent.md](../specs/agent.md); this ADR records t
 - **mTLS over the socket:** stronger primitives than needed for a local channel, with certificate lifecycle to manage. HMAC with a shared random secret is enough here.
 - **A key derived from the master secret:** one secret less in `.env`, but the agent would then hold the key to every encrypted column in the core database. Rejected.
 - **Core creates the per-service databases:** needs `CREATEROLE`/`CREATEDB` for the core's connection, and the agent needs database access for dumps and restores anyway. Rejected in favor of one owner of the data plane.
+- **A maintenance route as the write barrier during upgrades:** depends on when Traefik polls, does not drain open connections and does not cover published ports such as SSH. Kept only as a friendlier answer; the fence is in the rendered project.
 - **Resume an interrupted upgrade forward:** migrations may be half applied, so forward recovery is provider-specific and hard to test. Rolling back from the snapshot is deterministic.

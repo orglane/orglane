@@ -14,7 +14,7 @@ It refines [ADR 0006](../adr/0006-agent-and-desired-state.md) and [ADR 0007](../
                 │           agent (root, network_mode: none) ──► /var/run/docker.sock       │
                 │                │ writes ${ORGLANE_DATA_DIR}/instances/<key>/ (same path)   │
                 │                ▼                                                          │
-                └─edge──► managed services (Compose project orglane-<key>) ─services─► postgres
+                └─edge──► managed services (Compose project <project>-<key>) ─services─► postgres
                          └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -23,6 +23,8 @@ It refines [ADR 0006](../adr/0006-agent-and-desired-state.md) and [ADR 0007](../
 ```yaml
 services:
   agent:
+    # Same convention as ORGLANE_IMAGE: the installer writes the release tag
+    # (the same one as the core image) into .env.
     image: ${ORGLANE_AGENT_IMAGE:-ghcr.io/orglane/orglane-agent:latest}
     profiles: [managed]
     restart: unless-stopped
@@ -36,7 +38,12 @@ services:
       ORGLANE_AGENT_SECRET: ${ORGLANE_AGENT_SECRET:-}
       ORGLANE_AGENT_DATA_DIR: ${ORGLANE_DATA_DIR:-/var/lib/orglane}
       ORGLANE_AGENT_PEER_UID: "65532"
-      ORGLANE_AGENT_TRAEFIK_ADDRESS: ${ORGLANE_EDGE_NETWORK_PREFIX:-10.231.0}.2
+      # The bundle's project name: finds PostgreSQL and the networks, and
+      # prefixes instance projects, so two installs on one host stay apart.
+      ORGLANE_AGENT_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-orglane}
+      # Where published instance ports (Forgejo SSH) bind: 127.0.0.1 in local
+      # mode, all interfaces in domain mode. Written by the installer.
+      ORGLANE_AGENT_PUBLISH_ADDRESS: ${ORGLANE_AGENT_PUBLISH_ADDRESS:-127.0.0.1}
       DOCKER_CONFIG: /tmp/docker
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -60,6 +67,15 @@ services:
     volumes:
       - agent-run:/run/orglane-agent
 
+  traefik:
+    networks:
+      edge:
+        ipv4_address: ${ORGLANE_EDGE_NETWORK_PREFIX:-10.231.0}.2
+        # Containers on the edge network (managed services) resolve the
+        # workspace host to Traefik, so they reach Orglane by its public name.
+        aliases:
+          - ${ORGLANE_DOMAIN_WORKSPACE_HOST:-${ORGLANE_DOMAIN_BASE:-localhost}}
+
   postgres:
     networks:
       database: {}
@@ -74,9 +90,9 @@ volumes:
   agent-run: {}
 ```
 
-- **Opt-in:** the `agent` service only starts with `COMPOSE_PROFILES=managed`. Without it the core runs unchanged and `GET /api/v1/apps/agent` reports `not_connected`; Settings → Apps shows the command that enables managed services.
-- **Installer (#59):** always generates `ORGLANE_AGENT_SECRET` (64 hex characters) into `.env`, so enabling the agent later needs no core restart. New option `--managed` (and an interactive question) writes `COMPOSE_PROFILES=managed`; new subcommand `enable-managed` does the same on an existing install. It creates `instances/` (mode 700). `uninstall` first runs `docker compose down` for every project under `instances/*/compose.yaml`, then the bundle. `status` shows the agent.
-- **Image (#59):** a second target of the root `Dockerfile`, `ghcr.io/orglane/orglane-agent`: distroless static base, the `orglane` binary, the static Docker CLI and the Compose plugin, both pinned by version and SHA-256. Released together with the core image by `images.yml`, same tag.
+- **Opt-in, off by default (ADR 0006, maintainer decision):** the `agent` service only starts with `COMPOSE_PROFILES=managed`. Without it the core runs unchanged and `GET /api/v1/apps/agent` reports `not_connected`. The core cannot start the agent itself, so Settings → Apps shows the exact one-line command to run on the host, `curl -fsSL https://orglane.app/install.sh | sh -s -- enable-managed` (or `sh install.sh enable-managed` with a local copy), and refreshes when the agent connects.
+- **Installer (#59):** always generates `ORGLANE_AGENT_SECRET` (64 hex characters) into `.env`, so enabling the agent later needs no core restart. The interactive installer does not ask and does not enable managed services; the option `--managed` and the subcommand `enable-managed` write `COMPOSE_PROFILES=managed`, `ORGLANE_AGENT_IMAGE` (same tag as `ORGLANE_IMAGE`), `ORGLANE_AGENT_PUBLISH_ADDRESS` and, in local mode, the `*.localhost` base (see "Local mode"), then run `docker compose up -d`. It creates `instances/` (mode 700). `uninstall` first runs `docker compose down` for every project under `instances/*/compose.yaml`, then the bundle. `status` shows the agent.
+- **Image (#59, maintainer decision):** a separate image `ghcr.io/orglane/orglane-agent`, a second target of the root `Dockerfile`: distroless static base, the `orglane` binary, the static Docker CLI and the Compose plugin, both pinned by version and SHA-256. The core image stays distroless without Docker tooling. Released together with the core image by `images.yml`, same tag. Like `ORGLANE_IMAGE`, the project's own images are referenced by release tag (the installer writes it); third-party images in the bundle and in packages are pinned by version and digest.
 - **Hardening of the core's internal listener (#59):** since managed services join the edge network, the internal listener (`/traefik/config`) answers only requests from Traefik's fixed address.
 
 ### Configuration
@@ -88,7 +104,6 @@ Core (`core/internal/config`, section `agent`):
 | `agent.socket` | `ORGLANE_AGENT_SOCKET` | empty | Agent socket path. Empty, or an empty secret, disables managed services |
 | `agent.secret` | `ORGLANE_AGENT_SECRET` | empty | Shared secret, at least 32 characters |
 | `agent.sync_interval` | `ORGLANE_AGENT_SYNC_INTERVAL` | `5m` | Status sync and re-push of lagging desired state |
-| `ingress.maintenance_delay` | `ORGLANE_INGRESS_MAINTENANCE_DELAY` | `15s` | How long to wait for Traefik to pick up a maintenance route (poll interval + margin) |
 
 Agent (`orglane agent`; it does not require `database.url` or `domain.base`):
 
@@ -98,10 +113,10 @@ Agent (`orglane agent`; it does not require `database.url` or `domain.base`):
 | `agent.secret` | `ORGLANE_AGENT_SECRET` | required |
 | `agent.data_dir` | `ORGLANE_AGENT_DATA_DIR` | `/var/lib/orglane` (instances under `instances/`, agent state under `instances/.agent/`) |
 | `agent.peer_uid` | `ORGLANE_AGENT_PEER_UID` | `65532`; `-1` disables the check (tests, development) |
-| `agent.compose_project` | `ORGLANE_AGENT_COMPOSE_PROJECT` | `orglane` (the bundle's project: finds PostgreSQL and the networks) |
+| `agent.compose_project` | `ORGLANE_AGENT_COMPOSE_PROJECT` | `orglane`; the bundle passes `COMPOSE_PROJECT_NAME`. Finds PostgreSQL and the networks; instance projects are `<project>-<key>` |
 | `agent.postgres_service`, `agent.postgres_user` | | `postgres`, `orglane` |
 | `agent.edge_network`, `agent.services_network` | | `<project>_edge`, `<project>_services` |
-| `agent.traefik_address` | `ORGLANE_AGENT_TRAEFIK_ADDRESS` | required when an instance needs it |
+| `agent.publish_address` | `ORGLANE_AGENT_PUBLISH_ADDRESS` | `127.0.0.1`; host address for published instance ports |
 | `agent.reconcile_interval` | | `10m` |
 | `agent.snapshot_retention` | | `2` upgrade snapshots per instance |
 
@@ -124,7 +139,7 @@ HTTP/1.1 over the Unix socket. JSON bodies (`application/json`), at most 1 MiB p
   ```
 
   The agent rejects (401, problem code `unauthenticated`) a missing or wrong MAC, a timestamp more than 60 s away from its clock or earlier than its own start, and a nonce seen in the last 120 s. Comparison is constant time.
-- **Response signature** (agent → core): `X-Orglane-Signature: base64url(HMAC-SHA256(K, "orglane-agent-response/v1\n" + base64url(request mac) + "\n" + status + "\n" + hex(SHA-256(body))))`. The core discards responses without a valid signature (`agent_untrusted`), so a process that took over the socket path cannot feed it status or receive desired state with secrets.
+- **Response signature** (agent → core): `X-Orglane-Signature: base64url(HMAC-SHA256(K, "orglane-agent-response/v1\n" + base64url(request mac) + "\n" + status + "\n" + hex(SHA-256(body))))`. The core discards responses without a valid signature (`agent_untrusted`), so a process that took over the socket path cannot feed it status. Because a request body is sent before its response can be checked, the client sends a signed `GET /v1/health` first on every new connection and sends requests that carry secrets (`PUT /v1/instances/{key}`) only on a connection whose peer has proven the key.
 - **Versions:** `GET /v1/health` returns the protocol (`1`) and the Orglane version. The core sends mutating requests only when the versions are equal (development builds `dev` excepted) and reports `agent_version_mismatch` otherwise. Core and agent images are upgraded together by `docker compose up -d`.
 
 ## Agent API
@@ -168,12 +183,13 @@ type Spec struct {
 
 | Case | Answer |
 |---|---|
+| The key's directory belongs to another `instance_id` | `409 instance_mismatch` (a removed instance's data is still retained under that key) |
 | `generation` < accepted generation | `409 stale_generation` (body: accepted generation) |
 | `generation` = accepted, same canonical hash | `200` with the operation that applied it (idempotent retry) |
 | `generation` = accepted, different hash | `409 generation_conflict` |
 | Package version not embedded | `422 unknown_package_version` |
 | Settings or secrets fail the manifest's schema | `422 invalid_input` (field names only, never values) |
-| Version change not allowed by `upgrade.min_from`, or a downgrade | `422 upgrade_path_blocked` (body: the required stop version) |
+| Version lower than `current.json`'s, or a change from `current.json`'s version not allowed by `upgrade.min_from` | `422 upgrade_path_blocked` (body: the required stop version). Checks compare with `current.json` (what runs), not with the last accepted spec, so a revert spec after a rollback (the version that runs) is a plain apply |
 | Otherwise | persisted to `desired.json`, `202` with a new operation |
 
 A spec accepted while another operation runs is applied after it; only the newest accepted spec is applied (intermediate generations are skipped). Snapshot and restore requests during an operation get `409 busy`.
@@ -195,7 +211,7 @@ type Operation struct {
 }
 ```
 
-Operations are persisted under `instances/.agent/operations/<id>.json` and kept 7 days, so the core can poll them across agent restarts. Error codes: `unauthenticated`, `agent_busy`, `stale_generation`, `generation_conflict`, `unknown_package_version`, `invalid_input`, `policy_violation`, `upgrade_path_blocked`, `insufficient_disk`, `pull_failed`, `compose_failed`, `database_failed`, `hook_failed`, `health_timeout`, `confirm_timeout`, `aborted`, `snapshot_failed`, `rollback_failed`, `interrupted`.
+Operations are persisted under `instances/.agent/operations/<id>.json` and kept 7 days, so the core can poll them across agent restarts. Error codes: `unauthenticated`, `agent_busy`, `instance_mismatch`, `stale_generation`, `generation_conflict`, `unknown_package_version`, `invalid_input`, `policy_violation`, `upgrade_path_blocked`, `insufficient_disk`, `pull_failed`, `compose_failed`, `database_failed`, `hook_failed`, `health_timeout`, `confirm_timeout`, `aborted`, `snapshot_failed`, `rollback_failed`, `interrupted`.
 
 ## Desired state and reconciliation
 
@@ -207,32 +223,40 @@ Operations are persisted under `instances/.agent/operations/<id>.json` and kept 
 
 **Reconcile loop (agent):**
 
-- Triggers: an accepted spec (immediately); agent start (every instance, after upgrade journal recovery); Docker `die`/`destroy`/`health_status` events of containers labeled `com.docker.compose.project=orglane-<key>` (debounced 5 s, at most once a minute per instance); every `agent.reconcile_interval`.
-- Per instance, serialized:
+- Triggers: an accepted spec (immediately); agent start (every instance, after upgrade journal recovery); Docker `die`/`destroy`/`health_status` events of containers labeled `com.docker.compose.project=<project>-<key>` (debounced 5 s, at most once a minute per instance); every `agent.reconcile_interval`.
+- Per instance, serialized. Reconciliation always targets `current.json`; only an operation moves `current` toward `desired`:
 
 ```
 if upgrade.json exists: recover (see "Upgrade") and stop
-if desired.package.version != current.package.version
-   and the last operation for desired.generation is not rolled_back: run the upgrade flow
-switch desired.state:
+
+if desired.generation > current.generation and desired.generation is not blocked:
+    if desired.package.version != current.package.version:
+        run the upgrade flow            # moves current only on commit
+        stop
+    target := desired                   # apply: configure, stop, remove
+else:
+    target := current                   # includes: desired.generation blocked after a failed or rolled-back upgrade
+
+converge(target):
   running: render → policy check → write files atomically (temp + rename) → ensure data dirs
-           → ensure database role and database → docker compose up -d --wait (start timeout)
+           → ensure database role and database → docker compose up -d --remove-orphans --wait (start timeout)
            → if rendered output changed or first install: run configure hooks
-           → current := desired
   stopped: docker compose stop
   absent:  docker compose down --remove-orphans; with purge: drop database and role, delete instances/<key>
+  on success: current := target
 ```
 
-- Every Compose call is `docker compose --project-name orglane-<key> --project-directory <dir> -f <dir>/compose.yaml --env-file <dir>/.env ...`. The explicit `-f` keeps a stray `compose.override.yaml` from being loaded.
+- **Blocked generations:** a generation whose upgrade failed or rolled back is recorded in `instances/<key>/blocked.json` and is never tried again by the agent, whatever triggers the reconcile (Docker events, the periodic run, an agent restart, the core being offline). The instance keeps running `current`. The block ends with the next accepted generation: the core's **revert** spec (same version as `current`, the acknowledgment of the rollback) or an admin's retry (a new generation with the target version). A failed non-upgrade apply leaves `current` running and is retried by the periodic reconcile at most 3 times, then blocked the same way.
+- Every Compose call is `docker compose --project-name <project>-<key> --project-directory <dir> -f <dir>/compose.yaml --env-file <dir>/.env ...`. The explicit `-f` keeps a stray `compose.override.yaml` from being loaded. `--remove-orphans` on every `up` removes containers of services a package version dropped or renamed, so they cannot keep ports or data access.
 - `up -d` is idempotent: it recreates missing or changed containers and leaves the rest. Manual edits of generated files are overwritten on the next reconcile; this is documented in deploy/README.md.
 - A container that crash-loops makes the instance `degraded`; the agent does not restart it beyond Docker's restart policy.
-- An upgrade that rolled back is not retried by the agent: it waits for a new generation. The core then records a `revert` spec (the old version) so desired and actual agree, and an admin retries explicitly.
+- After a rollback the core records a `revert` spec (the running version) as soon as it sees the operation, so desired and actual agree; an admin retries the upgrade explicitly (providers.md "Managed instance lifecycle").
 
 **When something is down:**
 
 | Down | Effect |
 |---|---|
-| Core | Services keep running. The agent keeps reconciling from `desired.json`. An upgrade waiting for confirmation rolls back after `confirm_timeout` |
+| Core | Services keep running. The agent keeps reconciling `current.json` and applies an already accepted newer generation. An upgrade waiting for confirmation rolls back after `confirm_timeout`; the blocked generation is not retried |
 | Agent | Services keep running (Docker restart policies). Pushes queue in the core. Health in the core becomes `unknown` after two missed syncs |
 | Both, host reboot | Docker restarts the bundle and the services; the agent recovers journals, then reconciles; the core re-syncs |
 
@@ -244,8 +268,10 @@ switch desired.state:
 ${ORGLANE_DATA_DIR}/instances/
   .agent/                    agent state: boot ID, operations/ (0700)
   <key>/                     0700, root
+    instance.json            0600  {"instance_id": ...}: binds the directory to one app instance
     desired.json             0600  last accepted spec (secrets)
     current.json             0600  spec that is running (secrets)
+    blocked.json             0600  generations that failed or rolled back (see "Reconcile loop")
     compose.yaml             0644  rendered project, readable by the admin
     .env                     0600  ORGLANE_SECRET_<NAME>='<value>' for Compose interpolation
     files/                   rendered package files (config, hook scripts), mounted read-only
@@ -254,7 +280,7 @@ ${ORGLANE_DATA_DIR}/instances/
     upgrade.json             upgrade journal, only during an upgrade
 ```
 
-`<key>` is the instance key (providers.md), which is the `<id>` of ADR 0006's path.
+`<key>` is the instance key (providers.md), which is the `<id>` of ADR 0006's path. The directory is bound to the immutable `instance_id` in `instance.json`: a spec for the same key with another instance ID is refused (`instance_mismatch`). A key is reused only after a purge deleted the directory, the database and the role (providers.md "app_instances").
 
 ## Package format
 
@@ -340,7 +366,8 @@ Go `text/template` with `Option("missingkey=error")` and only these functions:
 | `quote v` | YAML double-quoted scalar; escapes `\`, `"`, control characters and `$` (as `$$`, so Compose does not interpolate input) |
 | `secret "name"` | `"${ORGLANE_SECRET_NAME}"`; the value is written to `.env` (single-quoted). Fails for undeclared names |
 | `image "name"` | The pinned reference from the manifest |
-| `alias "service"` | `<key>-<service>`, the service's alias on the edge network |
+| `alias "service"` | `<key>-<service>`, the service's alias on the edge network that the core's routes use; `<key>-<service>-fenced` while the project is rendered fenced (see "Upgrade") |
+| `port "name"` | The published host port mapping of a declared port (`<publish address>:<host port>:<container port>`), or nothing while fenced |
 | `dir "name"` | Absolute host path of a declared data directory |
 | `file "path"` | Absolute host path of a rendered package file |
 
@@ -348,11 +375,12 @@ Template data:
 
 ```go
 type TemplateData struct {
-    Instance struct{ Key, ID, Project string } // Project = "orglane-<key>"
+    Instance struct{ Key, ID, Project string } // Project = "<compose project>-<key>"
     Package  struct{ ID, Version string }
     Hosts    map[string]string // route name -> hostname, plus "workspace"
     URLs     struct{ Workspace, Issuer, Instance, Webhook string }
-    Ingress  struct{ Mode, TraefikAddress string }
+    Ingress  struct{ Mode string }  // "local" | "domain"
+    Fenced   bool               // true while an upgrade candidate runs (see "Upgrade")
     Networks struct{ Edge, Services string }   // external network names
     Database struct{ Address, Name, User string } // "postgres:5432", "svc_<key>"; password: secret "db_password"
     Settings map[string]any   // validated against the manifest; defaults applied
@@ -371,16 +399,33 @@ After rendering, the agent runs `docker compose ... config --format json` and ch
 - No `privileged`, `pid`/`ipc`/`uts`/`userns_mode` = `host`, no `network_mode` (only `networks`), no `devices`, no `device_cgroup_rules`, no `cgroup_parent`.
 - `cap_add` only from `capabilities_add`; no `security_opt` that disables seccomp, AppArmor or `no-new-privileges`.
 - Volumes: bind mounts only with sources inside `instances/<key>/data/` or `instances/<key>/files/` (read-only), `tmpfs`; no named volumes; nothing that resolves to the Docker socket.
-- Ports: only those declared in `ports`, bound to the declared setting's value.
+- Ports: only those declared in `ports`, bound to `agent.publish_address` and the declared setting's value; none at all in a fenced render.
+- Aliases on the edge network: only those produced by `alias` (in a fenced render, only `-fenced` aliases).
 - Networks: only the project's default network and the external `Networks.Edge` and `Networks.Services`.
 - `restart: unless-stopped` and log rotation on every long-running service; a healthcheck on every service in `services`.
 
 ## Networking
 
-- **Edge network** (`orglane_edge`, external): routed services join it with the alias `<key>-<service>`; Traefik reaches them at `http://<key>-<service>:<port>` (the upstream in the core's routes, providers.md "Ingress routes"). It also gives services outbound internet access.
-- **Services network** (`orglane_services`, internal): services that use the database join it and reach PostgreSQL at `postgres:5432`. The core is not on it.
-- **Reaching Orglane:** services that call Orglane (OIDC discovery, token and user info for Forgejo; webhooks to the core) use the public workspace URL. The template maps the workspace host to Traefik's fixed address with `extra_hosts`, so traffic stays on the host, TLS is the real certificate, and no hairpin NAT is needed. Forgejo's webhook host allowlist must include the workspace host.
-- **Ports:** only manifest-declared host ports (Forgejo SSH) are published.
+- **Edge network** (`<project>_edge`, external): routed services join it with the alias `<key>-<service>`; Traefik reaches them at `http://<key>-<service>:<port>` (the upstream in the core's routes, providers.md "Ingress routes"). It also gives services outbound internet access.
+- **Services network** (`<project>_services`, internal): services that use the database join it and reach PostgreSQL at `postgres:5432`. The core is not on it.
+- **Reaching Orglane by the same name as the browser:** Traefik carries the workspace host as a network alias on the edge network (bundle change above). Docker's embedded DNS answers it for every container on that network, so Forgejo calls OIDC discovery, token and user info, and sends webhooks, to the public workspace URL; the traffic stays on the host, TLS (domain mode) is the real certificate, and no hairpin NAT is needed. Forgejo's webhook host allowlist must include the workspace host. Service-to-service calls by public service host names are not needed in M2 (the core uses the direct upstream); if a later package needs them, Traefik gets those aliases too.
+- **Published ports:** only manifest-declared host ports, bound to `agent.publish_address`.
+
+### Local mode (demo, e2e and acceptance tests)
+
+Managed services work in local mode, with `*.localhost` names (maintainer decision): browsers resolve every `*.localhost` name to loopback, where Traefik listens, and containers resolve the workspace host through the Traefik alias.
+
+- **Blocker, and the way around it:** the bare name `localhost` cannot be the workspace host with managed services. Inside a container `localhost` is answered from `/etc/hosts` (the container itself) before Docker's DNS, so no alias can redirect it. Therefore `--managed` / `enable-managed` in local mode set `ORGLANE_DOMAIN_BASE=orglane.localhost` (workspace `http://orglane.localhost`, Forgejo `http://git.orglane.localhost`), and the demo with managed services uses the same. Local mode without managed services keeps `localhost`. Switching an existing local install changes its workspace URL; the installer says so.
+- The OIDC issuer is `http://orglane.localhost` for both the browser and Forgejo, so discovery, redirects and tokens agree.
+- Chromium and Firefox (and Playwright) resolve `*.localhost` without configuration. Safari on macOS does not resolve subdomains of `localhost`; local mode documents using another browser or adding hosts entries.
+- Published ports (Forgejo SSH) bind to `127.0.0.1` in local mode.
+
+### Forgejo SSH (#61, maintainer decision: in M2)
+
+- Git over SSH uses a **direct published port** of the Forgejo container, default host port **2222** (setting `ssh_port`; 22 is normally the host's own SSH daemon). Traefik is not used: SSH has no host name in its handshake (no SNI), so a Traefik TCP entry point could not route by host and would still need one port per instance.
+- Forgejo is configured with `SSH_DOMAIN` = its host and `SSH_PORT` = the published port, so clone URLs are `ssh://git@git.acme.com:2222/<org>/<repo>.git`. The domain-mode install shows that the port must be open in the host firewall.
+- Users manage their SSH keys in Forgejo. Removing keys on offboarding is M5; until then a suspended person loses SSO and team access but keeps working keys for repositories that remain accessible (the capability matrix says so).
+- While an upgrade candidate runs, the port is not published (fence, see "Upgrade").
 
 ## Per-service database
 
@@ -413,7 +458,17 @@ instances/<key>/snapshots/<snapshot id, UUIDv7>/     0700
 
 ## Upgrade
 
-Triggered by a spec whose package version differs from `current.json`. The core first switches the instance's routes to its maintenance response and waits `ingress.maintenance_delay`, then pushes the spec; it restores the routes after the operation is terminal.
+Triggered by a spec whose package version differs from `current.json`.
+
+**When upgrades start (maintainer decision):** automatically. When the core starts with a release that embeds a newer package version than an instance runs, it plans the path (required stops) and records an `upgrade` spec, one instance at a time; each step runs this flow. The result (succeeded, rolled back with the reason, failed) is an `app_operations` row and a report in Settings → Apps, and an audit entry. An admin can retry a rolled-back or failed upgrade (`POST /api/v1/apps/instances/{instanceId}/upgrade`); the agent never retries one by itself.
+
+**Write fence.** A rollback must not discard a write that a client was told succeeded. Therefore the candidate version is never reachable through a client entry point until commit:
+
+- While fenced, the project is rendered with `Fenced = true`: routed services get only `-fenced` aliases (Traefik's upstream `<key>-<service>` does not resolve to them, whatever its route says) and no host port is published (no SSH). The fence is part of the rendered files, so it survives container and host restarts.
+- The core verifies the candidate through the fenced alias (`Instance.Upstream` points to it during the upgrade).
+- The old version is stopped before the snapshot, so its writes up to the stop are in the snapshot; requests cut off by the stop were not acknowledged.
+- For a friendly answer instead of a `502`, the core switches the instance's routes to its own maintenance response (`503`, `Retry-After`) when the operation starts and back when it is terminal. Correctness does not depend on when Traefik picks this up.
+- Packages turn off the candidate's outbound side effects where the product allows it while fenced (Forgejo: mailer, cron, webhook delivery). Work the candidate does by itself (migrations, background jobs) is discarded by a rollback and redone by the restored version.
 
 ```
 preflight ─► pulling ─► stopping ─► snapshotting ─► switching ─► migrating ─► verifying
@@ -432,17 +487,17 @@ rolling_back ─► rolled_back (op rolled_back)   |   rolling_back ─► rollb
 | `pulling` | Render the new version into a staging directory, policy check, `docker compose pull`. No downtime yet |
 | `stopping` | Stop `backup.stop_services` |
 | `snapshotting` | Take the snapshot (above) |
-| `switching` | Write the new rendered files, `up -d` |
+| `switching` | Write the new rendered files, fenced; `up -d --remove-orphans` |
 | `migrating` | Run the `migrate` hook if declared |
 | `verifying` | Wait for all healthchecks within `health.start_timeout` |
-| `awaiting_confirmation` | The core runs `Lifecycle.Verify` through the direct upstream and calls `confirm` or `abort`. No answer within `confirm_timeout` rolls back |
-| `committing` | `current.json` := new spec; delete the journal; prune old snapshots beyond retention |
+| `awaiting_confirmation` | The core runs `Lifecycle.Verify` through the fenced alias and calls `confirm` or `abort`. No answer within `confirm_timeout` rolls back |
+| `committing` | Render unfenced, `up -d --remove-orphans --wait` (containers are recreated with the real aliases and ports); `current.json` := new spec; delete the journal; prune old snapshots beyond retention |
 
 **Journal:** `upgrade.json` holds the operation ID, from/to version and generation, snapshot ID and phase. It is written and fsynced before each phase starts.
 
-**Rollback** (idempotent steps, each safe to repeat): `docker compose down` of the new version; for each data directory, move the current one aside to `data/.<name>.failed-<operation>` and extract the snapshot archive; restore the database (`DROP DATABASE ... WITH (FORCE)`, create, `pg_restore` with objects owned by the service role); write the snapshot's rendered files; `up -d`; wait for health. The moved-aside directories are deleted after the next successful upgrade or after 7 days.
+**Rollback** (idempotent steps, each safe to repeat): `docker compose down` of the new version; for each data directory, move the current one aside to `data/.<name>.failed-<operation>` and extract the snapshot archive; restore the database (`DROP DATABASE ... WITH (FORCE)`, create, `pg_restore` with objects owned by the service role); write the snapshot's rendered files (unfenced); `up -d --remove-orphans`; wait for health; record the generation as blocked. The moved-aside directories are deleted after the next successful upgrade or after 7 days.
 
-**Guarantee:** after `rolled_back`, the instance runs the previous package version with exactly the data of the snapshot. Because the routes point to maintenance between snapshot and commit, no user change made in that window can be lost (webhooks and API calls from inside the host are the exception; they are retried by their senders).
+**Guarantee (narrowed to what the fence enforces):** after `rolled_back`, the instance runs the previous package version with exactly the data of the snapshot. No write acknowledged to a client through a declared entry point (routes, published ports) is lost, because between the snapshot and the commit no such entry point reaches either version. Not covered: work the candidate did on its own (lost or repeated), and calls made to the candidate's fenced alias by the core itself during verification (read-only checks). Every M2 package must route all client writes through declared routes and ports; the policy check enforces that nothing else is published.
 
 **Interrupted upgrades** (agent crash, host reboot): on start the agent reads every journal before anything else:
 
@@ -451,10 +506,10 @@ rolling_back ─► rolled_back (op rolled_back)   |   rolling_back ─► rollb
 | `preflight`, `pulling` | Delete the journal; reconcile the current version (nothing had changed) |
 | `stopping`, `snapshotting` | Delete the partial snapshot; start the current version |
 | `switching`, `migrating`, `verifying`, `awaiting_confirmation` | Roll back from the snapshot; error code `interrupted` |
-| `committing` | Finish the commit (confirmation had been received) |
+| `committing` | Finish the commit: render unfenced and start (confirmation had been received) |
 | `rolling_back` | Continue the rollback |
 
-The agent never resumes forward. A failed rollback (`rollback_failed`) leaves the snapshot and the moved-aside data in place, marks the instance `failed` and is shown in Settings → Apps with the snapshot ID; `POST /v1/instances/{key}/restore` retries it.
+Docker may restart the candidate's containers on a reboot before the agent runs; they come back fenced, so no client reaches them, and the agent then rolls them back. The agent never resumes forward. A failed rollback (`rollback_failed`) leaves the snapshot and the moved-aside data in place, marks the instance `failed` and is shown in Settings → Apps with the snapshot ID; `POST /v1/instances/{key}/restore` retries it.
 
 ## Status, health and logs
 
@@ -473,8 +528,12 @@ The agent never resumes forward. A failed rollback (`rollback_failed`) leaves th
 | Rendering and policy | Unit tests per rule with `agenttest` package variants (privileged, host bind mount, Docker socket, unpinned image, undeclared port, host network, extra capability); injection attempts in settings (newline, `$`, quotes, YAML syntax) are rejected or rendered inert | #59 |
 | Agent with real Docker | `integration` tag: the test starts a minimal bundle project (PostgreSQL with the two networks, labeled like the bundle) and runs the agent in-process with `peer_uid = -1`; installs the `agenttest` package (a pinned tiny image plus `psql` from the pinned PostgreSQL image for a database write), reconciles drift (container removed, compose file edited), changes settings, stops, removes, purges | #59 |
 | Upgrades | Successful upgrade v1 → v2; v2 with a failing healthcheck rolls back with the database row and data file intact; abort and confirm timeout roll back; a crash at each journal phase (test hook `ORGLANE_AGENT_TEST_CRASH_AT=<phase>`, only in `agenttest` builds) recovers as the table says; v1 → v3 with `min_from: v2` is refused, v1 → v2 → v3 works | #60 |
+| Rollback stays rolled back | After a rollback, with the core stopped: Docker events (container killed), periodic reconciles and an agent restart keep v1 running and never start v2; a revert spec (v1) is accepted as an apply and unblocks; a retry spec (v2, new generation) runs the upgrade again | #60 |
+| Write fence | A write acknowledged before the snapshot (HTTP and over the published port) survives the rollback; during `verifying` the route answers 503 and the published port refuses connections; a simulated host restart during `verifying` (stop and start every project container and the agent) leaves the candidate fenced and ends rolled back with the acknowledged write intact | #60 |
+| Keys and instance IDs | A spec with the same key and another instance ID is refused while the directory exists; after purge the key can be used again | #59 |
 | Bundle | `make test-compose`: the bundle with `COMPOSE_PROFILES=managed` starts, the core reports the agent connected, the core container has no Docker socket and no Docker CLI; #61 adds installing Forgejo and reaching it through Traefik | #59, #61 |
-| Installer | `make test-install`: `--managed`, `enable-managed`, `uninstall` removes instance projects | #59 |
+| Installer | `make test-install`: default install has no agent; `--managed`, `enable-managed` (local mode switches to `orglane.localhost`), `uninstall` removes instance projects | #59 |
+| Local mode | Forgejo installed in local mode reaches the issuer at `http://orglane.localhost` through the Traefik alias; Playwright signs in to `http://git.orglane.localhost` through Orglane | #61, #62 |
 | Forgejo package | Package unit tests; integration install through the agent; idle memory measured and reported | #61 |
 
 ## Non-goals (M2)
@@ -487,10 +546,14 @@ The agent never resumes forward. A failed rollback (`rollback_failed`) leaves th
 - Resource limits on services; multi-host.
 - Adopting existing Compose projects or self-hosted installs.
 
-## Open questions for the maintainer
+## Decided questions
 
-1. **Default for managed services.** This spec keeps the agent off unless `--managed` is chosen (ADR 0006: installed only when used). The interactive installer could default to "yes" in domain mode so "Install Forgejo" works without a second command. Which default?
-2. **Local mode and the workspace on bare `localhost`.** Inside a container `localhost` is the container itself, so Forgejo cannot reach Orglane's issuer at `http://localhost`. `extra_hosts` works for any other name (for example `orglane.localhost`, which browsers also resolve to loopback). Options: change the local/demo default host to `orglane.localhost`; or support managed services only in domain mode for M2. #61 has to decide demo behavior; this needs the maintainer's call first.
-3. **Automatic package upgrades after an Orglane upgrade.** ADR 0007 says users don't pick versions. This spec has the core start package upgrades automatically when a new Orglane release embeds a newer package version (each with snapshot and rollback). Alternatively the admin presses "Upgrade" with a notice. Which?
-4. **Forgejo SSH.** Publishing a host port (default 2222) for Git over SSH is in the example manifest. Keep SSH in M2, or HTTPS only until later?
-5. **Agent image name and signing.** `ghcr.io/orglane/orglane-agent` as a second image, built and signed like the core image. Acceptable, or one image with both (Docker CLI in the core image, unused by the server)?
+The open questions of the first draft were answered by the maintainer (2026-11-04) and are applied above:
+
+| Question | Decision | Section |
+|---|---|---|
+| Installer default for managed services | Off (ADR 0006); Settings → Apps shows the one-line `enable-managed` command | Process model |
+| Local mode with managed services | Supported with `*.localhost` names and a Traefik network alias; bare `localhost` is a documented blocker, so local mode with managed services uses `orglane.localhost` | Local mode |
+| Package upgrades after an Orglane upgrade | Start automatically, with snapshot, health check and automatic rollback; result visible to admins; admins retry failures | Upgrade |
+| Forgejo SSH | In M2, direct published port 2222; key revocation stays M5 | Forgejo SSH |
+| Separate agent image | Yes, `ghcr.io/orglane/orglane-agent` | Process model |
