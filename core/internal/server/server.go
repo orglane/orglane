@@ -58,7 +58,11 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 
 	jobClient, err := jobs.NewClient(pool, cfg.Jobs, logger, jobs.Options{
 		IdentityMaintenance: func(ctx context.Context) error { return stack.Maintain(ctx, pool) },
-		Mail:                stack.Mail,
+		ImportCleanup: func(ctx context.Context) error {
+			_, err := stack.Imports.Cleanup(ctx)
+			return err
+		},
+		Mail: stack.Mail,
 	})
 	if err != nil {
 		return err

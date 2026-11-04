@@ -43,6 +43,7 @@ type fixture struct {
 	profiles *profile.Service
 	imports  *peopleimport.Service
 	owner    store.Person
+	keys     *crypto.Keyring
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -83,7 +84,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	actor := audit.Actor{Kind: audit.ActorPerson, ID: owner.ID.String()}
 	ctx = authz.WithPrincipal(ctx, &authz.Principal{Subject: owner.ID.String(), Permissions: authz.All()})
-	return &fixture{t: t, ctx: ctx, actor: actor, pool: pool, ids: ids, profiles: profiles, imports: peopleimport.NewService(pool, ids, profiles, keys), owner: owner}
+	return &fixture{t: t, ctx: ctx, actor: actor, pool: pool, ids: ids, profiles: profiles, imports: peopleimport.NewService(pool, ids, profiles, keys), owner: owner, keys: keys}
 }
 func (f *fixture) upload(name string) peopleimport.Run {
 	f.t.Helper()

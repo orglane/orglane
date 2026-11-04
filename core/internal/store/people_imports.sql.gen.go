@@ -7,22 +7,25 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 const createPeopleImportRun = `-- name: CreatePeopleImportRun :one
-INSERT INTO people_import_runs (id, created_by, source, encoding, delimiter, headers_sealed)
-VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at
+INSERT INTO people_import_runs (id, created_by, source, encoding, delimiter, headers_sealed, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6,
+    now() + $7::bigint * interval '1 second') RETURNING id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at, captions, applied_at, expires_at
 `
 
 type CreatePeopleImportRunParams struct {
-	ID            uuid.UUID
-	CreatedBy     uuid.UUID
-	Source        string
-	Encoding      string
-	Delimiter     string
-	HeadersSealed []byte
+	ID               uuid.UUID
+	CreatedBy        uuid.UUID
+	Source           string
+	Encoding         string
+	Delimiter        string
+	HeadersSealed    []byte
+	RetentionSeconds int64
 }
 
 func (q *Queries) CreatePeopleImportRun(ctx context.Context, arg CreatePeopleImportRunParams) (PeopleImportRun, error) {
@@ -33,6 +36,7 @@ func (q *Queries) CreatePeopleImportRun(ctx context.Context, arg CreatePeopleImp
 		arg.Encoding,
 		arg.Delimiter,
 		arg.HeadersSealed,
+		arg.RetentionSeconds,
 	)
 	var i PeopleImportRun
 	err := row.Scan(
@@ -45,6 +49,97 @@ func (q *Queries) CreatePeopleImportRun(ctx context.Context, arg CreatePeopleImp
 		&i.Mapping,
 		&i.State,
 		&i.CreatedAt,
+		&i.Captions,
+		&i.AppliedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const deleteExpiredPeopleImportRuns = `-- name: DeleteExpiredPeopleImportRuns :many
+DELETE FROM people_import_runs WHERE id IN (
+    SELECT id FROM people_import_runs WHERE expires_at <= clock_timestamp()
+    ORDER BY expires_at LIMIT $1::int FOR UPDATE)
+RETURNING id, state
+`
+
+type DeleteExpiredPeopleImportRunsRow struct {
+	ID    uuid.UUID
+	State string
+}
+
+func (q *Queries) DeleteExpiredPeopleImportRuns(ctx context.Context, maxRuns int32) ([]DeleteExpiredPeopleImportRunsRow, error) {
+	rows, err := q.db.Query(ctx, deleteExpiredPeopleImportRuns, maxRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeleteExpiredPeopleImportRunsRow{}
+	for rows.Next() {
+		var i DeleteExpiredPeopleImportRunsRow
+		if err := rows.Scan(&i.ID, &i.State); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deletePeopleImportRun = `-- name: DeletePeopleImportRun :one
+DELETE FROM people_import_runs WHERE id = $1 RETURNING id, state
+`
+
+type DeletePeopleImportRunRow struct {
+	ID    uuid.UUID
+	State string
+}
+
+func (q *Queries) DeletePeopleImportRun(ctx context.Context, id uuid.UUID) (DeletePeopleImportRunRow, error) {
+	row := q.db.QueryRow(ctx, deletePeopleImportRun, id)
+	var i DeletePeopleImportRunRow
+	err := row.Scan(&i.ID, &i.State)
+	return i, err
+}
+
+const erasePeopleImportRows = `-- name: ErasePeopleImportRows :exec
+UPDATE people_import_rows SET payload_sealed = NULL, preview_sealed = NULL WHERE run_id = $1
+`
+
+func (q *Queries) ErasePeopleImportRows(ctx context.Context, runID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, erasePeopleImportRows, runID)
+	return err
+}
+
+const erasePeopleImportRun = `-- name: ErasePeopleImportRun :one
+UPDATE people_import_runs SET headers_sealed = NULL, captions = $1::text[]
+WHERE id = $2 RETURNING id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at, captions, applied_at, expires_at
+`
+
+type ErasePeopleImportRunParams struct {
+	Captions []string
+	ID       uuid.UUID
+}
+
+// Keeps value-free captions only; the sealed headers are gone afterwards.
+func (q *Queries) ErasePeopleImportRun(ctx context.Context, arg ErasePeopleImportRunParams) (PeopleImportRun, error) {
+	row := q.db.QueryRow(ctx, erasePeopleImportRun, arg.Captions, arg.ID)
+	var i PeopleImportRun
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedBy,
+		&i.Source,
+		&i.Encoding,
+		&i.Delimiter,
+		&i.HeadersSealed,
+		&i.Mapping,
+		&i.State,
+		&i.CreatedAt,
+		&i.Captions,
+		&i.AppliedAt,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -238,17 +333,39 @@ func (q *Queries) FindPeopleImportWorkEmail(ctx context.Context, email string) (
 	return items, nil
 }
 
-const finishPeopleImport = `-- name: FinishPeopleImport :exec
-UPDATE people_import_runs SET state = 'applied' WHERE id = $1
+const finishPeopleImport = `-- name: FinishPeopleImport :one
+UPDATE people_import_runs SET state = 'applied', applied_at = now(),
+    expires_at = now() + $1::bigint * interval '1 second'
+WHERE id = $2 RETURNING id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at, captions, applied_at, expires_at
 `
 
-func (q *Queries) FinishPeopleImport(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.Exec(ctx, finishPeopleImport, id)
-	return err
+type FinishPeopleImportParams struct {
+	RetentionSeconds int64
+	ID               uuid.UUID
+}
+
+func (q *Queries) FinishPeopleImport(ctx context.Context, arg FinishPeopleImportParams) (PeopleImportRun, error) {
+	row := q.db.QueryRow(ctx, finishPeopleImport, arg.RetentionSeconds, arg.ID)
+	var i PeopleImportRun
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedBy,
+		&i.Source,
+		&i.Encoding,
+		&i.Delimiter,
+		&i.HeadersSealed,
+		&i.Mapping,
+		&i.State,
+		&i.CreatedAt,
+		&i.Captions,
+		&i.AppliedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
 }
 
 const getPeopleImportRun = `-- name: GetPeopleImportRun :one
-SELECT id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at FROM people_import_runs WHERE id = $1 AND created_by = $2
+SELECT id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at, captions, applied_at, expires_at FROM people_import_runs WHERE id = $1 AND created_by = $2 AND expires_at > clock_timestamp()
 `
 
 type GetPeopleImportRunParams struct {
@@ -256,6 +373,9 @@ type GetPeopleImportRunParams struct {
 	CreatedBy uuid.UUID
 }
 
+// An expired run is gone even before the cleanup job deletes it. Expiry uses
+// the current clock, not the transaction start: callers wait for the import
+// locks first, and a run may expire while they wait.
 func (q *Queries) GetPeopleImportRun(ctx context.Context, arg GetPeopleImportRunParams) (PeopleImportRun, error) {
 	row := q.db.QueryRow(ctx, getPeopleImportRun, arg.ID, arg.CreatedBy)
 	var i PeopleImportRun
@@ -269,6 +389,9 @@ func (q *Queries) GetPeopleImportRun(ctx context.Context, arg GetPeopleImportRun
 		&i.Mapping,
 		&i.State,
 		&i.CreatedAt,
+		&i.Captions,
+		&i.AppliedAt,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -327,8 +450,47 @@ func (q *Queries) ListPeopleImportRows(ctx context.Context, runID uuid.UUID) ([]
 	return items, nil
 }
 
+const listUnerasedAppliedPeopleImportRuns = `-- name: ListUnerasedAppliedPeopleImportRuns :many
+SELECT id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at, captions, applied_at, expires_at FROM people_import_runs WHERE state = 'applied' AND headers_sealed IS NOT NULL
+ORDER BY id LIMIT $1::int FOR UPDATE
+`
+
+// Runs applied before apply erased their source material.
+func (q *Queries) ListUnerasedAppliedPeopleImportRuns(ctx context.Context, maxRuns int32) ([]PeopleImportRun, error) {
+	rows, err := q.db.Query(ctx, listUnerasedAppliedPeopleImportRuns, maxRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PeopleImportRun{}
+	for rows.Next() {
+		var i PeopleImportRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedBy,
+			&i.Source,
+			&i.Encoding,
+			&i.Delimiter,
+			&i.HeadersSealed,
+			&i.Mapping,
+			&i.State,
+			&i.CreatedAt,
+			&i.Captions,
+			&i.AppliedAt,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockPeopleImportRun = `-- name: LockPeopleImportRun :one
-SELECT id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at FROM people_import_runs WHERE id = $1 AND created_by = $2 FOR UPDATE
+SELECT id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at, captions, applied_at, expires_at FROM people_import_runs WHERE id = $1 AND created_by = $2 AND expires_at > clock_timestamp() FOR UPDATE
 `
 
 type LockPeopleImportRunParams struct {
@@ -336,6 +498,9 @@ type LockPeopleImportRunParams struct {
 	CreatedBy uuid.UUID
 }
 
+// Callers re-check expiry with PeopleImportRunExpired after the row lock:
+// PostgreSQL re-evaluates this condition after a row-lock wait only if the
+// holder changed the row.
 func (q *Queries) LockPeopleImportRun(ctx context.Context, arg LockPeopleImportRunParams) (PeopleImportRun, error) {
 	row := q.db.QueryRow(ctx, lockPeopleImportRun, arg.ID, arg.CreatedBy)
 	var i PeopleImportRun
@@ -349,6 +514,9 @@ func (q *Queries) LockPeopleImportRun(ctx context.Context, arg LockPeopleImportR
 		&i.Mapping,
 		&i.State,
 		&i.CreatedAt,
+		&i.Captions,
+		&i.AppliedAt,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -386,6 +554,17 @@ func (q *Queries) LockPeopleImportTeams(ctx context.Context) ([]Team, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const peopleImportRunExpired = `-- name: PeopleImportRunExpired :one
+SELECT $1::timestamptz <= clock_timestamp() AS expired
+`
+
+func (q *Queries) PeopleImportRunExpired(ctx context.Context, expiresAt time.Time) (bool, error) {
+	row := q.db.QueryRow(ctx, peopleImportRunExpired, expiresAt)
+	var expired bool
+	err := row.Scan(&expired)
+	return expired, err
 }
 
 const peopleImportSnapshot = `-- name: PeopleImportSnapshot :one

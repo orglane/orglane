@@ -168,3 +168,17 @@ func (s *server) FetchGitHubPeopleImport(ctx context.Context, req apigen.FetchGi
 	}
 	return apigen.FetchGitHubPeopleImport201JSONResponse(out), nil
 }
+
+func (s *server) DeletePeopleImport(ctx context.Context, req apigen.DeletePeopleImportRequestObject) (apigen.DeletePeopleImportResponseObject, error) {
+	if s.opts.Imports == nil {
+		return nil, errors.New("api: imports are not configured")
+	}
+	actor, err := s.importActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.opts.Imports.Delete(ctx, actor, req.RunId); err != nil {
+		return nil, importError(err)
+	}
+	return apigen.DeletePeopleImport204Response{}, nil
+}

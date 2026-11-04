@@ -1723,6 +1723,7 @@ paths:
         per row and never evaluated. UTF-8, BOM-marked UTF-16 and Windows-1252
         CSV are detected. Only the first XLSX sheet is imported.
         Runs belong to their uploader; source values never appear in responses.
+        Unapplied runs are deleted 24 hours after upload (see expiresAt).
       tags: [people-imports]
       x-orglane-permission: people.manage
       requestBody:
@@ -1802,6 +1803,26 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+    delete:
+      operationId: deletePeopleImport
+      summary: Delete an import and everything stored for it
+      description: |
+        Any holder of people.manage may delete any run, including its uploader.
+        Removes staged source material, decisions, results and the error export
+        at once; people and changes made by an applied run are not undone.
+        Source-scoped identity matches for reimport are kept. Deleting a run
+        that does not exist (or no longer exists) also succeeds.
+      tags: [people-imports]
+      x-orglane-permission: people.manage
+      responses:
+        "204":
+          description: Deleted, or already gone.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /api/v1/people-imports/{runId}/preview:
     parameters:
       - { name: runId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1851,8 +1872,9 @@ paths:
       summary: Apply a persisted preview with isolated row transactions
       description: |
         Current permissions, identities, definitions and preview versions are
-        revalidated. Failed rows roll back while other rows continue. Repeating
-        apply returns the stored result. Invitations use the existing secure
+        revalidated. Failed rows roll back while other rows continue. Apply
+        erases the staged source material in the same transaction; repeating
+        apply returns the stored, value-free result until the run expires. Invitations use the existing secure
         channel and grant ceilings; links and tokens are never staged/exported.
         Optional email delivery fails the row if the grant requires a link.
       tags: [people-imports]
@@ -2056,7 +2078,8 @@ components:
         result: { type: string, enum: [pending, created, updated, skipped, failed] }
     PeopleImport:
       type: object
-      required: [id, state, source, encoding, delimiter, headers, mapping, rows, createdAt]
+      required:
+        [id, state, source, encoding, delimiter, headers, mapping, rows, createdAt, expiresAt]
       properties:
         id: { type: string, format: uuid }
         state: { type: string, enum: [staged, previewed, applied] }
@@ -2071,6 +2094,13 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PeopleImportRow" }
         createdAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: |
+            When the run is deleted automatically: 24 hours after upload until
+            it is applied, then 90 days after apply. Afterwards every operation
+            on the run returns 404.
     Problem:
       type: object
       description: RFC 9457 problem details.

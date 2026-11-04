@@ -64,6 +64,30 @@ func (w *IdentityMaintenanceWorker) Work(ctx context.Context, _ *river.Job[Ident
 	return w.Maintain(ctx)
 }
 
+// ImportCleanupArgs are the arguments of the hourly people import cleanup
+// job: it deletes expired import runs (docs/specs/people-import.md
+// "Lifecycle").
+type ImportCleanupArgs struct{}
+
+// Kind implements river.JobArgs.
+func (ImportCleanupArgs) Kind() string { return "orglane.people_import_cleanup" }
+
+// ImportCleanupInterval is how often the import cleanup runs. Expired runs
+// are already unreadable before it deletes them, so this only bounds how
+// long their rows are kept.
+const ImportCleanupInterval = time.Hour
+
+// ImportCleanupWorker runs Cleanup.
+type ImportCleanupWorker struct {
+	river.WorkerDefaults[ImportCleanupArgs]
+	Cleanup func(ctx context.Context) error
+}
+
+// Work implements river.Worker.
+func (w *ImportCleanupWorker) Work(ctx context.Context, _ *river.Job[ImportCleanupArgs]) error {
+	return w.Cleanup(ctx)
+}
+
 // Client is the job queue client.
 type Client = river.Client[pgx.Tx]
 
@@ -71,6 +95,8 @@ type Client = river.Client[pgx.Tx]
 type Options struct {
 	// IdentityMaintenance, when set, runs hourly and on start.
 	IdentityMaintenance func(ctx context.Context) error
+	// ImportCleanup, when set, runs hourly and on start.
+	ImportCleanup func(ctx context.Context) error
 	// Mail, when set, delivers queued system email (mail.SendArgs). The
 	// client is attached to it as its queue.
 	Mail *mail.Service
@@ -98,6 +124,16 @@ func NewClient(pool *pgxpool.Pool, cfg config.Jobs, logger *slog.Logger, opts Op
 		periodic = append(periodic, river.NewPeriodicJob(
 			river.PeriodicInterval(IdentityMaintenanceInterval),
 			func() (river.JobArgs, *river.InsertOpts) { return IdentityMaintenanceArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		))
+	}
+	if opts.ImportCleanup != nil {
+		if err := river.AddWorkerSafely(workers, &ImportCleanupWorker{Cleanup: opts.ImportCleanup}); err != nil {
+			return nil, fmt.Errorf("register import cleanup worker: %w", err)
+		}
+		periodic = append(periodic, river.NewPeriodicJob(
+			river.PeriodicInterval(ImportCleanupInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return ImportCleanupArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: true},
 		))
 	}

@@ -170,6 +170,28 @@ const messages = defineMessages({
     id: "import.error.inactiveReference",
     defaultMessage: "A person or team is no longer active.",
   },
+  gone: {
+    id: "import.gone",
+    defaultMessage: "This import no longer exists. It expired or was deleted.",
+  },
+  deleteRun: { id: "import.delete", defaultMessage: "Delete import" },
+  confirmDelete: {
+    id: "import.confirmDelete",
+    defaultMessage:
+      "Delete this import, its results and its error report? People and changes it made stay.",
+  },
+  cancelDelete: { id: "import.cancelDelete", defaultMessage: "Cancel" },
+  deleteConfirmed: { id: "import.deleteConfirm", defaultMessage: "Delete" },
+});
+const expiresStagedMessage = defineMessage<{ date: string }>({
+  id: "import.expiresStaged",
+  defaultMessage:
+    "Until it is applied, this import and its encrypted file contents are deleted automatically on {date}.",
+});
+const expiresAppliedMessage = defineMessage<{ date: string }>({
+  id: "import.expiresApplied",
+  defaultMessage:
+    "The file contents were erased when the import was applied. These results and the error report are kept until {date}.",
 });
 const columnMessage = defineMessage<{ number: number }>({
   id: "import.column",
@@ -248,6 +270,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
   });
   const [editing, setEditing] = useState(true);
   const [needsPreview, setNeedsPreview] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const resume = useQuery({
     queryKey: ["people-import", runId],
     staleTime: Number.POSITIVE_INFINITY,
@@ -273,6 +296,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
     );
     setEditing(next.state === "staged");
     setNeedsPreview(false);
+    setConfirmingDelete(false);
   }, [resume.data]);
   const fields = useQuery({
     queryKey: ["profile-fields", "import"],
@@ -293,6 +317,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
       preview.reset();
       apply.reset();
       download.reset();
+      remove.reset();
       queryClient.setQueryData(["people-import", next.id], next);
       setRun(next);
       setMapping({
@@ -315,6 +340,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
       );
       apply.reset();
       download.reset();
+      remove.reset();
       queryClient.setQueryData(["people-import", next.id], next);
       setRun(next);
       setEditing(false);
@@ -354,6 +380,25 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
       URL.revokeObjectURL(url);
     },
   });
+  const startAgain = () => {
+    setRun(undefined);
+    setFile(undefined);
+    setConfirmingDelete(false);
+    upload.reset();
+    preview.reset();
+    apply.reset();
+    download.reset();
+    void navigate({ to: "/people/import", search: {}, replace: true });
+  };
+  const remove = useMutation({
+    mutationFn: async (id: string) => {
+      await call(
+        api.client.DELETE("/api/v1/people-imports/{runId}", { params: { path: { runId: id } } }),
+      );
+      queryClient.removeQueries({ queryKey: ["people-import", id] });
+      startAgain();
+    },
+  });
   // Credentials never enter React Query mutation variables or retained data.
   const fetchGitHub = async () => {
     if (currentFetch.current) return;
@@ -376,6 +421,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
       preview.reset();
       apply.reset();
       download.reset();
+      remove.reset();
       queryClient.setQueryData(["people-import", next.id], next);
       setRun(next);
       setMapping({
@@ -411,12 +457,14 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
       }
     }
   };
-  const busy = fetching || upload.isPending || preview.isPending || apply.isPending;
+  const busy =
+    fetching || upload.isPending || preview.isPending || apply.isPending || remove.isPending;
   const error =
     fetchError ??
     upload.error ??
     preview.error ??
     apply.error ??
+    remove.error ??
     download.error ??
     fields.error ??
     resume.error;
@@ -476,6 +524,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
               {errorMessage(intl, error, {
                 400: fetchError ? messages.githubFailure : messages.invalid,
                 403: messages.forbidden,
+                404: messages.gone,
                 409: messages.stale,
               })}
             </Alert>
@@ -728,13 +777,8 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
                   </Link>
                   <Button
                     onClick={() => {
-                      setRun(undefined);
-                      setFile(undefined);
-                      upload.reset();
-                      preview.reset();
-                      apply.reset();
-                      download.reset();
-                      void navigate({ to: "/people/import", search: {}, replace: true });
+                      remove.reset();
+                      startAgain();
                     }}
                   >
                     <FormattedMessage {...messages.startAgain} />
@@ -763,6 +807,56 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
                   )}
                   <Button variant="outline" disabled={busy} onClick={() => setEditing(true)}>
                     <FormattedMessage {...messages.editMapping} />
+                  </Button>
+                </div>
+              )}
+            </Card>
+          )}
+          {run && (
+            <Card className="flex flex-col gap-3 p-6">
+              <p className="text-sm text-muted-foreground">
+                {intl.formatMessage(
+                  run.state === "applied" ? expiresAppliedMessage : expiresStagedMessage,
+                  {
+                    date: intl.formatDate(run.expiresAt, {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    }),
+                  },
+                )}
+              </p>
+              {confirmingDelete ? (
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-sm">
+                    <FormattedMessage {...messages.confirmDelete} />
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={remove.isPending}
+                    onClick={() => setConfirmingDelete(false)}
+                  >
+                    <FormattedMessage {...messages.cancelDelete} />
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    loading={remove.isPending}
+                    onClick={() => remove.mutate(run.id)}
+                    autoFocus
+                  >
+                    <FormattedMessage {...messages.deleteConfirmed} />
+                  </Button>
+                </div>
+              ) : (
+                <div>
+                  <Button
+                    variant="destructive-ghost"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => setConfirmingDelete(true)}
+                  >
+                    <FormattedMessage {...messages.deleteRun} />
                   </Button>
                 </div>
               )}

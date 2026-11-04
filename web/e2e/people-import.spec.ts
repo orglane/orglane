@@ -265,3 +265,59 @@ test("recovery clears superseded download errors while fresh request failures re
   await expect(page.getByLabel("CSV or XLSX file")).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
+
+test("shows when an import expires and deletes it after confirmation", async ({
+  page,
+  instance,
+  webauthn: _,
+}, testInfo) => {
+  await mappedImport(page, instance);
+  await expect(
+    page.getByText(/Until it is applied, this import .* deleted automatically on/),
+  ).toBeVisible();
+  const assetDir = fileURLToPath(
+    new URL("../../.github/pr-assets/people-import/", import.meta.url),
+  );
+  mkdirSync(assetDir, { recursive: true });
+  const stagedImage = `${assetDir}staged-expiry.png`;
+  await page.screenshot({ path: stagedImage, fullPage: true });
+  await testInfo.attach("import-staged-expiry", { path: stagedImage, contentType: "image/png" });
+  await page.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await page.getByRole("button", { name: "Apply import", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Finished: 50 created, 0 updated, 0 skipped, 0 failed.",
+  );
+  await expect(page.getByText(/were erased when the import was applied/)).toBeVisible();
+  const runId = new URL(page.url()).searchParams.get("runId");
+  expect(runId).toBeTruthy();
+  const appliedImage = `${assetDir}applied-expiry.png`;
+  await page.screenshot({ path: appliedImage, fullPage: true });
+  await testInfo.attach("import-applied-expiry", { path: appliedImage, contentType: "image/png" });
+
+  // Cancelling keeps the run; confirming deletes it and returns to upload.
+  await page.getByRole("button", { name: "Delete import", exact: true }).click();
+  await expect(
+    page.getByText(/Delete this import, its results and its error report\?/),
+  ).toBeVisible();
+  const confirmImage = `${assetDir}delete-confirm.png`;
+  await page.screenshot({ path: confirmImage, fullPage: true });
+  await testInfo.attach("import-delete-confirm", { path: confirmImage, contentType: "image/png" });
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("Finished: 50 created");
+  await page.getByRole("button", { name: "Delete import", exact: true }).click();
+  const deleted = page.waitForResponse(
+    (r) => r.url().endsWith(`/people-imports/${runId}`) && r.request().method() === "DELETE",
+  );
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  expect((await deleted).status()).toBe(204);
+  await expect(page.getByLabel("CSV or XLSX file")).toBeVisible();
+  expect((await page.request.get(`${instance.url}/api/v1/people-imports/${runId}`)).status()).toBe(
+    404,
+  );
+  // Reopening the deleted run explains why it is gone.
+  await page.goto(`${instance.url}/people/import?runId=${runId}`);
+  await expect(page.getByRole("alert")).toContainText("no longer exists");
+  // People created by the import stay.
+  await page.goto(`${instance.url}/people/invitations`);
+  await expect(page.getByText("Import Person 01", { exact: true })).toBeVisible();
+});

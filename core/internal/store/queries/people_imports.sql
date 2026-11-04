@@ -1,18 +1,52 @@
 -- name: CreatePeopleImportRun :one
-INSERT INTO people_import_runs (id, created_by, source, encoding, delimiter, headers_sealed)
-VALUES (@id, @created_by, @source, @encoding, @delimiter, @headers_sealed) RETURNING *;
+INSERT INTO people_import_runs (id, created_by, source, encoding, delimiter, headers_sealed, expires_at)
+VALUES (@id, @created_by, @source, @encoding, @delimiter, @headers_sealed,
+    now() + sqlc.arg(retention_seconds)::bigint * interval '1 second') RETURNING *;
 
 -- name: GetPeopleImportRun :one
-SELECT * FROM people_import_runs WHERE id = @id AND created_by = @created_by;
+-- An expired run is gone even before the cleanup job deletes it. Expiry uses
+-- the current clock, not the transaction start: callers wait for the import
+-- locks first, and a run may expire while they wait.
+SELECT * FROM people_import_runs WHERE id = @id AND created_by = @created_by AND expires_at > clock_timestamp();
 
 -- name: LockPeopleImportRun :one
-SELECT * FROM people_import_runs WHERE id = @id AND created_by = @created_by FOR UPDATE;
+-- Callers re-check expiry with PeopleImportRunExpired after the row lock:
+-- PostgreSQL re-evaluates this condition after a row-lock wait only if the
+-- holder changed the row.
+SELECT * FROM people_import_runs WHERE id = @id AND created_by = @created_by AND expires_at > clock_timestamp() FOR UPDATE;
+
+-- name: PeopleImportRunExpired :one
+SELECT sqlc.arg(expires_at)::timestamptz <= clock_timestamp() AS expired;
 
 -- name: SetPeopleImportMapping :exec
 UPDATE people_import_runs SET mapping = @mapping, state = 'previewed' WHERE id = @id;
 
--- name: FinishPeopleImport :exec
-UPDATE people_import_runs SET state = 'applied' WHERE id = @id;
+-- name: FinishPeopleImport :one
+UPDATE people_import_runs SET state = 'applied', applied_at = now(),
+    expires_at = now() + sqlc.arg(retention_seconds)::bigint * interval '1 second'
+WHERE id = @id RETURNING *;
+
+-- name: ErasePeopleImportRun :one
+-- Keeps value-free captions only; the sealed headers are gone afterwards.
+UPDATE people_import_runs SET headers_sealed = NULL, captions = sqlc.arg(captions)::text[]
+WHERE id = @id RETURNING *;
+
+-- name: ErasePeopleImportRows :exec
+UPDATE people_import_rows SET payload_sealed = NULL, preview_sealed = NULL WHERE run_id = @run_id;
+
+-- name: ListUnerasedAppliedPeopleImportRuns :many
+-- Runs applied before apply erased their source material.
+SELECT * FROM people_import_runs WHERE state = 'applied' AND headers_sealed IS NOT NULL
+ORDER BY id LIMIT sqlc.arg(max_runs)::int FOR UPDATE;
+
+-- name: DeletePeopleImportRun :one
+DELETE FROM people_import_runs WHERE id = @id RETURNING id, state;
+
+-- name: DeleteExpiredPeopleImportRuns :many
+DELETE FROM people_import_runs WHERE id IN (
+    SELECT id FROM people_import_runs WHERE expires_at <= clock_timestamp()
+    ORDER BY expires_at LIMIT sqlc.arg(max_runs)::int FOR UPDATE)
+RETURNING id, state;
 
 -- name: InsertPeopleImportRow :exec
 INSERT INTO people_import_rows (run_id, row_number, payload_sealed, error_code)

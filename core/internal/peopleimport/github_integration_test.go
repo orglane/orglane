@@ -109,6 +109,11 @@ func TestGitHubPipelinePendingLinkAndRepeat(t *testing.T) {
 	if conflict.Rows[0].Decision != "conflict" || conflict.Rows[0].Error != "identity_conflict" {
 		t.Fatalf("stable account/email conflict lost: %+v", conflict.Rows)
 	}
+	// Staged ciphertext exists until apply erases it; it never holds plaintext.
+	var staged string
+	if e = f.pool.QueryRow(f.ctx, `SELECT string_agg(encode(payload_sealed,'escape'),'') FROM people_import_rows WHERE run_id=$1`, conflict.ID).Scan(&staged); e != nil || staged == "" || strings.Contains(staged, "test-only-token") || strings.Contains(staged, "fixture@example.test") {
+		t.Fatal("staging plaintext leak", e)
+	}
 	conflict, err = f.imports.Apply(f.ctx, f.actor, conflict.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +130,7 @@ func TestGitHubPipelinePendingLinkAndRepeat(t *testing.T) {
 		t.Fatalf("audit credential leak err=%v", e)
 	}
 	var plaintext string
-	if e = f.pool.QueryRow(f.ctx, `SELECT string_agg(encode(payload_sealed,'escape'),'') FROM people_import_rows`).Scan(&plaintext); e != nil || strings.Contains(plaintext, "test-only-token") || strings.Contains(plaintext, "fixture@example.test") {
+	if e = f.pool.QueryRow(f.ctx, `SELECT coalesce(string_agg(encode(payload_sealed,'escape'),''),'') FROM people_import_rows`).Scan(&plaintext); e != nil || strings.Contains(plaintext, "test-only-token") || strings.Contains(plaintext, "fixture@example.test") {
 		t.Fatal("staging plaintext leak", e)
 	}
 }

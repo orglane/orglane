@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/orglane/orglane/core/internal/audit"
+	"github.com/orglane/orglane/core/internal/authz"
 	"github.com/orglane/orglane/core/internal/peopleimport"
 	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/tests/mailtest"
@@ -64,6 +66,7 @@ func TestPeopleImportPublicAPIAndPermissions(t *testing.T) {
 		{http.MethodPost, "/api/v1/people-imports/" + run.ID.String() + "/preview", importMapping("username", "work_email", "display_name")},
 		{http.MethodPost, "/api/v1/people-imports/" + run.ID.String() + "/apply", nil},
 		{http.MethodGet, "/api/v1/people-imports/" + run.ID.String() + "/errors", nil},
+		{http.MethodDelete, "/api/v1/people-imports/" + run.ID.String(), nil},
 	}
 	for _, p := range paths {
 		expectStatus(t, member.req(p.method, p.path, p.body), http.StatusForbidden)
@@ -323,5 +326,82 @@ func TestPeopleImportApplyArchivedMappedFieldDoesNotMutate(t *testing.T) {
 		if bytes.Contains(r.body, []byte(value)) {
 			t.Fatal("invalid apply diagnostic exposed mapped data")
 		}
+	}
+}
+
+func TestPeopleImportDeleteAndExpiry(t *testing.T) {
+	e := newEnv(t)
+	owner := e.browser()
+	e.setupOwner(owner)
+	memberPerson := e.createMember("importviewer")
+	member := e.browser()
+	member.signIn(memberPerson.WorkEmail)
+	adminPerson := e.createMember("importadmin")
+	if err := e.stack.Identity.AssignRole(t.Context(), audit.System, adminPerson.ID, authz.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	admin := e.browser()
+	admin.signIn(adminPerson.WorkEmail)
+	text := "username,work_email,display_name,Private Heading\ndeleted,deleted@acme.test,Deleted Person,private\nbroken,broken@acme.test\n"
+	mapping := importMapping("username", "work_email", "display_name")
+
+	staged := stageImport(t, owner, text)
+	if !staged.ExpiresAt.Equal(staged.CreatedAt.Add(peopleimport.StagingRetention)) {
+		t.Fatalf("staged expiresAt = %v, createdAt = %v", staged.ExpiresAt, staged.CreatedAt)
+	}
+	applied := applyImport(t, owner, previewImport(t, owner, stageImport(t, owner, text), mapping))
+	if !applied.ExpiresAt.After(time.Now().Add(peopleimport.AppliedRetention - time.Hour)) {
+		t.Fatalf("applied expiresAt = %v, want 90 days after apply", applied.ExpiresAt)
+	}
+	// The value-free result and error export outlive the erased source.
+	exported := owner.req(http.MethodGet, "/api/v1/people-imports/"+applied.ID.String()+"/errors", nil)
+	expectStatus(t, exported, http.StatusOK)
+	if string(exported.body) != "row,decision,error,result\n3,conflict,column_count,failed\n" {
+		t.Fatalf("error export after apply = %q", exported.body)
+	}
+	repeated := applyImport(t, owner, applied)
+	if repeated.Rows[0].Result != "created" || len(repeated.Headers) != 4 || repeated.Headers[3] != "" {
+		t.Fatalf("repeated apply = %+v", repeated)
+	}
+
+	// Without people.manage the delete is denied and nothing changes.
+	path := "/api/v1/people-imports/" + applied.ID.String()
+	expectStatus(t, member.req(http.MethodDelete, path, nil), http.StatusForbidden)
+	expectStatus(t, owner.req(http.MethodGet, path, nil), http.StatusOK)
+
+	// Another people.manage holder may delete the owner's run; the uploader
+	// may delete their own. Both are audited, without values.
+	before := e.auditCount("import.deleted")
+	expectStatus(t, admin.req(http.MethodDelete, path, nil), http.StatusNoContent)
+	expectStatus(t, owner.req(http.MethodDelete, "/api/v1/people-imports/"+staged.ID.String(), nil), http.StatusNoContent)
+	if e.auditCount("import.deleted") != before+2 {
+		t.Fatal("deletes not audited")
+	}
+	var leaked bool
+	if err := e.pool.QueryRow(t.Context(), `SELECT EXISTS(SELECT 1 FROM audit_entries WHERE action='import.deleted' AND (metadata::text LIKE '%deleted@%' OR metadata::text LIKE '%Private%'))`).Scan(&leaked); err != nil || leaked {
+		t.Fatalf("delete audit leaked source values: %v", err)
+	}
+	for _, id := range []string{applied.ID.String(), staged.ID.String()} {
+		expectStatus(t, owner.req(http.MethodGet, "/api/v1/people-imports/"+id, nil), http.StatusNotFound)
+		expectStatus(t, owner.req(http.MethodGet, "/api/v1/people-imports/"+id+"/errors", nil), http.StatusNotFound)
+		expectStatus(t, owner.req(http.MethodPost, "/api/v1/people-imports/"+id+"/apply", nil), http.StatusNotFound)
+		expectStatus(t, owner.req(http.MethodPost, "/api/v1/people-imports/"+id+"/preview", mapping), http.StatusNotFound)
+		// Idempotent: deleting again succeeds and records nothing.
+		expectStatus(t, owner.req(http.MethodDelete, "/api/v1/people-imports/"+id, nil), http.StatusNoContent)
+	}
+	expectStatus(t, owner.req(http.MethodDelete, "/api/v1/people-imports/"+uuid.NewString(), nil), http.StatusNoContent)
+	if e.auditCount("import.deleted") != before+2 {
+		t.Fatal("repeated delete wrote audit entries")
+	}
+	if _, err := e.stack.Identity.GetPersonByWorkEmail(t.Context(), "deleted@acme.test"); err != nil {
+		t.Fatalf("deleting the run removed its imported person: %v", err)
+	}
+
+	// An expired run is not found, and the cleanup job removes it.
+	expired := stageImport(t, owner, text)
+	e.exec("UPDATE people_import_runs SET expires_at = now() - interval '1 second' WHERE id = $1", expired.ID)
+	expectStatus(t, owner.req(http.MethodGet, "/api/v1/people-imports/"+expired.ID.String(), nil), http.StatusNotFound)
+	if res, err := e.stack.Imports.Cleanup(t.Context()); err != nil || res.Expired != 1 {
+		t.Fatalf("cleanup = %+v, %v", res, err)
 	}
 }
