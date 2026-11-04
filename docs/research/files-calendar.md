@@ -1,8 +1,8 @@
 # Files, calendar and contacts provider research
 
-Research for [#31](https://github.com/orglane/orglane/issues/31), observed on 2026-11-03 with a bounded Radicale follow-up on 2026-11-04. Recommendations are provisional; the maintainer chooses providers.
+Research for [#31](https://github.com/orglane/orglane/issues/31), observed on 2026-11-03 with bounded Radicale and OpenCloud follow-ups on 2026-11-04. Recommendations are provisional; the maintainer chooses providers.
 
-**Draft: incomplete experiments.** Runtime coverage is partial and the issue remains open. Research containers are stopped with volumes preserved while feature verification uses the shared host. Remaining measurements, repository checks and final removal of task-owned containers/volumes are pending.
+**Draft: incomplete experiments.** Runtime coverage is partial and the issue remains open. Research is paused at the user's request after the current OpenCloud observation; containers are stopped with volumes preserved. Remaining measurements, repository checks and final removal of task-owned containers/volumes are pending.
 
 ## Recommendation
 
@@ -29,19 +29,20 @@ Same shared host/method as [tasks](tasks.md#measurements-and-reproducibility): L
 | Candidate | Idle min / median / max MiB | Loaded peak MiB | Images / MB | Local result |
 |---|---:|---:|---:|---|
 | Nextcloud + PostgreSQL | Unverified | Unverified | 2 / 1796.2 | 35.0.2 readiness, OCS provisioning/membership/sharing and file round trip verified; benchmarks/DAV object tests deferred on host pressure |
-| OpenCloud standalone | Unverified | Unverified | Unverified | Container started; Graph request did not reach readiness before suspension |
+| OpenCloud standalone | 401.3 / 401.3 / 401.6 (3 post-readiness samples) | Unverified | 1 / 223.6 | Version 9.0.0 and Basic-auth Graph `/me` 200 verified; pressure abort before provisioning/file/share smoke |
 | Radicale standalone | 32.4 / 32.4 / 32.4 (3 pre-batch samples) | Unverified | 1 / 128.1 | 20 events + 20 contacts verified; configured 20-second sampler maximum 37.5 MiB is not an active-batch peak |
 | Baikal image | Unverified | Unverified | Unverified | Pull/extraction interrupted before deployment |
 | Seafile CE + MariaDB + Redis | Unverified | Unverified | Unverified | Pull interrupted before deployment |
 
-The shared host became saturated during concurrent work and experiments were suspended by the coordinator. Nextcloud was subsequently released alone for a bounded follow-up, described below. No application steady-state result is inferred from an image download, started container or single memory snapshot. **The issue's full local measurement coverage is not yet complete.**
+The shared host became saturated during concurrent work and experiments were suspended by the coordinator. Nextcloud, Radicale and OpenCloud were subsequently released separately for bounded follow-ups, described below. No application steady-state result is inferred from an image download, started container or single memory snapshot. **The issue's full local measurement coverage is not yet complete.**
 
 Run from the repository root. Fixtures use unique project names, disposable example credentials, named volumes and loopback ports. They are experiments, not production Orglane packages. Use a fresh project name/port for another run.
 
 ```sh
 docker compose -p rs-nextcloud -f docs/research/env/nextcloud/compose.yaml \
   -f docs/research/env/nextcloud/bounded.yaml up -d --pull never --no-build
-docker compose -p rs-opencloud -f docs/research/env/opencloud/compose.yaml up -d
+docker compose -p rs-opencloud -f docs/research/env/opencloud/compose.yaml \
+  -f docs/research/env/opencloud/bounded.yaml up -d --pull never --no-build
 docker compose -p rs-radicale -f docs/research/env/radicale/compose.yaml up -d
 docker compose -p rs-baikal -f docs/research/env/baikal/compose.yaml up -d
 docker compose -p rs-seafile -f docs/research/env/seafile/compose.yaml up -d
@@ -89,6 +90,36 @@ sh docs/research/env/measure.sh images rs-nextcloud
 docker compose -p rs-nextcloud -f docs/research/env/nextcloud/compose.yaml \
   -f docs/research/env/nextcloud/bounded.yaml stop
 ```
+
+### OpenCloud standalone follow-up (2026-11-04)
+
+Only the existing `rs-opencloud` project ran, reusing its config/data volumes and cached arm64 image `opencloudeu/opencloud-rolling:9.0.0@sha256:bd57f039d0dd3df510fb25f178beefdf0b1f049097285feead607824460e6506`. No pull, build, reset, forced initialization or authentication reconfiguration was performed. The override set **1 CPU / 768 MiB**; inspection confirmed the limits, **zero restarts** and **OOMKilled=false**. The single image was **223,623,696 uncompressed bytes** (223.6 MB); this footprint is standalone OpenCloud only.
+
+`opencloud version` reported **9.0.0**, edition **rolling**, compiled October 27. With the fixture's existing `PROXY_ENABLE_BASIC_AUTH=true` and disposable admin credentials, **GET `/graph/v1.0/me` returned HTTP 200 with a user ID**. The first readiness probe succeeded in **2.904 seconds after polling began**, with no preceding failed probes; this is not cold-start or installation time. Earlier non-readiness remains an interrupted observation, not an established provider defect.
+
+The readiness watcher allowed at most five minutes, used a three-second HTTP timeout and serial requests, and aborted if one-minute host load exceeded the lower of 10 and its initial value + 3 (**7.95** in this phase), or VM memory PSI `avg10` exceeded 0.1. The planned write smoke had a two-minute limit but was **not started**: after three quiet samples, host load reached **9.68**, above the guard. No user/group/member round trip, file upload, share or synthetic load was attempted. Those steps remain unverified, rather than failed API operations.
+
+The post-readiness samples with two-second sleeps between Docker-stat calls were **401.3 / 401.3 / 401.6 MiB min/median/max**. This brief quiet window is not a long-settled idle baseline, active workload measurement or throughput result. Host one-minute load was **4.51** before startup, **4.95** at readiness and **9.68** after sampling, declining to **8.19** before stopping; no cause is attributed. VM available memory changed from **6,507,472 KiB** after startup to **6,313,052 KiB** at the end, with memory PSI `some/full avg10=0.00` at both checks.
+
+The container was stopped, both `rs-opencloud_config` and `rs-opencloud_data` were preserved, and the runtime slot was returned. No other candidate or combined OpenCloud/Radicale setup was started. The user then requested a pause after recording these results; the research remains incomplete.
+
+Recorded startup/version/sample/stop commands, with an equivalent direct readiness probe:
+
+```sh
+docker compose -p rs-opencloud -f docs/research/env/opencloud/compose.yaml \
+  -f docs/research/env/opencloud/bounded.yaml up -d --pull never --no-build
+docker exec rs-opencloud-app-1 opencloud version
+# Actual readiness used a bounded Python watcher; this probes the same endpoint.
+# -k applies only to the fixture's local self-signed TLS certificate.
+curl -ksS --max-time 3 -u admin:research-pass-1 https://localhost:18104/graph/v1.0/me \
+  | jq '{id_present:has("id")}'
+sh docs/research/env/measure.sh mem rs-opencloud 3 2
+sh docs/research/env/measure.sh images rs-opencloud
+docker compose -p rs-opencloud -f docs/research/env/opencloud/compose.yaml \
+  -f docs/research/env/opencloud/bounded.yaml stop
+```
+
+[Official Docker guidance](https://docs.opencloud.eu/docs/admin/getting-started/container/docker/) supplies standalone setup context. The [v9.0.0 proxy defaults](https://github.com/opencloud-eu/opencloud/blob/v9.0.0/services/proxy/pkg/config/defaults/defaultconfig.go) disable Basic auth by default; this fixture explicitly enables it for testing, consistent with the [developer WebDAV guidance](https://docs.opencloud.eu/docs/dev/server/apis/http/webdav/). Official [Graph users](https://docs.opencloud.eu/docs/dev/server/apis/http/graph/users/) and [groups](https://docs.opencloud.eu/docs/dev/server/apis/http/graph/groups/) docs describe provisioning/membership, but the served docs identify version 7.2 and those operations were not exercised against this 9.0.0 fixture. The authenticated `/me` read establishes no browser SSO, revocation, webhook, upgrade, UI or full file/calendar/contact workflow.
 
 ### Radicale bounded follow-up (2026-11-04)
 
