@@ -404,6 +404,14 @@ func (a *Agent) forward(ctx context.Context, in *instance, j *journal, from *age
 // both win.
 func (a *Agent) awaitConfirmation(ctx context.Context, in *instance, j *journal) (bool, error) {
 	dir := a.instanceDir(in.key)
+	a.mu.Lock()
+	in.awaiting = j.Operation
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		in.awaiting = uuid.Nil
+		a.mu.Unlock()
+	}()
 	for {
 		in.files.Lock()
 		cur, err := readJournal(dir)
@@ -447,8 +455,11 @@ func (a *Agent) awaitConfirmation(ctx context.Context, in *instance, j *journal)
 	}
 }
 
-// decide handles POST /v1/operations/{id}/confirm and /abort. A repeated
-// call with the same decision answers the operation again.
+// decide handles POST /v1/operations/{id}/confirm and /abort. Only an
+// upgrade that this process waits on can be decided, and a confirmation
+// only before its deadline: a journal in awaiting_confirmation left by an
+// earlier process rolls back on recovery, whatever arrives first. A
+// repeated call with the same decision answers the operation again.
 func (a *Agent) decide(id uuid.UUID, confirm bool) (agentapi.Operation, string) {
 	op, ok := a.ops.get(id)
 	if !ok {
@@ -474,8 +485,15 @@ func (a *Agent) decide(id uuid.UUID, confirm bool) (agentapi.Operation, string) 
 		}
 		return op, agentapi.CodeNotAwaitingConfirmation
 	}
+	a.mu.Lock()
+	waiting := in.awaiting == id
+	a.mu.Unlock()
 	switch {
-	case j.Phase == agentapi.PhaseAwaitingConfirmation && j.Decision == "":
+	case j.Phase == agentapi.PhaseAwaitingConfirmation && j.Decision == "" && waiting:
+		if confirm && (j.ConfirmBy == nil || !a.now().Before(*j.ConfirmBy)) {
+			// Too late: the timeout rolls it back.
+			return op, agentapi.CodeNotAwaitingConfirmation
+		}
 		if confirm {
 			j.Phase = agentapi.PhaseCommitting
 		} else {

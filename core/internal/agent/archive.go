@@ -136,6 +136,12 @@ func extractArchive(r io.Reader, dir string, chown bool) (err error) {
 			if err = errors.Join(err, f.Close()); err != nil {
 				return err
 			}
+			// The owner before the mode: chown(2) clears setuid and setgid.
+			if chown {
+				if err := root.Lchown(name, hdr.Uid, hdr.Gid); err != nil {
+					return err
+				}
+			}
 			if err := root.Chmod(name, unixMode(hdr.Mode)); err != nil {
 				return err
 			}
@@ -149,7 +155,7 @@ func extractArchive(r io.Reader, dir string, chown bool) (err error) {
 		default:
 			return fmt.Errorf("archive: unsupported entry type %q for %s", hdr.Typeflag, hdr.Name)
 		}
-		if chown {
+		if chown && hdr.Typeflag != tar.TypeReg {
 			if err := root.Lchown(name, hdr.Uid, hdr.Gid); err != nil {
 				return err
 			}

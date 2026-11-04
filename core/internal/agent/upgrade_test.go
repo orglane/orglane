@@ -334,6 +334,7 @@ func awaitingAgent(t *testing.T, now time.Time) (*Agent, agentapi.Operation) {
 		t.Fatal(err)
 	}
 	a.opPhase(op.ID, agentapi.PhaseAwaitingConfirmation)
+	a.instance("git").awaiting = op.ID // the upgrade waits in this process
 	return a, op
 }
 
@@ -401,6 +402,70 @@ func TestConfirmAndAbort(t *testing.T) {
 	if code, _, _ := post(t, b, now, agentapi.OperationConfirmPath(op2.ID), nil); code != http.StatusConflict {
 		t.Fatalf("confirm after abort: %d", code)
 	}
+}
+
+// TestConfirmOnlyWhileWaiting: a journal in awaiting_confirmation that no
+// upgrade of this process waits on (left by an agent that crashed) cannot
+// be confirmed, and neither can an upgrade past its deadline.
+func TestConfirmOnlyWhileWaiting(t *testing.T) {
+	now := time.Now()
+	a, op := awaitingAgent(t, now)
+	a.instance("git").awaiting = uuid.Nil // as after a restart, before recovery
+	if code, p, _ := post(t, a, now, agentapi.OperationConfirmPath(op.ID), nil); code != http.StatusConflict || p.Code != agentapi.CodeNotAwaitingConfirmation {
+		t.Fatalf("confirm of a left-over journal: %d %+v", code, p)
+	}
+	if j, _ := readJournal(a.instanceDir("git")); j.Phase != agentapi.PhaseAwaitingConfirmation || j.Decision != "" {
+		t.Fatalf("journal = %+v", j)
+	}
+
+	b, op2 := awaitingAgent(t, now)
+	b.now = func() time.Time { return now.Add(2 * time.Minute) }
+	if code, p, _ := post(t, b, now, agentapi.OperationConfirmPath(op2.ID), nil); code != http.StatusConflict || p.Code != agentapi.CodeNotAwaitingConfirmation {
+		t.Fatalf("confirm after the deadline: %d %+v", code, p)
+	}
+	if j, _ := readJournal(b.instanceDir("git")); j.Phase != agentapi.PhaseAwaitingConfirmation {
+		t.Fatalf("journal after a late confirm = %+v", j)
+	}
+}
+
+// TestRoutesNeedSignatures: every route refuses unsigned and wrongly signed
+// requests before it does anything.
+func TestRoutesNeedSignatures(t *testing.T) {
+	now := time.Now()
+	a, rr := newTestAgent(t, func() time.Time { return now })
+	wrong, err := agentapi.DeriveKey(strings.Repeat("w", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := uuid.Must(uuid.NewV7()).String()
+	for _, route := range Routes() {
+		method, pattern, _ := strings.Cut(route, " ")
+		path := strings.NewReplacer("{key}", "git", "{id}", id).Replace(pattern)
+		body := []byte(`{"reason":"manual"}`)
+		unsigned := httptestRequest(t, method, path, body)
+		if rec := serve(a.Handler(), unsigned); rec.Code != http.StatusUnauthorized || rec.Header().Get(agentapi.HeaderSignature) != "" {
+			t.Errorf("unsigned %s: %d", route, rec.Code)
+		}
+		req, _ := signed(t, wrong, method, path, body, now)
+		if rec := serve(a.Handler(), req); rec.Code != http.StatusUnauthorized {
+			t.Errorf("wrongly signed %s: %d", route, rec.Code)
+		}
+	}
+	if n := rr.count(); n != 0 {
+		t.Fatalf("unauthenticated requests invoked Docker %d times", n)
+	}
+	if _, err := os.Stat(a.instanceDir("git")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("an unauthenticated request created an instance")
+	}
+}
+
+func httptestRequest(t *testing.T, method, target string, body []byte) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), method, target, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
 }
 
 // TestConfirmationTimeout: without a decision the waiting upgrade rolls
@@ -535,5 +600,36 @@ func TestCheckpoint(t *testing.T) {
 	}
 	if err := a.checkpoint(agentapi.PhaseVerifying); !errors.Is(err, errCrashed) || !a.crashed.Load() || !stopped {
 		t.Fatalf("checkpoint = %v, crashed %v, stopped %v", err, a.crashed.Load(), stopped)
+	}
+}
+
+// TestExtractKeepsSetuidAsRoot: the owner is applied before the mode, so
+// setuid and setgid bits survive a restore by root.
+func TestExtractKeepsSetuidAsRoot(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root")
+	}
+	src := t.TempDir()
+	p := filepath.Join(src, "tool")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(p, 1000, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o755|os.ModeSetuid|os.ModeSetgid); err != nil { //nolint:gosec // the test's point
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := archiveDir(src, &buf); err != nil {
+		t.Fatal(err)
+	}
+	dst := t.TempDir()
+	if err := extractArchive(&buf, dst, true); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(dst, "tool"))
+	if err != nil || fi.Mode()&(os.ModeSetuid|os.ModeSetgid) != os.ModeSetuid|os.ModeSetgid {
+		t.Fatalf("mode after the restore = %v, %v", fi.Mode(), err)
 	}
 }

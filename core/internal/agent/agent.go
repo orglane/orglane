@@ -102,6 +102,10 @@ type instance struct {
 	busyKind     string    // the operation kind that runs, if any
 	lastError    string    // error code of the last failed reconcile
 	snapshotOp   uuid.UUID // a requested manual snapshot, uuid.Nil if none
+	// awaiting is the upgrade operation this process waits to have
+	// confirmed. Only it can be confirmed: a journal in
+	// awaiting_confirmation left by an earlier process rolls back.
+	awaiting uuid.UUID
 }
 
 // New prepares an agent: it derives the transport key and creates the data
