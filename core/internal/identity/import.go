@@ -22,6 +22,7 @@ import (
 // ImportedPerson is one mapped row. Empty mapped cells leave existing values.
 // Role is an additive bundle; imports never silently revoke existing roles.
 type ImportedPerson struct {
+	GitHub                                                *PendingGitHubAccount
 	ID                                                    uuid.UUID
 	Username, WorkEmail, ContactEmail, DisplayName, Title string
 	Role                                                  authz.RoleKey
@@ -197,6 +198,20 @@ func (s *Service) ImportPersonTx(ctx context.Context, tx pgx.Tx, q *store.Querie
 			return store.Person{}, err
 		}
 	}
+
+	if in.GitHub != nil {
+		g := in.GitHub
+		n, e := q.PutPendingGitHubAccount(ctx, store.PutPendingGitHubAccountParams{OrganizationID: g.OrganizationID, ExternalID: g.UserID, PersonID: person.ID, Login: g.Login, AvatarUrl: g.AvatarURL})
+		if e != nil {
+			return store.Person{}, e
+		}
+		if n != 1 {
+			return store.Person{}, ErrInvalid
+		}
+		if _, e = audit.Record(ctx, q, audit.Entry{Actor: actor, Action: audit.PersonUpdated, Target: personTarget(person.ID), Metadata: map[string]any{"fields": []string{"pending_github_account"}}}); e != nil {
+			return store.Person{}, e
+		}
+	}
 	return person, nil
 }
 
@@ -233,4 +248,10 @@ func (s *Service) issueImportedInvitation(ctx context.Context, tx pgx.Tx, q *sto
 	}
 	_, err = audit.Record(ctx, q, audit.Entry{Actor: actor, Action: audit.InvitationCreated, Target: invitationTarget(inv.ID), Metadata: map[string]any{"person_id": person.ID, "delivery": delivery, "source": "import"}})
 	return err
+}
+
+// PendingGitHubAccount records imported evidence, never verified ownership.
+type PendingGitHubAccount struct {
+	OrganizationID, UserID int64
+	Login, AvatarURL       string
 }

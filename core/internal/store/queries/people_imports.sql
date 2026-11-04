@@ -62,8 +62,20 @@ SELECT jsonb_build_object(
     'roles', (SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY r.id), '[]') FROM roles r),
     'permissions', (SELECT coalesce(jsonb_agg(to_jsonb(rp) ORDER BY rp.role_id,rp.permission), '[]') FROM role_permissions rp),
     'grants', (SELECT coalesce(jsonb_agg(to_jsonb(pr) ORDER BY pr.role_id), '[]') FROM person_roles pr WHERE pr.person_id = @person_id),
+    'pending_accounts', (SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.organization_id,a.external_id), '[]') FROM pending_account_links a WHERE a.person_id = @person_id),
     'external', (SELECT coalesce(jsonb_agg(to_jsonb(i) ORDER BY i.source,i.external_hash), '[]') FROM people_import_identities i WHERE i.person_id = @person_id),
     'fields', (SELECT coalesce(jsonb_agg(to_jsonb(f) ORDER BY f.id), '[]') FROM profile_fields f),
     'values', (SELECT coalesce(jsonb_agg(to_jsonb(v) ORDER BY v.field_id), '[]') FROM profile_field_values v WHERE v.person_id = @person_id),
     'memberships', (SELECT coalesce(jsonb_agg(to_jsonb(m) ORDER BY m.team_id), '[]') FROM team_memberships m WHERE m.person_id = @person_id)
 )::jsonb AS snapshot;
+
+-- name: PutPendingGitHubAccount :execrows
+INSERT INTO pending_account_links (provider, organization_id, external_id, person_id, login, avatar_url)
+VALUES ('github', @organization_id, @external_id, @person_id, @login, @avatar_url)
+ON CONFLICT (provider, organization_id, external_id) DO UPDATE
+SET login = EXCLUDED.login, avatar_url = EXCLUDED.avatar_url
+WHERE pending_account_links.person_id = EXCLUDED.person_id;
+
+-- name: FindPendingGitHubAccount :many
+SELECT p.* FROM people p JOIN pending_account_links a ON a.person_id = p.id
+WHERE a.provider = 'github' AND a.organization_id = @organization_id AND a.external_id = @external_id;

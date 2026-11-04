@@ -1065,6 +1065,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/people-imports/github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch GitHub organization members into encrypted import staging
+         * @description Short-lived fine-grained PAT with organization Members read permission.
+         *     Token is used synchronously and never persisted. Maximum 2000 members;
+         *     incomplete fetches fail without creating a run. Public email is optional
+         *     and is not identity proof. Existing required-field rules still apply.
+         */
+        post: operations["fetchGitHubPeopleImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/people-imports/{runId}": {
         parameters: {
             query?: never;
@@ -1189,6 +1212,7 @@ export interface components {
             }[];
             createTeams: boolean;
             sendInvitations: boolean;
+            /** @description GitHub runs allow 2000 skips; file runs remain limited to 1000. */
             skipRows: number[];
         };
         PeopleImportRow: {
@@ -3583,6 +3607,37 @@ export interface operations {
         };
         responses: {
             /** @description Staged import, with column headers and detection metadata. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PeopleImport"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    fetchGitHubPeopleImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    organization: string;
+                    token: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Complete source staged; token discarded. */
             201: {
                 headers: {
                     [name: string]: unknown;

@@ -154,6 +154,17 @@ type Passkey struct {
 	LastUsedAt   *time.Time
 }
 
+type PendingAccountLink struct {
+	Provider       string
+	OrganizationID int64
+	ExternalID     int64
+	PersonID       uuid.UUID
+	Login          string
+	AvatarUrl      string
+	State          string
+	CreatedAt      time.Time
+}
+
 type PeopleImportIdentity struct {
 	Source       string
 	ExternalHash []byte

@@ -345,3 +345,26 @@ func TestWebUIGetsOnlyUnclaimedPaths(t *testing.T) {
 	}
 	decodeProblem(t, rec)
 }
+
+func TestGitHubImportPermissionDeniedBeforeSource(t *testing.T) {
+	h := newTestHandler(t, Options{Version: "test", BaseDomain: "acme.test", WorkspaceHost: "work.acme.test"})
+	for _, token := range []string{"", "member"} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/people-imports/github", strings.NewReader(`{"organization":"fixture","token":"never-disclose-me"}`))
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		expected := http.StatusForbidden
+		if token == "" {
+			expected = http.StatusUnauthorized
+		}
+		if rec.Code != expected {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+		}
+		if strings.Contains(rec.Body.String(), "never-disclose-me") {
+			t.Fatal("credential leaked")
+		}
+	}
+}

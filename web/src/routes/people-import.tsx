@@ -14,6 +14,23 @@ import { errorMessage } from "@/lib/errors";
 import { useMe } from "@/lib/session";
 
 const messages = defineMessages({
+  githubFailure: {
+    id: "import.githubFailure",
+    defaultMessage:
+      "GitHub fetch failed. Check organization membership, token access, rate limits and the 2,000-member limit, then retry. No partial run was saved.",
+  },
+  source: { id: "import.source", defaultMessage: "Import source" },
+  spreadsheet: { id: "import.spreadsheet", defaultMessage: "Spreadsheet" },
+  github: { id: "import.github", defaultMessage: "GitHub organization" },
+  organization: { id: "import.organization", defaultMessage: "Organization name" },
+  token: { id: "import.token", defaultMessage: "Short-lived fine-grained token" },
+  fetch: { id: "import.fetch", defaultMessage: "Fetch members" },
+  githubHint: {
+    id: "import.githubHint",
+    defaultMessage:
+      "Up to 2,000 members. Use a short-lived token with organization Members read access. Failed or incomplete fetches create no run. The token is discarded after fetching. Public email is optional; new people still need a work email and full name. Account associations remain unverified. Avatars are recorded as source evidence only.",
+  },
+
   title: { id: "import.title", defaultMessage: "Import people" },
   description: {
     id: "import.description",
@@ -200,6 +217,11 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
   const queryClient = useQueryClient();
   const me = useMe();
   const allowed = me.permissions.includes("people.manage");
+  const [source, setSource] = useState("file");
+  const [organization, setOrganization] = useState("");
+  const [token, setToken] = useState("");
+  const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<unknown>();
   const [file, setFile] = useState<File>();
   const [run, setRun] = useState<Run>();
   const [mapping, setMapping] = useState<Mapping>({
@@ -316,9 +338,43 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
       URL.revokeObjectURL(url);
     },
   });
-  const busy = upload.isPending || preview.isPending || apply.isPending;
+  // Credentials never enter React Query mutation variables or retained data.
+  const fetchGitHub = async () => {
+    setFetching(true);
+    setFetchError(undefined);
+    const credential = token;
+    setToken("");
+    try {
+      const next = await call(
+        api.client.POST("/api/v1/people-imports/github", {
+          body: { organization, token: credential },
+        }),
+      );
+      queryClient.setQueryData(["people-import", next.id], next);
+      setRun(next);
+      setMapping({
+        ...next.mapping,
+        columns: next.headers.flatMap((h, column) => (h ? [{ column, target: h }] : [])),
+      });
+      setEditing(true);
+      setNeedsPreview(false);
+      await navigate({ to: "/people/import", search: { runId: next.id }, replace: true });
+    } catch {
+      setFetchError(new Error(intl.formatMessage(messages.invalid)));
+    } finally {
+      setFetching(false);
+      setToken("");
+    }
+  };
+  const busy = fetching || upload.isPending || preview.isPending || apply.isPending;
   const error =
-    upload.error ?? preview.error ?? apply.error ?? download.error ?? fields.error ?? resume.error;
+    fetchError ??
+    upload.error ??
+    preview.error ??
+    apply.error ??
+    download.error ??
+    fields.error ??
+    resume.error;
   const mapLabel = (target: string) =>
     target === "title"
       ? intl.formatMessage(messages.titleField)
@@ -372,37 +428,85 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
         <div className="flex max-w-4xl flex-col gap-6">
           {error && (
             <Alert role="alert">
-              {errorMessage(intl, error, {
-                400: messages.invalid,
-                403: messages.forbidden,
-                409: messages.stale,
-              })}
+              {fetchError
+                ? intl.formatMessage(messages.githubFailure)
+                : errorMessage(intl, error, {
+                    400: messages.invalid,
+                    403: messages.forbidden,
+                    409: messages.stale,
+                  })}
             </Alert>
           )}
           {!run ? (
             <Card className="flex flex-col gap-4 p-6">
-              <Button variant="outline" onClick={() => download.mutate("template")}>
-                <FormattedMessage {...messages.template} />
-              </Button>
-              <Field
-                type="file"
-                disabled={busy}
-                accept=".csv,.xlsx"
-                label={<FormattedMessage {...messages.file} />}
-                hint={<FormattedMessage {...messages.limits} />}
-                onChange={(e) => {
-                  setFile(e.target.files?.[0]);
-                  upload.reset();
-                }}
-              />
-              <Button
-                disabled={!file || file.size > 5 * 1024 * 1024 || busy}
-                loading={upload.isPending}
-                aria-label={intl.formatMessage(messages.upload)}
-                onClick={() => upload.mutate()}
-              >
-                <FormattedMessage {...messages.upload} />
-              </Button>
+              <label>
+                <FormattedMessage {...messages.source} />
+                <select
+                  value={source}
+                  disabled={busy}
+                  onChange={(e) => {
+                    setSource(e.target.value);
+                    setToken("");
+                    setFetchError(undefined);
+                  }}
+                >
+                  <option value="file">{intl.formatMessage(messages.spreadsheet)}</option>
+                  <option value="github">{intl.formatMessage(messages.github)}</option>
+                </select>
+              </label>
+              {source === "github" ? (
+                <>
+                  <p>
+                    <FormattedMessage {...messages.githubHint} />
+                  </p>
+                  <Field
+                    label={<FormattedMessage {...messages.organization} />}
+                    value={organization}
+                    disabled={busy}
+                    onChange={(e) => setOrganization(e.target.value)}
+                    autoComplete="off"
+                  />
+                  <Field
+                    type="password"
+                    label={<FormattedMessage {...messages.token} />}
+                    value={token}
+                    disabled={busy}
+                    onChange={(e) => setToken(e.target.value)}
+                    autoComplete="off"
+                  />
+                  <Button
+                    disabled={busy || !organization || !token}
+                    onClick={() => void fetchGitHub()}
+                  >
+                    <FormattedMessage {...messages.fetch} />
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button variant="outline" onClick={() => download.mutate("template")}>
+                    <FormattedMessage {...messages.template} />
+                  </Button>
+                  <Field
+                    type="file"
+                    disabled={busy}
+                    accept=".csv,.xlsx"
+                    label={<FormattedMessage {...messages.file} />}
+                    hint={<FormattedMessage {...messages.limits} />}
+                    onChange={(e) => {
+                      setFile(e.target.files?.[0]);
+                      upload.reset();
+                    }}
+                  />
+                  <Button
+                    disabled={!file || file.size > 5 * 1024 * 1024 || busy}
+                    loading={upload.isPending}
+                    aria-label={intl.formatMessage(messages.upload)}
+                    onClick={() => upload.mutate()}
+                  >
+                    <FormattedMessage {...messages.upload} />
+                  </Button>
+                </>
+              )}
             </Card>
           ) : editing && run.state !== "applied" ? (
             <Card className="flex flex-col gap-4 p-6">

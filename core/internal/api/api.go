@@ -109,6 +109,10 @@ func newHandler(spec []byte, opts Options) (http.Handler, error) {
 	mux := http.NewServeMux()
 	guard := newRouteGuard(mux, ops, opts.Authenticator, opts.Logger, opts.Demo != nil)
 	badRequest := func(w http.ResponseWriter, r *http.Request, err error) {
+		if r.URL.Path == "/api/v1/people-imports/github" {
+			writeProblem(w, r, http.StatusBadRequest, "Invalid GitHub import request.")
+			return
+		}
 		writeProblem(w, r, http.StatusBadRequest, err.Error())
 	}
 	strict := apigen.NewStrictHandlerWithOptions(&server{opts: opts}, []apigen.StrictMiddlewareFunc{withHTTP}, apigen.StrictHTTPServerOptions{

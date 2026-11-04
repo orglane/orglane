@@ -27,6 +27,8 @@ func (s *server) importActor(ctx context.Context) (audit.Actor, error) {
 }
 func importError(err error) error {
 	switch {
+	case errors.Is(err, peopleimport.ErrGitHub):
+		return problemErr(http.StatusBadRequest, "GitHub fetch failed. Check access, rate limits and the 2000-member limit, then retry.")
 	case errors.Is(err, peopleimport.ErrFile), errors.Is(err, peopleimport.ErrInvalid):
 		return problemErr(http.StatusBadRequest, err.Error())
 	case errors.Is(err, peopleimport.ErrForbidden):
@@ -141,4 +143,28 @@ func (s *server) ExportPeopleImportErrors(ctx context.Context, req apigen.Export
 		return nil, importError(err)
 	}
 	return apigen.ExportPeopleImportErrors200TextcsvResponse{Body: strings.NewReader(peopleimport.ErrorsCSV(run))}, nil
+}
+
+func (s *server) FetchGitHubPeopleImport(ctx context.Context, req apigen.FetchGitHubPeopleImportRequestObject) (apigen.FetchGitHubPeopleImportResponseObject, error) {
+	if s.opts.Imports == nil {
+		return nil, errors.New("api: imports are not configured")
+	}
+	actor, err := s.importActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Body == nil || req.Body.Token == nil {
+		return nil, importError(peopleimport.ErrGitHub)
+	}
+	token := *req.Body.Token
+	*req.Body.Token = ""
+	run, err := s.opts.Imports.FetchGitHub(ctx, actor, req.Body.Organization, token)
+	if err != nil {
+		return nil, importError(err)
+	}
+	out, err := importResponse(run)
+	if err != nil {
+		return nil, err
+	}
+	return apigen.FetchGitHubPeopleImport201JSONResponse(out), nil
 }
