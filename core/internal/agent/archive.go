@@ -84,7 +84,13 @@ func archiveDir(dir string, w io.Writer) (err error) {
 // must exist and be empty. Every path stays inside dir (os.Root): entries
 // that would leave it, through ".." or a symlink, fail the extraction.
 // Owners are applied only when chown is set (the agent runs as root).
-func extractArchive(r io.Reader, dir string, chown bool) (err error) {
+func extractArchive(r io.Reader, dir string, chown bool) error {
+	return extractArchiveSync(r, dir, chown, (*os.File).Sync)
+}
+
+// extractArchiveSync allows tests to inject writeback errors at the durability
+// boundary. All regular files and directories are synced after their metadata.
+func extractArchiveSync(r io.Reader, dir string, chown bool, sync func(*os.File) error) (err error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
@@ -128,24 +134,7 @@ func extractArchive(r io.Reader, dir string, chown bool) (err error) {
 			}
 			dirs = append(dirs, dirMeta{name: name, mode: unixMode(hdr.Mode), mtime: hdr.ModTime})
 		case tar.TypeReg:
-			f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-			if err != nil {
-				return err
-			}
-			_, err = io.CopyN(f, tr, hdr.Size)
-			if err = errors.Join(err, f.Close()); err != nil {
-				return err
-			}
-			// The owner before the mode: chown(2) clears setuid and setgid.
-			if chown {
-				if err := root.Lchown(name, hdr.Uid, hdr.Gid); err != nil {
-					return err
-				}
-			}
-			if err := root.Chmod(name, unixMode(hdr.Mode)); err != nil {
-				return err
-			}
-			if err := root.Chtimes(name, hdr.ModTime, hdr.ModTime); err != nil {
+			if err := extractRegular(root, tr, name, hdr, chown, sync); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:
@@ -165,10 +154,19 @@ func extractArchive(r io.Reader, dir string, chown bool) (err error) {
 	// (the root, the first entry, comes last).
 	slices.Reverse(dirs)
 	for _, d := range dirs {
-		if err := root.Chmod(d.name, d.mode); err != nil {
+		// Open before applying a potentially unreadable final mode.
+		f, err := root.Open(d.name)
+		if err != nil {
 			return err
 		}
-		if err := root.Chtimes(d.name, d.mtime, d.mtime); err != nil {
+		err = root.Chmod(d.name, d.mode)
+		if err == nil {
+			err = root.Chtimes(d.name, d.mtime, d.mtime)
+		}
+		if err == nil {
+			err = sync(f)
+		}
+		if err = errors.Join(err, f.Close()); err != nil {
 			return err
 		}
 	}
@@ -218,4 +216,29 @@ func dirSize(dir string) (int64, error) {
 		return nil
 	})
 	return total, err
+}
+
+// extractRegular holds the writable descriptor through ownership, mode and
+// time updates, then syncs both content and metadata before closing it.
+func extractRegular(root *os.Root, tr io.Reader, name string, hdr *tar.Header, chown bool, sync func(*os.File) error) (err error) {
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, f.Close()) }()
+	if _, err := io.CopyN(f, tr, hdr.Size); err != nil {
+		return err
+	}
+	if chown {
+		if err := f.Chown(hdr.Uid, hdr.Gid); err != nil {
+			return err
+		}
+	}
+	if err := f.Chmod(unixMode(hdr.Mode)); err != nil {
+		return err
+	}
+	if err := root.Chtimes(name, hdr.ModTime, hdr.ModTime); err != nil {
+		return err
+	}
+	return sync(f)
 }

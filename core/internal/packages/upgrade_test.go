@@ -3,6 +3,7 @@ package packages
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -104,5 +105,22 @@ func TestCheckUpgrade(t *testing.T) {
 	}
 	if got := r.RequiredStop("agenttest", "1.0.0-1", "3.0.0-1"); got != "2.0.0-1" {
 		t.Errorf("RequiredStop(1, 3) = %q", got)
+	}
+}
+
+// CheckUpgrade does not know whether an embedded intermediate version exists.
+// Its text must describe the direct-upgrade restriction in both registry cases.
+func TestUpgradeErrorDescribesDirectRestriction(t *testing.T) {
+	for _, withIntermediate := range []bool{false, true} {
+		versions := map[string]string{"3.0.0-1": "2.0.0-1"}
+		if withIntermediate {
+			versions["2.0.0-1"] = "1.0.0-1"
+		}
+		r := pathRegistry(t, versions)
+		pkg, _ := r.Get(agentapi.PackageRef{ID: "demo", Version: "3.0.0-1"})
+		err := pkg.CheckUpgrade("1.0.0-1")
+		if err == nil || strings.Contains(err.Error(), "no embedded upgrade path") || !strings.Contains(err.Error(), "cannot upgrade to 3.0.0-1 directly") || !strings.Contains(err.Error(), "needs at least 2.0.0-1") {
+			t.Fatalf("misleading direct-upgrade error (intermediate %v): %v", withIntermediate, err)
+		}
 	}
 }

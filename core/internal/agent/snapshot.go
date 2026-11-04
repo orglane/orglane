@@ -179,13 +179,30 @@ func (a *Agent) takeSnapshot(ctx context.Context, key string, spec *agentapi.Spe
 		f.File = rel
 		snap.DataDirs = append(snap.DataDirs, agentapi.SnapshotDataDir{Name: name, SnapshotFile: f})
 	}
+	return completeSnapshot(dir, snap, syncDir)
+}
+
+// completeSnapshot persists all parent entries before publishing COMPLETE.
+// The injected directory sync lets tests verify writeback failure handling.
+func completeSnapshot(dir string, snap *agentapi.Snapshot, sync func(string) error) error {
+	data := filepath.Join(dir, snapshotData)
+	if _, err := os.Stat(data); err == nil {
+		if err := sync(data); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := sync(filepath.Dir(dir)); err != nil {
+		return err
+	}
+	if err := sync(filepath.Dir(filepath.Dir(dir))); err != nil {
+		return err
+	}
 	if err := writeJSON(filepath.Join(dir, snapshotMeta), snap); err != nil {
 		return err
 	}
-	if err := writeFileAtomic(filepath.Join(dir, snapshotComplete), []byte(id.String()+"\n"), 0o600); err != nil {
-		return err
-	}
-	return syncDir(a.snapshotsPath(key))
+	return writeFileAtomic(filepath.Join(dir, snapshotComplete), []byte(snap.ID.String()+"\n"), 0o600)
 }
 
 // writeSnapshotFile writes a file through fn, syncs it and returns its size
@@ -231,11 +248,6 @@ func copyRendered(instanceDir, dst string) (string, error) {
 	if err := os.Mkdir(dst, 0o700); err != nil {
 		return "", err
 	}
-	h := sha256.New()
-	add := func(name string, mode fs.FileMode, data []byte) {
-		_, _ = fmt.Fprintf(h, "%s\x00%o\x00%d\x00", name, mode, len(data))
-		h.Write(data)
-	}
 	for _, f := range renderedFiles {
 		data, err := os.ReadFile(filepath.Join(instanceDir, f.name)) //nolint:gosec // agent-owned path
 		if errors.Is(err, fs.ErrNotExist) && f.name == configuredFile {
@@ -247,7 +259,6 @@ func copyRendered(instanceDir, dst string) (string, error) {
 		if err := writeFileAtomic(filepath.Join(dst, f.name), data, f.mode); err != nil {
 			return "", err
 		}
-		add(f.name, f.mode, data)
 	}
 	files, err := readTree(filepath.Join(instanceDir, packages.FilesDir))
 	if err != nil {
@@ -262,9 +273,55 @@ func copyRendered(instanceDir, dst string) (string, error) {
 		if err := writeFileAtomic(p, f.Data, f.Mode); err != nil {
 			return "", err
 		}
+	}
+	if err := syncTreeDirs(dst); err != nil {
+		return "", err
+	}
+	r, configured, err := readRenderedProject(dst)
+	if err != nil {
+		return "", err
+	}
+	return renderedDigest(r, configured), nil
+}
+
+// renderedDigest uses the same encoding for snapshot creation and verification.
+func renderedDigest(r *packages.Rendered, configured []byte) string {
+	h := sha256.New()
+	add := func(name string, mode fs.FileMode, data []byte) {
+		_, _ = fmt.Fprintf(h, "%s\x00%o\x00%d\x00", name, mode, len(data))
+		_, _ = h.Write(data)
+	}
+	add(composeFile, 0o644, r.Compose)
+	add(envFile, 0o600, r.Env)
+	if configured != nil {
+		add(configuredFile, 0o600, configured)
+	}
+	for _, name := range sortedKeys(r.Files) {
+		f := r.Files[name]
 		add(packages.FilesDir+"/"+name, f.Mode, f.Data)
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// syncTreeDirs persists directory entries bottom-up without following symlinks.
+// File contents must already have been synced by their writer.
+func syncTreeDirs(dir string) error {
+	var dirs []string
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return err
+	}); err != nil {
+		return err
+	}
+	slices.Reverse(dirs)
+	for _, d := range dirs {
+		if err := syncDir(d); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // readTree reads the regular files under dir by slash-separated path; a
@@ -502,7 +559,10 @@ func (a *Agent) restoreDataDirs(key string, snap *agentapi.Snapshot, op uuid.UUI
 			return err
 		}
 	}
-	return syncDir(root)
+	if err := syncDir(root); err != nil {
+		return err
+	}
+	return syncDir(a.instanceDir(key))
 }
 
 // restoreDatabase replaces the instance's database with the snapshot's
@@ -535,15 +595,30 @@ REVOKE ALL ON DATABASE %[1]s FROM PUBLIC;
 // snapshotRenderedProject reads a snapshot's rendered files as a project to
 // write with writeRendered, fenced if asked.
 func (a *Agent) snapshotRenderedProject(key string, id uuid.UUID, fenced bool) (*packages.Rendered, []byte, error) {
-	dir := filepath.Join(a.snapshotPath(key, id), snapshotRendered)
-	compose, err := os.ReadFile(filepath.Join(dir, composeFile)) //nolint:gosec // agent-owned path
+	snap, _, err := a.loadSnapshot(key, id)
 	if err != nil {
 		return nil, nil, err
 	}
+	r, configured, err := readRenderedProject(filepath.Join(a.snapshotPath(key, id), snapshotRendered))
+	if err != nil {
+		return nil, nil, err
+	}
+	// Pre-alpha snapshots without a digest cannot establish integrity either.
+	if snap.RenderedSHA256 == "" || renderedDigest(r, configured) != snap.RenderedSHA256 {
+		return nil, nil, fmt.Errorf("snapshot %s: rendered project does not match its checksum", id)
+	}
 	if fenced {
-		if compose, err = fenceCompose(compose); err != nil {
+		if r.Compose, err = fenceCompose(r.Compose); err != nil {
 			return nil, nil, err
 		}
+	}
+	return r, configured, nil
+}
+
+func readRenderedProject(dir string) (*packages.Rendered, []byte, error) {
+	compose, err := os.ReadFile(filepath.Join(dir, composeFile)) //nolint:gosec // agent-owned path
+	if err != nil {
+		return nil, nil, err
 	}
 	env, err := os.ReadFile(filepath.Join(dir, envFile)) //nolint:gosec // agent-owned path
 	if err != nil {
@@ -570,12 +645,20 @@ func (a *Agent) writeSnapshotRendered(ctx context.Context, key string, id uuid.U
 		return err
 	}
 	if fenced {
+		original, _, err := a.snapshotRenderedProject(key, id, false)
+		if err != nil {
+			return err
+		}
+		aliases, err := composeAliases(original.Compose)
+		if err != nil {
+			return err
+		}
 		if err := a.stage(c, r, func(file, env string) error {
 			normalized, err := c.config(ctx, file, env)
 			if err != nil {
 				return err
 			}
-			return checkFenced(normalized)
+			return checkFenced(normalized, aliases...)
 		}); err != nil {
 			return err
 		}

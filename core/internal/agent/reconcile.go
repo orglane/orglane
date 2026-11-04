@@ -61,6 +61,26 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 	if err == nil {
 		j, err = readJournal(dir)
 	}
+	// Claim work before releasing the lock shared with restore acceptance.
+	// Operation-store I/O may block; a request must not publish a journal
+	// after this state read and before the worker claims its generation.
+	var snapshotOp uuid.UUID
+	if err == nil {
+		switch {
+		case j != nil:
+			if !j.RollbackFailed {
+				a.setBusyKind(in, j.Kind)
+			}
+		case st.pending():
+			a.setBusyKind(in, opKind(st.desired, st.current))
+		}
+		if j == nil {
+			snapshotOp = a.takeSnapshotRequest(in)
+			if snapshotOp != uuid.Nil {
+				a.setBusyKind(in, agentapi.KindSnapshot)
+			}
+		}
+	}
 	in.files.Unlock()
 	if err != nil {
 		a.log.Error("read instance state", "instance", in.key, "error", err)
@@ -80,7 +100,7 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 		a.wakeIfSettled(in)
 		return
 	}
-	if id := a.takeSnapshotRequest(in); id != uuid.Nil {
+	if id := snapshotOp; id != uuid.Nil {
 		a.setBusyKind(in, agentapi.KindSnapshot)
 		a.clearBusy(in, a.manualSnapshot(ctx, in, st, id))
 		a.wake(in.key) // pending work runs next
@@ -97,6 +117,7 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 			// A retry after a failure, or an operation pruned meanwhile.
 			if o, err = a.ops.create(in.key, opKind(target, st.current), target.Generation); err != nil {
 				a.log.Error("create operation", "instance", in.key, "error", err)
+				a.clearBusy(in, agentapi.CodeInternal)
 				return
 			}
 		}
@@ -269,6 +290,11 @@ func (a *Agent) clearBusy(in *instance, code string) {
 func (a *Agent) converge(ctx context.Context, in *instance, target, prev *agentapi.Spec, setPhase func(string)) error {
 	pkg, ok := a.registry.Get(target.Package)
 	if !ok {
+		// Only the exact running spec may use the saved project. A new
+		// desired spec still requires its embedded package and policy.
+		if prev != nil && target.Hash() == prev.Hash() {
+			return a.repairRestored(ctx, in.key, target)
+		}
 		return failed(agentapi.CodeUnknownPackageVersion, fmt.Errorf("package %s is not embedded", target.Package))
 	}
 	secrets := target.SecretValues()

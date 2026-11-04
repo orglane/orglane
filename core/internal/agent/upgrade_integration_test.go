@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/google/uuid"
@@ -201,7 +203,34 @@ func (e *testEnv) assertFenced(key string, port int, version string) {
 // agent would repair the removed containers).
 func cleanupProject(t *testing.T, project, key string) {
 	t.Cleanup(func() {
-		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", packages.InstanceProject(project, key), "down", "--remove-orphans").Run() //nolint:gosec // test commands
+		ctx := context.WithoutCancel(t.Context())
+		label := "label=com.docker.compose.project=" + packages.InstanceProject(project, key)
+		// Remove by the instance project label: there is no Compose file in
+		// the test process's working directory, and agents may have restarted.
+		for _, resource := range []struct {
+			kind string
+			args []string
+		}{
+			{"container", []string{"rm", "--force", "--volumes"}},
+			{"network", []string{"network", "rm"}},
+		} {
+			list := []string{resource.kind, "ls", "--quiet", "--filter", label}
+			if resource.kind == "container" {
+				list = append(list, "--all")
+			}
+			out, err := exec.CommandContext(ctx, "docker", list...).CombinedOutput() //nolint:gosec // test commands
+			if err != nil {
+				t.Errorf("list instance %s for cleanup: %v: %s", resource.kind, err, out)
+				continue
+			}
+			ids := strings.Fields(string(out))
+			if len(ids) == 0 {
+				continue
+			}
+			if out, err := exec.CommandContext(ctx, "docker", append(resource.args, ids...)...).CombinedOutput(); err != nil { //nolint:gosec // test commands
+				t.Errorf("clean instance %s: %v: %s", resource.kind, err, out)
+			}
+		}
 	})
 }
 
@@ -228,6 +257,7 @@ func TestUpgrades(t *testing.T) {
 	s.run(t, "path", s.testPath)
 	s.rollback(t)
 	s.run(t, "stays-rolled-back", s.testStaysRolledBack)
+	s.run(t, "unembedded-rollback-repair", s.testUnembeddedRollbackRepair)
 	s.crashRecovery(t)
 	s.run(t, "snapshot-restore", s.testSnapshotAndRestore)
 }
@@ -698,4 +728,82 @@ func (s *upgradeSuite) testSnapshotAndRestore(t *testing.T) {
 		t.Fatalf("status after the restore = %+v, %v", st, err)
 	}
 	e.checkAudit(map[string]bool{key: true})
+}
+
+// testUnembeddedRollbackRepair preserves acknowledged writes through ordinary
+// drift repair, a process restart, and snapshot deletion with no old package.
+func (s *upgradeSuite) testUnembeddedRollbackRepair(t *testing.T) {
+	const key = "oldmissing"
+	cleanupProject(t, s.project, key)
+	e := launchAgent(t, s.project, s.registry, agentOptions{})
+	id := uuid.Must(uuid.NewV7())
+	port := freePort(t)
+	e.installV1(key, id, port)
+	if err := e.stop(); err != nil {
+		t.Fatal(err)
+	}
+	src := fstest.MapFS{}
+	if err := fs.WalkDir(agenttest.FS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || strings.HasPrefix(path, agenttest.Version+"/") {
+			return err
+		}
+		data, err := fs.ReadFile(agenttest.FS, path)
+		if err != nil {
+			return err
+		}
+		src[path] = &fstest.MapFile{Data: data}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := packages.NewRegistry(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e = launchAgent(t, s.project, registry, agentOptions{dataDir: e.dataDir})
+	op := e.push(key, versionSpec(id, 2, port, agenttest.Version2, "health"))
+	if op = e.waitTerminal(op.ID); op.State != agentapi.OpRolledBack {
+		t.Fatalf("rollback: %+v", op)
+	}
+	clientWrite(t, port, "after-rollback")
+	db := packages.DatabaseName(key)
+	e.psql(db, "INSERT INTO client_writes VALUES ('after-rollback')")
+	removeWeb := func() {
+		t.Helper()
+		web := docker(t, "ps", "--quiet", "--filter", "label=com.docker.compose.project="+packages.InstanceProject(s.project, key), "--filter", "label=com.docker.compose.service=web")
+		docker(t, "rm", "--force", web)
+	}
+	removeWeb()
+	e.agent.wake(key)
+	e.assertV1IntactWithDatabaseWrite(key, port, "before-upgrade", "after-rollback")
+	// Retention of the source snapshot must not be required for drift repair.
+	if err := e.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(e.agent.snapshotsPath(key)); err != nil {
+		t.Fatal(err)
+	}
+	removeWeb()
+	e = launchAgent(t, s.project, registry, agentOptions{dataDir: e.dataDir})
+	e.assertV1IntactWithDatabaseWrite(key, port, "before-upgrade", "after-rollback", "after-repair")
+}
+
+func (e *testEnv) assertV1IntactWithDatabaseWrite(key string, port int, acknowledged ...string) {
+	e.t.Helper()
+	eventually(e.t, 2*time.Minute, "unembedded version repaired", func() bool {
+		v, err := httpPath(port, "/version")
+		return err == nil && v == agenttest.Version+"\n"
+	})
+	clientWrite(e.t, port, "after-repair")
+	got := writesLog(e.t, e, key)
+	if !slices.Equal(got, append(acknowledged, "after-repair")) {
+		e.t.Fatalf("acknowledged writes lost: %v", got)
+	}
+	db := packages.DatabaseName(key)
+	if got := e.psql(db, "select string_agg(v, ',') from client_writes"); got != "before-upgrade,after-rollback" {
+		e.t.Fatalf("database writes lost: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(e.agent.instanceDir(key), journalFile)); !errors.Is(err, os.ErrNotExist) {
+		e.t.Fatalf("drift repair revived journal: %v", err)
+	}
 }

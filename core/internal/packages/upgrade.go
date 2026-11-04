@@ -28,7 +28,7 @@ func (e *UpgradeError) Error() string {
 	case e.Required != "":
 		return fmt.Sprintf("%s: %s cannot upgrade to %s directly; upgrade to %s first", e.ID, e.From, e.To, e.Required)
 	default:
-		return fmt.Sprintf("%s: no embedded upgrade path from %s to %s (%s needs at least %s)", e.ID, e.From, e.To, e.To, e.MinFrom)
+		return fmt.Sprintf("%s: %s cannot upgrade to %s directly (%s needs at least %s)", e.ID, e.From, e.To, e.To, e.MinFrom)
 	}
 }
 

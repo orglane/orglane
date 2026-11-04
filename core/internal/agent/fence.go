@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -22,6 +23,10 @@ import (
 // package this binary may no longer embed, so the rollback fences them with
 // this transformation; checkFenced verifies the normalized result.
 func fenceCompose(data []byte) ([]byte, error) {
+	originalAliases, err := composeAliases(data)
+	if err != nil {
+		return nil, fmt.Errorf("fence: %w", err)
+	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("fence: %w", err)
@@ -59,8 +64,11 @@ func fenceCompose(data []byte) ([]byte, error) {
 				if a.Kind != yaml.ScalarNode {
 					return nil, errors.New("fence: malformed alias")
 				}
-				if !strings.HasSuffix(a.Value, packages.FencedSuffix) {
+				for {
 					a.Value += packages.FencedSuffix
+					if !slices.Contains(originalAliases, a.Value) {
+						break
+					}
 				}
 			}
 		}
@@ -97,7 +105,7 @@ func deleteKey(m *yaml.Node, key string) {
 
 // checkFenced verifies a project normalized by `docker compose config
 // --format json`: no published ports, and only fenced aliases.
-func checkFenced(normalized []byte) error {
+func checkFenced(normalized []byte, originalAliases ...string) error {
 	var p struct {
 		Services map[string]struct {
 			Ports    []any `json:"ports"`
@@ -118,11 +126,58 @@ func checkFenced(normalized []byte) error {
 				continue
 			}
 			for _, a := range n.Aliases {
-				if !strings.HasSuffix(a, packages.FencedSuffix) {
+				if slices.Contains(originalAliases, a) || !strings.HasSuffix(a, packages.FencedSuffix) {
 					return fmt.Errorf("fence: service %s has the alias %s on network %s", name, a, net)
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// composeAliases lists the original aliases, including names which happen to
+// end in the fence suffix. Validation must forbid each original route target.
+func composeAliases(data []byte) ([]string, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, errors.New("fence: the compose file is not a mapping")
+	}
+	services := mappingValue(doc.Content[0], "services")
+	if services == nil || services.Kind != yaml.MappingNode {
+		return nil, errors.New("fence: the compose file has no services")
+	}
+	var aliases []string
+	for i := 1; i < len(services.Content); i += 2 {
+		svc := services.Content[i]
+		if svc.Kind != yaml.MappingNode {
+			return nil, errors.New("fence: malformed service")
+		}
+		nets := mappingValue(svc, "networks")
+		if nets == nil || nets.Kind != yaml.MappingNode {
+			continue
+		}
+		for j := 1; j < len(nets.Content); j += 2 {
+			net := nets.Content[j]
+			if net.Kind != yaml.MappingNode {
+				continue
+			}
+			list := mappingValue(net, "aliases")
+			if list == nil {
+				continue
+			}
+			if list.Kind != yaml.SequenceNode {
+				return nil, errors.New("fence: malformed aliases")
+			}
+			for _, alias := range list.Content {
+				if alias.Kind != yaml.ScalarNode {
+					return nil, errors.New("fence: malformed alias")
+				}
+				aliases = append(aliases, alias.Value)
+			}
+		}
+	}
+	return aliases, nil
 }

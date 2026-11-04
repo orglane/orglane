@@ -23,7 +23,7 @@ import (
 )
 
 // TestFenceCompose fences a rendered project: no ports, only fenced aliases,
-// everything else unchanged; fencing twice changes nothing more.
+// everything else unchanged; each call fences the supplied original aliases.
 func TestFenceCompose(t *testing.T) {
 	a, _ := newTestAgent(t, time.Now)
 	pkg, _ := a.registry.Get(agentapi.PackageRef{ID: "agenttest", Version: agenttest.Version})
@@ -66,8 +66,8 @@ func TestFenceCompose(t *testing.T) {
 		t.Fatalf("fencing changed more than ports and aliases:\n%s\n%s", a, b)
 	}
 	twice, err := fenceCompose(fenced)
-	if err != nil || !bytes.Equal(twice, fenced) {
-		t.Fatalf("fencing twice: %v\n%s", err, twice)
+	if err != nil || !bytes.Contains(twice, []byte(packages.ServiceAlias("git", "web", true)+packages.FencedSuffix)) {
+		t.Fatalf("an original alias ending in the suffix was not fenced: %v\n%s", err, twice)
 	}
 	// The candidate's own fenced render agrees with the transformation.
 	rc := a.renderContext("git")

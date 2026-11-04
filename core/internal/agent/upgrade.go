@@ -132,7 +132,7 @@ func (a *Agent) finalize(in *instance, j *journal, current *agentapi.Spec, block
 			o.SnapshotID = j.SnapshotID.String()
 		}
 	}); err != nil {
-		a.log.Error("update operation", "operation", j.Operation, "error", err)
+		return fmt.Errorf("record operation result: %w", err)
 	}
 	in.files.Lock()
 	defer in.files.Unlock()
@@ -705,6 +705,12 @@ func (a *Agent) expose(ctx context.Context, in *instance, j *journal) string {
 	state, code, block := agentapi.OpRolledBack, j.ErrorCode, true
 	if j.Kind == agentapi.KindRestore {
 		restored, state, code, block = j.Spec, agentapi.OpSucceeded, "", false
+	}
+	// Keep a verified copy of the saved project before removing
+	// the journal. Ordinary drift repair uses it without touching live data.
+	if err := a.saveRestoredProject(in.key, j.SnapshotID, restored); err != nil {
+		a.log.Error("save restored project", "instance", in.key, "error", err)
+		return agentapi.CodeInternal
 	}
 	if err := a.finalize(in, j, restored, block, state, code, ""); err != nil {
 		a.log.Error("record the rollback", "instance", in.key, "error", err)
