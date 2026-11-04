@@ -3,7 +3,7 @@
 **The open-source operating system for your company.**
 People, access, tools and notifications in one app. Self-hosted or in the cloud.
 
-> ⚠️ **Pre-alpha.** Orglane is under active early development and is not usable yet. Follow the [roadmap](ROADMAP.md), and star the repo to get notified when the first preview ships.
+> ⚠️ **Pre-alpha.** Orglane is under active early development and is not ready for real company data: expect missing features, breaking changes and no upgrade path between early versions. Sign-in, people, teams, invitations and people import work today; follow the [roadmap](ROADMAP.md), and star the repo to get notified when the first preview ships.
 
 ---
 
@@ -39,11 +39,14 @@ Read more: [Product brief](docs/brief.md) · [Architecture](docs/architecture.md
 
 ## Quick start
 
-*Coming with the first preview.* The goal is a single command:
+One command on Linux or macOS with Docker:
 
 ```sh
-curl -fsSL https://orglane.app/install.sh | sh   # not available yet
+curl -fsSL https://orglane.app/install.sh | sh                        # asks: demo, domain or local
+curl -fsSL https://orglane.app/install.sh | sh -s -- --mode demo --yes  # the demo company on a laptop, no questions
 ```
+
+The demo mode loads the "Acme Robotics" sample company with one-click sign-in as any of its people. Read the script first, or check its SHA-256 on [orglane.app](https://orglane.app). Options, modes and the production setup with your own domain are in [deploy/README.md](deploy/README.md#the-installer).
 
 ## Contributing
 

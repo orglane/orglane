@@ -36,7 +36,7 @@ test("the landing page shows the positioning, the pre-alpha notice and the insta
   // The vision is labelled as planned, and the install section says what
   // exists today.
   await expect(page.locator("#features li .tag--planned")).toHaveCount(5);
-  await expect(page.locator("#features")).toContainText("none of it is ready yet");
+  await expect(page.locator("#features")).toContainText("the rest is in progress");
   await expect(page.getByRole("heading", { name: "What you get today" })).toBeVisible();
   await expect(page.locator(".command__code").first()).toHaveText(
     "curl -fsSL https://orglane.app/install.sh | sh",
