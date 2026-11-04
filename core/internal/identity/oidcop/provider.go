@@ -108,6 +108,7 @@ func New(pool *pgxpool.Pool, opts Options) (*Provider, error) {
 		op.WithCustomIntrospectionEndpoint(op.NewEndpoint(PathIntrospect)),
 		op.WithCustomDeviceAuthorizationEndpoint(op.NewEndpoint(PathDeviceAuthz)),
 		op.WithLogger(opts.Logger.With("component", "oidc")),
+		op.WithHttpInterceptors(checkRevocationToken),
 		// Access tokens are encrypted with AES-256-GCM, and only GCM
 		// decrypts them. zitadel's default also falls back to AES-CFB for
 		// tokens of older zitadel versions; CFB is not authenticated, so it

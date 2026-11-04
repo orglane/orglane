@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -462,6 +463,9 @@ func (s *storage) TerminateSessionFromRequest(ctx context.Context, req *op.EndSe
 // access token arrives as its ID, decrypted from the token. Anything else is
 // a token this provider did not issue.
 func (s *storage) RevokeToken(ctx context.Context, tokenOrID, userID, clientID string) *oidc.Error {
+	if missing, _ := ctx.Value(missingTokenKey{}).(bool); missing {
+		return oidc.ErrInvalidRequest().WithDescription("token missing")
+	}
 	if strings.HasPrefix(tokenOrID, RefreshTokenPrefix) {
 		return s.revokeRefreshToken(ctx, tokenOrID, clientID)
 	}
@@ -485,6 +489,33 @@ func (s *storage) RevokeToken(ctx context.Context, tokenOrID, userID, clientID s
 		return oidc.ErrServerError().WithParent(err)
 	}
 	return nil
+}
+
+// zitadel's revocation endpoint (op.Revoke) does not check that a request
+// has a token, which RFC 7009 (section 2.1) requires, and answers 200 as for
+// an unknown token. Its newer op.Server does check, after authenticating the
+// client. checkRevocationToken does the same for op.Revoke: it marks a
+// request without a token, and RevokeToken, which zitadel calls only once
+// the client is authenticated, answers invalid_request (RFC 6749, section
+// 5.2). Client authentication errors keep their answers.
+type missingTokenKey struct{}
+
+// checkRevocationToken is an interceptor of the provider's router, so it
+// runs inside its CORS handling. It parses the form of a revocation request,
+// so a form that cannot be read is answered here, as op.Revoke would.
+func checkRevocationToken(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == PathRevoke {
+			if err := r.ParseForm(); err != nil {
+				op.RevocationRequestError(w, r, oidc.ErrInvalidRequest().WithDescription("unable to parse request").WithParent(err))
+				return
+			}
+			if r.Form.Get("token") == "" {
+				r = r.WithContext(context.WithValue(r.Context(), missingTokenKey{}, true))
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *storage) revokeRefreshToken(ctx context.Context, token, clientID string) *oidc.Error {

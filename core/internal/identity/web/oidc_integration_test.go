@@ -499,6 +499,103 @@ func TestRevokeRefreshTokenWithAccessTokenHint(t *testing.T) {
 	}
 }
 
+// TestRevocationRequiresToken is a regression test: a revocation request
+// without a token (RFC 7009, section 2.1: REQUIRED) is answered with 400
+// invalid_request (RFC 6749, section 5.2), once the client is
+// authenticated. A token the provider does not know is still answered with
+// 200 (RFC 7009, section 2.2), and client authentication errors take
+// precedence over the missing token.
+func TestRevocationRequiresToken(t *testing.T) {
+	e := newEnv(t)
+	b := e.browser()
+	e.setupOwner(b)
+	e.registerClient(identity.NewOIDCClient{ID: "spa", Public: true})
+	secret := e.registerClient(identity.NewOIDCClient{ID: "forgejo"})
+	basic := func(id, secret string) []string {
+		return []string{"Authorization", "Basic " + base64.StdEncoding.EncodeToString([]byte(id+":"+secret))}
+	}
+	type oauthError struct {
+		Error       string `json:"error"`
+		Description string `json:"error_description"`
+	}
+	revoke := func(body any, headers ...string) (int, oauthError) {
+		t.Helper()
+		r := b.req("POST", "/oidc/revoke", body, append([]string{"Origin", ""}, headers...)...)
+		var res oauthError
+		if len(r.body) > 0 && string(r.body) != "null" {
+			r.json(t, &res)
+		}
+		return r.StatusCode, res
+	}
+
+	for _, c := range []struct {
+		name    string
+		form    url.Values
+		headers []string
+	}{
+		{"public client", url.Values{"client_id": {"spa"}}, nil},
+		{"confidential client", url.Values{}, basic("forgejo", secret)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			with := func(kv ...string) url.Values {
+				f := maps.Clone(c.form)
+				for i := 0; i+1 < len(kv); i += 2 {
+					f.Add(kv[i], kv[i+1])
+				}
+				return f
+			}
+			for name, form := range map[string]url.Values{
+				"missing token":           with(),
+				"empty token":             with("token", ""),
+				"only a hint":             with("token_type_hint", "refresh_token"),
+				"empty token with a hint": with("token", "", "token_type_hint", "access_token"),
+			} {
+				if status, res := revoke(form, c.headers...); status != http.StatusBadRequest || res.Error != "invalid_request" {
+					t.Errorf("%s = %d %+v, want 400 invalid_request", name, status, res)
+				}
+			}
+			for _, hint := range []string{"", "access_token", "refresh_token"} {
+				form := with("token", "unknown-token")
+				if hint != "" {
+					form.Set("token_type_hint", hint)
+				}
+				if status, res := revoke(form, c.headers...); status != http.StatusOK {
+					t.Errorf("unknown token (hint %q) = %d %+v, want 200", hint, status, res)
+				}
+			}
+		})
+	}
+
+	// Without a token, a client that does not authenticate gets the client
+	// authentication error, as before.
+	for name, req := range map[string]struct {
+		form    url.Values
+		headers []string
+	}{
+		"no client":      {url.Values{}, nil},
+		"unknown client": {url.Values{"client_id": {"nope"}}, nil},
+		"wrong secret":   {url.Values{}, basic("forgejo", "wrong-secret")},
+		"no secret":      {url.Values{"client_id": {"forgejo"}}, nil},
+	} {
+		if status, res := revoke(req.form, req.headers...); status != http.StatusUnauthorized || res.Error != "invalid_client" {
+			t.Errorf("missing token, %s = %d %+v, want 401 invalid_client", name, status, res)
+		}
+	}
+
+	// A form that cannot be read is an invalid request, as before.
+	if status, res := revoke([]byte("client_id=spa&token=%zz"), "Content-Type", "application/x-www-form-urlencoded"); status != http.StatusBadRequest || res.Error != "invalid_request" {
+		t.Errorf("unreadable form = %d %+v, want 400 invalid_request", status, res)
+	}
+
+	// The error goes through the provider's CORS handling, so a browser
+	// client can read it.
+	const app = "https://app.acme.test"
+	r := b.req("POST", "/oidc/revoke", url.Values{"client_id": {"spa"}}, "Origin", app)
+	if r.StatusCode != http.StatusBadRequest || r.Header.Get("Access-Control-Allow-Origin") != app {
+		t.Errorf("missing token from a browser = %d, Access-Control-Allow-Origin %q; want 400 and %q", r.StatusCode, r.Header.Get("Access-Control-Allow-Origin"), app)
+	}
+}
+
 func TestOIDCEndSession(t *testing.T) {
 	e := newEnv(t)
 	b := e.browser()
