@@ -191,6 +191,9 @@ type PeopleImportRun struct {
 	Mapping       []byte
 	State         string
 	CreatedAt     time.Time
+	Captions      []string
+	AppliedAt     *time.Time
+	ExpiresAt     time.Time
 }
 
 type Person struct {

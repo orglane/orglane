@@ -911,9 +911,14 @@ type PasswordSignInRequest struct {
 
 // PeopleImport defines model for PeopleImport.
 type PeopleImport struct {
-	CreatedAt time.Time           `json:"createdAt"`
-	Delimiter string              `json:"delimiter"`
-	Encoding  string              `json:"encoding"`
+	CreatedAt time.Time `json:"createdAt"`
+	Delimiter string    `json:"delimiter"`
+	Encoding  string    `json:"encoding"`
+
+	// ExpiresAt When the run is deleted automatically: 24 hours after upload until
+	// it is applied, then 90 days after apply. Afterwards every operation
+	// on the run returns 404.
+	ExpiresAt time.Time           `json:"expiresAt"`
 	Headers   []string            `json:"headers"`
 	Id        openapi_types.UUID  `json:"id"`
 	Mapping   PeopleImportMapping `json:"mapping"`
@@ -1656,6 +1661,9 @@ type ServerInterface interface {
 	// GetPeopleImportTemplate Download a CSV import template
 	// (GET /api/v1/people-imports/template)
 	GetPeopleImportTemplate(w http.ResponseWriter, r *http.Request)
+	// DeletePeopleImport Delete an import and everything stored for it
+	// (DELETE /api/v1/people-imports/{runId})
+	DeletePeopleImport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
 	// GetPeopleImport Read an import and its persisted decisions and results
 	// (GET /api/v1/people-imports/{runId})
 	GetPeopleImport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID)
@@ -2341,6 +2349,32 @@ func (siw *ServerInterfaceWrapper) GetPeopleImportTemplate(w http.ResponseWriter
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetPeopleImportTemplate(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeletePeopleImport operation middleware
+func (siw *ServerInterfaceWrapper) DeletePeopleImport(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "runId" -------------
+	var runId openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "runId", r.PathValue("runId"), &runId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "runId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeletePeopleImport(w, r, runId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3273,6 +3307,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people-imports/template", wrapper.GetPeopleImportTemplate)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports", wrapper.UploadPeopleImport)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports/github", wrapper.FetchGitHubPeopleImport)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/people-imports/{runId}", wrapper.DeletePeopleImport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people-imports/{runId}", wrapper.GetPeopleImport)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports/{runId}/preview", wrapper.PreviewPeopleImport)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports/{runId}/apply", wrapper.ApplyPeopleImport)
@@ -5674,6 +5709,70 @@ type GetPeopleImportTemplate500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response GetPeopleImportTemplate500ApplicationProblemPlusJSONResponse) VisitGetPeopleImportTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeletePeopleImportRequestObject struct {
+	RunId openapi_types.UUID `json:"runId"`
+}
+
+type DeletePeopleImportResponseObject interface {
+	VisitDeletePeopleImportResponse(w http.ResponseWriter) error
+}
+
+type DeletePeopleImport204Response struct {
+}
+
+func (response DeletePeopleImport204Response) VisitDeletePeopleImportResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeletePeopleImport401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response DeletePeopleImport401ApplicationProblemPlusJSONResponse) VisitDeletePeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeletePeopleImport403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response DeletePeopleImport403ApplicationProblemPlusJSONResponse) VisitDeletePeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeletePeopleImport500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response DeletePeopleImport500ApplicationProblemPlusJSONResponse) VisitDeletePeopleImportResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -8652,6 +8751,9 @@ type StrictServerInterface interface {
 	// GetPeopleImportTemplate Download a CSV import template
 	// (GET /api/v1/people-imports/template)
 	GetPeopleImportTemplate(ctx context.Context, request GetPeopleImportTemplateRequestObject) (GetPeopleImportTemplateResponseObject, error)
+	// DeletePeopleImport Delete an import and everything stored for it
+	// (DELETE /api/v1/people-imports/{runId})
+	DeletePeopleImport(ctx context.Context, request DeletePeopleImportRequestObject) (DeletePeopleImportResponseObject, error)
 	// GetPeopleImport Read an import and its persisted decisions and results
 	// (GET /api/v1/people-imports/{runId})
 	GetPeopleImport(ctx context.Context, request GetPeopleImportRequestObject) (GetPeopleImportResponseObject, error)
@@ -9604,6 +9706,32 @@ func (sh *strictHandler) GetPeopleImportTemplate(w http.ResponseWriter, r *http.
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetPeopleImportTemplateResponseObject); ok {
 		if err := validResponse.VisitGetPeopleImportTemplateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeletePeopleImport operation middleware
+func (sh *strictHandler) DeletePeopleImport(w http.ResponseWriter, r *http.Request, runId openapi_types.UUID) {
+	var request DeletePeopleImportRequestObject
+
+	request.RunId = runId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeletePeopleImport(ctx, request.(DeletePeopleImportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeletePeopleImport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeletePeopleImportResponseObject); ok {
+		if err := validResponse.VisitDeletePeopleImportResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

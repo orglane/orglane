@@ -21,6 +21,11 @@ func TestMain(m *testing.M) { pgtest.Main(m) }
 
 func startClient(t *testing.T, cfg config.Jobs) *jobs.Client {
 	t.Helper()
+	return startClientWith(t, cfg, jobs.Options{})
+}
+
+func startClientWith(t *testing.T, cfg config.Jobs, opts jobs.Options) *jobs.Client {
+	t.Helper()
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pool, err := database.Connect(ctx, config.Database{URL: pgtest.NewDatabase(t), MaxConns: 5, ConnectTimeout: 10 * time.Second}, logger)
@@ -36,7 +41,7 @@ func startClient(t *testing.T, cfg config.Jobs) *jobs.Client {
 	if err := m.Up(ctx); err != nil {
 		t.Fatal(err)
 	}
-	client, err := jobs.NewClient(pool, cfg, logger, jobs.Options{})
+	client, err := jobs.NewClient(pool, cfg, logger, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,5 +90,23 @@ func TestPeriodicNoopJob(t *testing.T) {
 	// seconds on a fresh client.
 	if ev := waitCompleted(t, client, 30*time.Second); ev.Kind != river.EventKindJobCompleted || ev.Job.Kind != "orglane.noop" {
 		t.Fatalf("event = %s %s, want completed orglane.noop", ev.Kind, ev.Job.Kind)
+	}
+}
+
+func TestImportCleanupRunsOnStart(t *testing.T) {
+	ran := make(chan struct{}, 1)
+	startClientWith(t, config.Default().Jobs, jobs.Options{ImportCleanup: func(context.Context) error {
+		select {
+		case ran <- struct{}{}:
+		default:
+		}
+		return nil
+	}})
+	// The periodic enqueuer runs on the elected leader; election takes a few
+	// seconds on a fresh client.
+	select {
+	case <-ran:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the import cleanup job did not run on start")
 	}
 }

@@ -1057,6 +1057,7 @@ export interface paths {
          *     per row and never evaluated. UTF-8, BOM-marked UTF-16 and Windows-1252
          *     CSV are detected. Only the first XLSX sheet is imported.
          *     Runs belong to their uploader; source values never appear in responses.
+         *     Unapplied runs are deleted 24 hours after upload (see expiresAt).
          */
         post: operations["uploadPeopleImport"];
         delete?: never;
@@ -1101,7 +1102,15 @@ export interface paths {
         get: operations["getPeopleImport"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete an import and everything stored for it
+         * @description Any holder of people.manage may delete any run, including its uploader.
+         *     Removes staged source material, decisions, results and the error export
+         *     at once; people and changes made by an applied run are not undone.
+         *     Source-scoped identity matches for reimport are kept. Deleting a run
+         *     that does not exist (or no longer exists) also succeeds.
+         */
+        delete: operations["deletePeopleImport"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1151,8 +1160,9 @@ export interface paths {
         /**
          * Apply a persisted preview with isolated row transactions
          * @description Current permissions, identities, definitions and preview versions are
-         *     revalidated. Failed rows roll back while other rows continue. Repeating
-         *     apply returns the stored result. Invitations use the existing secure
+         *     revalidated. Failed rows roll back while other rows continue. Apply
+         *     erases the staged source material in the same transaction; repeating
+         *     apply returns the stored, value-free result until the run expires. Invitations use the existing secure
          *     channel and grant ceilings; links and tokens are never staged/exported.
          *     Optional email delivery fails the row if the grant requires a link.
          */
@@ -1237,6 +1247,13 @@ export interface components {
             rows: components["schemas"]["PeopleImportRow"][];
             /** Format: date-time */
             createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the run is deleted automatically: 24 hours after upload until
+             *     it is applied, then 90 days after apply. Afterwards every operation
+             *     on the run returns 404.
+             */
+            expiresAt: string;
         };
         /** @description RFC 9457 problem details. */
         Problem: {
@@ -3675,6 +3692,29 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    deletePeopleImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted, or already gone. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             500: components["responses"]["InternalError"];
         };
     };

@@ -67,6 +67,8 @@ type Run struct {
 	Mapping   Mapping   `json:"mapping"`
 	Rows      []Row     `json:"rows"`
 	CreatedAt time.Time `json:"createdAt"`
+	// ExpiresAt is when the cleanup job deletes the run (see Retention).
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 
 // Service persists runs and delegates mutations to identity/profile domains.
@@ -157,7 +159,7 @@ func (s *Service) Upload(ctx context.Context, actor audit.Actor, source Source, 
 		if err != nil {
 			return err
 		}
-		run, err := q.CreatePeopleImportRun(ctx, store.CreatePeopleImportRunParams{ID: id, CreatedBy: caller, Source: source.Key(), Encoding: data.Encoding, Delimiter: data.Delimiter, HeadersSealed: sealed})
+		run, err := q.CreatePeopleImportRun(ctx, store.CreatePeopleImportRunParams{ID: id, CreatedBy: caller, Source: source.Key(), Encoding: data.Encoding, Delimiter: data.Delimiter, HeadersSealed: sealed, RetentionSeconds: seconds(StagingRetention)})
 		if err != nil {
 			return err
 		}
@@ -238,19 +240,16 @@ func headingTarget(h string) string {
 	return ""
 }
 func (s *Service) view(ctx context.Context, q *store.Queries, r store.PeopleImportRun) (Run, error) {
-	out := Run{ID: r.ID, State: r.State, Source: r.Source, Encoding: r.Encoding, Delimiter: r.Delimiter, Mapping: emptyMapping(), Headers: []string{}, Rows: []Row{}, CreatedAt: r.CreatedAt}
+	out := Run{ID: r.ID, State: r.State, Source: r.Source, Encoding: r.Encoding, Delimiter: r.Delimiter, Mapping: emptyMapping(), Rows: []Row{}, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt}
 	if err := json.Unmarshal(r.Mapping, &out.Mapping); err != nil {
 		return Run{}, err
 	}
-	var headers []string
-	if err := s.open(r.ID, 0, "headers", r.HeadersSealed, &headers); err != nil {
+	// Applied runs have no sealed headers left; both paths are value-free.
+	headers, err := s.captions(r)
+	if err != nil {
 		return Run{}, err
 	}
-	// Unknown headings may themselves contain sensitive data. Return only known
-	// canonical field captions; clients label everything else by column number.
-	for _, h := range headers {
-		out.Headers = append(out.Headers, headingTarget(h))
-	}
+	out.Headers = headers
 	rows, err := q.ListPeopleImportRows(ctx, r.ID)
 	if err != nil {
 		return Run{}, err
@@ -760,10 +759,13 @@ func (s *Service) process(ctx context.Context, actor audit.Actor, id uuid.UUID, 
 			}
 		}
 		if apply {
-			if err = q.FinishPeopleImport(ctx, id); err != nil {
+			if run, err = q.FinishPeopleImport(ctx, store.FinishPeopleImportParams{ID: id, RetentionSeconds: seconds(AppliedRetention)}); err != nil {
 				return err
 			}
-			run.State = "applied"
+			// Source material never outlives apply: erase it in this transaction.
+			if run, err = s.eraseSourceTx(ctx, q, run); err != nil {
+				return err
+			}
 			if err = record(ctx, q, actor, id, "import.applied", map[string]any{"rows": len(rows)}); err != nil {
 				return err
 			}

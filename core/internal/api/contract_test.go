@@ -113,6 +113,7 @@ func TestContractPermissions(t *testing.T) {
 		"POST /api/v1/people-imports/github":          authz.PeopleManage,
 		"POST /api/v1/people-imports":                 authz.PeopleManage,
 		"GET /api/v1/people-imports/{runId}":          authz.PeopleManage,
+		"DELETE /api/v1/people-imports/{runId}":       authz.PeopleManage,
 		"POST /api/v1/people-imports/{runId}/preview": authz.PeopleManage,
 		"POST /api/v1/people-imports/{runId}/apply":   authz.PeopleManage,
 		"GET /api/v1/people-imports/{runId}/errors":   authz.PeopleManage,

@@ -1,6 +1,6 @@
 # People import
 
-ADR 0015, issues #27, #28 and #38. File adapters implement `peopleimport.Source` and
+ADR 0015, issues #27, #28, #38 and #42. File adapters implement `peopleimport.Source` and
 produce bounded untrusted records; adapters never write people. File external
 identifiers use one stable namespace across CSV and XLSX. Other sources must use
 their own stable namespace.
@@ -31,7 +31,7 @@ apply writes; teams auto-created by earlier rows of that same apply may be
 reused without treating simulated preview UUIDs as stable identities. Apply
 revalidates identities, grants, field definitions and versions. A stale row fails
 and must be previewed again in a new run. Applied runs are immutable; repeated
-apply returns the saved result.
+apply returns the saved result until the run expires (see Lifecycle).
 
 CSV row numbers are the physical starting lines, including blank lines and
 quoted multiline cells; XLSX uses the original worksheet row numbers.
@@ -65,3 +65,49 @@ local base/contact/profile fields, roles, teams and manager are preserved even
 when mapped. Supplied identities still participate in conflict checks before
 mutation values are discarded; current grants and local-state stale snapshots
 remain enforced. New-person mapping and file-source updates are unchanged.
+
+## Lifecycle
+
+Issue #42 fixes how long import data is kept. The retention periods are
+constants (`peopleimport.StagingRetention`, `peopleimport.AppliedRetention`),
+not settings. Every run response carries `expiresAt`.
+
+| Data | Kept | Then |
+|---|---|---|
+| Unfinished run (staged or previewed): sealed headers, row payloads, previews, mapping, decisions | 24 hours after upload | Deleted entirely |
+| Source material of an applied run: sealed headers, row payloads and previews, including unmapped, skipped and conflicted values | Until apply | Erased in the apply transaction |
+| Value-free report of an applied run: captions, mapping, row numbers, decisions, error codes, results | 90 days after apply | Deleted entirely |
+| Audit entries (run id, counts, row decisions and error codes, never values) | Indefinitely (append-only) | — |
+| `people_import_identities` (source-scoped external-ID hashes → person) | Indefinitely | Follows the person (M5) |
+
+Apply erases the source material in the same transaction that marks the run
+applied and sets `applied_at`. Captions (recognized field names, empty for
+unknown headings) are stored in plain text before the sealed headers go, so the
+result view, a repeated apply (which returns the saved result) and the error
+CSV work from value-free data only. The operator keeps the original file;
+anything else requires a new upload.
+
+Expiry is exact: once `expiresAt` has passed, read, preview, apply and the error
+export return 404 even before cleanup removes the run. The hourly import cleanup
+job (`orglane.people_import_cleanup`, River, also on start) deletes expired runs
+with their rows and records `import.expired` with the system actor and the state
+of the run. It also erases the source material of runs applied by 0.0.1, which
+did not erase on apply (`import.source_erased`); migration 00013 dates their
+apply from the `import.applied` audit entry. Cleanup is idempotent.
+
+`DELETE /api/v1/people-imports/{runId}` deletes a run at any time: any current
+holder of `people.manage` may delete any run, the uploader included (reads stay
+restricted to the uploader). It records `import.deleted` with the deleting
+person, run id and state, never values, in the same transaction. Deleting a run
+that is gone succeeds without an entry. The people, memberships, invitations and
+profile changes an applied run made are not undone, and the identity matches
+stay so a later reimport does not duplicate people.
+
+Delete and cleanup take the grant lock that upload, read, preview and apply also
+hold for their whole transaction, so a run is never deleted halfway through
+being applied: a delete or cleanup waits for a running apply, and an apply that
+waited for a delete or expiry returns 404 without changing anything.
+
+The lifecycle of `people_import_identities` follows the person: it is handled
+with offboarding and deletion in M5. Runs a person uploaded need no extra
+handling there, because every run expires within 90 days of apply.
