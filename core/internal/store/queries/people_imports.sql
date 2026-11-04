@@ -4,11 +4,19 @@ VALUES (@id, @created_by, @source, @encoding, @delimiter, @headers_sealed,
     now() + sqlc.arg(retention_seconds)::bigint * interval '1 second') RETURNING *;
 
 -- name: GetPeopleImportRun :one
--- An expired run is gone even before the cleanup job deletes it.
-SELECT * FROM people_import_runs WHERE id = @id AND created_by = @created_by AND expires_at > now();
+-- An expired run is gone even before the cleanup job deletes it. Expiry uses
+-- the current clock, not the transaction start: callers wait for the import
+-- locks first, and a run may expire while they wait.
+SELECT * FROM people_import_runs WHERE id = @id AND created_by = @created_by AND expires_at > clock_timestamp();
 
 -- name: LockPeopleImportRun :one
-SELECT * FROM people_import_runs WHERE id = @id AND created_by = @created_by AND expires_at > now() FOR UPDATE;
+-- Callers re-check expiry with PeopleImportRunExpired after the row lock:
+-- PostgreSQL re-evaluates this condition after a row-lock wait only if the
+-- holder changed the row.
+SELECT * FROM people_import_runs WHERE id = @id AND created_by = @created_by AND expires_at > clock_timestamp() FOR UPDATE;
+
+-- name: PeopleImportRunExpired :one
+SELECT sqlc.arg(expires_at)::timestamptz <= clock_timestamp() AS expired;
 
 -- name: SetPeopleImportMapping :exec
 UPDATE people_import_runs SET mapping = @mapping, state = 'previewed' WHERE id = @id;
@@ -36,7 +44,7 @@ DELETE FROM people_import_runs WHERE id = @id RETURNING id, state;
 
 -- name: DeleteExpiredPeopleImportRuns :many
 DELETE FROM people_import_runs WHERE id IN (
-    SELECT id FROM people_import_runs WHERE expires_at <= now()
+    SELECT id FROM people_import_runs WHERE expires_at <= clock_timestamp()
     ORDER BY expires_at LIMIT sqlc.arg(max_runs)::int FOR UPDATE)
 RETURNING id, state;
 

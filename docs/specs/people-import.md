@@ -88,7 +88,10 @@ CSV work from value-free data only. The operator keeps the original file;
 anything else requires a new upload.
 
 Expiry is exact: once `expiresAt` has passed, read, preview, apply and the error
-export return 404 even before cleanup removes the run. The hourly import cleanup
+export return 404 even before cleanup removes the run. Expiry is checked with
+the current clock after the import locks (and the run's row lock) are granted,
+so a request that waited while the run expired also returns 404 and writes
+nothing. The hourly import cleanup
 job (`orglane.people_import_cleanup`, River, also on start) deletes expired runs
 with their rows and records `import.expired` with the system actor and the state
 of the run. It also erases the source material of runs applied by 0.0.1, which

@@ -621,6 +621,14 @@ func (s *Service) process(ctx context.Context, actor audit.Actor, id uuid.UUID, 
 		if err != nil {
 			return err
 		}
+		// The run may have expired while this transaction waited for its lock.
+		expired, err := q.PeopleImportRunExpired(ctx, run.ExpiresAt)
+		if err != nil {
+			return err
+		}
+		if expired {
+			return ErrNotFound
+		}
 		if run.State == "applied" {
 			if !apply {
 				return ErrState

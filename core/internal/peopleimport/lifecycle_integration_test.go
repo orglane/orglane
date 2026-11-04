@@ -18,6 +18,7 @@ import (
 	"github.com/orglane/orglane/core/internal/authz"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/peopleimport"
+	"github.com/orglane/orglane/core/internal/store"
 )
 
 // sealedLeft counts the sealed bytes still stored for a run.
@@ -307,7 +308,7 @@ func (f *fixture) waitLocks(n int) {
 
 // holdRun locks a run row the way a concurrent preview or apply does, so the
 // test controls in which order the competing operations reach it.
-func (f *fixture) holdRun(id uuid.UUID, sql string) pgx.Tx {
+func (f *fixture) holdRun(id uuid.UUID) pgx.Tx {
 	f.t.Helper()
 	tx, err := f.pool.Begin(f.ctx)
 	if err != nil {
@@ -316,11 +317,6 @@ func (f *fixture) holdRun(id uuid.UUID, sql string) pgx.Tx {
 	f.t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
 	if _, err = tx.Exec(f.ctx, "SELECT 1 FROM people_import_runs WHERE id=$1 FOR UPDATE", id); err != nil {
 		f.t.Fatal(err)
-	}
-	if sql != "" {
-		if _, err = tx.Exec(f.ctx, sql, id); err != nil {
-			f.t.Fatal(err)
-		}
 	}
 	return tx
 }
@@ -369,7 +365,7 @@ func TestDeleteAndCleanupRacingApply(t *testing.T) {
 	t.Run("delete waits for a running apply", func(t *testing.T) {
 		f := newFixture(t)
 		run := f.preview(f.uploadText(text), m)
-		hold := f.holdRun(run.ID, "")
+		hold := f.holdRun(run.ID)
 		applied := f.applyAsync(run.ID)
 		f.waitLocks(1)
 		deleted := async(func() error { return f.imports.Delete(f.ctx, f.actor, run.ID) })
@@ -385,7 +381,7 @@ func TestDeleteAndCleanupRacingApply(t *testing.T) {
 	t.Run("apply after a delete finds nothing", func(t *testing.T) {
 		f := newFixture(t)
 		run := f.preview(f.uploadText(text), m)
-		hold := f.holdRun(run.ID, "")
+		hold := f.holdRun(run.ID)
 		deleted := async(func() error { return f.imports.Delete(f.ctx, f.actor, run.ID) })
 		f.waitLocks(1)
 		applied := f.applyAsync(run.ID)
@@ -401,11 +397,23 @@ func TestDeleteAndCleanupRacingApply(t *testing.T) {
 	t.Run("cleanup never deletes a run that apply took before it expired", func(t *testing.T) {
 		f := newFixture(t)
 		run := f.preview(f.uploadText(text), m)
-		// The run expires while apply waits for it.
-		hold := f.holdRun(run.ID, "UPDATE people_import_runs SET expires_at = now() + interval '1 second' WHERE id=$1")
+		if _, err := f.pool.Exec(f.ctx, "UPDATE people_import_runs SET expires_at = clock_timestamp() + interval '1 second' WHERE id=$1", run.ID); err != nil {
+			t.Fatal(err)
+		}
+		// Apply takes the unexpired run, then waits for the field definitions
+		// it locks while validating the mapping, holding the run meanwhile.
+		hold, err := f.pool.Begin(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
+		if _, err = hold.Exec(f.ctx, "SELECT 1 FROM profile_fields FOR UPDATE"); err != nil {
+			t.Fatal(err)
+		}
 		applied := f.applyAsync(run.ID)
 		f.waitLocks(1)
-		// Cleanup starts once the run has expired, while apply still holds it.
+		// Cleanup starts once the run's original expiry has passed, while
+		// apply still holds it.
 		time.Sleep(1200 * time.Millisecond)
 		cleaned := async(func() error { _, err := f.imports.Cleanup(f.ctx); return err })
 		f.waitLocks(2)
@@ -430,7 +438,7 @@ func TestDeleteAndCleanupRacingApply(t *testing.T) {
 		if _, err := f.pool.Exec(f.ctx, "UPDATE people_import_runs SET expires_at = now() - interval '1 second' WHERE id=$1", run.ID); err != nil {
 			t.Fatal(err)
 		}
-		hold := f.holdRun(run.ID, "")
+		hold := f.holdRun(run.ID)
 		cleaned := async(func() error { _, err := f.imports.Cleanup(f.ctx); return err })
 		f.waitLocks(1)
 		applied := f.applyAsync(run.ID)
@@ -446,4 +454,86 @@ func TestDeleteAndCleanupRacingApply(t *testing.T) {
 			t.Fatal("expiry not audited")
 		}
 	})
+}
+
+// runState is every stored value of a run and its rows, plus the audit log
+// and people counts.
+func (f *fixture) runState(id uuid.UUID) string {
+	f.t.Helper()
+	var state string
+	if err := f.pool.QueryRow(f.ctx, `SELECT jsonb_build_object(
+        'run', (SELECT to_jsonb(r) FROM people_import_runs r WHERE id=$1),
+        'rows', (SELECT jsonb_agg(to_jsonb(w) ORDER BY row_number) FROM people_import_rows w WHERE run_id=$1),
+        'audit', (SELECT count(*) FROM audit_entries),
+        'people', (SELECT count(*) FROM people))::text`, id).Scan(&state); err != nil {
+		f.t.Fatal(err)
+	}
+	return state
+}
+
+// A request that waits for the import locks while the run expires must find
+// nothing: expiry is checked with the clock at the time the lock is granted.
+func TestRequestsQueuedBeforeExpiryFindNothing(t *testing.T) {
+	text := "username,work_email,display_name\nqueued,queued@acme.test,Queued\n"
+	m := mapping("username", "work_email", "display_name")
+	for _, tc := range []struct {
+		name string
+		// hold takes the lock the requests queue behind.
+		hold func(f *fixture, id uuid.UUID) pgx.Tx
+		// queued is how many requests can wait at the same time: the grant
+		// lock queues all of them, a run-row lock only one, which already
+		// holds the grant lock.
+		queued int
+	}{
+		{"grant lock", func(f *fixture, _ uuid.UUID) pgx.Tx {
+			tx, err := f.pool.Begin(f.ctx)
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			f.t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+			if err = identity.LockGrantsTx(f.ctx, store.New(tx)); err != nil {
+				f.t.Fatal(err)
+			}
+			return tx
+		}, 3},
+		// Without a change to the row, PostgreSQL does not re-evaluate the
+		// query condition after the wait.
+		{"run row lock", func(f *fixture, id uuid.UUID) pgx.Tx { return f.holdRun(id) }, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			run := f.preview(f.uploadText(text), m)
+			if _, err := f.pool.Exec(f.ctx, "UPDATE people_import_runs SET expires_at = clock_timestamp() + interval '1 second' WHERE id=$1", run.ID); err != nil {
+				t.Fatal(err)
+			}
+			before := f.runState(run.ID)
+			hold := tc.hold(f, run.ID)
+			applied := f.applyAsync(run.ID)
+			var read, previewed <-chan error
+			if tc.queued > 1 {
+				read = async(func() error { _, err := f.imports.Get(f.ctx, f.actor, run.ID); return err })
+				previewed = async(func() error { _, err := f.imports.Preview(f.ctx, f.actor, run.ID, m); return err })
+			}
+			f.waitLocks(tc.queued)
+			// Release only once the run has expired.
+			time.Sleep(1200 * time.Millisecond)
+			if err := hold.Commit(f.ctx); err != nil {
+				t.Fatal(err)
+			}
+			if r := <-applied; !errors.Is(r.err, peopleimport.ErrNotFound) {
+				t.Fatalf("queued apply = %+v, %v; want not found", r.run, r.err)
+			}
+			if read != nil {
+				if err := <-read; !errors.Is(err, peopleimport.ErrNotFound) {
+					t.Fatalf("queued read = %v, want not found", err)
+				}
+				if err := <-previewed; !errors.Is(err, peopleimport.ErrNotFound) {
+					t.Fatalf("queued preview = %v, want not found", err)
+				}
+			}
+			if after := f.runState(run.ID); after != before {
+				t.Fatalf("a request queued before expiry changed the run:\nbefore %s\nafter  %s", before, after)
+			}
+		})
+	}
 }

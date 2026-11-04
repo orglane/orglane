@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -57,7 +58,7 @@ func (q *Queries) CreatePeopleImportRun(ctx context.Context, arg CreatePeopleImp
 
 const deleteExpiredPeopleImportRuns = `-- name: DeleteExpiredPeopleImportRuns :many
 DELETE FROM people_import_runs WHERE id IN (
-    SELECT id FROM people_import_runs WHERE expires_at <= now()
+    SELECT id FROM people_import_runs WHERE expires_at <= clock_timestamp()
     ORDER BY expires_at LIMIT $1::int FOR UPDATE)
 RETURNING id, state
 `
@@ -364,7 +365,7 @@ func (q *Queries) FinishPeopleImport(ctx context.Context, arg FinishPeopleImport
 }
 
 const getPeopleImportRun = `-- name: GetPeopleImportRun :one
-SELECT id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at, captions, applied_at, expires_at FROM people_import_runs WHERE id = $1 AND created_by = $2 AND expires_at > now()
+SELECT id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at, captions, applied_at, expires_at FROM people_import_runs WHERE id = $1 AND created_by = $2 AND expires_at > clock_timestamp()
 `
 
 type GetPeopleImportRunParams struct {
@@ -372,7 +373,9 @@ type GetPeopleImportRunParams struct {
 	CreatedBy uuid.UUID
 }
 
-// An expired run is gone even before the cleanup job deletes it.
+// An expired run is gone even before the cleanup job deletes it. Expiry uses
+// the current clock, not the transaction start: callers wait for the import
+// locks first, and a run may expire while they wait.
 func (q *Queries) GetPeopleImportRun(ctx context.Context, arg GetPeopleImportRunParams) (PeopleImportRun, error) {
 	row := q.db.QueryRow(ctx, getPeopleImportRun, arg.ID, arg.CreatedBy)
 	var i PeopleImportRun
@@ -487,7 +490,7 @@ func (q *Queries) ListUnerasedAppliedPeopleImportRuns(ctx context.Context, maxRu
 }
 
 const lockPeopleImportRun = `-- name: LockPeopleImportRun :one
-SELECT id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at, captions, applied_at, expires_at FROM people_import_runs WHERE id = $1 AND created_by = $2 AND expires_at > now() FOR UPDATE
+SELECT id, created_by, source, encoding, delimiter, headers_sealed, mapping, state, created_at, captions, applied_at, expires_at FROM people_import_runs WHERE id = $1 AND created_by = $2 AND expires_at > clock_timestamp() FOR UPDATE
 `
 
 type LockPeopleImportRunParams struct {
@@ -495,6 +498,9 @@ type LockPeopleImportRunParams struct {
 	CreatedBy uuid.UUID
 }
 
+// Callers re-check expiry with PeopleImportRunExpired after the row lock:
+// PostgreSQL re-evaluates this condition after a row-lock wait only if the
+// holder changed the row.
 func (q *Queries) LockPeopleImportRun(ctx context.Context, arg LockPeopleImportRunParams) (PeopleImportRun, error) {
 	row := q.db.QueryRow(ctx, lockPeopleImportRun, arg.ID, arg.CreatedBy)
 	var i PeopleImportRun
@@ -548,6 +554,17 @@ func (q *Queries) LockPeopleImportTeams(ctx context.Context) ([]Team, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const peopleImportRunExpired = `-- name: PeopleImportRunExpired :one
+SELECT $1::timestamptz <= clock_timestamp() AS expired
+`
+
+func (q *Queries) PeopleImportRunExpired(ctx context.Context, expiresAt time.Time) (bool, error) {
+	row := q.db.QueryRow(ctx, peopleImportRunExpired, expiresAt)
+	var expired bool
+	err := row.Scan(&expired)
+	return expired, err
 }
 
 const peopleImportSnapshot = `-- name: PeopleImportSnapshot :one
