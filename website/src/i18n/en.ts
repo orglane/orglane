@@ -42,7 +42,8 @@ export const en = {
     title: "One ecosystem instead of a pile of tools",
     intro:
       "Big companies give their people one internal app. Orglane brings that to every company, without the ops burden of running a dozen self-hosted apps.",
-    planned: "This is the plan for the first developer preview (v0.1); none of it is ready yet.",
+    planned:
+      "This is the plan for the first developer preview (v0.1). People and sign-in work today; the rest is in progress.",
     roadmap: "Follow each milestone on the roadmap",
     plannedTag: "Planned",
     items: [
@@ -74,7 +75,7 @@ export const en = {
       "One command on Linux or macOS with Docker. It checks the machine, asks how you want to run Orglane and prints the address to open.",
     todayTitle: "What you get today",
     today:
-      "Sign-in with passwords and passkeys, an embedded OpenID Connect provider, people and roles, and the first screens of the web app, plus the Acme Robotics demo company. Integrations, notifications, the mobile app and backups come next.",
+      "Sign-in with passwords and passkeys, an embedded OpenID Connect provider, roles, a people directory with teams and profile fields, invitations, an onboarding checklist and people import from CSV, XLSX or a GitHub organization, plus the Acme Robotics demo company. Integrations, notifications, the mobile app and backups come next.",
     noticeTitle: "Pre-alpha software",
     notice:
       "Orglane is not ready for real company data. Expect missing features, breaking changes and no upgrade path between early versions.",

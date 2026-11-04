@@ -4,7 +4,11 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project status
 
-Pre-alpha. The monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the M0 data model (people, roles, devices, sessions, audit log), identity (embedded OpenID Provider, password and passkey sign-in, sessions), the web skeleton (React SPA embedded into the binary, design tokens, i18n), the Compose bundle with Traefik, the one-command installer (`deploy/install.sh`) and the orglane.app website (`website/`) are in place (see [ROADMAP.md](ROADMAP.md)).
+Pre-alpha (releases 0.0.x until the v0.1 Developer Preview). M0 (Foundation) and M1 (People) are done; M2 (Code) is next (see [ROADMAP.md](ROADMAP.md)).
+
+In place from M0: the monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the data model (people, roles, devices, sessions, audit log), identity (embedded OpenID Provider, password and passkey sign-in, sessions), the web skeleton (React SPA embedded into the binary, design tokens, i18n), the Compose bundle with Traefik, the one-command installer (`deploy/install.sh`) and the orglane.app website (`website/`).
+
+In place from M1: teams and memberships, profile fields (field library, custom fields, visibility), the people directory and profile pages, system email over SMTP and invitations, the onboarding checklist and welcome flow, and the staged people import from CSV/XLSX and from a GitHub organization. Their specs are in [docs/specs/](docs/specs/), the GitHub import setup in [docs/github-import.md](docs/github-import.md).
 
 ## Toolchain
 
@@ -65,7 +69,7 @@ Integration tests carry the `integration` build tag (`//go:build integration`) a
 
 ### Running the server locally
 
-`make dev` starts Postgres from `deploy/dev/compose.yaml` and runs `orglane server -config deploy/dev/orglane.yaml`. Other modes: `go run ./core/cmd/orglane cli migrate -config deploy/dev/orglane.yaml`, `... cli version`, `... agent` (stub). `make demo` runs demo mode (`orglane server --demo`): on an empty database it loads the "Acme Robotics" dataset from `demo/` and allows one-click sign-in as any demo person; see [demo/README.md](demo/README.md). Tests and scripts that need realistic data use that dataset (`tests/demotest`).
+`make dev` starts Postgres and Mailpit (it captures system email such as invitations, at http://localhost:8025) from `deploy/dev/compose.yaml` and runs `orglane server -config deploy/dev/orglane.yaml`. Other modes: `go run ./core/cmd/orglane cli migrate -config deploy/dev/orglane.yaml`, `... cli version`, `... agent` (stub). `make demo` runs demo mode (`orglane server --demo`): on an empty database it loads the "Acme Robotics" dataset from `demo/` and allows one-click sign-in as any demo person; see [demo/README.md](demo/README.md). Tests and scripts that need realistic data use that dataset (`tests/demotest`).
 
 Configuration is a YAML file (`-config` or `ORGLANE_CONFIG`) plus `ORGLANE_*` environment variables, which override the file. The variable name is the YAML path in upper case joined with `_` (`domain.workspace_host` → `ORGLANE_DOMAIN_WORKSPACE_HOST`). Required: `database.url`, `domain.base` and, in production, `identity.master_secret` (at least 32 characters; never change it on a running instance). On first start the server logs a one-time setup token for creating the owner (`go run ./core/cmd/orglane cli setup-token -config deploy/dev/orglane.yaml` makes a new one). See `core/internal/config/config.go` for every setting and its default. Hosts are never hard-coded outside that package (ADR 0018).
 

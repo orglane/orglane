@@ -4,12 +4,14 @@
 
 ## Overview
 
-| Milestone | Character | Audience |
-|---|---|---|
-| **M0 — Foundation** | Private. Ends with the repository going public (pre-alpha) | — |
-| **v0.1 — Developer Preview** (M1–M7) | Quiet release, devlog only | Maintainers and early adopters |
-| **v0.2 — Public Launch** | Loud: Hacker News, Reddit, Product Hunt | Everyone |
-| **v0.3+** | Growth | — |
+| Milestone | Character | Audience | Status |
+|---|---|---|---|
+| **M0 — Foundation** | Private. Ends with the repository going public (pre-alpha) | — | Done |
+| **v0.1 — Developer Preview** (M1–M7) | Quiet release, devlog only | Maintainers and early adopters | In progress: M1 done, M2 next |
+| **v0.2 — Public Launch** | Loud: Hacker News, Reddit, Product Hunt | Everyone | Research tracks started |
+| **v0.3+** | Growth | — | — |
+
+Until v0.1, pre-alpha releases are numbered 0.0.x (the first is 0.0.1). They are for trying Orglane out, not for real company data.
 
 ---
 
@@ -25,6 +27,8 @@
 
 **Exit:** `curl … | sh` brings up a working sign-in. Docs and skeleton are in place, and **the repository goes public** with a pre-alpha notice.
 
+**Status:** done. Verified on a fresh 2 vCPU / 4 GB VPS with a real domain and a Let's Encrypt certificate; the repository is public.
+
 ## Research tracks (in parallel, starting after M0)
 
 Each candidate is deployed and compared on idle and loaded memory, OIDC quality, provisioning/deprovisioning APIs, webhooks/events, design, license and upgrade pain. Output: a short report with a recommendation; the maintainer decides.
@@ -39,7 +43,7 @@ Each candidate is deployed and compared on idle and loaded memory, OIDC quality,
 
 | | Milestone | Scope |
 |---|---|---|
-| **M1** | People | People, teams, Owner/Admin/Member roles, profile field library + custom fields + visibility, CSV/XLSX and GitHub org import, invites, onboarding checklist |
+| **M1** ✅ | People | People, teams, Owner/Admin/Member roles, profile field library + custom fields + visibility, CSV/XLSX and GitHub org import, invites, onboarding checklist |
 | **M2** | Code | **Forgejo (managed):** agent, package, upgrade with snapshot and rollback, SSO, provisioning, team mapping, webhooks, silent SSO deep links. **GitHub (external):** GitHub App, account linking, invites, removal, webhooks |
 | **M3** | Notifications | Event pipeline, Inbox, grouping, priorities, Web Push, Telegram bot (linking, DMs, invite links and removal from groups) |
 | **M4** | Mobile app | Expo app: QR and email sign-in, Home, Inbox, People (offline), Apps, devices, end-to-end encrypted push via the open-source relay |
