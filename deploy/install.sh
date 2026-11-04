@@ -1015,8 +1015,16 @@ cmd_install() {
 		eval "val=\${$v:-}"
 		one_line "$val" || die "invalid $v: it must be a single line"
 	done
-	if [ -n "${ORGLANE_EDGE_NETWORK_PREFIX:-}" ] && ! valid_edge_prefix "$ORGLANE_EDGE_NETWORK_PREFIX"; then
-		die "invalid ORGLANE_EDGE_NETWORK_PREFIX '$ORGLANE_EDGE_NETWORK_PREFIX': give the first three octets of a free /24, e.g. 10.232.0"
+	# The prefix this run writes: from the environment, else the one kept in
+	# .env (which may have been edited by hand).
+	edge=${ORGLANE_EDGE_NETWORK_PREFIX:-}
+	edge_from='the environment'
+	if [ -z "$edge" ] && [ "$EXISTING" = 1 ]; then
+		edge=$(env_get "$ENV_FILE" ORGLANE_EDGE_NETWORK_PREFIX)
+		edge_from=$ENV_FILE
+	fi
+	if [ -n "$edge" ] && ! valid_edge_prefix "$edge"; then
+		die "invalid ORGLANE_EDGE_NETWORK_PREFIX '$edge' in $edge_from: give the first three octets of a free /24, e.g. 10.232.0"
 	fi
 
 	check_resources

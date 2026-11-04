@@ -10,7 +10,8 @@
 //   - demo mode: install and one-click sign-in as the demo owner;
 //   - an edge subnet taken by another Docker network: the failure names
 //     ORGLANE_EDGE_NETWORK_PREFIX, and a re-run with a free one installs;
-//     malformed or multi-line settings are refused and leave .env alone;
+//     malformed or multi-line settings (also a bad prefix kept in .env)
+//     are refused and leave .env alone;
 //   - domain mode: the DNS check refuses an unresolvable workspace host
 //     before anything starts, and an install against Pebble (Let's
 //     Encrypt's ACME test server, deploy/compose/pebble) gets a certificate.
@@ -124,7 +125,13 @@ func newInstall(t *testing.T, edgePrefix string, env ...string) *install {
 
 // setEnv sets an environment variable of the installer for later runs.
 func (in *install) setEnv(key, value string) {
-	in.env = append(slices.DeleteFunc(in.env, func(kv string) bool { return strings.HasPrefix(kv, key+"=") }), key+"="+value)
+	in.unsetEnv(key)
+	in.env = append(in.env, key+"="+value)
+}
+
+// unsetEnv removes an environment variable of the installer for later runs.
+func (in *install) unsetEnv(key string) {
+	in.env = slices.DeleteFunc(in.env, func(kv string) bool { return strings.HasPrefix(kv, key+"=") })
 }
 
 // run runs the installer and returns its combined output and exit code.
@@ -555,6 +562,27 @@ func TestEdgeSubnetClash(t *testing.T) {
 	refused("multi-line COMPOSE_PROJECT_NAME", "invalid COMPOSE_PROJECT_NAME")
 	in.setEnv("COMPOSE_PROJECT_NAME", in.project)
 	refused("multi-line --version", "invalid --version", "--version", "0.1.0\nORGLANE_DEMO_ENABLED=true")
+
+	// Without the variable the prefix kept in .env is used: a bad one,
+	// edited by hand, is refused too.
+	kept := before
+	before = bytes.Replace(kept, []byte("ORGLANE_EDGE_NETWORK_PREFIX="+free+"\n"), []byte("ORGLANE_EDGE_NETWORK_PREFIX=10.231.999\n"), 1)
+	if bytes.Equal(before, kept) {
+		t.Fatalf(".env does not keep ORGLANE_EDGE_NETWORK_PREFIX=%s:\n%s", free, kept)
+	}
+	if err := os.WriteFile(envPath, before, 0o600); err != nil { //nolint:gosec // the test's own data directory
+		t.Fatal(err)
+	}
+	in.unsetEnv("ORGLANE_EDGE_NETWORK_PREFIX")
+	refused("re-run with a bad prefix kept in .env", "invalid ORGLANE_EDGE_NETWORK_PREFIX '10.231.999'")
+	if err := os.WriteFile(envPath, kept, 0o600); err != nil { //nolint:gosec // the test's own data directory
+		t.Fatal(err)
+	}
+	// And a good kept one is used as it is.
+	in.mustRun(args...)
+	if got := in.envFile()["ORGLANE_EDGE_NETWORK_PREFIX"]; got != free {
+		t.Errorf("re-run without the variable: .env ORGLANE_EDGE_NETWORK_PREFIX = %q, want %q kept", got, free)
+	}
 	checkWorkspace(t, http.DefaultClient, "http://127.0.0.1:"+port, "localhost:"+port)
 
 	in.mustRun("uninstall", "--purge", "--yes", "--data-dir", in.dataDir)
