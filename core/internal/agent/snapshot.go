@@ -306,6 +306,21 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
+// findSnapshot returns the ID of an instance's snapshot directory that
+// equals want, as read from the directory.
+func (a *Agent) findSnapshot(key string, want uuid.UUID) (uuid.UUID, bool) {
+	entries, err := os.ReadDir(a.snapshotsPath(key))
+	if err != nil {
+		return uuid.Nil, false
+	}
+	for _, e := range entries {
+		if id, err := uuid.Parse(e.Name()); err == nil && e.IsDir() && id == want && id.String() == e.Name() {
+			return id, true
+		}
+	}
+	return uuid.Nil, false
+}
+
 // loadSnapshot reads a complete snapshot and its spec.
 func (a *Agent) loadSnapshot(key string, id uuid.UUID) (*agentapi.Snapshot, *agentapi.Spec, error) {
 	dir := a.snapshotPath(key, id)

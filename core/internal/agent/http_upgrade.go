@@ -179,7 +179,13 @@ func (a *Agent) acceptRestore(in *instance, dir string, req agentapi.RestoreRequ
 	if st.id == uuid.Nil {
 		return fail(http.StatusNotFound, agentapi.CodeNotFound, "unknown instance", nil)
 	}
-	_, spec, err := a.loadSnapshot(in.key, req.SnapshotID)
+	// Paths are built from the snapshot directory's own name, never from
+	// the request.
+	snapID, ok := a.findSnapshot(in.key, req.SnapshotID)
+	if !ok {
+		return fail(http.StatusNotFound, agentapi.CodeNotFound, "unknown or incomplete snapshot", nil)
+	}
+	_, spec, err := a.loadSnapshot(in.key, snapID)
 	if err != nil {
 		return fail(http.StatusNotFound, agentapi.CodeNotFound, "unknown or incomplete snapshot", nil)
 	}
@@ -207,12 +213,12 @@ func (a *Agent) acceptRestore(in *instance, dir string, req agentapi.RestoreRequ
 	if err != nil {
 		return internal(err)
 	}
-	if _, err := a.ops.update(op.ID, func(o *agentapi.Operation) { o.SnapshotID = req.SnapshotID.String() }); err != nil {
+	if _, err := a.ops.update(op.ID, func(o *agentapi.Operation) { o.SnapshotID = snapID.String() }); err != nil {
 		return internal(err)
 	}
 	nj := &journal{
 		Operation: op.ID, Kind: agentapi.KindRestore, To: spec.Package, ToGeneration: req.Generation,
-		SnapshotID: req.SnapshotID, Phase: agentapi.PhaseRollingBack, Spec: &restored,
+		SnapshotID: snapID, Phase: agentapi.PhaseRollingBack, Spec: &restored,
 	}
 	if err := writeJournal(dir, nj); err != nil {
 		return internal(err)
