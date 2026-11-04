@@ -181,6 +181,17 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 				ar.Outcome = OutcomeHeld
 			}
 		default:
+			if slices.Contains(grants, a.Kind) {
+				// Durable intent before the provider is touched: an action
+				// that grants access is only planned when the access does not
+				// exist, so whatever it creates is Orglane's, even if the
+				// process dies between the provider call and its bookkeeping.
+				// A failed write stops here, before any provider change.
+				if err := store.New(conn).MarkProvisioningGranted(ctx, store.MarkProvisioningGrantedParams{InstanceID: inst.ID, PersonID: d.person.ID}); err != nil {
+					return fmt.Errorf("apps: record grant intent: %w", err)
+				}
+				granted = true
+			}
 			out, err := prov.Apply(ctx, env, view, a)
 			if err != nil {
 				applyErr = err
@@ -653,16 +664,29 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs, 
 
 	var firstErr error
 	final := attempt >= maxAttempts
+	// A person's removals apply in plan order and stop at their first
+	// failure; other people go on independently.
+	stopped := map[uuid.UUID]bool{}
 	for _, item := range toApply {
+		if stopped[item.removal.PersonID] {
+			continue
+		}
 		again, retryErr, err := s.applyRemoval(ctx, prov, item, final)
-		if err != nil {
+		switch {
+		case errors.Is(err, errRemovalFailed):
+			stopped[item.removal.PersonID] = true
+			continue
+		case err != nil:
 			return err
 		}
 		if errors.Is(retryErr, errInstanceInactive) {
-			break // the rest waits until the instance is provisionable again
+			break // the rest waits until the instance is provisionable again (activation queues this job)
 		}
-		if retryErr != nil && firstErr == nil {
-			firstErr = retryErr
+		if retryErr != nil {
+			stopped[item.removal.PersonID] = true
+			if firstErr == nil {
+				firstErr = retryErr
+			}
 		}
 		if again {
 			replan[item.removal.PersonID] = true
@@ -670,11 +694,18 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs, 
 	}
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
-		if firstErr == nil {
-			for _, id := range batches {
-				if err := q.SetRemovalBatchState(ctx, store.SetRemovalBatchStateParams{ID: id, State: batchApplied}); err != nil {
-					return fmt.Errorf("apps: finish batch: %w", err)
-				}
+		// A confirmed batch is applied only once none of its items waits;
+		// an interrupted one stays confirmed and resumes with the next run.
+		for _, id := range batches {
+			n, err := q.CountHeldBatchRemovals(ctx, &id)
+			if err != nil {
+				return fmt.Errorf("apps: count batch items: %w", err)
+			}
+			if n > 0 {
+				continue
+			}
+			if err := q.SetRemovalBatchState(ctx, store.SetRemovalBatchStateParams{ID: id, State: batchApplied}); err != nil {
+				return fmt.Errorf("apps: finish batch: %w", err)
 			}
 		}
 		ids := make([]uuid.UUID, 0, len(replan))
@@ -720,6 +751,11 @@ type queuedRemoval struct {
 // errInstanceInactive stops applying removals of an instance that is no
 // longer provisionable.
 var errInstanceInactive = errors.New("apps: the instance is not provisionable")
+
+// errRemovalFailed reports that a removal failed for good: the person's
+// later removals do not run, and their open removals were dropped (the
+// result is failed and waits for a desired change or an admin's retry).
+var errRemovalFailed = errors.New("apps: the removal failed")
 
 // applyRemoval applies one removal under the person's provisioning lock,
 // so it never interleaves with that person's own job, after rechecking
@@ -780,9 +816,16 @@ func (s *Service) applyRemoval(ctx context.Context, prov provider.UserProvisione
 			if err != nil || n == 0 {
 				return err
 			}
+			// The rest of this person's plan does not run after a failure.
+			if err := q.DropOpenRemovals(ctx, store.DropOpenRemovalsParams{InstanceID: r.InstanceID, PersonID: r.PersonID}); err != nil {
+				return fmt.Errorf("apps: drop later removals: %w", err)
+			}
 			return s.failResult(ctx, q, inst, d, a, code)
 		})
-		return false, nil, err
+		if err != nil {
+			return false, nil, err
+		}
+		return false, nil, errRemovalFailed
 	}
 	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)

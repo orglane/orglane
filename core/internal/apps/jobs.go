@@ -69,8 +69,10 @@ type ProvisionPersonArgs struct {
 	// FollowUp marks the one job queued while another runs, so a change
 	// during a run is never lost.
 	FollowUp bool `json:"follow_up,omitempty" river:"unique"`
-	// Drift forces a plan even when the desired state was applied.
-	Drift bool `json:"drift,omitempty"`
+	// Drift forces a plan even when the desired state was applied. Unique,
+	// so a queued ordinary job (which may skip planning) does not swallow
+	// the daily drift check.
+	Drift bool `json:"drift,omitempty" river:"unique"`
 	// Retry also retries a failed result (an admin's Retry). Unique, so a
 	// queued ordinary job does not swallow it.
 	Retry bool `json:"retry,omitempty" river:"unique"`

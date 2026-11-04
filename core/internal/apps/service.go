@@ -547,6 +547,11 @@ func (s *Service) activated(ctx context.Context, tx pgx.Tx, q *store.Queries, in
 			return nil
 		}
 	}
+	// Removals an earlier run left (confirmed batches interrupted by an
+	// inactive instance) resume.
+	if err := s.enqueueRemovals(ctx, tx, inst.ID, 0); err != nil {
+		return err
+	}
 	return s.enqueueInstance(ctx, tx, inst.ID, ReasonActivated)
 }
 

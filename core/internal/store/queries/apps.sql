@@ -352,6 +352,14 @@ ORDER BY r.created_at, r.id;
 -- name: CountAppliedRemovalsSince :one
 SELECT count(*) FROM provisioning_removals WHERE instance_id = @instance_id AND state = 'applied' AND updated_at > @since;
 
+-- name: CountHeldBatchRemovals :one
+SELECT count(*) FROM provisioning_removals WHERE batch_id = @batch_id AND state = 'held';
+
+-- name: DropOpenRemovals :exec
+-- After a person's removal failed, their later removals do not run.
+UPDATE provisioning_removals SET state = 'dropped', updated_at = now()
+WHERE instance_id = @instance_id AND person_id = @person_id AND state IN ('pending', 'held');
+
 -- name: GetRemoval :one
 SELECT * FROM provisioning_removals WHERE id = @id;
 

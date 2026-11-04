@@ -261,3 +261,207 @@ func TestRemovalFailuresSurface(t *testing.T) {
 		t.Fatalf("carol after retry = %+v", r)
 	}
 }
+
+// Round 2 of the review of PR #74.
+
+// TestConfirmedBatchResumesAfterInactive: an instance that stops being
+// provisionable while a confirmed batch applies leaves the batch confirmed
+// with its remaining items; reactivation resumes them.
+func TestConfirmedBatchResumesAfterInactive(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	names := []string{"alice", "bob", "carol", "dave"}
+	for _, n := range names {
+		h.person(n)
+	}
+	h.drain()
+	for _, n := range names {
+		p, _ := h.ids.GetPersonByUsername(h.ctx, n)
+		if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, p.ID, identity.StatusSuspended); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: p.ID}, 1, 8); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.exec(`DELETE FROM river_job`)
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	held, err := h.svc.HeldRemovals(h.ctx, inst.ID)
+	if err != nil || held == nil || held.Batch.ItemCount != 4 {
+		t.Fatalf("held = %+v, %v", held, err)
+	}
+	if err := h.svc.ConfirmRemovals(h.ctx, audit.System, inst.ID, held.Batch.ID, held.Batch.ItemsHash); err != nil {
+		t.Fatal(err)
+	}
+	h.exec(`DELETE FROM river_job`)
+	reached, release := h.tp.Block("apply:remove_from_org")
+	done := make(chan error, 1)
+	go func() { done <- h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8) }()
+	<-reached
+	if _, err := h.svc.Transition(h.ctx, audit.System, inst.ID, apps.StateUpgrading, ""); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := h.pool.QueryRow(h.ctx, `SELECT state FROM provisioning_removal_batches WHERE id = $1`, held.Batch.ID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if left := h.count(`SELECT count(*) FROM provisioning_removals WHERE batch_id = $1 AND state = 'held'`, held.Batch.ID); state != "confirmed" || left != 3 {
+		t.Fatalf("interrupted batch = %s with %d held items, want confirmed with 3", state, left)
+	}
+	if _, err := h.svc.Transition(h.ctx, audit.System, inst.ID, apps.StateActive, ""); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	if left := h.count(`SELECT count(*) FROM provisioning_removals WHERE batch_id = $1 AND state = 'held'`, held.Batch.ID); left != 0 {
+		t.Fatalf("%d confirmed removals orphaned after reactivation", left)
+	}
+	for _, n := range names {
+		if acct, _ := h.tp.Account(inst.ID, n); acct.Member {
+			t.Errorf("suspended %s is still a member", n)
+		}
+	}
+	if err := h.pool.QueryRow(h.ctx, `SELECT state FROM provisioning_removal_batches WHERE id = $1`, held.Batch.ID).Scan(&state); err != nil || state != "applied" {
+		t.Fatalf("batch = %s, %v, want applied", state, err)
+	}
+}
+
+// TestGrantSurvivesFailedActionRecord: the grant intent is durable before
+// the provider is called, so a failure of the action's bookkeeping (audit
+// entry, link) after the provider created the account keeps the account
+// Orglane's; and if even the intent cannot be written, nothing is changed
+// at the provider and the retry converges.
+func TestGrantSurvivesFailedActionRecord(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	h.drain()
+	// The action's bookkeeping fails: storing the provisioned link aborts
+	// that transaction after the provider created the account.
+	h.exec(`CREATE FUNCTION review_fail_link() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'injected failure of the action record'; END $$`)
+	h.exec(`CREATE TRIGGER review_fail_link BEFORE INSERT ON account_links FOR EACH ROW EXECUTE FUNCTION review_fail_link()`)
+	alice := h.person("alice")
+	a := apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: alice.ID}
+	if err := h.svc.RunProvisionPerson(h.ctx, a, 1, 8); err == nil {
+		t.Fatal("the injected failure did not happen")
+	}
+	h.exec(`DROP TRIGGER review_fail_link ON account_links`)
+	if acct, ok := h.tp.Account(inst.ID, "alice"); !ok || !acct.Member {
+		t.Fatal("the account was not created")
+	}
+	if err := h.svc.RunProvisionPerson(h.ctx, a, 2, 8); err != nil {
+		t.Fatal(err)
+	}
+	if r := h.result(inst, alice); !r.GrantedByOrglane {
+		t.Fatal("ownership of the created account was lost")
+	}
+	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, alice.ID, identity.StatusOffboarded); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	if acct, _ := h.tp.Account(inst.ID, "alice"); acct.Member {
+		t.Fatal("an account Orglane created was kept after offboarding")
+	}
+
+	// Every result write fails: the intent cannot be recorded, so the
+	// provider is not touched; the retry creates and owns the account.
+	h.exec(`CREATE FUNCTION review_fail_result() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'injected failure of result writes'; END $$`)
+	h.exec(`CREATE TRIGGER review_fail_result BEFORE INSERT OR UPDATE ON provisioning_results FOR EACH ROW EXECUTE FUNCTION review_fail_result()`)
+	bob := h.person("bob")
+	b := apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: bob.ID}
+	if err := h.svc.RunProvisionPerson(h.ctx, b, 1, 8); err == nil {
+		t.Fatal("the injected failure did not happen")
+	}
+	if _, ok := h.tp.Account(inst.ID, "bob"); ok {
+		t.Fatal("the provider changed although the grant intent could not be recorded")
+	}
+	h.exec(`DROP TRIGGER review_fail_result ON provisioning_results`)
+	if err := h.svc.RunProvisionPerson(h.ctx, b, 2, 8); err != nil {
+		t.Fatal(err)
+	}
+	if r := h.result(inst, bob); !r.GrantedByOrglane || r.Status != apps.StatusDone {
+		t.Fatalf("bob = %+v", r)
+	}
+}
+
+// TestRemovalFailureStopsPersonActions: a person's removals stop at their
+// first failure (the organization removal after a failed team removal does
+// not run), while other people's removals go on.
+func TestRemovalFailureStopsPersonActions(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	alice, bob := h.person("alice"), h.person("bob")
+	team := h.team("old", alice) // alice: two removals, bob: one; three fit the limit
+	h.mapTeam(inst, team)
+	h.drain()
+	for _, id := range [][16]byte{alice.ID, bob.ID} {
+		if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, id, identity.StatusSuspended); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: id}, 1, 8); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.exec(`DELETE FROM river_job`)
+	h.tp.Fail("apply:remove_from_team:team-old", permanent("owner_protected"))
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := h.ids.GetPersonByUsername(h.ctx, "alice")
+	if acct, _ := h.tp.Account(inst.ID, "alice"); !acct.Member {
+		t.Fatal("remove_from_org ran after alice's remove_from_team failed")
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state IN ('pending', 'held')`, first.ID); n != 0 {
+		t.Fatalf("alice has %d open removals after her failure", n)
+	}
+	if r := h.result(inst, alice); r.Status != apps.StatusFailed {
+		t.Fatalf("alice = %+v", r)
+	}
+	if acct, _ := h.tp.Account(inst.ID, "bob"); acct.Member {
+		t.Fatal("bob's removal did not go on independently in the same run")
+	}
+	h.drain()
+	if acct, _ := h.tp.Account(inst.ID, "alice"); !acct.Member {
+		t.Fatal("alice's later removal ran in a later job")
+	}
+}
+
+// TestPersonDriftNotSwallowed: a drift check for a person whose hashes
+// converged plans again even when an ordinary job for them is queued.
+func TestPersonDriftNotSwallowed(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	alice := h.person("alice")
+	h.drain()
+	// Converge: the second run sees the grant, so applied and desired
+	// hashes match and ordinary runs take the shortcut.
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: alice.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if r := h.result(inst, alice); !bytes.Equal(r.AppliedHash, r.DesiredHash) {
+		t.Fatal("the result did not converge")
+	}
+	acct, _ := h.tp.Account(inst.ID, "alice")
+	// Someone removes alice in the provider; then an unrelated edit queues
+	// an ordinary job, which takes the applied-hash shortcut.
+	if _, err := h.tp.Apply(h.ctx, h.svc.EnvForTest(inst), inst.View(), provider.Action{Kind: provider.ActionRemoveFromOrg, Key: "external", Params: map[string]string{"account": acct.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	title := "New title"
+	if _, err := h.ids.UpdatePerson(h.ctx, audit.System, alice.ID, identity.PersonUpdate{Title: &title}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.RunProvisionInstance(h.ctx, apps.ProvisionInstanceArgs{InstanceID: inst.ID, Reason: apps.ReasonDrift}); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	if acct, _ := h.tp.Account(inst.ID, "alice"); !acct.Member {
+		t.Fatal("the drift check was swallowed: alice has no account")
+	}
+}

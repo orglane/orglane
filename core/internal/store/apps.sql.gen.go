@@ -122,6 +122,17 @@ func (q *Queries) CountAppliedRemovalsSince(ctx context.Context, arg CountApplie
 	return count, err
 }
 
+const countHeldBatchRemovals = `-- name: CountHeldBatchRemovals :one
+SELECT count(*) FROM provisioning_removals WHERE batch_id = $1 AND state = 'held'
+`
+
+func (q *Queries) CountHeldBatchRemovals(ctx context.Context, batchID *uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countHeldBatchRemovals, batchID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countManagedAccounts = `-- name: CountManagedAccounts :one
 SELECT count(*) FROM provisioning_results r JOIN app_instances i ON i.id = r.instance_id
 WHERE r.instance_id = $1 AND r.applied_hash IS NOT NULL
@@ -260,6 +271,22 @@ DELETE FROM app_unmanaged_accounts WHERE instance_id = $1
 // Unmanaged accounts -------------------------------------------------------
 func (q *Queries) DeleteUnmanagedAccounts(ctx context.Context, instanceID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, deleteUnmanagedAccounts, instanceID)
+	return err
+}
+
+const dropOpenRemovals = `-- name: DropOpenRemovals :exec
+UPDATE provisioning_removals SET state = 'dropped', updated_at = now()
+WHERE instance_id = $1 AND person_id = $2 AND state IN ('pending', 'held')
+`
+
+type DropOpenRemovalsParams struct {
+	InstanceID uuid.UUID
+	PersonID   uuid.UUID
+}
+
+// After a person's removal failed, their later removals do not run.
+func (q *Queries) DropOpenRemovals(ctx context.Context, arg DropOpenRemovalsParams) error {
+	_, err := q.db.Exec(ctx, dropOpenRemovals, arg.InstanceID, arg.PersonID)
 	return err
 }
 
