@@ -125,7 +125,7 @@ func New(pool *pgxpool.Pool, opts Options) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("oidcop: %w", err)
 	}
-	revocation.decoder = provider.Decoder()
+	revocation.revoker = provider
 	return &Provider{op: provider, storage: st, issuer: opts.Issuer, crypto: provider.Crypto()}, nil
 }
 

@@ -462,9 +462,6 @@ func (s *storage) TerminateSessionFromRequest(ctx context.Context, req *op.EndSe
 // access token arrives as its ID, decrypted from the token. Anything else is
 // a token this provider did not issue.
 func (s *storage) RevokeToken(ctx context.Context, tokenOrID, userID, clientID string) *oidc.Error {
-	if invalid := invalidTokenParam(ctx); invalid != "" {
-		return oidc.ErrInvalidRequest().WithDescription("%s", invalid)
-	}
 	if strings.HasPrefix(tokenOrID, RefreshTokenPrefix) {
 		return s.revokeRefreshToken(ctx, tokenOrID, clientID)
 	}

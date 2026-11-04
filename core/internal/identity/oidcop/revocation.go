@@ -1,11 +1,8 @@
 package oidcop
 
 import (
-	"context"
 	"net/http"
-	"net/url"
 
-	httphelper "github.com/zitadel/oidc/v3/pkg/http"
 	"github.com/zitadel/oidc/v3/pkg/oidc"
 	"github.com/zitadel/oidc/v3/pkg/op"
 )
@@ -15,87 +12,51 @@ import (
 // zitadel's revocation endpoint (op.Revoke) does not check that a request
 // has a token, which RFC 7009 (section 2.1) requires, and answers 200 as for
 // an unknown token. Its newer op.Server does check, after authenticating the
-// client. revocationCheck does the same for op.Revoke: it marks a request
-// whose token is missing, empty or given more than once, and RevokeToken,
-// which zitadel calls only once the client is authenticated, answers
-// invalid_request (RFC 6749, section 5.2). Client authentication errors keep
-// their answers.
+// client. revocationCheck does the same for op.Revoke: it runs zitadel's own
+// op.ParseTokenRevocationRequest, which op.Revoke runs first (the same form,
+// decoder and request type, and client authentication), and answers
+// invalid_request (RFC 6749, section 5.2) when the token it decodes is
+// empty. Errors of that step are answered as op.Revoke answers them, so
+// client authentication and malformed forms keep their answers.
 //
-// A repeated token is rejected (RFC 6749, section 3.1: parameters must not
-// be included more than once) rather than resolved, because the token
-// zitadel revokes is the one its form decoder picks: the last value of a
-// key, of whichever key it decodes last when several keys match (keys match
-// field names case-insensitively, "Token" and "token" alike, and a promoted
-// field also by its dotted path, "RevocationRequest.token"; map iteration
-// order decides between them). So the check asks the provider's own decoder
-// which keys of the request it would decode into the token, and counts their
-// values: with exactly one, the check and zitadel see the same token.
-//
-// The token_type_hint parameter can be ambiguous in the same way, but
-// nothing here depends on it: the hint only decides in which order zitadel
-// looks the token up, and every order revokes the same token.
+// op.Revoke then parses the request again, with the same result: client
+// authentication only reads from the database. Which of several token
+// values the decoder picks can differ between the two decodes (when
+// differently cased keys carry tokens, map iteration order decides), but
+// not whether the token is empty: the decoder takes the last value of each
+// key and skips a key whose last value is empty, so the token is empty
+// exactly when every key it reads as the token ends with an empty value. A
+// token given more than once is not rejected; zitadel revokes the value its
+// decoder picks.
 type revocationCheck struct {
-	// decoder is the provider's form decoder, set once the provider is
-	// built (before it serves requests).
-	decoder httphelper.Decoder
+	// revoker is the provider, set once it is built (before it serves
+	// requests).
+	revoker op.Revoker
 }
-
-// revocationForm has the shape of the form op.ParseTokenRevocationRequest
-// decodes, so a key maps to its Token field exactly when it maps to the
-// token there.
-type revocationForm struct {
-	oidc.RevocationRequest
-	oidc.ClientAssertionParams
-	ClientID     string `schema:"client_id"`
-	ClientSecret string `schema:"client_secret"`
-}
-
-type invalidTokenParamKey struct{}
 
 // intercept is an interceptor of the provider's router, so it runs inside
-// its CORS handling. It parses the form of a revocation request, so a form
-// that cannot be read is answered here, as op.Revoke would.
+// its CORS handling.
 func (c *revocationCheck) intercept(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == PathRevoke {
+			// op.ParseTokenRevocationRequest and op.Revoke each parse a
+			// copy of r (WithContext): parsing r first gives both the same
+			// form, and a failed ParseForm does not fail again, so its error
+			// is answered here as op.ParseTokenRevocationRequest answers it.
 			if err := r.ParseForm(); err != nil {
 				op.RevocationRequestError(w, r, oidc.ErrInvalidRequest().WithDescription("unable to parse request").WithParent(err))
 				return
 			}
-			if invalid := c.invalidToken(r.Form); invalid != "" {
-				r = r.WithContext(context.WithValue(r.Context(), invalidTokenParamKey{}, invalid))
+			token, _, _, err := op.ParseTokenRevocationRequest(r, c.revoker)
+			if err != nil {
+				op.RevocationRequestError(w, r, err) // as op.Revoke answers it
+				return
+			}
+			if token == "" {
+				op.RevocationRequestError(w, r, oidc.ErrInvalidRequest().WithDescription("token missing"))
+				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-// invalidToken returns why the token of a revocation form is invalid, or ""
-// if it has exactly one non-empty token.
-func (c *revocationCheck) invalidToken(form url.Values) string {
-	var tokens []string
-	for key, values := range form {
-		var probe revocationForm
-		if err := c.decoder.Decode(&probe, url.Values{key: {"probe"}}); err != nil {
-			// op.Revoke fails to decode the form too and answers that.
-			return ""
-		}
-		if probe.Token != "" {
-			tokens = append(tokens, values...)
-		}
-	}
-	switch {
-	case len(tokens) > 1:
-		return "token repeated"
-	case len(tokens) == 0 || tokens[0] == "":
-		return "token missing"
-	}
-	return ""
-}
-
-// invalidTokenParam returns why the token parameter of the revocation
-// request in ctx is invalid, or "".
-func invalidTokenParam(ctx context.Context) string {
-	invalid, _ := ctx.Value(invalidTokenParamKey{}).(string)
-	return invalid
 }

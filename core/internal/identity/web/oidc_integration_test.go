@@ -611,13 +611,14 @@ func TestRevocationRequiresToken(t *testing.T) {
 	}
 }
 
-// TestRevocationRejectsRepeatedToken: a token parameter given more than
-// once, in the body or in the body and the query, is an invalid request
-// (RFC 6749, section 3.1) and revokes nothing. zitadel's form decoder takes
-// the last value and the body comes before the query, so resolving the
-// duplicate could revoke another token than the one checked. A token only
-// in the query is accepted, as before.
-func TestRevocationRejectsRepeatedToken(t *testing.T) {
+// TestRevocationTokenAsDecoded checks that the missing-token check and
+// zitadel's revocation agree on the token of a request: whatever keys carry
+// it (zitadel's form decoder matches them case-insensitively and by the
+// dotted path of the promoted field, takes the last value of a key, and
+// skips a key whose last value is empty), an empty decoded token is answered with 400
+// invalid_request and revokes nothing, and otherwise the token the decoder
+// picks is revoked, and no other.
+func TestRevocationTokenAsDecoded(t *testing.T) {
 	e := newEnv(t)
 	b := e.browser()
 	e.setupOwner(b)
@@ -640,7 +641,7 @@ func TestRevocationRejectsRepeatedToken(t *testing.T) {
 	revoke := func(query, body url.Values) (int, string, string) {
 		t.Helper()
 		target := "/oidc/revoke"
-		if query != nil {
+		if len(query) > 0 {
 			target += "?" + query.Encode()
 		}
 		r := b.req("POST", target, body, "Origin", "")
@@ -653,38 +654,70 @@ func TestRevocationRejectsRepeatedToken(t *testing.T) {
 		}
 		return r.StatusCode, res.Error, res.Description
 	}
+	// kv builds form values; "X" and "Y" stand for two live tokens.
+	type kv [][2]string
 
-	x, y := issue(), issue()
 	for _, c := range []struct {
 		name        string
-		query, body url.Values
+		query, body kv
+		// revoked lists the tokens the decoder may pick: exactly one of
+		// them is revoked. Empty means the decoded token is empty.
+		revoked []string
 	}{
-		{"body token, empty query token", url.Values{"token": {""}}, url.Values{"client_id": {"spa"}, "token": {x}}},
-		{"empty body token, query token", url.Values{"token": {x}}, url.Values{"client_id": {"spa"}, "token": {""}}},
-		{"body and query tokens", url.Values{"token": {y}}, url.Values{"client_id": {"spa"}, "token": {x}}},
-		{"two body tokens", nil, url.Values{"client_id": {"spa"}, "token": {x, y}}},
-		{"two query tokens", url.Values{"token": {x, y}}, url.Values{"client_id": {"spa"}}},
-		// zitadel's decoder matches keys case-insensitively, and the
-		// promoted token field also by its dotted path.
-		{"body token, query Token", url.Values{"Token": {y}}, url.Values{"client_id": {"spa"}, "token": {x}}},
-		{"body TOKEN, query token", url.Values{"token": {y}}, url.Values{"client_id": {"spa"}, "TOKEN": {x}}},
-		{"body token and tOkEn", nil, url.Values{"client_id": {"spa"}, "token": {x}, "tOkEn": {y}}},
-		{"body token, empty body Token", nil, url.Values{"client_id": {"spa"}, "token": {x}, "Token": {""}}},
-		{"query Token and token", url.Values{"Token": {x}, "token": {y}}, url.Values{"client_id": {"spa"}}},
-		{"body token and RevocationRequest.token", nil, url.Values{"client_id": {"spa"}, "token": {x}, "RevocationRequest.token": {y}}},
-		{"body token, query revocationrequest.TOKEN", url.Values{"revocationrequest.TOKEN": {y}}, url.Values{"client_id": {"spa"}, "token": {x}}},
+		{"body token, empty query token", kv{{"token", ""}}, kv{{"token", "X"}}, nil},
+		{"empty body token, query token", kv{{"token", "X"}}, kv{{"token", ""}}, []string{"X"}},
+		{"body and query tokens", kv{{"token", "Y"}}, kv{{"token", "X"}}, []string{"Y"}},
+		{"two body tokens", nil, kv{{"token", "X"}, {"token", "Y"}}, []string{"Y"}},
+		{"two query tokens", kv{{"token", "X"}, {"token", "Y"}}, nil, []string{"Y"}},
+		{"body token, then empty", nil, kv{{"token", "X"}, {"token", ""}}, nil},
+		{"two empty keys", nil, kv{{"token", ""}, {"Token", ""}}, nil},
+		{"body token, empty Token", nil, kv{{"token", "X"}, {"Token", ""}}, []string{"X"}},
+		{"empty token, body TOKEN", nil, kv{{"token", ""}, {"TOKEN", "X"}}, []string{"X"}},
+		{"body token, query Token", kv{{"Token", "Y"}}, kv{{"token", "X"}}, []string{"X", "Y"}},
+		{"body TOKEN, query token", kv{{"token", "Y"}}, kv{{"TOKEN", "X"}}, []string{"X", "Y"}},
+		{"body token and tOkEn", nil, kv{{"token", "X"}, {"tOkEn", "Y"}}, []string{"X", "Y"}},
+		{"body token and RevocationRequest.token", nil, kv{{"token", "X"}, {"RevocationRequest.token", "Y"}}, []string{"X", "Y"}},
+		{"query revocationrequest.TOKEN, body token", kv{{"revocationrequest.TOKEN", "Y"}}, kv{{"token", "X"}}, []string{"X", "Y"}},
+		{"empty ClientAssertionParams, no token", kv{{"ClientAssertionParams", ""}}, nil, nil},
+		{"empty ClientAssertionParams, two tokens", kv{{"ClientAssertionParams", ""}}, kv{{"token", "X"}, {"token", "Y"}}, []string{"Y"}},
+		{"empty RevocationRequest, no token", nil, kv{{"RevocationRequest", ""}}, nil},
+		{"empty RevocationRequest, token", nil, kv{{"RevocationRequest", ""}, {"token", "X"}}, []string{"X"}},
 	} {
-		if status, oauthErr, desc := revoke(c.query, c.body); status != http.StatusBadRequest || oauthErr != "invalid_request" || desc != "token repeated" {
-			t.Errorf("%s = %d %q %q, want 400 invalid_request \"token repeated\"", c.name, status, oauthErr, desc)
-		}
-		if !accepted(x) || !accepted(y) {
-			t.Fatalf("%s revoked a token", c.name)
-		}
-	}
+		t.Run(c.name, func(t *testing.T) {
+			tokens := map[string]string{"X": issue(), "Y": issue()}
+			bystander := issue()
+			form := func(pairs kv, base url.Values) url.Values {
+				for _, p := range pairs {
+					v := p[1]
+					if tok, ok := tokens[v]; ok {
+						v = tok
+					}
+					base.Add(p[0], v)
+				}
+				return base
+			}
+			query, body := form(c.query, url.Values{}), form(c.body, url.Values{"client_id": {"spa"}})
 
-	// Client authentication errors still come first.
-	if status, oauthErr, _ := revoke(url.Values{"token": {y}}, url.Values{"token": {x}}); status != http.StatusUnauthorized || oauthErr != "invalid_client" {
-		t.Errorf("repeated token without a client = %d %q, want 401 invalid_client", status, oauthErr)
+			status, oauthErr, desc := revoke(query, body)
+			var revoked []string
+			for _, name := range []string{"X", "Y"} {
+				if !accepted(tokens[name]) {
+					revoked = append(revoked, name)
+				}
+			}
+			if !accepted(bystander) {
+				t.Fatal("a token that was not in the request was revoked")
+			}
+			if len(c.revoked) == 0 {
+				if status != http.StatusBadRequest || oauthErr != "invalid_request" || desc != "token missing" || len(revoked) > 0 {
+					t.Fatalf("= %d %q %q, revoked %v; want 400 invalid_request \"token missing\" and nothing revoked", status, oauthErr, desc, revoked)
+				}
+				return
+			}
+			if status != http.StatusOK || len(revoked) != 1 || !slices.Contains(c.revoked, revoked[0]) {
+				t.Fatalf("= %d %q %q, revoked %v; want 200 and exactly one of %v revoked", status, oauthErr, desc, revoked, c.revoked)
+			}
+		})
 	}
 
 	// A token given once is revoked, in the body or the query, under any
@@ -693,13 +726,10 @@ func TestRevocationRejectsRepeatedToken(t *testing.T) {
 	for _, key := range []string{"token", "Token", "TOKEN", "RevocationRequest.token"} {
 		for _, inQuery := range []bool{false, true} {
 			name := key + " in the body"
-			query, body := url.Values(nil), url.Values{"client_id": {"spa"}}
-			if inQuery {
-				name, query = key+" in the query", url.Values{}
-			}
+			query, body := url.Values{}, url.Values{"client_id": {"spa"}}
 			given := body
 			if inQuery {
-				given = query
+				name, given = key+" in the query", query
 			}
 			given.Set(key, "")
 			if status, oauthErr, desc := revoke(query, body); status != http.StatusBadRequest || oauthErr != "invalid_request" || desc != "token missing" {
@@ -718,8 +748,23 @@ func TestRevocationRejectsRepeatedToken(t *testing.T) {
 			}
 		}
 	}
-	if !accepted(x) || !accepted(y) {
-		t.Fatal("a token of the rejected requests was revoked")
+
+	// A form zitadel's decoder rejects is answered as before, before client
+	// authentication, and revokes nothing.
+	x := issue()
+	if status, oauthErr, _ := revoke(url.Values{"ClientAssertionParams": {"x"}}, url.Values{"client_id": {"spa"}, "token": {x}}); status != http.StatusBadRequest || oauthErr != "invalid_request" {
+		t.Errorf("undecodable form = %d %q, want 400 invalid_request", status, oauthErr)
+	}
+	if status, oauthErr, _ := revoke(url.Values{"ClientAssertionParams": {"x"}}, url.Values{"token": {x}}); status != http.StatusBadRequest || oauthErr != "invalid_request" {
+		t.Errorf("undecodable form without a client = %d %q, want 400 invalid_request", status, oauthErr)
+	}
+	if !accepted(x) {
+		t.Fatal("an undecodable request revoked a token")
+	}
+
+	// Client authentication errors still come before the token check.
+	if status, oauthErr, _ := revoke(url.Values{"token": {""}}, url.Values{"token": {x}}); status != http.StatusUnauthorized || oauthErr != "invalid_client" {
+		t.Errorf("empty token without a client = %d %q, want 401 invalid_client", status, oauthErr)
 	}
 }
 
