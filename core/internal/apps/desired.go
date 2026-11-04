@@ -65,6 +65,11 @@ func (s *Service) computeDesired(ctx context.Context, q *store.Queries, inst Ins
 	if inst.Adapter != nil {
 		link, err := q.GetVerifiedAccountLink(ctx, store.GetVerifiedAccountLinkParams{PersonID: personID, Provider: inst.Provider, Realm: inst.Adapter.Realm(inst.View())})
 		if err == nil {
+			// An account this instance provisioned is Orglane's, even if the
+			// result row lost track of it.
+			if link.Method == provider.LinkProvisioned && link.InstanceID != nil && *link.InstanceID == inst.ID {
+				d.Managed = true
+			}
 			d.Link = &provider.AccountLink{
 				ID:         link.ID,
 				Account:    provider.ExternalAccount{Realm: link.Realm, ExternalID: link.ExternalID, Login: link.Login},

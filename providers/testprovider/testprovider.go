@@ -72,6 +72,7 @@ type Provider struct {
 	faults   map[string][]error
 	outcomes map[string][]provider.RotationOutcome
 	lose     map[string]int
+	blocks   map[string]*block
 	calls    []string
 	nextID   int
 }
@@ -95,6 +96,7 @@ func New(opts ...Option) *Provider {
 		faults:     map[string][]error{},
 		outcomes:   map[string][]provider.RotationOutcome{},
 		lose:       map[string]int{},
+		blocks:     map[string]*block{},
 		nextID:     1000,
 	}
 	for _, o := range opts {
@@ -168,6 +170,34 @@ func (p *Provider) fault(ops ...string) error {
 		}
 	}
 	return nil
+}
+
+type block struct {
+	reached chan struct{}
+	release chan struct{}
+}
+
+// Block makes the next call of op ("apply:<action key>", "rotate:<name>")
+// wait: reached is closed when the call arrives, and the call continues
+// once release is closed. Tests use it to interleave jobs.
+func (p *Provider) Block(op string) (reached <-chan struct{}, release chan<- struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	b := &block{reached: make(chan struct{}), release: make(chan struct{})}
+	p.blocks[op] = b
+	return b.reached, b.release
+}
+
+// wait blocks the calling operation if a test asked for it.
+func (p *Provider) wait(op string) {
+	p.mu.Lock()
+	b := p.blocks[op]
+	delete(p.blocks, op)
+	p.mu.Unlock()
+	if b != nil {
+		close(b.reached)
+		<-b.release
+	}
 }
 
 // Calls returns the calls made so far ("plan:<username>", "apply:<key>", ...).
@@ -308,6 +338,7 @@ func (p *Provider) Plan(_ context.Context, _ provider.Env, inst provider.Instanc
 
 // Apply implements provider.UserProvisioner. Every action is an "ensure".
 func (p *Provider) Apply(_ context.Context, _ provider.Env, inst provider.Instance, a provider.Action) (provider.ActionOutcome, error) {
+	p.wait("apply:" + a.Key)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls = append(p.calls, "apply:"+a.Key)
@@ -536,6 +567,7 @@ func (p *Provider) RotationOutcomes(name string, outcomes ...provider.RotationOu
 // ApplyCredential implements provider.CredentialRotator. Setting the same
 // value again is idempotent. api_token is minted by the "provider".
 func (p *Provider) ApplyCredential(_ context.Context, _ provider.Env, inst provider.Instance, name string, version int, value []byte) (provider.Rotation, error) {
+	p.wait("rotate:" + name)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls = append(p.calls, fmt.Sprintf("rotate:%s:%d", name, version))

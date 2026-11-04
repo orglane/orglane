@@ -209,6 +209,7 @@ func (s *Service) instance(row store.AppInstance) (Instance, error) {
 	inst := Instance{AppInstance: row, Settings: settings}
 	if a, ok := s.reg.Adapter(provider.ID(row.Provider)); ok {
 		inst.Adapter = a
+		canonicalSettings(a.Manifest.Settings, settings)
 	}
 	return inst, nil
 }

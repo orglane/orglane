@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, ExternalLink, LayoutGrid, Plus, RefreshCw } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { defineMessage, defineMessages, FormattedMessage, useIntl } from "react-intl";
 
 import { navMessages } from "@/components/app-shell";
@@ -535,6 +535,12 @@ function AccessSettings({ instance }: { instance: AppInstance }) {
   const policyId = useId();
   const [policy, setPolicy] = useState(instance.accessPolicy);
   const [manageExisting, setManageExisting] = useState(instance.manageExistingMembers);
+  // Follow changes saved elsewhere without remounting (which would hide the
+  // "saved" confirmation).
+  useEffect(() => {
+    setPolicy(instance.accessPolicy);
+    setManageExisting(instance.manageExistingMembers);
+  }, [instance.accessPolicy, instance.manageExistingMembers]);
   const save = useMutation({
     mutationFn: () =>
       call(
@@ -669,7 +675,9 @@ function Credentials({
         <ul className="divide-y">
           {active.map((c) => {
             const pending = detail.credentials.some(
-              (o) => o.name === c.name && (o.state === "pending" || o.state === "uncertain"),
+              (o) =>
+                o.name === c.name &&
+                (o.state === "pending" || o.state === "uncertain" || o.state === "abandoning"),
             );
             return (
               <li key={c.name} className="flex items-center justify-between gap-3 py-2 text-sm">
@@ -886,6 +894,15 @@ function Provisioning({ instanceId }: { instanceId: string }) {
   );
   return (
     <div className="space-y-5">
+      {/* Outside the batch card: after confirming, the batch is no longer held. */}
+      {confirm.isError && (
+        <Alert>{errorMessage(intl, confirm.error, { 409: messages.batchChanged })}</Alert>
+      )}
+      {confirm.isSuccess && (
+        <Alert variant="success" role="status">
+          <FormattedMessage {...messages.confirmed} />
+        </Alert>
+      )}
       {heldRemovals && (
         <Card className="border-warning">
           <CardHeader>
@@ -897,14 +914,6 @@ function Provisioning({ instanceId }: { instanceId: string }) {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {confirm.isError && (
-              <Alert>{errorMessage(intl, confirm.error, { 409: messages.batchChanged })}</Alert>
-            )}
-            {confirm.isSuccess && (
-              <Alert variant="success">
-                <FormattedMessage {...messages.confirmed} />
-              </Alert>
-            )}
             <ul className="divide-y text-sm">
               {heldRemovals.items.map((it) => (
                 <li key={it.id} className="flex flex-wrap justify-between gap-2 py-2">
@@ -1236,7 +1245,7 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
         </Card>
         {instance.state !== "removed" && provisioningEnabled && (
           <>
-            <AccessSettings key={instance.updatedAt} instance={instance} />
+            <AccessSettings instance={instance} />
             <TeamMappings instanceId={instanceId} />
             <Provisioning instanceId={instanceId} />
           </>

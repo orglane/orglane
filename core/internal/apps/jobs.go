@@ -71,6 +71,9 @@ type ProvisionPersonArgs struct {
 	FollowUp bool `json:"follow_up,omitempty" river:"unique"`
 	// Drift forces a plan even when the desired state was applied.
 	Drift bool `json:"drift,omitempty"`
+	// Retry also retries a failed result (an admin's Retry). Unique, so a
+	// queued ordinary job does not swallow it.
+	Retry bool `json:"retry,omitempty" river:"unique"`
 }
 
 // Kind implements river.JobArgs.
@@ -83,7 +86,9 @@ func (ProvisionPersonArgs) InsertOpts() river.InsertOpts { return uniqueOpts(max
 // everyone it concerns.
 type ProvisionInstanceArgs struct {
 	InstanceID uuid.UUID `json:"instance_id" river:"unique"`
-	Reason     string    `json:"reason"`
+	// Reason is unique, so a queued job for another reason does not
+	// swallow the daily drift check (runs are serialized per instance).
+	Reason string `json:"reason" river:"unique"`
 	// FollowUp marks the one job queued while another runs.
 	FollowUp bool `json:"follow_up,omitempty" river:"unique"`
 }
@@ -226,7 +231,7 @@ type applyRemovalsWorker struct {
 }
 
 func (w *applyRemovalsWorker) Work(ctx context.Context, job *river.Job[ApplyRemovalsArgs]) error {
-	return w.s.RunApplyRemovals(ctx, job.Args)
+	return w.s.RunApplyRemovals(ctx, job.Args, job.Attempt, job.MaxAttempts)
 }
 
 func (w *applyRemovalsWorker) Timeout(*river.Job[ApplyRemovalsArgs]) time.Duration {
@@ -331,7 +336,7 @@ func (s *Service) enqueueInstance(ctx context.Context, tx pgx.Tx, instanceID uui
 // At most one job per (instance, person) waits; when one is already
 // running, a single follow-up is queued so a change during the run is not
 // lost.
-func (s *Service) enqueuePerson(ctx context.Context, tx pgx.Tx, q *store.Queries, instanceID, personID uuid.UUID, drift bool) error {
+func (s *Service) enqueuePerson(ctx context.Context, tx pgx.Tx, q *store.Queries, instanceID, personID uuid.UUID, drift bool, retry ...bool) error {
 	queue, err := s.getQueue()
 	if err != nil {
 		return err
@@ -339,7 +344,7 @@ func (s *Service) enqueuePerson(ctx context.Context, tx pgx.Tx, q *store.Queries
 	if err := q.MarkProvisioningQueued(ctx, store.MarkProvisioningQueuedParams{InstanceID: instanceID, PersonID: personID}); err != nil {
 		return fmt.Errorf("apps: mark result queued: %w", err)
 	}
-	args := ProvisionPersonArgs{InstanceID: instanceID, PersonID: personID, Drift: drift}
+	args := ProvisionPersonArgs{InstanceID: instanceID, PersonID: personID, Drift: drift, Retry: len(retry) > 0 && retry[0]}
 	res, err := queue.InsertTx(ctx, tx, args, nil)
 	if err != nil {
 		return fmt.Errorf("apps: queue provisioning: %w", err)

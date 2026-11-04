@@ -183,7 +183,7 @@ func (h *harness) work(j queued) error {
 	case apps.ApplyRemovalsArgs{}.Kind():
 		var a apps.ApplyRemovalsArgs
 		h.decode(j.args, &a)
-		return h.svc.RunApplyRemovals(h.ctx, a)
+		return h.svc.RunApplyRemovals(h.ctx, a, attempt, j.maxAttempts)
 	case apps.ProcessDeliveryArgs{}.Kind():
 		var a apps.ProcessDeliveryArgs
 		h.decode(j.args, &a)

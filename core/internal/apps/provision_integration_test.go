@@ -643,7 +643,7 @@ func TestChangeWhileJobRuns(t *testing.T) {
 	// Same for apply_removals.
 	bob := h.person("bob")
 	h.drain()
-	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}); err != nil {
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, bob.ID, identity.StatusSuspended); err != nil {

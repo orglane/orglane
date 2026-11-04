@@ -76,6 +76,10 @@ func (s *Service) ReceiveWebhook(ctx context.Context, instanceID uuid.UUID, h ht
 		return WebhookReceipt{}, invalid("body", "too large")
 	}
 	if err := src.Verify(ctx, s.env(inst), inst.View(), h, body); err != nil {
+		if !errors.Is(err, provider.ErrBadSignature) {
+			// Loading the secrets failed, not the signature: a server error.
+			return WebhookReceipt{}, fmt.Errorf("apps: verify webhook: %w", err)
+		}
 		if s.badSignatures.allow(s.cfg.Now()) {
 			// Never the body or headers: they are untrusted and may carry
 			// personal data.

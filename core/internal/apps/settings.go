@@ -1,6 +1,7 @@
 package apps
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -141,14 +142,29 @@ func sameSetting(spec provider.SettingSpec, a, b any) bool {
 	return err1 == nil && err2 == nil && x == y
 }
 
-// decodeSettings reads stored settings with numbers kept exact.
+// decodeSettings reads stored settings with numbers kept exact
+// (json.Number); canonicalSettings then converts them to the declared types.
 func decodeSettings(raw []byte) (map[string]any, error) {
 	out := map[string]any{}
 	if len(raw) == 0 {
 		return out, nil
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("apps: decode settings: %w", err)
 	}
 	return out, nil
+}
+
+// canonicalSettings converts declared settings to their canonical Go types
+// (string, int64, bool), so adapters can rely on them.
+func canonicalSettings(specs []provider.SettingSpec, settings map[string]any) {
+	for _, spec := range specs {
+		if v, ok := settings[spec.Name]; ok {
+			if c, err := settingValue(spec, v); err == nil {
+				settings[spec.Name] = c
+			}
+		}
+	}
 }

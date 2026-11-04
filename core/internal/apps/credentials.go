@@ -24,9 +24,12 @@ import (
 const (
 	credentialPending   = "pending"
 	credentialUncertain = "uncertain"
-	credentialActive    = "active"
-	credentialRetiring  = "retiring"
-	credentialDiscarded = "discarded"
+	// credentialAbandoning: an admin abandoned the candidate; it still
+	// verifies incoming deliveries until the active value is re-applied.
+	credentialAbandoning = "abandoning"
+	credentialActive     = "active"
+	credentialRetiring   = "retiring"
+	credentialDiscarded  = "discarded"
 )
 
 // defaultOverlap is how long a replaced version stays valid when the spec
@@ -115,7 +118,7 @@ func (s *Service) Credentials(ctx context.Context, instanceID uuid.UUID) ([]Cred
 // uncertain for longer than a day.
 func RotationStuck(creds []Credential, now time.Time) bool {
 	for _, c := range creds {
-		if c.State == credentialUncertain && now.Sub(c.CreatedAt) > stuckAfter {
+		if (c.State == credentialUncertain || c.State == credentialAbandoning) && now.Sub(c.CreatedAt) > stuckAfter {
 			return true
 		}
 	}
@@ -174,6 +177,14 @@ func (s *Service) AbandonRotation(ctx context.Context, actor audit.Actor, instan
 		} else if err != nil {
 			return fmt.Errorf("apps: load candidate: %w", err)
 		}
+		// The intent is persisted, so a forward attempt that runs after it
+		// never installs the candidate again.
+		if _, err := q.SetAppCredentialStateFrom(ctx, store.SetAppCredentialStateFromParams{
+			InstanceID: instanceID, Name: name, Version: cand.Version, State: credentialAbandoning,
+			FromStates: []string{credentialPending, credentialUncertain},
+		}); err != nil {
+			return fmt.Errorf("apps: mark candidate abandoning: %w", err)
+		}
 		if _, err := audit.Record(ctx, q, audit.Entry{
 			Actor:    actor,
 			Action:   audit.AppCredentialRotationAbandoned,
@@ -225,9 +236,17 @@ func mapCandidateConflict(err error) error {
 // committed the change.
 var errRotationUnknown = errors.New("apps: the provider's answer to a credential change is unknown")
 
-// RunRotateCredential works one attempt of a rotate_credential job.
+// RunRotateCredential works one attempt of a rotate_credential job. Forward
+// and abandon attempts for one credential are serialized by a session lock
+// held across the provider call, and both recheck the candidate's state
+// under it.
 func (s *Service) RunRotateCredential(ctx context.Context, args RotateCredentialArgs) error {
-	q := store.New(s.pool)
+	conn, release, err := sessionLock(ctx, s.pool, lockID("credential", args.InstanceID.String(), args.Name))
+	if err != nil {
+		return err
+	}
+	defer release()
+	q := store.New(conn)
 	inst, err := s.loadInstance(ctx, q, args.InstanceID, false)
 	if errors.Is(err, ErrNotFound) {
 		return river.JobCancel(err)
@@ -248,12 +267,15 @@ func (s *Service) RunRotateCredential(ctx context.Context, args RotateCredential
 	} else if err != nil {
 		return fmt.Errorf("apps: load candidate: %w", err)
 	}
-	if cand.State != credentialPending && cand.State != credentialUncertain {
-		return nil // resolved by another path (proof by use, an earlier attempt)
-	}
 	env := s.env(inst)
 	if args.Abandon {
+		if cand.State != credentialAbandoning {
+			return nil // resolved before the abandon request (acknowledged, discarded)
+		}
 		return s.abandon(ctx, inst, rotator, env, cand)
+	}
+	if cand.State != credentialPending && cand.State != credentialUncertain {
+		return nil // resolved by another path (proof by use, abandoned, an earlier attempt)
 	}
 	var value []byte
 	if spec.Source == provider.SourceGenerated {
@@ -264,8 +286,14 @@ func (s *Service) RunRotateCredential(ctx context.Context, args RotateCredential
 	// The candidate is uncertain from the moment it is handed over: a worker
 	// dying mid-call must not leave it looking untried.
 	if cand.State == credentialPending {
-		if err := q.SetAppCredentialState(ctx, store.SetAppCredentialStateParams{InstanceID: cand.InstanceID, Name: cand.Name, Version: cand.Version, State: credentialUncertain}); err != nil {
+		n, err := q.SetAppCredentialStateFrom(ctx, store.SetAppCredentialStateFromParams{
+			InstanceID: cand.InstanceID, Name: cand.Name, Version: cand.Version, State: credentialUncertain, FromStates: []string{credentialPending},
+		})
+		if err != nil {
 			return fmt.Errorf("apps: mark candidate uncertain: %w", err)
+		}
+		if n == 0 {
+			return nil // abandoned meanwhile
 		}
 	}
 	res, err := rotator.ApplyCredential(ctx, env, inst.View(), args.Name, int(args.Version), value)
@@ -287,10 +315,17 @@ func (s *Service) RunRotateCredential(ctx context.Context, args RotateCredential
 		})
 	case provider.RotationRejected:
 		return s.inTx(ctx, func(_ pgx.Tx, q *store.Queries) error {
-			if err := q.SetAppCredentialState(ctx, store.SetAppCredentialStateParams{InstanceID: cand.InstanceID, Name: cand.Name, Version: cand.Version, State: credentialDiscarded}); err != nil {
+			n, err := q.SetAppCredentialStateFrom(ctx, store.SetAppCredentialStateFromParams{
+				InstanceID: cand.InstanceID, Name: cand.Name, Version: cand.Version, State: credentialDiscarded,
+				FromStates: []string{credentialPending, credentialUncertain},
+			})
+			if err != nil {
 				return fmt.Errorf("apps: discard candidate: %w", err)
 			}
-			_, err := audit.Record(ctx, q, audit.Entry{
+			if n == 0 {
+				return nil // abandoned meanwhile: the abandon job re-applies the active value
+			}
+			_, err = audit.Record(ctx, q, audit.Entry{
 				Actor:    audit.System,
 				Action:   audit.AppCredentialRotationFailed,
 				Target:   instanceTarget(inst.ID),
@@ -337,6 +372,8 @@ func (s *Service) acknowledge(ctx context.Context, q *store.Queries, inst Instan
 
 func (s *Service) abandon(ctx context.Context, inst Instance, rotator provider.CredentialRotator, env provider.Env, cand store.AppCredential) error {
 	q := store.New(s.pool)
+	// The candidate stays abandoning (and verifies deliveries) until the
+	// provider acknowledged the active value again.
 	active, err := q.GetActiveAppCredential(ctx, store.GetActiveAppCredentialParams{InstanceID: cand.InstanceID, Name: cand.Name})
 	if err != nil {
 		return fmt.Errorf("apps: load active credential: %w", err)
@@ -350,10 +387,17 @@ func (s *Service) abandon(ctx context.Context, inst Instance, rotator provider.C
 		return errRotationUnknown // keep re-applying the active value
 	}
 	return s.inTx(ctx, func(_ pgx.Tx, q *store.Queries) error {
-		if err := q.SetAppCredentialState(ctx, store.SetAppCredentialStateParams{InstanceID: cand.InstanceID, Name: cand.Name, Version: cand.Version, State: credentialDiscarded}); err != nil {
+		n, err := q.SetAppCredentialStateFrom(ctx, store.SetAppCredentialStateFromParams{
+			InstanceID: cand.InstanceID, Name: cand.Name, Version: cand.Version, State: credentialDiscarded,
+			FromStates: []string{credentialAbandoning},
+		})
+		if err != nil {
 			return fmt.Errorf("apps: discard candidate: %w", err)
 		}
-		_, err := audit.Record(ctx, q, audit.Entry{
+		if n == 0 {
+			return nil
+		}
+		_, err = audit.Record(ctx, q, audit.Entry{
 			Actor:    audit.System,
 			Action:   audit.AppCredentialRotationAbandoned,
 			Target:   instanceTarget(inst.ID),
@@ -403,6 +447,9 @@ func (s *Service) proveByUse(ctx context.Context, q *store.Queries, inst Instanc
 		return nil
 	} else if err != nil {
 		return fmt.Errorf("apps: load candidate: %w", err)
+	}
+	if cand.State == credentialAbandoning {
+		return nil // being abandoned: proof of use must not activate it
 	}
 	candValue, err := s.openCredential(cand)
 	if err != nil {

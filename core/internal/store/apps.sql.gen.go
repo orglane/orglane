@@ -284,6 +284,34 @@ func (q *Queries) DropPendingRemovals(ctx context.Context, arg DropPendingRemova
 	return result.RowsAffected(), nil
 }
 
+const failProvisioningResult = `-- name: FailProvisioningResult :exec
+UPDATE provisioning_results
+SET status = 'failed', employee_step = NULL, error_code = $1, actions = $2,
+    desired_hash = $3, attempts = attempts + 1, last_attempt_at = now(), updated_at = now()
+WHERE instance_id = $4 AND person_id = $5
+`
+
+type FailProvisioningResultParams struct {
+	ErrorCode   *string
+	Actions     []byte
+	DesiredHash []byte
+	InstanceID  uuid.UUID
+	PersonID    uuid.UUID
+}
+
+// A removal failed permanently (or exhausted its retries): the person's
+// result shows it until desired access changes or an admin retries.
+func (q *Queries) FailProvisioningResult(ctx context.Context, arg FailProvisioningResultParams) error {
+	_, err := q.db.Exec(ctx, failProvisioningResult,
+		arg.ErrorCode,
+		arg.Actions,
+		arg.DesiredHash,
+		arg.InstanceID,
+		arg.PersonID,
+	)
+	return err
+}
+
 const finishWebhookDelivery = `-- name: FinishWebhookDelivery :exec
 UPDATE webhook_deliveries SET status = $1, error_code = $2, event_count = $3, processed_at = now()
 WHERE id = $4
@@ -358,7 +386,7 @@ func (q *Queries) GetAppCredential(ctx context.Context, arg GetAppCredentialPara
 }
 
 const getAppCredentialCandidate = `-- name: GetAppCredentialCandidate :one
-SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND state IN ('pending', 'uncertain')
+SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND state IN ('pending', 'uncertain', 'abandoning')
 `
 
 type GetAppCredentialCandidateParams struct {
@@ -366,6 +394,7 @@ type GetAppCredentialCandidateParams struct {
 	Name       string
 }
 
+// The version being rotated in, if any (abandoning included).
 func (q *Queries) GetAppCredentialCandidate(ctx context.Context, arg GetAppCredentialCandidateParams) (AppCredential, error) {
 	row := q.db.QueryRow(ctx, getAppCredentialCandidate, arg.InstanceID, arg.Name)
 	var i AppCredential
@@ -567,6 +596,29 @@ func (q *Queries) GetProvisioningResult(ctx context.Context, arg GetProvisioning
 		&i.Attempts,
 		&i.LastAttemptAt,
 		&i.NextAttemptAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getRemoval = `-- name: GetRemoval :one
+SELECT id, instance_id, person_id, action, action_key, desired_hash, state, batch_id, error_code, created_at, updated_at FROM provisioning_removals WHERE id = $1
+`
+
+func (q *Queries) GetRemoval(ctx context.Context, id uuid.UUID) (ProvisioningRemoval, error) {
+	row := q.db.QueryRow(ctx, getRemoval, id)
+	var i ProvisioningRemoval
+	err := row.Scan(
+		&i.ID,
+		&i.InstanceID,
+		&i.PersonID,
+		&i.Action,
+		&i.ActionKey,
+		&i.DesiredHash,
+		&i.State,
+		&i.BatchID,
+		&i.ErrorCode,
+		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
@@ -1582,26 +1634,27 @@ func (q *Queries) ListFailedProvisioningResults(ctx context.Context, arg ListFai
 }
 
 const listHeldRemovals = `-- name: ListHeldRemovals :many
-SELECT r.id, r.instance_id, r.person_id, r.action, r.action_key, r.desired_hash, r.state, r.batch_id, r.error_code, r.created_at, r.updated_at, p.username, p.display_name
+SELECT r.id, r.instance_id, r.person_id, r.action, r.action_key, r.desired_hash, r.state, r.batch_id, r.error_code, r.created_at, r.updated_at, p.username, p.display_name, p.status AS person_status
 FROM provisioning_removals r JOIN people p ON p.id = r.person_id
 WHERE r.batch_id = $1 AND r.state = 'held'
 ORDER BY r.created_at, r.id
 `
 
 type ListHeldRemovalsRow struct {
-	ID          uuid.UUID
-	InstanceID  uuid.UUID
-	PersonID    uuid.UUID
-	Action      []byte
-	ActionKey   string
-	DesiredHash []byte
-	State       string
-	BatchID     *uuid.UUID
-	ErrorCode   *string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	Username    string
-	DisplayName string
+	ID           uuid.UUID
+	InstanceID   uuid.UUID
+	PersonID     uuid.UUID
+	Action       []byte
+	ActionKey    string
+	DesiredHash  []byte
+	State        string
+	BatchID      *uuid.UUID
+	ErrorCode    *string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	Username     string
+	DisplayName  string
+	PersonStatus string
 }
 
 func (q *Queries) ListHeldRemovals(ctx context.Context, batchID *uuid.UUID) ([]ListHeldRemovalsRow, error) {
@@ -1627,6 +1680,7 @@ func (q *Queries) ListHeldRemovals(ctx context.Context, batchID *uuid.UUID) ([]L
 			&i.UpdatedAt,
 			&i.Username,
 			&i.DisplayName,
+			&i.PersonStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -2086,7 +2140,7 @@ func (q *Queries) ListRealmAccountLinks(ctx context.Context, arg ListRealmAccoun
 
 const listStuckAppCredentials = `-- name: ListStuckAppCredentials :many
 SELECT instance_id, name, version, created_at FROM app_credentials
-WHERE state = 'uncertain' AND created_at < $1
+WHERE state IN ('uncertain', 'abandoning') AND created_at < $1
 `
 
 type ListStuckAppCredentialsRow struct {
@@ -2177,7 +2231,7 @@ func (q *Queries) ListUnmanagedAccounts(ctx context.Context, instanceID uuid.UUI
 const listUsableAppCredentials = `-- name: ListUsableAppCredentials :many
 SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at FROM app_credentials
 WHERE instance_id = $1 AND name = $2
-  AND (state IN ('pending', 'uncertain', 'active') OR (state = 'retiring' AND retire_at > now()))
+  AND (state IN ('pending', 'uncertain', 'abandoning', 'active') OR (state = 'retiring' AND retire_at > now()))
 ORDER BY version DESC
 `
 
@@ -2217,8 +2271,28 @@ func (q *Queries) ListUsableAppCredentials(ctx context.Context, arg ListUsableAp
 	return items, nil
 }
 
+const markProvisioningGranted = `-- name: MarkProvisioningGranted :exec
+INSERT INTO provisioning_results (instance_id, person_id, status, access, granted_by_orglane)
+VALUES ($1, $2, 'queued', true, true)
+ON CONFLICT (instance_id, person_id) DO UPDATE SET granted_by_orglane = true, updated_at = now()
+`
+
+type MarkProvisioningGrantedParams struct {
+	InstanceID uuid.UUID
+	PersonID   uuid.UUID
+}
+
+// Orglane granted access (created the account, the invitation or the
+// membership): recorded with the action's audit entry, never undone.
+func (q *Queries) MarkProvisioningGranted(ctx context.Context, arg MarkProvisioningGrantedParams) error {
+	_, err := q.db.Exec(ctx, markProvisioningGranted, arg.InstanceID, arg.PersonID)
+	return err
+}
+
 const markProvisioningQueued = `-- name: MarkProvisioningQueued :exec
-UPDATE provisioning_results SET status = 'queued', employee_step = NULL, next_attempt_at = clock_timestamp(), updated_at = now()
+UPDATE provisioning_results
+SET status = CASE WHEN status = 'failed' THEN status ELSE 'queued' END,
+    employee_step = NULL, next_attempt_at = clock_timestamp(), updated_at = now()
 WHERE instance_id = $1 AND person_id = $2
 `
 
@@ -2227,6 +2301,8 @@ type MarkProvisioningQueuedParams struct {
 	PersonID   uuid.UUID
 }
 
+// A failed result stays failed (with its error) until a run decides: only
+// a desired-state change or an admin's retry runs it again.
 func (q *Queries) MarkProvisioningQueued(ctx context.Context, arg MarkProvisioningQueuedParams) error {
 	_, err := q.db.Exec(ctx, markProvisioningQueued, arg.InstanceID, arg.PersonID)
 	return err
@@ -2332,6 +2408,33 @@ func (q *Queries) SetAppCredentialState(ctx context.Context, arg SetAppCredentia
 		arg.Version,
 	)
 	return err
+}
+
+const setAppCredentialStateFrom = `-- name: SetAppCredentialStateFrom :execrows
+UPDATE app_credentials SET state = $1
+WHERE instance_id = $2 AND name = $3 AND version = $4 AND state = ANY($5::text[])
+`
+
+type SetAppCredentialStateFromParams struct {
+	State      string
+	InstanceID uuid.UUID
+	Name       string
+	Version    int32
+	FromStates []string
+}
+
+func (q *Queries) SetAppCredentialStateFrom(ctx context.Context, arg SetAppCredentialStateFromParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAppCredentialStateFrom,
+		arg.State,
+		arg.InstanceID,
+		arg.Name,
+		arg.Version,
+		arg.FromStates,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setAppInstanceState = `-- name: SetAppInstanceState :one
@@ -2448,6 +2551,31 @@ type SetRemovalStateParams struct {
 func (q *Queries) SetRemovalState(ctx context.Context, arg SetRemovalStateParams) error {
 	_, err := q.db.Exec(ctx, setRemovalState, arg.State, arg.ErrorCode, arg.ID)
 	return err
+}
+
+const setRemovalStateFrom = `-- name: SetRemovalStateFrom :execrows
+UPDATE provisioning_removals SET state = $1, error_code = $2, updated_at = now()
+WHERE id = $3 AND state = $4
+`
+
+type SetRemovalStateFromParams struct {
+	State     string
+	ErrorCode *string
+	ID        uuid.UUID
+	FromState string
+}
+
+func (q *Queries) SetRemovalStateFrom(ctx context.Context, arg SetRemovalStateFromParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setRemovalStateFrom,
+		arg.State,
+		arg.ErrorCode,
+		arg.ID,
+		arg.FromState,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateAppInstanceConfig = `-- name: UpdateAppInstanceConfig :one
@@ -2576,7 +2704,8 @@ VALUES ($1, $2, $3, $4, $5, $6,
     $7, $8, $9, $10, $11, now(), $12, now())
 ON CONFLICT (instance_id, person_id) DO UPDATE
 SET status = EXCLUDED.status, access = EXCLUDED.access, employee_step = EXCLUDED.employee_step,
-    granted_by_orglane = EXCLUDED.granted_by_orglane, desired_hash = EXCLUDED.desired_hash,
+    granted_by_orglane = provisioning_results.granted_by_orglane OR EXCLUDED.granted_by_orglane,
+    desired_hash = EXCLUDED.desired_hash,
     applied_hash = EXCLUDED.applied_hash, actions = EXCLUDED.actions, error_code = EXCLUDED.error_code,
     attempts = EXCLUDED.attempts, last_attempt_at = now(),
     -- A change queued while this run worked keeps its marker (it is newer

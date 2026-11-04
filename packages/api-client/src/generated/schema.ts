@@ -2545,7 +2545,7 @@ export interface components {
             name: string;
             version: number;
             /** @enum {string} */
-            state: "pending" | "uncertain" | "active" | "retiring";
+            state: "pending" | "uncertain" | "abandoning" | "active" | "retiring";
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */

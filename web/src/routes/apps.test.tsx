@@ -136,6 +136,7 @@ describe("Settings → Apps", () => {
   });
 
   it("confirms a held removal batch with the hash it showed", async () => {
+    let confirmed = false;
     const app = renderApp(`/settings/apps/${instanceId}`, {
       "GET /api/v1/me": { status: 200, body: admin },
       "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
@@ -163,7 +164,8 @@ describe("Settings → Apps", () => {
         body: { items: [] },
       },
       "GET /api/v1/teams": { status: 200, body: { items: [] } },
-      [`GET /api/v1/apps/instances/${instanceId}/provisioning`]: {
+      // After the confirmation the batch is no longer held.
+      [`GET /api/v1/apps/instances/${instanceId}/provisioning`]: () => ({
         status: 200,
         body: {
           items: [
@@ -188,24 +190,29 @@ describe("Settings → Apps", () => {
           unmanagedAccounts: [
             { externalId: "9", login: "outsider", seenAt: "2026-11-01T10:00:00Z" },
           ],
-          heldRemovals: {
-            id: "0190a1b2-0000-7000-8000-0000000000c1",
-            itemCount: 1,
-            itemsHash: "a".repeat(64),
-            createdAt: "2026-11-01T10:00:00Z",
-            items: [
-              {
-                id: "0190a1b2-0000-7000-8000-0000000000c2",
-                person: person("0190a1b2-0000-7000-8000-0000000000b2", "Sam"),
-                kind: "remove_from_org",
-                key: "remove_from_org",
+          heldRemovals: confirmed
+            ? undefined
+            : {
+                id: "0190a1b2-0000-7000-8000-0000000000c1",
+                itemCount: 1,
+                itemsHash: "a".repeat(64),
+                createdAt: "2026-11-01T10:00:00Z",
+                items: [
+                  {
+                    id: "0190a1b2-0000-7000-8000-0000000000c2",
+                    person: person("0190a1b2-0000-7000-8000-0000000000b2", "Sam"),
+                    kind: "remove_from_org",
+                    key: "remove_from_org",
+                  },
+                ],
               },
-            ],
-          },
         },
-      },
+      }),
       [`POST /api/v1/apps/instances/${instanceId}/provisioning/removal-batches/0190a1b2-0000-7000-8000-0000000000c1/confirm`]:
-        { status: 202 },
+        () => {
+          confirmed = true;
+          return { status: 202 };
+        },
     });
     expect(await screen.findByText("Removals waiting for confirmation")).toBeInTheDocument();
     expect(screen.getByText("outsider")).toBeInTheDocument();
@@ -227,6 +234,10 @@ describe("Settings → Apps", () => {
       )[0]?.body,
     ).toEqual({ itemsHash: "a".repeat(64) });
     expect(await screen.findByText(/checked again before it is applied/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Removals waiting for confirmation")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText(/checked again before it is applied/)).toBeInTheDocument();
     // Rotating a credential is a labeled action.
     expect(screen.getByRole("button", { name: "Rotate webhook_secret" })).toBeEnabled();
   });

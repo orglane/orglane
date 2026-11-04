@@ -4162,7 +4162,7 @@ components:
           type: integer
         state:
           type: string
-          enum: [pending, uncertain, active, retiring]
+          enum: [pending, uncertain, abandoning, active, retiring]
         createdAt:
           type: string
           format: date-time

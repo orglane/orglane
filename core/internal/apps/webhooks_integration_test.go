@@ -172,6 +172,16 @@ func TestWebhookIngestion(t *testing.T) {
 		t.Fatal("the old replay was not processed without events")
 	}
 
+	// A secret that cannot be loaded is a server error, not a bad signature.
+	h.exec(`UPDATE app_credentials SET ciphertext = '\x00' WHERE instance_id = $1 AND name = 'webhook_secret' AND state = 'active'`, inst.ID)
+	if _, err := h.svc.ReceiveWebhook(h.ctx, inst.ID, delivery(fixtureSecret, prBody("acme", 98), "y", "pull_request"), prBody("acme", 98)); err == nil || errors.Is(err, apps.ErrWebhookSignature) {
+		t.Fatalf("unreadable secret = %v, want a server error", err)
+	}
+	if err := h.svc.StoreCredential(h.ctx, audit.System, inst.ID, "webhook_secret", fixtureSecret); err != nil {
+		t.Fatal(err)
+	}
+	h.exec(`DELETE FROM app_credentials WHERE instance_id = $1 AND name = 'webhook_secret' AND state = 'retiring'`, inst.ID)
+
 	// Connecting and removed instances answer 404; inactive ones are kept
 	// but not processed.
 	h.exec(`UPDATE app_instances SET state = 'connecting' WHERE id = $1`, inst.ID)

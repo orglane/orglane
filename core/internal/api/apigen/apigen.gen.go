@@ -117,15 +117,18 @@ func (e AppCredentialSpecSource) Valid() bool {
 
 // Defines values for AppCredentialVersionState.
 const (
-	AppCredentialVersionStateActive    AppCredentialVersionState = "active"
-	AppCredentialVersionStatePending   AppCredentialVersionState = "pending"
-	AppCredentialVersionStateRetiring  AppCredentialVersionState = "retiring"
-	AppCredentialVersionStateUncertain AppCredentialVersionState = "uncertain"
+	AppCredentialVersionStateAbandoning AppCredentialVersionState = "abandoning"
+	AppCredentialVersionStateActive     AppCredentialVersionState = "active"
+	AppCredentialVersionStatePending    AppCredentialVersionState = "pending"
+	AppCredentialVersionStateRetiring   AppCredentialVersionState = "retiring"
+	AppCredentialVersionStateUncertain  AppCredentialVersionState = "uncertain"
 )
 
 // Valid indicates whether the value is a known member of the AppCredentialVersionState enum.
 func (e AppCredentialVersionState) Valid() bool {
 	switch e {
+	case AppCredentialVersionStateAbandoning:
+		return true
 	case AppCredentialVersionStateActive:
 		return true
 	case AppCredentialVersionStatePending:

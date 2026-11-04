@@ -94,20 +94,21 @@ CREATE UNIQUE INDEX app_bindings_default_key ON app_bindings (capability) WHERE 
 -- Credentials of app instances, sealed (crypto.PurposeAppCredentials, AD
 -- bound to instance, name and version). Rotation is staged: pending or
 -- uncertain candidates never replace the active version before the provider
--- acknowledged them.
+-- acknowledged them; an abandoning candidate is discarded once the active
+-- value is re-applied.
 CREATE TABLE app_credentials (
     instance_id  uuid NOT NULL REFERENCES app_instances (id) ON DELETE CASCADE,
     name         text NOT NULL CHECK (name ~ '^[a-z][a-z0-9_]{0,40}$'),
     version      integer NOT NULL CHECK (version > 0),
     ciphertext   bytea NOT NULL,
-    state        text NOT NULL CHECK (state IN ('pending', 'uncertain', 'active', 'retiring', 'discarded')),
+    state        text NOT NULL CHECK (state IN ('pending', 'uncertain', 'abandoning', 'active', 'retiring', 'discarded')),
     created_at   timestamptz NOT NULL DEFAULT now(),
     activated_at timestamptz,
     retire_at    timestamptz,
     PRIMARY KEY (instance_id, name, version)
 );
 CREATE UNIQUE INDEX app_credentials_active_key ON app_credentials (instance_id, name) WHERE state = 'active';
-CREATE UNIQUE INDEX app_credentials_pending_key ON app_credentials (instance_id, name) WHERE state IN ('pending', 'uncertain');
+CREATE UNIQUE INDEX app_credentials_pending_key ON app_credentials (instance_id, name) WHERE state IN ('pending', 'uncertain', 'abandoning');
 
 -- Verified links between people and provider accounts (and their revoked
 -- history). Unverified import evidence stays in pending_account_links.

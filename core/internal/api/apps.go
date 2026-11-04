@@ -464,7 +464,7 @@ func (s *server) GetAppProvisioning(ctx context.Context, req apigen.GetAppProvis
 		for _, it := range held.Items {
 			var a provider.Action
 			_ = json.Unmarshal(it.Action, &a)
-			b.Items = append(b.Items, apigen.HeldRemoval{Id: it.ID, Person: card(it.PersonID, it.Username, it.DisplayName, "active"), Kind: string(a.Kind), Key: a.Key})
+			b.Items = append(b.Items, apigen.HeldRemoval{Id: it.ID, Person: card(it.PersonID, it.Username, it.DisplayName, it.PersonStatus), Kind: string(a.Kind), Key: a.Key})
 		}
 		out.HeldRemovals = &b
 	}

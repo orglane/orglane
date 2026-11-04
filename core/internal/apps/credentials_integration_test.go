@@ -209,8 +209,8 @@ func TestRotationAbandon(t *testing.T) {
 	if err := h.svc.RunRotateCredential(h.ctx, abandon); err == nil {
 		t.Fatal("abandon discarded before the active value was acknowledged")
 	}
-	if s := h.credState(inst, version); s != "uncertain" {
-		t.Fatalf("candidate = %s, want still uncertain", s)
+	if s := h.credState(inst, version); s != "abandoning" {
+		t.Fatalf("candidate = %s, want abandoning (still verifying, not discarded)", s)
 	}
 	if err := h.svc.RunRotateCredential(h.ctx, abandon); err != nil {
 		t.Fatal(err)

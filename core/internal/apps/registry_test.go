@@ -99,3 +99,28 @@ func TestRemovalLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestTruncateRunes(t *testing.T) {
+	s := strings.Repeat("a", 99) + "ä" // 101 bytes
+	if got := truncateRunes(s, 100); got != strings.Repeat("a", 99) {
+		t.Fatalf("truncateRunes = %q", got)
+	}
+	if got := truncateRunes("äbc", 100); got != "äbc" {
+		t.Fatalf("short string changed: %q", got)
+	}
+}
+
+func TestSettingsDecodeCanonically(t *testing.T) {
+	specs := []provider.SettingSpec{{Name: "seats", Type: provider.SettingInt, Min: 1, Max: 1 << 62, Mutable: true}, {Name: "org", Type: provider.SettingString}}
+	got, err := decodeSettings([]byte(`{"seats": 9007199254740993, "org": "acme"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalSettings(specs, got)
+	if v, ok := got["seats"].(int64); !ok || v != 9007199254740993 {
+		t.Fatalf("seats = %#v, want int64 9007199254740993", got["seats"])
+	}
+	if got["org"] != "acme" {
+		t.Fatalf("org = %#v", got["org"])
+	}
+}

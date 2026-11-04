@@ -97,20 +97,25 @@ SELECT * FROM app_credentials WHERE instance_id = @instance_id AND name = @name 
 SELECT * FROM app_credentials WHERE instance_id = @instance_id AND name = @name AND state = 'active';
 
 -- name: GetAppCredentialCandidate :one
-SELECT * FROM app_credentials WHERE instance_id = @instance_id AND name = @name AND state IN ('pending', 'uncertain');
+-- The version being rotated in, if any (abandoning included).
+SELECT * FROM app_credentials WHERE instance_id = @instance_id AND name = @name AND state IN ('pending', 'uncertain', 'abandoning');
 
 -- name: ListUsableAppCredentials :many
 -- Pending, uncertain, active and not yet retired versions, newest first:
 -- what incoming verification accepts during a changeover.
 SELECT * FROM app_credentials
 WHERE instance_id = @instance_id AND name = @name
-  AND (state IN ('pending', 'uncertain', 'active') OR (state = 'retiring' AND retire_at > now()))
+  AND (state IN ('pending', 'uncertain', 'abandoning', 'active') OR (state = 'retiring' AND retire_at > now()))
 ORDER BY version DESC;
 
 -- name: ListAppCredentials :many
 SELECT instance_id, name, version, state, created_at, activated_at, retire_at
 FROM app_credentials WHERE instance_id = @instance_id AND state <> 'discarded'
 ORDER BY name, version DESC;
+
+-- name: SetAppCredentialStateFrom :execrows
+UPDATE app_credentials SET state = @state
+WHERE instance_id = @instance_id AND name = @name AND version = @version AND state = ANY(@from_states::text[]);
 
 -- name: SetAppCredentialState :exec
 UPDATE app_credentials SET state = @state WHERE instance_id = @instance_id AND name = @name AND version = @version;
@@ -128,7 +133,7 @@ WHERE instance_id = @instance_id AND name = @name AND version = @version;
 
 -- name: ListStuckAppCredentials :many
 SELECT instance_id, name, version, created_at FROM app_credentials
-WHERE state = 'uncertain' AND created_at < @before;
+WHERE state IN ('uncertain', 'abandoning') AND created_at < @before;
 
 -- name: DeleteExpiredAppCredentials :execrows
 DELETE FROM app_credentials
@@ -245,7 +250,26 @@ ORDER BY p.id;
 SELECT * FROM provisioning_results WHERE instance_id = @instance_id AND person_id = @person_id;
 
 -- name: MarkProvisioningQueued :exec
-UPDATE provisioning_results SET status = 'queued', employee_step = NULL, next_attempt_at = clock_timestamp(), updated_at = now()
+-- A failed result stays failed (with its error) until a run decides: only
+-- a desired-state change or an admin's retry runs it again.
+UPDATE provisioning_results
+SET status = CASE WHEN status = 'failed' THEN status ELSE 'queued' END,
+    employee_step = NULL, next_attempt_at = clock_timestamp(), updated_at = now()
+WHERE instance_id = @instance_id AND person_id = @person_id;
+
+-- name: MarkProvisioningGranted :exec
+-- Orglane granted access (created the account, the invitation or the
+-- membership): recorded with the action's audit entry, never undone.
+INSERT INTO provisioning_results (instance_id, person_id, status, access, granted_by_orglane)
+VALUES (@instance_id, @person_id, 'queued', true, true)
+ON CONFLICT (instance_id, person_id) DO UPDATE SET granted_by_orglane = true, updated_at = now();
+
+-- name: FailProvisioningResult :exec
+-- A removal failed permanently (or exhausted its retries): the person's
+-- result shows it until desired access changes or an admin retries.
+UPDATE provisioning_results
+SET status = 'failed', employee_step = NULL, error_code = @error_code, actions = @actions,
+    desired_hash = @desired_hash, attempts = attempts + 1, last_attempt_at = now(), updated_at = now()
 WHERE instance_id = @instance_id AND person_id = @person_id;
 
 -- name: UpsertProvisioningResult :one
@@ -255,7 +279,8 @@ VALUES (@instance_id, @person_id, @status, @access, @employee_step, @granted_by_
     @desired_hash, @applied_hash, @actions, @error_code, @attempts, now(), @next_attempt_at, now())
 ON CONFLICT (instance_id, person_id) DO UPDATE
 SET status = EXCLUDED.status, access = EXCLUDED.access, employee_step = EXCLUDED.employee_step,
-    granted_by_orglane = EXCLUDED.granted_by_orglane, desired_hash = EXCLUDED.desired_hash,
+    granted_by_orglane = provisioning_results.granted_by_orglane OR EXCLUDED.granted_by_orglane,
+    desired_hash = EXCLUDED.desired_hash,
     applied_hash = EXCLUDED.applied_hash, actions = EXCLUDED.actions, error_code = EXCLUDED.error_code,
     attempts = EXCLUDED.attempts, last_attempt_at = now(),
     -- A change queued while this run worked keeps its marker (it is newer
@@ -319,13 +344,20 @@ ORDER BY created_at, id FOR UPDATE;
 SELECT * FROM provisioning_removals WHERE batch_id = @batch_id ORDER BY created_at, id;
 
 -- name: ListHeldRemovals :many
-SELECT r.*, p.username, p.display_name
+SELECT r.*, p.username, p.display_name, p.status AS person_status
 FROM provisioning_removals r JOIN people p ON p.id = r.person_id
 WHERE r.batch_id = @batch_id AND r.state = 'held'
 ORDER BY r.created_at, r.id;
 
 -- name: CountAppliedRemovalsSince :one
 SELECT count(*) FROM provisioning_removals WHERE instance_id = @instance_id AND state = 'applied' AND updated_at > @since;
+
+-- name: GetRemoval :one
+SELECT * FROM provisioning_removals WHERE id = @id;
+
+-- name: SetRemovalStateFrom :execrows
+UPDATE provisioning_removals SET state = @state, error_code = @error_code, updated_at = now()
+WHERE id = @id AND state = @from_state;
 
 -- name: SetRemovalState :exec
 UPDATE provisioning_removals SET state = @state, error_code = @error_code, updated_at = now() WHERE id = @id;

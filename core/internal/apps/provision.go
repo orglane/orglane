@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -126,6 +128,11 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 	if d.result == nil && !d.access.Access && d.access.Link == nil {
 		return nil // never had access: nothing to record or remove
 	}
+	if r := d.result; r != nil && r.Status == StatusFailed && !args.Retry && bytes.Equal(r.DesiredHash, d.hash) {
+		// A permanent failure is retried when desired access changes or an
+		// admin retries, never by drift checks or unrelated changes.
+		return s.followUp(nil, conn, inst.ID, args.PersonID, startedAt)
+	}
 	if r := d.result; r != nil && !args.Drift && bytes.Equal(r.AppliedHash, d.hash) && r.ErrorCode == nil && r.EmployeeStep == nil && r.Status != StatusFailed {
 		err := s.writeResult(ctx, conn, inst, d, StatusDone, nil, r.Actions, nil, r.GrantedByOrglane, r.AppliedHash, 0, startedAt)
 		return s.followUp(err, conn, inst.ID, args.PersonID, startedAt)
@@ -149,13 +156,20 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 		return s.followUp(err, conn, inst.ID, args.PersonID, startedAt)
 	}
 
-	granted := d.result != nil && d.result.GrantedByOrglane
+	// Ownership is recovered on reruns: a link this instance provisioned
+	// makes the access Orglane's (computeDesired's Managed).
+	granted := (d.result != nil && d.result.GrantedByOrglane) || (d.access.Managed && !inst.ManageExistingMembers)
 	results := make([]ActionResult, 0, len(plan.Actions))
 	var removals []provider.Action
 	var applyErr error
 	for _, a := range plan.Actions {
 		ar := ActionResult{Kind: a.Kind, Key: a.Key, Removal: a.Removal}
 		switch {
+		case applyErr != nil:
+			// Plan order: nothing after the first failure runs, removals
+			// included (they would take away access the failed step was
+			// to replace).
+			ar.Outcome = OutcomeNotAttempted
 		case a.Removal:
 			if !d.access.Managed {
 				// Adapters plan removals only for managed accounts; refuse
@@ -166,8 +180,6 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 				removals = append(removals, a)
 				ar.Outcome = OutcomeHeld
 			}
-		case applyErr != nil:
-			ar.Outcome = OutcomeNotAttempted
 		default:
 			out, err := prov.Apply(ctx, env, view, a)
 			if err != nil {
@@ -212,14 +224,20 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 	return s.followUp(err, conn, inst.ID, args.PersonID, startedAt)
 }
 
-// recordApplied writes the audit entry of a changed action and the link of
-// a created account.
+// recordApplied writes the audit entry of a changed action, the link of a
+// created account and, for grants, that Orglane owns the access: all in one
+// transaction, so a later failure cannot lose the ownership.
 func (s *Service) recordApplied(ctx context.Context, conn *pgxpool.Conn, inst Instance, personID uuid.UUID, a provider.Action, out provider.ActionOutcome) error {
 	if !out.Changed && out.Link == nil {
 		return nil
 	}
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
+		if (out.Changed && slices.Contains(grants, a.Kind)) || out.Link != nil {
+			if err := q.MarkProvisioningGranted(ctx, store.MarkProvisioningGrantedParams{InstanceID: inst.ID, PersonID: personID}); err != nil {
+				return fmt.Errorf("apps: record grant: %w", err)
+			}
+		}
 		if out.Changed {
 			if _, err := audit.Record(ctx, q, audit.Entry{
 				Actor:    audit.System,
@@ -455,10 +473,7 @@ func (s *Service) RunProvisionInstance(ctx context.Context, args ProvisionInstan
 			if i < 0 || ref.ExternalRef == "" || len(ref.ExternalRef) > 100 {
 				continue
 			}
-			name := ref.Name
-			if len(name) > 100 {
-				name = name[:100]
-			}
+			name := truncateRunes(strings.ToValidUTF8(ref.Name, ""), 100)
 			if err := q.SetAppTeamMappingExternal(ctx, store.SetAppTeamMappingExternalParams{InstanceID: inst.ID, TeamID: ref.TeamID, ExternalRef: &ref.ExternalRef, ExternalName: &name}); err != nil {
 				return fmt.Errorf("apps: store provider team: %w", err)
 			}
@@ -526,7 +541,7 @@ func retryOrCancel(err error) error {
 // guard (docs/specs/providers.md "Removal guard"): stale removals are
 // dropped, small sets apply, large ones are held for confirmation, and
 // confirmed batches apply after a freshness check per item.
-func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs) error {
+func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs, attempt, maxAttempts int) error {
 	conn, release, err := sessionLock(ctx, s.pool, lockID("removals", args.InstanceID.String()))
 	if err != nil {
 		return err
@@ -550,7 +565,7 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs) 
 		return nil
 	}
 
-	var toApply []store.ProvisioningRemoval
+	var toApply []queuedRemoval
 	var batches []uuid.UUID
 	replan := map[uuid.UUID]bool{}
 	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
@@ -587,7 +602,7 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs) 
 					return err
 				}
 				if ok {
-					toApply = append(toApply, r)
+					toApply = append(toApply, queuedRemoval{removal: r, state: removalHeld})
 				}
 			}
 			batches = append(batches, b.ID)
@@ -625,7 +640,9 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs) 
 			return fmt.Errorf("apps: load held batch: %w", err)
 		}
 		if !heldExists && int64(len(freshPending))+recent <= removalLimit(managed) {
-			toApply = append(toApply, freshPending...)
+			for _, r := range freshPending {
+				toApply = append(toApply, queuedRemoval{removal: r, state: removalPending})
+			}
 			return nil
 		}
 		return s.hold(ctx, q, inst, freshPending)
@@ -634,45 +651,22 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs) 
 		return err
 	}
 
-	env, view := s.env(inst), inst.View()
 	var firstErr error
-	for _, r := range toApply {
-		var a provider.Action
-		if err := json.Unmarshal(r.Action, &a); err != nil {
-			return fmt.Errorf("apps: decode removal: %w", err)
-		}
-		out, applyErr := prov.Apply(ctx, env, view, a)
-		state, code := removalApplied, (*string)(nil)
-		if applyErr != nil {
-			c, retryable, _ := provider.Classify(applyErr)
-			if retryable && firstErr == nil {
-				firstErr = applyErr
-				continue // stays as it is; the job retries
-			} else if retryable {
-				continue
-			}
-			state, code = removalFailed, &c
-		}
-		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-			q := store.New(tx)
-			if err := q.SetRemovalState(ctx, store.SetRemovalStateParams{ID: r.ID, State: state, ErrorCode: code}); err != nil {
-				return fmt.Errorf("apps: record removal: %w", err)
-			}
-			if applyErr == nil && out.Changed {
-				if _, err := audit.Record(ctx, q, audit.Entry{
-					Actor:    audit.System,
-					Action:   audit.ProvisioningActionApplied,
-					Target:   audit.Target{Kind: audit.TargetPerson, ID: r.PersonID.String()},
-					Metadata: map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key},
-				}); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
+	final := attempt >= maxAttempts
+	for _, item := range toApply {
+		again, retryErr, err := s.applyRemoval(ctx, prov, item, final)
+		if err != nil {
 			return err
 		}
-		replan[r.PersonID] = true
+		if errors.Is(retryErr, errInstanceInactive) {
+			break // the rest waits until the instance is provisionable again
+		}
+		if retryErr != nil && firstErr == nil {
+			firstErr = retryErr
+		}
+		if again {
+			replan[item.removal.PersonID] = true
+		}
 	}
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
@@ -706,6 +700,134 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs) 
 		}
 		return nil
 	})
+}
+
+// truncateRunes cuts s to at most n bytes without splitting a character.
+func truncateRunes(s string, n int) string {
+	for len(s) > n {
+		_, size := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-size]
+	}
+	return s
+}
+
+// queuedRemoval is a removal chosen to apply and the state it was in.
+type queuedRemoval struct {
+	removal store.ProvisioningRemoval
+	state   string
+}
+
+// errInstanceInactive stops applying removals of an instance that is no
+// longer provisionable.
+var errInstanceInactive = errors.New("apps: the instance is not provisionable")
+
+// applyRemoval applies one removal under the person's provisioning lock,
+// so it never interleaves with that person's own job, after rechecking
+// everything it depends on: the removal is still in the state it was chosen
+// in, the instance is provisionable and the person's desired access still
+// hashes to what planned the removal. A stale removal is dropped and the
+// person replanned. A permanent failure (or the last attempt's retryable
+// one) fails the person's result, which then waits for a desired-state
+// change or an admin's retry. It reports whether to replan the person and a
+// retryable error to retry the job with.
+func (s *Service) applyRemoval(ctx context.Context, prov provider.UserProvisioner, item queuedRemoval, final bool) (bool, error, error) {
+	r := item.removal
+	conn, release, err := sessionLock(ctx, s.pool, lockID("provision", r.InstanceID.String(), r.PersonID.String()))
+	if err != nil {
+		return false, nil, err
+	}
+	defer release()
+	q := store.New(conn)
+	cur, err := q.GetRemoval(ctx, r.ID)
+	if err != nil {
+		return false, nil, fmt.Errorf("apps: reload removal: %w", err)
+	}
+	if cur.State != item.state {
+		return false, nil, nil // dropped or resolved meanwhile
+	}
+	inst, err := s.loadInstance(ctx, q, r.InstanceID, false)
+	if err != nil {
+		return false, nil, err
+	}
+	if !inst.Provisionable() || inst.Adapter == nil {
+		return false, errInstanceInactive, nil
+	}
+	d, err := s.computeDesired(ctx, q, inst, r.PersonID)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil, nil // the person is gone (their rows cascade)
+	} else if err != nil {
+		return false, nil, err
+	}
+	if !bytes.Equal(d.hash, cur.DesiredHash) {
+		if _, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalDropped}); err != nil {
+			return false, nil, fmt.Errorf("apps: drop removal: %w", err)
+		}
+		return true, nil, nil
+	}
+	var a provider.Action
+	if err := json.Unmarshal(cur.Action, &a); err != nil {
+		return false, nil, fmt.Errorf("apps: decode removal: %w", err)
+	}
+	out, applyErr := prov.Apply(ctx, s.env(inst), inst.View(), a)
+	if applyErr != nil {
+		code, retryable, _ := provider.Classify(applyErr)
+		if retryable && !final {
+			return false, applyErr, nil // stays as it is; the job retries
+		}
+		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			q := store.New(tx)
+			n, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalFailed, ErrorCode: &code})
+			if err != nil || n == 0 {
+				return err
+			}
+			return s.failResult(ctx, q, inst, d, a, code)
+		})
+		return false, nil, err
+	}
+	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		q := store.New(tx)
+		n, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalApplied})
+		if err != nil {
+			return fmt.Errorf("apps: record removal: %w", err)
+		}
+		if n == 0 || !out.Changed {
+			return nil
+		}
+		_, err = audit.Record(ctx, q, audit.Entry{
+			Actor:    audit.System,
+			Action:   audit.ProvisioningActionApplied,
+			Target:   audit.Target{Kind: audit.TargetPerson, ID: r.PersonID.String()},
+			Metadata: map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key},
+		})
+		return err
+	})
+	return true, nil, err
+}
+
+// failResult marks a person's result failed because a removal failed: the
+// action shows as failed with the code, and Retry Failed selects it.
+func (s *Service) failResult(ctx context.Context, q *store.Queries, inst Instance, d desired, a provider.Action, code string) error {
+	var results []ActionResult
+	if d.result != nil {
+		_ = json.Unmarshal(d.result.Actions, &results) // written by the framework
+	}
+	i := slices.IndexFunc(results, func(r ActionResult) bool { return r.Key == a.Key })
+	if i < 0 {
+		results = append(results, ActionResult{Kind: a.Kind, Key: a.Key, Removal: true})
+		i = len(results) - 1
+	}
+	results[i].Outcome, results[i].Error = OutcomeFailed, code
+	raw, err := json.Marshal(results)
+	if err != nil {
+		return fmt.Errorf("apps: encode actions: %w", err)
+	}
+	if err := q.FailProvisioningResult(ctx, store.FailProvisioningResultParams{
+		InstanceID: inst.ID, PersonID: d.person.ID, ErrorCode: &code, Actions: raw, DesiredHash: d.hash,
+	}); err != nil {
+		return fmt.Errorf("apps: fail result: %w", err)
+	}
+	s.env(inst).Logger().WarnContext(ctx, "removal failed", "person_id", d.person.ID, "kind", a.Kind, "code", code)
+	return nil
 }
 
 // removalLimit is how many removals may apply without confirmation within
@@ -846,7 +968,7 @@ func (s *Service) RetryFailed(ctx context.Context, actor audit.Actor, instanceID
 			return fmt.Errorf("apps: list failed results: %w", err)
 		}
 		for _, id := range ids {
-			if err := s.enqueuePerson(ctx, tx, q, instanceID, id, true); err != nil {
+			if err := s.enqueuePerson(ctx, tx, q, instanceID, id, true, true); err != nil {
 				return err
 			}
 		}
