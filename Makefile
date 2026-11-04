@@ -208,12 +208,14 @@ test-unit: ## Run Go unit tests only
 # PostgreSQL containers initializing bind-mounted data directories next to
 # those of tests/compose sometimes fail with "wrong ownership". The package
 # list is built in separate, checked steps: a failing `go list` inside the
-# `go test` arguments would not stop it.
+# `go test` arguments would not stop it. The agent's upgrade tests (real
+# Docker, a crash at every journal phase) take longer than go test's default
+# timeout of 10 minutes per package on CI runners.
 test-integration: ## Run Go unit and integration tests (needs Docker)
 	pkgs="$$(go list -tags integration ./...)"; \
 	pkgs="$$(printf '%s\n' "$$pkgs" | grep -v '/tests/install$$')"; \
 	if [ -z "$$pkgs" ]; then echo "error: go list found no packages to test"; exit 1; fi; \
-	go test -race -count=1 -tags integration $$pkgs
+	go test -race -count=1 -timeout 30m -tags integration $$pkgs
 	$(MAKE) --no-print-directory test-install
 
 test-compose: ## Start the Compose bundle (local mode, domain mode with Pebble) and test it (needs Docker)
