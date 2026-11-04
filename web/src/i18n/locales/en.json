@@ -72,6 +72,7 @@
   "apps.code.installFailed": "Installing this app failed. Check the server's resources, then retry.",
   "apps.code.invalidLogin": "The app refused this person's username. Change the username, then retry.",
   "apps.code.ownerProtected": "Owners of the app's organization are never removed by Orglane.",
+  "apps.code.ownershipUnproven": "This person's account already exists in the app, but Orglane cannot prove it created it, so it is not managed and never removed automatically. Review it, then use Retry failed to accept it as unmanaged.",
   "apps.code.providerError": "The app did not answer as expected. Orglane retries automatically.",
   "apps.code.providerUnavailable": "This version of Orglane cannot talk to this app.",
   "apps.code.rateLimited": "The app asked Orglane to slow down. It retries once the app allows it.",

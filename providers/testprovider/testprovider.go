@@ -52,6 +52,12 @@ type Account struct {
 	Email       string
 	Member      bool
 	Teams       map[string]bool // external team refs
+	// CreatedFor is the provider-side marker of an account Orglane created:
+	// the person it was created for (like Forgejo's auth-source binding).
+	// Empty for accounts created outside Orglane.
+	CreatedFor string
+	// TeamsFor marks team memberships Orglane added, by team ref.
+	TeamsFor map[string]string
 }
 
 type org struct {
@@ -323,7 +329,7 @@ func (p *Provider) Plan(_ context.Context, _ provider.Env, inst provider.Instanc
 	for _, t := range d.Teams {
 		want[t.ExternalRef] = true
 		if acct == nil || !acct.Teams[t.ExternalRef] {
-			plan.Actions = append(plan.Actions, provider.Action{Kind: provider.ActionAddToTeam, Key: "add_to_team:" + t.ExternalRef, Params: map[string]string{"username": d.Username, "team": t.ExternalRef}})
+			plan.Actions = append(plan.Actions, provider.Action{Kind: provider.ActionAddToTeam, Key: "add_to_team:" + t.ExternalRef, Params: map[string]string{"person_id": d.PersonID.String(), "username": d.Username, "team": t.ExternalRef}})
 		}
 	}
 	if acct != nil && d.Managed {
@@ -358,17 +364,22 @@ func (p *Provider) Apply(_ context.Context, _ provider.Env, inst provider.Instan
 	case provider.ActionCreateAccount:
 		acct := byLogin(a.Params["username"])
 		if acct != nil && acct.Member {
-			// Already there: unchanged, but the ensure still reports the
-			// account, so an interrupted run can record its link.
-			return provider.ActionOutcome{Link: &provider.ExternalAccount{Realm: inst.ID.String(), ExternalID: acct.ID, Login: acct.Login}}, nil
+			// Already there: unchanged. The marker proves whether Orglane's
+			// earlier call created it for this person.
+			out := provider.ActionOutcome{Link: &provider.ExternalAccount{Realm: inst.ID.String(), ExternalID: acct.ID, Login: acct.Login}}
+			if acct.CreatedFor != "" && acct.CreatedFor == a.Params["person_id"] {
+				out.Proof = &provider.Proof{Kind: provider.ProofMarker, Evidence: "created_for"}
+			}
+			return out, nil
 		}
 		if acct == nil {
 			p.nextID++
 			acct = &Account{ID: strconv.Itoa(p.nextID), Login: a.Params["username"], Teams: map[string]bool{}}
 			o.accounts[acct.ID] = acct
 		}
-		acct.Member, acct.DisplayName, acct.Email = true, a.Params["display_name"], a.Params["email"]
-		return provider.ActionOutcome{Changed: true, Link: &provider.ExternalAccount{Realm: inst.ID.String(), ExternalID: acct.ID, Login: acct.Login}}, nil
+		acct.Member, acct.DisplayName, acct.Email, acct.CreatedFor = true, a.Params["display_name"], a.Params["email"], a.Params["person_id"]
+		return provider.ActionOutcome{Changed: true, Link: &provider.ExternalAccount{Realm: inst.ID.String(), ExternalID: acct.ID, Login: acct.Login},
+			Proof: &provider.Proof{Kind: provider.ProofResponse, Evidence: "create_account"}}, nil
 	case provider.ActionUpdateAccount:
 		acct := o.accounts[a.Params["account"]]
 		if acct == nil {
@@ -386,16 +397,25 @@ func (p *Provider) Apply(_ context.Context, _ provider.Env, inst provider.Instan
 			return provider.ActionOutcome{}, &provider.Error{Code: "unknown_team"}
 		}
 		if acct.Teams[a.Params["team"]] {
-			return provider.ActionOutcome{}, nil
+			out := provider.ActionOutcome{}
+			if by := acct.TeamsFor[a.Params["team"]]; by != "" && by == a.Params["person_id"] {
+				out.Proof = &provider.Proof{Kind: provider.ProofMarker, Evidence: "team_added_for"}
+			}
+			return out, nil
 		}
 		acct.Teams[a.Params["team"]] = true
-		return provider.ActionOutcome{Changed: true}, nil
+		if acct.TeamsFor == nil {
+			acct.TeamsFor = map[string]string{}
+		}
+		acct.TeamsFor[a.Params["team"]] = a.Params["person_id"]
+		return provider.ActionOutcome{Changed: true, Proof: &provider.Proof{Kind: provider.ProofResponse, Evidence: "add_to_team"}}, nil
 	case provider.ActionRemoveFromTeam:
 		acct := o.accounts[a.Params["account"]]
 		if acct == nil || !acct.Teams[a.Params["team"]] {
 			return provider.ActionOutcome{}, nil
 		}
 		delete(acct.Teams, a.Params["team"])
+		delete(acct.TeamsFor, a.Params["team"])
 		return provider.ActionOutcome{Changed: true}, nil
 	case provider.ActionRemoveFromOrg:
 		acct := o.accounts[a.Params["account"]]
@@ -404,6 +424,7 @@ func (p *Provider) Apply(_ context.Context, _ provider.Env, inst provider.Instan
 		}
 		acct.Member = false
 		acct.Teams = map[string]bool{}
+		acct.TeamsFor = nil
 		return provider.ActionOutcome{Changed: true}, nil
 	}
 	return provider.ActionOutcome{}, &provider.Error{Code: "unknown_action"}

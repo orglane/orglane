@@ -562,3 +562,117 @@ func TestUncertainGrantResolvedByReplay(t *testing.T) {
 		t.Fatal("an account Orglane created was kept after offboarding")
 	}
 }
+
+// Round 4 of the review of PR #74.
+
+// TestReplayWithoutProofIsNotAdopted: an interrupted grant whose replay
+// finds an account created independently (no provider proof of Orglane's
+// call) is neither adopted, verified nor removed; it waits for an admin as
+// ownership_unproven and appears in the unmanaged accounts report.
+func TestReplayWithoutProofIsNotAdopted(t *testing.T) {
+	for _, suspended := range []bool{false, true} {
+		name := "active"
+		if suspended {
+			name = "suspended"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			inst := h.instance(nil)
+			h.drain()
+			alice := h.person("alice")
+			h.exec(`DELETE FROM river_job`)
+			a := apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: alice.ID}
+			h.tp.Fail("apply:create_account", retryable("connection_refused")) // before any provider change
+			if err := h.svc.RunProvisionPerson(h.ctx, a, 1, 8); err == nil {
+				t.Fatal("expected the first attempt to fail")
+			}
+			external := h.tp.AddMember(inst.ID, "alice") // someone else creates the account
+			if suspended {
+				if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, alice.ID, identity.StatusSuspended); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := h.svc.RunProvisionPerson(h.ctx, a, 2, 8); err != nil {
+				t.Fatal(err)
+			}
+			r := h.result(inst, alice)
+			if r.GrantedByOrglane || r.PendingGrant != nil {
+				t.Fatalf("granted=%v pending=%s: an account without proof was adopted or left pending", r.GrantedByOrglane, r.PendingGrant)
+			}
+			if r.Status != apps.StatusFailed || r.ErrorCode == nil || *r.ErrorCode != apps.CodeOwnershipUnproven {
+				t.Fatalf("result = %s %v, want failed %s (admin review)", r.Status, r.ErrorCode, apps.CodeOwnershipUnproven)
+			}
+			if n := h.count(`SELECT count(*) FROM account_links WHERE person_id = $1 AND method = 'provisioned'`, alice.ID); n != 0 {
+				t.Fatal("an independently created account was verified as provisioned")
+			}
+			if !suspended {
+				unmanaged, err := h.svc.UnmanagedAccounts(h.ctx, inst.ID)
+				if err != nil || len(unmanaged) != 1 || unmanaged[0].ExternalID != external.ID {
+					t.Fatalf("unmanaged = %+v, %v", unmanaged, err)
+				}
+			}
+			// Nothing runs it again on its own, and nothing removes it.
+			if err := h.svc.RunDriftCheck(h.ctx); err != nil {
+				t.Fatal(err)
+			}
+			h.drain()
+			if acct, _ := h.tp.Account(inst.ID, "alice"); !acct.Member {
+				t.Fatal("an account Orglane never proved it created was removed")
+			}
+			if r := h.result(inst, alice); r.Status != apps.StatusFailed {
+				t.Fatalf("the review state was overwritten: %+v", r)
+			}
+		})
+	}
+}
+
+// TestReplayFailurePolicy: a failing replay goes through the same failure
+// handling as any action: attempts count up to exhaustion (and Retry Failed
+// then selects the person), and a permanent rejection fails the person and
+// stops the run.
+func TestReplayFailurePolicy(t *testing.T) {
+	t.Run("exhaustion", func(t *testing.T) {
+		h := newHarness(t)
+		inst := h.instance(nil)
+		h.drain()
+		alice := h.person("alice")
+		for range 8 {
+			h.tp.Fail("apply:create_account", retryable("unavailable"))
+		}
+		h.drain()
+		r := h.result(inst, alice)
+		if r.Status != apps.StatusFailed || r.Attempts != 8 {
+			t.Fatalf("after 8 failed attempts: status %s, attempts %d", r.Status, r.Attempts)
+		}
+		if n, err := h.svc.RetryFailed(h.ctx, audit.System, inst.ID, nil); err != nil || n != 1 {
+			t.Fatalf("Retry Failed selected %d, %v", n, err)
+		}
+		h.drain()
+		if r := h.result(inst, alice); r.Status != apps.StatusDone || !r.GrantedByOrglane {
+			t.Fatalf("after the retry: %+v", r)
+		}
+	})
+	t.Run("permanent", func(t *testing.T) {
+		h := newHarness(t)
+		inst := h.instance(nil)
+		h.drain()
+		alice := h.person("alice")
+		h.exec(`DELETE FROM river_job`)
+		a := apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: alice.ID}
+		h.tp.Fail("apply:create_account", retryable("unavailable"))
+		if err := h.svc.RunProvisionPerson(h.ctx, a, 1, 8); err == nil {
+			t.Fatal("expected the first attempt to fail")
+		}
+		h.tp.Fail("apply:create_account", permanent("seat_limit"))
+		if err := h.svc.RunProvisionPerson(h.ctx, a, 2, 8); err != nil {
+			t.Fatal(err)
+		}
+		r := h.result(inst, alice)
+		if r.Status != apps.StatusFailed || r.ErrorCode == nil || *r.ErrorCode != "seat_limit" || r.PendingGrant != nil {
+			t.Fatalf("result = %+v", r)
+		}
+		if _, ok := h.tp.Account(inst.ID, "alice"); ok {
+			t.Fatal("the run created the account after the replay was rejected")
+		}
+	})
+}

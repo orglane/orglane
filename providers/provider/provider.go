@@ -289,11 +289,35 @@ type Action struct {
 // ActionOutcome is the result of UserProvisioner.Apply.
 type ActionOutcome struct {
 	Changed bool // false: already satisfied
-	// Link is set when the action created an account (Forgejo); it becomes
-	// a verified "provisioned" link. An ensure that finds the account it
-	// would create already there reports it too (Changed false), so a run
-	// that replays an interrupted creation can record the link.
+	// Link is the account the action concerns (created, or found by an
+	// ensure that finds it already there).
 	Link *ExternalAccount
+	// Proof is set only when the adapter can prove that Orglane's call made
+	// the grant: the confirmed response of this call (ProofResponse), or a
+	// provider-side marker an ensure checks (ProofMarker: e.g. Forgejo, an
+	// account bound to Orglane's auth source with this person's subject;
+	// GitHub, an invitation or membership created by Orglane's App
+	// installation). The core grants ownership (granted_by_orglane) and
+	// stores Link as a verified "provisioned" link only with a Proof. It
+	// never infers ownership from access being there now.
+	Proof *Proof
+}
+
+// Proof kinds.
+const (
+	// ProofResponse: the provider confirmed that this call made the change.
+	ProofResponse = "response"
+	// ProofMarker: a provider-side marker shows that Orglane's earlier call
+	// for this person made the change.
+	ProofMarker = "marker"
+)
+
+// Proof is provider-verifiable evidence that Orglane's call made a grant.
+type Proof struct {
+	Kind string // ProofResponse | ProofMarker
+	// Evidence names what was checked, without secrets or personal data,
+	// e.g. "auth_source", "invitation:12345". Recorded in the audit entry.
+	Evidence string
 }
 
 // AccountVerifier proves that a person owns an account at the provider.

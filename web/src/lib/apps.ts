@@ -239,6 +239,11 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
     id: "apps.code.ownerProtected",
     defaultMessage: "Owners of the app's organization are never removed by Orglane.",
   },
+  ownership_unproven: {
+    id: "apps.code.ownershipUnproven",
+    defaultMessage:
+      "This person's account already exists in the app, but Orglane cannot prove it created it, so it is not managed and never removed automatically. Review it, then use Retry failed to accept it as unmanaged.",
+  },
   invalid_login: {
     id: "apps.code.invalidLogin",
     defaultMessage: "The app refused this person's username. Change the username, then retry.",
