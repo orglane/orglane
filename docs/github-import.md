@@ -24,6 +24,8 @@ Official GitHub documentation checked 2026-11-04:
 
 The browser sends the token once in the JSON POST body, not in a URL. Transient
 form state clears when fetching starts, finishes or the source selection changes.
+Leaving the import page aborts the in-flight browser request and ignores obsolete
+completion; cancellation cannot undo a staged run already committed by the server.
 Credentials never enter React Query variables/data, browser persistent storage,
 background jobs, staging, pending links, audit metadata or error text. Memory is
 released normally by the runtimes; this is not a claim of secure memory erasure.

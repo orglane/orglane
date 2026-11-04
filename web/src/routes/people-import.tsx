@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { defineMessage, defineMessages, FormattedMessage, useIntl } from "react-intl";
 
 import { Field } from "@/components/field";
@@ -14,6 +14,10 @@ import { errorMessage } from "@/lib/errors";
 import { useMe } from "@/lib/session";
 
 const messages = defineMessages({
+  githubPending: {
+    id: "import.githubPending",
+    defaultMessage: "Fetching members. This can take up to five minutes.",
+  },
   githubFailure: {
     id: "import.githubFailure",
     defaultMessage:
@@ -221,6 +225,16 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
   const [organization, setOrganization] = useState("");
   const [token, setToken] = useState("");
   const [fetching, setFetching] = useState(false);
+  const currentFetch = useRef<AbortController | null>(null);
+  useEffect(() => {
+    setFetching(false);
+    // A resumed run has no credential form; discard any previous form value.
+    if (runId) setToken("");
+    return () => {
+      currentFetch.current?.abort();
+      currentFetch.current = null;
+    };
+  }, [runId]);
   const [fetchError, setFetchError] = useState<unknown>();
   const [file, setFile] = useState<File>();
   const [run, setRun] = useState<Run>();
@@ -340,6 +354,10 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
   });
   // Credentials never enter React Query mutation variables or retained data.
   const fetchGitHub = async () => {
+    if (currentFetch.current) return;
+    const controller = new AbortController();
+    currentFetch.current = controller;
+    const isCurrent = () => currentFetch.current === controller && !controller.signal.aborted;
     setFetching(true);
     setFetchError(undefined);
     const credential = token;
@@ -348,8 +366,14 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
       const next = await call(
         api.client.POST("/api/v1/people-imports/github", {
           body: { organization, token: credential },
+          signal: controller.signal,
         }),
       );
+      if (!isCurrent()) return;
+      upload.reset();
+      preview.reset();
+      apply.reset();
+      download.reset();
       queryClient.setQueryData(["people-import", next.id], next);
       setRun(next);
       setMapping({
@@ -360,10 +384,13 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
       setNeedsPreview(false);
       await navigate({ to: "/people/import", search: { runId: next.id }, replace: true });
     } catch {
-      setFetchError(new Error(intl.formatMessage(messages.invalid)));
+      if (isCurrent()) setFetchError(new Error(intl.formatMessage(messages.invalid)));
     } finally {
-      setFetching(false);
-      setToken("");
+      if (currentFetch.current === controller) {
+        currentFetch.current = null;
+        setFetching(false);
+        setToken("");
+      }
     }
   };
   const busy = fetching || upload.isPending || preview.isPending || apply.isPending;
@@ -476,10 +503,17 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
                   />
                   <Button
                     disabled={busy || !organization || !token}
+                    loading={fetching}
+                    aria-label={intl.formatMessage(messages.fetch)}
                     onClick={() => void fetchGitHub()}
                   >
                     <FormattedMessage {...messages.fetch} />
                   </Button>
+                  {fetching && (
+                    <p role="status">
+                      <FormattedMessage {...messages.githubPending} />
+                    </p>
+                  )}
                 </>
               ) : (
                 <>
