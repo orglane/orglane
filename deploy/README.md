@@ -80,14 +80,25 @@ curl -fsSL https://orglane.app/install.sh | sudo sh -s -- --acme-ca production
 
 ### Advanced settings
 
-These environment variables are read on the first install and kept in `.env`: `ORGLANE_HTTP_PUBLISH` and `ORGLANE_HTTPS_PUBLISH` (where Traefik is published), `ORGLANE_EDGE_NETWORK_PREFIX` (see [Configuration](#configuration)), `COMPOSE_PROJECT_NAME` (to run several installs on one machine) and `COMPOSE_FILE` (extra Compose files; the installer tests use it for the Pebble overlay). `--http-port` moves local and demo mode to another port, for example `--http-port 8080` for `http://localhost:8080`.
+These environment variables are kept in `.env`; a re-run uses the value from its environment if set, else the kept one: `ORGLANE_HTTP_PUBLISH` and `ORGLANE_HTTPS_PUBLISH` (where Traefik is published), `ORGLANE_EDGE_NETWORK_PREFIX` (see [Configuration](#configuration)), `COMPOSE_PROJECT_NAME` (to run several installs on one machine) and `COMPOSE_FILE` (extra Compose files; the installer tests use it for the Pebble overlay). `--http-port` moves local and demo mode to another port, for example `--http-port 8080` for `http://localhost:8080`.
+
+### Troubleshooting
+
+- **A port is in use.** The installer stops and says so. Stop the other program, or move local and demo mode with `--http-port`.
+- **The network overlaps.** The core and Traefik share a network with a fixed subnet, `10.231.0.0/24` by default. When another Docker network (for example one left behind by an older install) or a network of the host already uses it, Docker refuses to create it (depending on its version: `Pool overlaps with other one on this address space`, `networks have overlapping IPv4` or `failed to allocate gateway`). The installer then stops and names the subnet. `docker network ls` and `docker network inspect` show the networks Docker has. Remove the old one, or run the installer again with a free subnet in `ORGLANE_EDGE_NETWORK_PREFIX` (the first three octets). The installer keeps it in `.env` for later re-runs:
+
+  ```sh
+  curl -fsSL https://orglane.app/install.sh | ORGLANE_EDGE_NETWORK_PREFIX=10.232.0 sh -s -- --mode demo
+  # as root (Linux): ... | sudo ORGLANE_EDGE_NETWORK_PREFIX=10.232.0 sh -s -- --mode domain ...
+  ```
 
 ### Testing the installer
 
-`make test-install` (also part of `make test-integration`) builds the core image from the checkout. It then runs `install.sh` non-interactively from `--source`, in four ways:
+`make test-install` (also part of `make test-integration`) builds the core image from the checkout. It then runs `install.sh` non-interactively from `--source`, in five ways:
 
 - **local mode:** the web UI and `/readyz` through Traefik; `.env` mode 600; the printed setup token creates the owner; a re-run keeps the secrets and the owner; `status`; and `uninstall` with and without `--purge`;
 - **demo mode:** one-click sign-in as the demo owner;
+- **an edge subnet clash:** with another Docker network on the edge subnet (the same /24, or a partial overlap) the install fails with a message that names `ORGLANE_EDGE_NETWORK_PREFIX`, and a re-run with a free prefix installs and keeps it in `.env`; a malformed prefix is refused before anything is written;
 - **domain mode against Pebble:** a certificate is issued and HTTPS works; a re-run keeps the CA stored in `.env` (`--acme-ca staging`) and `acme.json`; `--acme-ca production` switches the CA, resets `acme.json` and gets a new certificate;
 - **domain mode without DNS:** the install is refused before anything is written or started.
 

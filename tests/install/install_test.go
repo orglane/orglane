@@ -8,6 +8,8 @@
 //     file's permissions, the owner created with the printed setup token, a
 //     re-run that keeps the secrets, status, uninstall and purge;
 //   - demo mode: install and one-click sign-in as the demo owner;
+//   - an edge subnet taken by another Docker network: the failure names
+//     ORGLANE_EDGE_NETWORK_PREFIX, and a re-run with a free one installs;
 //   - domain mode: the DNS check refuses an unresolvable workspace host
 //     before anything starts, and an install against Pebble (Let's
 //     Encrypt's ACME test server, deploy/compose/pebble) gets a certificate.
@@ -41,6 +43,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -116,6 +119,11 @@ func newInstall(t *testing.T, edgePrefix string, env ...string) *install {
 	}, env...)
 	t.Cleanup(func() { in.cleanup(parent) })
 	return in
+}
+
+// setEnv sets an environment variable of the installer for later runs.
+func (in *install) setEnv(key, value string) {
+	in.env = append(slices.DeleteFunc(in.env, func(kv string) bool { return strings.HasPrefix(kv, key+"=") }), key+"="+value)
 }
 
 // run runs the installer and returns its combined output and exit code.
@@ -462,6 +470,88 @@ func TestDemoMode(t *testing.T) {
 	if c := in.containers(); len(c) > 0 {
 		t.Errorf("containers left after uninstall: %v", c)
 	}
+}
+
+// TestEdgeSubnetClash: when another Docker network already uses the edge
+// subnet (an older install's leftover, a VPN), the installer names the clash
+// and ORGLANE_EDGE_NETWORK_PREFIX instead of a generic failure, and a re-run
+// with a free prefix installs. Docker words the clash differently for the
+// same subnet and a partial overlap, so both are tried.
+func TestEdgeSubnetClash(t *testing.T) {
+	const clash, free = "10.231.115", "10.231.116"
+	in := newInstall(t, clash)
+	port := freePort(t)
+	args := []string{"--mode", "local", "--yes", "--source", repoRoot, "--image", image, "--data-dir", in.dataDir, "--http-port", port}
+
+	// A malformed prefix is refused before anything is written.
+	in.setEnv("ORGLANE_EDGE_NETWORK_PREFIX", "10.232.0.0")
+	if out, code := in.run(args...); code == 0 || !strings.Contains(out, "invalid ORGLANE_EDGE_NETWORK_PREFIX") {
+		t.Errorf("malformed prefix: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(in.dataDir); !os.IsNotExist(err) {
+		t.Errorf("the refused install created the data directory: %v", err)
+	}
+
+	in.setEnv("ORGLANE_EDGE_NETWORK_PREFIX", clash)
+	for _, other := range [][]string{
+		{"--subnet", clash + ".0/24"},
+		{"--subnet", clash + ".0/25", "--gateway", clash + ".126"},
+	} {
+		remove := createNetwork(t, other...)
+		out, code := in.run(args...)
+		remove()
+		if code == 0 {
+			t.Fatalf("install with a network %v succeeded:\n%s", other, out)
+		}
+		for _, want := range []string{clash + ".0/24", "overlaps", "ORGLANE_EDGE_NETWORK_PREFIX="} {
+			if !strings.Contains(out, want) {
+				t.Errorf("network %v: output lacks %q:\n%s", other, want, out)
+			}
+		}
+		// The compose status is captured: no error about a missing status
+		// file, and not the generic failure.
+		if strings.Contains(out, "No such file") || strings.Contains(out, "did not start") {
+			t.Errorf("network %v: output has a stray or generic error:\n%s", other, out)
+		}
+	}
+
+	// A re-run with a free prefix installs and keeps it in .env.
+	in.setEnv("ORGLANE_EDGE_NETWORK_PREFIX", free)
+	out := in.mustRun(args...)
+	if got := lastLine(out); got != "http://localhost:"+port {
+		t.Errorf("printed URL = %q", got)
+	}
+	if got := in.envFile()["ORGLANE_EDGE_NETWORK_PREFIX"]; got != free {
+		t.Errorf(".env ORGLANE_EDGE_NETWORK_PREFIX = %q, want %q", got, free)
+	}
+	checkWorkspace(t, http.DefaultClient, "http://127.0.0.1:"+port, "localhost:"+port)
+
+	in.mustRun("uninstall", "--purge", "--yes", "--data-dir", in.dataDir)
+	if c := in.containers(); len(c) > 0 {
+		t.Errorf("containers left after uninstall: %v", c)
+	}
+}
+
+// createNetwork creates a Docker network with the given options and returns
+// a function that removes it; it is removed at the end of the test too.
+func createNetwork(t *testing.T, opts ...string) func() {
+	t.Helper()
+	name := "orglane-install-test-net-" + randomHex(t, 4)
+	if out, err := exec.CommandContext(t.Context(), "docker", append(append([]string{"network", "create"}, opts...), name)...).CombinedOutput(); err != nil { //nolint:gosec // fixed docker network create
+		t.Fatalf("docker network create %v: %v\n%s", opts, err, out)
+	}
+	removed := false
+	remove := func() {
+		if removed {
+			return
+		}
+		removed = true
+		if out, err := exec.CommandContext(context.Background(), "docker", "network", "rm", name).CombinedOutput(); err != nil { //nolint:gosec // fixed docker network rm
+			t.Errorf("docker network rm %s: %v\n%s", name, err, out)
+		}
+	}
+	t.Cleanup(remove)
+	return remove
 }
 
 // TestDomainModeRefusesUnreadyDNS: without DNS for the workspace host the

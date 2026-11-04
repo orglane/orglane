@@ -215,6 +215,11 @@ valid_port() {
 	[ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
 
+# valid_edge_prefix <a.b.c>: the first three octets of an IPv4 /24.
+valid_edge_prefix() {
+	printf '%s' "$1" | grep -Eq '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){2}$'
+}
+
 valid_ipv4() {
 	printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 }
@@ -881,12 +886,23 @@ wait_certificate() {
 start_bundle() {
 	step "Starting Orglane"
 	log=$WORK/compose-up.log
-	# The status of the compose command, not of tee.
+	# The status of the compose command, not of tee. The group runs in a
+	# subshell under set -e: without the || it would exit before writing the
+	# status.
 	{
-		dc up --detach --wait --wait-timeout 300 --remove-orphans 2>&1
-		echo "$?" >"$WORK/compose-up.status"
+		st=0
+		dc up --detach --wait --wait-timeout 300 --remove-orphans 2>&1 || st=$?
+		echo "$st" >"$WORK/compose-up.status"
 	} | tee "$log" >&2
-	if [ "$(cat "$WORK/compose-up.status")" != 0 ]; then
+	if [ "$(cat "$WORK/compose-up.status" 2>/dev/null || echo 1)" != 0 ]; then
+		# A taken subnet, depending on the Docker version and the clash: "Pool
+		# overlaps with other one on this address space" (invalid pool
+		# request), "networks have overlapping IPv4", "failed to allocate
+		# gateway (...): Address already in use".
+		if grep -Eqi 'overlap|invalid pool request|failed to allocate gateway' "$log"; then
+			edge=$(env_get "$ENV_FILE" ORGLANE_EDGE_NETWORK_PREFIX)
+			die "the network Orglane needs, ${edge:-10.231.0}.0/24, overlaps with another Docker network or a network of this computer ('docker network ls' and 'docker network inspect' show them). Run the installer again with a free one in ORGLANE_EDGE_NETWORK_PREFIX (the first three octets), e.g. 'curl -fsSL https://orglane.app/install.sh | ORGLANE_EDGE_NETWORK_PREFIX=10.232.0 sh' with your options"
+		fi
 		if grep -Eq 'address already in use|port is already allocated' "$log"; then
 			die "a port Orglane needs is in use by another program. Stop it, or choose another one with --http-port (local and demo modes)"
 		fi
@@ -980,6 +996,9 @@ cmd_install() {
 	fi
 	HTTP_PUBLISH=${HTTP_PUBLISH:-$DEFAULT_HTTP_PUBLISH}
 	HTTPS_PUBLISH=${HTTPS_PUBLISH:-$DEFAULT_HTTPS_PUBLISH}
+	if [ -n "${ORGLANE_EDGE_NETWORK_PREFIX:-}" ] && ! valid_edge_prefix "$ORGLANE_EDGE_NETWORK_PREFIX"; then
+		die "invalid ORGLANE_EDGE_NETWORK_PREFIX '$ORGLANE_EDGE_NETWORK_PREFIX': give the first three octets of a free /24, e.g. 10.232.0"
+	fi
 
 	check_resources
 	size_postgres
