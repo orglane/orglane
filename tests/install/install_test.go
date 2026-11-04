@@ -995,8 +995,12 @@ func startRegistry(t *testing.T) *registry {
 	// A free port on this machine; with Docker Desktop the host network is
 	// the VM's, where a clash is just as unlikely.
 	addr := "127.0.0.1:" + freePort(t)
+	if out, err := exec.CommandContext(t.Context(), "docker", "pull", "--quiet", registryImage).CombinedOutput(); err != nil { //nolint:gosec // fixed docker pull
+		t.Fatalf("pull %s: %v\n%s", registryImage, err, out)
+	}
+	// Standard output only: the container ID.
 	out, err := exec.CommandContext(t.Context(), "docker", "run", "--detach", "--rm", "--network", "host", //nolint:gosec // fixed docker run
-		"--env", "REGISTRY_HTTP_ADDR="+addr, registryImage).CombinedOutput()
+		"--env", "REGISTRY_HTTP_ADDR="+addr, registryImage).Output()
 	if err != nil {
 		t.Fatalf("start a registry: %v\n%s", err, out)
 	}
@@ -1006,11 +1010,12 @@ func startRegistry(t *testing.T) *registry {
 	})
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		if _, err := r.manifestDigest("_/_", "_"); err == nil || !strings.Contains(err.Error(), "refused") {
+		out, err := exec.CommandContext(t.Context(), "docker", "exec", r.id, "wget", "-q", "-O", "/dev/null", "http://"+addr+"/v2/").CombinedOutput() //nolint:gosec // fixed docker exec
+		if err == nil {
 			return r
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the registry did not start")
+			t.Fatalf("the registry did not start: %v\n%s", err, out)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

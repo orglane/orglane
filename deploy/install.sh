@@ -272,6 +272,19 @@ image_repo() {
 	esac
 }
 
+# has_registry_host <ref>: the reference names a registry host (ghcr.io/...,
+# localhost:5000/...), not only a Docker Hub or local name.
+has_registry_host() {
+	case $1 in
+	*/*) ;;
+	*) return 1 ;;
+	esac
+	case ${1%%/*} in
+	*.* | *:* | localhost) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
 # repo_digest <ref>: the registry digest (sha256:...) Docker recorded for the
 # repository of a pulled image reference, or nothing (an image built
 # locally). For a tag of a multi-arch image it is the index digest.
@@ -621,9 +634,9 @@ fetch_bundle() {
 # names another one. A registry image is pulled and pinned by the digest the
 # registry gives for its tag (<repo>:<tag>@sha256:<digest>). If no digest can
 # be resolved, it stops: a bare tag is never written. Only an image given
-# with --agent-image that exists on this machine without any registry digest
-# (built here with `docker build --target agent`) is used as it is, like
-# --image for the core.
+# with --agent-image under a name without a registry host that can't be
+# pulled but exists on this machine (built here with `docker build --target
+# agent`) is used as it is, like --image for the core.
 resolve_agent_image() {
 	if [ -n "$OPT_AGENT_IMAGE" ]; then
 		ref=$OPT_AGENT_IMAGE
@@ -646,14 +659,17 @@ resolve_agent_image() {
 		return 0
 		;;
 	esac
-	if [ -n "$OPT_AGENT_IMAGE" ] && docker image inspect "$ref" >/dev/null 2>&1 && [ -z "$(repo_digest "$ref")" ]; then
-		warn "the agent image $ref was built on this machine: it runs as it is, not pinned by a registry digest"
-		AGENT_IMAGE=$ref
-		return 0
-	fi
 	say "  pulling $ref"
-	out=$(docker pull "$ref" 2>&1) ||
+	if ! out=$(docker pull "$ref" 2>&1); then
+		# A name without a registry host that no registry has, but this
+		# machine has: an image built here.
+		if [ -n "$OPT_AGENT_IMAGE" ] && ! has_registry_host "$ref" && docker image inspect "$ref" >/dev/null 2>&1; then
+			warn "the agent image $ref was built on this machine (no registry has it): it runs as it is, not pinned by a registry digest"
+			AGENT_IMAGE=$ref
+			return 0
+		fi
 		die "could not pull the agent image $ref, so managed services were not enabled and nothing was changed: $out"
+	fi
 	digest=$(repo_digest "$ref")
 	[ -n "$digest" ] ||
 		die "could not resolve the agent image $ref to its registry digest, so managed services were not enabled and nothing was changed"
