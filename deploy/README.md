@@ -5,7 +5,7 @@ The one-command installer and the Docker Compose files.
 | Path | Contents |
 |---|---|
 | `install.sh` | The installer: checks the machine, writes the bundle and its settings, starts Orglane and prints the URL |
-| `compose/` | The production bundle: Traefik, the Orglane core and PostgreSQL |
+| `compose/` | The production bundle: Traefik, the Orglane core and PostgreSQL, and the agent for managed services (off by default) |
 | `compose/pebble/` | **Testing only:** an overlay that runs domain mode against Pebble, Let's Encrypt's ACME test server |
 | `dev/` | Local development only: a PostgreSQL for `make dev` and the matching `orglane.yaml` |
 
@@ -46,6 +46,26 @@ sh install.sh uninstall --purge   # also deletes the data directory (asks you to
 ```
 
 Add `--data-dir` when the install is not in the default place. Without a local copy, run them as `curl -fsSL https://orglane.app/install.sh | sh -s -- status`.
+
+### Managed services
+
+Managed services (such as Forgejo, from M2) run as Docker Compose projects next to Orglane. They are installed and kept running by the **agent** ([ADR 0019](../docs/adr/0019-agent-transport-and-packages.md), [docs/specs/agent.md](../docs/specs/agent.md)), the only container with access to Docker. They are **off by default**: the installer never enables them on its own, and the interactive installer doesn't ask. The core can't start the agent itself; enable it on the host:
+
+```sh
+curl -fsSL https://orglane.app/install.sh | sudo sh -s -- enable-managed   # an existing install
+sh install.sh --mode local --managed --yes                                 # a new one, enabled right away
+```
+
+`enable-managed` keeps the installed version (unless `--version` is given; the agent must have the core's version) and the secrets, then:
+
+- writes `COMPOSE_PROFILES=managed`, which starts the `agent` service, and `ORGLANE_INSTALL_MANAGED=true`. Later re-runs and upgrades keep managed services enabled;
+- **pins the agent image by digest:** it pulls `ghcr.io/orglane/orglane-agent:<version>`, reads the digest the registry gives for that tag (the multi-arch index) and writes `ORGLANE_AGENT_IMAGE=ghcr.io/orglane/orglane-agent:<version>@sha256:<digest>`. If the image can't be pulled or no digest can be resolved, it stops and changes nothing; it never writes a bare tag. `--agent-image` names another image; one that exists only on this machine (built with `docker build --target agent -t orglane-agent:dev .`, no registry digest) is used as it is, like `--image` for the core, with a warning;
+- writes `ORGLANE_AGENT_PUBLISH_ADDRESS`, where services publish their own ports (Forgejo SSH): `127.0.0.1` in local and demo mode, every interface (`0.0.0.0`) in domain mode, where those ports must also be open in the firewalls;
+- creates `instances/` (mode 700) in the data directory and runs `docker compose up --wait`, which waits until the agent answers its healthcheck.
+
+Every install gets `ORGLANE_AGENT_SECRET` (64 hex characters) in `.env`, the secret the core and the agent share, so enabling managed services later needs no new secret. `status` shows whether the agent is ready (`orglane agent healthcheck` in its container) and lists the service projects. `uninstall` stops the agent first, then runs `docker compose down` for every project under `instances/*/compose.yaml` (project `<COMPOSE_PROJECT_NAME>-<key>`, default `orglane-<key>`), then removes the bundle; their data stays until `--purge`.
+
+**Local and demo mode use `orglane.localhost` with managed services.** Inside a container the bare name `localhost` is the container itself (`/etc/hosts` comes before Docker's DNS), so a service could never reach a workspace at `http://localhost`. With managed services the base domain is `orglane.localhost`: the workspace is `http://orglane.localhost` and services get names such as `http://git.orglane.localhost`. Enabling them on an existing local install therefore **moves the workspace** from `http://localhost` (the installer says so and asks, unless `--yes`); people sign in again at the new address. Chrome, Firefox and Playwright resolve every `*.localhost` name to this machine without configuration. Safari on macOS doesn't resolve subdomains of `localhost`: use another browser, or add `/etc/hosts` entries such as `127.0.0.1 orglane.localhost git.orglane.localhost`. Inside Docker, services reach the workspace on port 80 only, so keep the default `--http-port` when services sign in with Orglane (the installer warns otherwise).
 
 ### Domain mode: DNS and reachability first
 
@@ -100,9 +120,10 @@ These environment variables are kept in `.env` (each must be a single line); a r
 - **demo mode:** one-click sign-in as the demo owner;
 - **an edge subnet clash:** with another Docker network on the edge subnet (the same /24, or a partial overlap) the install fails with a message that names `ORGLANE_EDGE_NETWORK_PREFIX`, and a re-run with a free prefix installs and keeps it in `.env`; a malformed prefix (from the environment, or kept in `.env` and edited by hand), and settings or options with more than one line, are refused before anything is written, and `.env` stays as it is;
 - **domain mode against Pebble:** a certificate is issued and HTTPS works; a re-run keeps the CA stored in `.env` (`--acme-ca staging`) and `acme.json`; `--acme-ca production` switches the CA, resets `acme.json` and gets a new certificate;
-- **domain mode without DNS:** the install is refused before anything is written or started.
+- **domain mode without DNS:** the install is refused before anything is written or started;
+- **managed services:** a default install has an agent secret but no agent; `enable-managed` on an existing local install refuses a custom build without `--agent-image` and an agent image it can't pull (`.env` unchanged, no agent), then pins an image pushed to a throwaway local registry by the registry's digest of its tag, moves the workspace to `orglane.localhost`, starts the agent and checks that the core reaches it over the shared socket and has no Docker socket; a re-run keeps managed services (with a locally built agent image used as it is); `uninstall` removes a service project under `instances/`; `--managed` on a fresh install; `enable-managed` on the Pebble domain install keeps its address and certificate and publishes service ports on every interface.
 
-Each test logs `install-time:`, the time from start to a ready workspace. `make lint` runs shellcheck on every shell script (`lint-sh`). Verification on a real VPS with a real domain is part of the M0 exit check.
+The tests build the agent image too (`docker build --target agent`) and pass it with `--agent-image`, the way `--image` passes the core image: no release is needed. Each test logs `install-time:`, the time from start to a ready workspace. `make lint` runs shellcheck on every shell script (`lint-sh`). Verification on a real VPS with a real domain is part of the M0 exit check.
 
 ## Reverse proxy and client addresses
 
@@ -113,17 +134,24 @@ The core takes the client IP (sign-in rate limiting, audit log) from the connect
 ```
                     :80 / :443
  internet ──────────► traefik ──── edge network ────► orglane :8080  (public listener: API, web app)
-                         │                              │
-                         └── polls ───────────────────► orglane :9090  (internal listener: Traefik routes)
-                                                        │
-                                       database network (no outside access)
-                                                        │
-                                                     postgres
+                       │  │                             │
+                       │  └── polls ──────────────────► orglane :9090  (internal listener: Traefik only)
+                       │                                │      │
+                       │                                │      │ unix socket (volume agent-run)
+                       │                                │      ▼
+                       │                                │    agent (profile managed, network none) ──► /var/run/docker.sock
+                       │                                │      │ writes instances/<key>/, runs docker compose
+                       │                       database network ▼
+                       └── edge network ──────► managed services (projects <project>-<key>)
+                                                        │      │
+                                                     postgres ◄── services network (no outside access)
 ```
 
 - **Traefik** (v3, pinned by version and digest) is the only container that publishes ports. It has a fixed address on the edge network (`<ORGLANE_EDGE_NETWORK_PREFIX>.2`), and that address is the only entry in the core's `server.trusted_proxies`, so client IPs come from Traefik's `X-Forwarded-For` and nobody else can set them. It has **no Docker socket** ([ADR 0008](../docs/adr/0008-ingress-domains-tunnels.md)): it polls its routes from the core through Traefik's HTTP provider.
 - **The core** serves those routes on an **internal listener** (`server.internal_listen`, `:9090` in the bundle) at `GET /traefik/config`. The internal listener is not published and Traefik does not route to it; the public listener does not serve `/traefik/config`. The routes are generated from the domain settings ([ADR 0018](../docs/adr/0018-domain-model.md)): a router for the workspace host, the security headers middleware and, in domain mode, TLS and the HTTP to HTTPS redirect. See `core/internal/ingress`.
-- **PostgreSQL** (18, pinned) sits on an internal network that only the core joins.
+- **PostgreSQL** (18, pinned) sits on an internal network that only the core joins, and on a second internal network, `services`, for managed services' databases (`svc_<key>`). The core is not on `services`.
+- **The agent** (profile `managed`, off by default, see [Managed services](#managed-services)) is the only container with the Docker socket. Its image, `ghcr.io/orglane/orglane-agent`, is the same binary as the core plus the Docker CLI and the Compose plugin, pinned by version and SHA-256 (the `agent` target of the root `Dockerfile`, published with the core image). It runs as root (the socket is root-equivalent anyway) with `network_mode: none`, a read-only root filesystem and only `CHOWN`, `DAC_OVERRIDE` and `FOWNER`. The core talks to it over a Unix socket in the `agent-run` volume, which only the two mount, with HMAC-signed requests and answers (`ORGLANE_AGENT_SECRET`); the agent accepts connections only from the core's uid (65532). The core container never gets the Docker socket or a Docker CLI.
+- **Managed services** join the edge network, so Traefik routes to them. Traefik carries the workspace host (without a port) as a network alias there (`ORGLANE_EDGE_WORKSPACE_ALIAS`, written by the installer; default the workspace host or base domain), so services reach Orglane by the same name and URL as browsers. Because they share that network with the core, the core's internal listener answers **only Traefik's address** (`server.internal_allowed_peers`, `ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS=<prefix>.2/32`); every other peer gets `403`.
 - Every service has a healthcheck and `restart: unless-stopped`. The core image is distroless and runs as a non-root user; the containers run with a read-only root filesystem where possible, no extra capabilities and `no-new-privileges`. Logs rotate at 3 × 10 MB per container.
 
 ### Data
@@ -134,8 +162,11 @@ Everything persistent lives under `ORGLANE_DATA_DIR` (default `/var/lib/orglane`
 |---|---|
 | `postgres/` | PostgreSQL data |
 | `traefik/acme.json` | ACME account and certificates (domain mode) |
+| `instances/` | Managed services (mode 700): `instances/<key>/` per service with its generated `compose.yaml`, `.env` (secrets, mode 600) and data; `instances/.agent/` holds the agent's state. See [docs/specs/agent.md](../docs/specs/agent.md#instance-directory) |
 
-Managed services will add `instances/<id>/` ([ADR 0006](../docs/adr/0006-agent-and-desired-state.md)). On macOS, set `ORGLANE_DATA_DIR` to a real path under your home directory without symlinks: Docker Desktop does not share `/var/lib`, and it creates missing directories below a symlinked path inside its VM instead of on the Mac.
+The files under `instances/<key>/` are generated: you can read them, but the agent overwrites manual edits on its next reconcile (every 10 minutes, and whenever a service's container stops). Settings change through Orglane.
+
+On macOS, set `ORGLANE_DATA_DIR` to a real path under your home directory without symlinks: Docker Desktop does not share `/var/lib`, and it creates missing directories below a symlinked path inside its VM instead of on the Mac.
 
 ### Configuration
 
@@ -161,6 +192,13 @@ Other variables (all optional; see `.env.example`):
 | `ORGLANE_POSTGRES_*` | see below | PostgreSQL sizing |
 | `ORGLANE_EDGE_NETWORK_PREFIX` | `10.231.0` | First three octets of the Traefik/core network (`<prefix>.0/24`); change it if it collides with a host network |
 | `ORGLANE_LOG_LEVEL`, `ORGLANE_TRAEFIK_LOG_LEVEL` | `info`, `INFO` | Log levels |
+| `COMPOSE_PROFILES` | empty | `managed` starts the agent (managed services) |
+| `ORGLANE_AGENT_SECRET` | empty | Secret shared by the core and the agent, at least 32 characters (`openssl rand -hex 32`). Empty disables managed services |
+| `ORGLANE_AGENT_IMAGE` | `ghcr.io/orglane/orglane-agent:<release>` | Agent image; pin it by digest (`...:<version>@sha256:<digest>`), same version as the core. `docker build --target agent -t orglane-agent:dev .` builds one |
+| `ORGLANE_AGENT_PUBLISH_ADDRESS` | `127.0.0.1` | Host address for ports that managed services publish (Forgejo SSH); `0.0.0.0` in domain mode |
+| `ORGLANE_EDGE_WORKSPACE_ALIAS` | the workspace host, else the base domain | Traefik's alias on the edge network for managed services: the workspace host without a port |
+
+In local mode with managed services, set `ORGLANE_DOMAIN_BASE=orglane.localhost` (see [Managed services](#managed-services)).
 
 The core validates the combination on start. Domain mode refuses `localhost` and a workspace host with a port, because no public certificate can be issued for them, and it requires `production` and `https`. Local mode requires `http`.
 
@@ -176,7 +214,7 @@ The defaults are light, for a small host ([ADR 0009](../docs/adr/0009-resource-p
 | `ORGLANE_POSTGRES_EFFECTIVE_CACHE_SIZE` | `512MB` | 50 % of RAM |
 | `ORGLANE_POSTGRES_WORK_MEM` | `4MB` | 4–16 MB (installer: 4 MB below 3.5 GB, 8 MB below 16 GB, else 16 MB) |
 | `ORGLANE_POSTGRES_MAINTENANCE_WORK_MEM` | `64MB` | 5 % of RAM, at least 64 MB, at most 1 GB |
-| `ORGLANE_POSTGRES_MAX_CONNECTIONS` | `50` | Raise when managed services share the instance (installer: 100 from 3.5 GB) |
+| `ORGLANE_POSTGRES_MAX_CONNECTIONS` | `50` | Raise when managed services share the instance: each service's role may use up to 20 (installer: 100 from 3.5 GB) |
 
 For example, a 4 GB VPS: `1GB`, `2GB`, `8MB`, `256MB`, `100`.
 
@@ -216,7 +254,7 @@ Use the same path as `ORGLANE_DATA_DIR` in `.env` (default `/var/lib/orglane`). 
 
 [Pebble](https://github.com/letsencrypt/pebble) is Let's Encrypt's ACME test server. The overlay `compose/pebble/compose.pebble.yaml` adds it to the bundle, points Traefik's resolver at it, switches the core to domain mode for `work.orglane.test`, and gives Traefik that name as a network alias, so Pebble validates the HTTP-01 challenge against Traefik inside the Compose network. No public DNS or open ports are involved.
 
-The automated test does all of this (`make test-compose`, also part of `make test-integration`). By hand:
+The automated test does all of this (`make test-compose`, also part of `make test-integration`). The same target starts the bundle with `COMPOSE_PROFILES=managed` and the agent image built from the checkout: the agent becomes healthy and reaches Docker, the core reaches the agent, the core container has neither the Docker socket nor a Docker CLI, PostgreSQL is on the services network and the core is not, and a container on the edge network reaches the workspace by its name (`orglane.localhost`) but gets `403` from the core's internal listener. By hand:
 
 ```sh
 make image

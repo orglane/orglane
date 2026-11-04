@@ -214,6 +214,13 @@ type Server struct {
 	// reachable from Traefik, never published. Empty (the default) disables
 	// it.
 	InternalListen string `yaml:"internal_listen"`
+	// InternalAllowedPeers is a comma-separated list of the addresses
+	// (CIDRs) that may use the internal listener, e.g. the Traefik
+	// container, "172.30.0.2/32"; requests from other peers get 403. Empty
+	// (the default) or "any" allows every peer that can reach the listener.
+	// The Compose bundle sets Traefik's fixed address: managed services
+	// share the network with the core (docs/specs/agent.md).
+	InternalAllowedPeers string `yaml:"internal_allowed_peers"`
 	// ShutdownTimeout bounds graceful shutdown. Defaults to 15s.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 	// TrustedProxies is a comma-separated list of the addresses (CIDRs) of
@@ -232,6 +239,21 @@ func (s Server) TrustedProxyPrefixes() ([]netip.Prefix, error) {
 	if raw == "" || strings.EqualFold(raw, "none") {
 		return nil, nil
 	}
+	return parsePrefixes(raw)
+}
+
+// InternalAllowedPeerPrefixes parses Server.InternalAllowedPeers. No
+// prefixes means every peer is allowed.
+func (s Server) InternalAllowedPeerPrefixes() ([]netip.Prefix, error) {
+	raw := strings.TrimSpace(s.InternalAllowedPeers)
+	if raw == "" || strings.EqualFold(raw, "any") {
+		return nil, nil
+	}
+	return parsePrefixes(raw)
+}
+
+// parsePrefixes parses a comma-separated list of CIDRs.
+func parsePrefixes(raw string) ([]netip.Prefix, error) {
 	var out []netip.Prefix
 	for part := range strings.SplitSeq(raw, ",") {
 		p, err := netip.ParsePrefix(strings.TrimSpace(part))
@@ -613,6 +635,9 @@ func (c *Config) Validate() error {
 	}
 	if _, err := c.Server.TrustedProxyPrefixes(); err != nil {
 		fail("server.trusted_proxies", "%v (a comma-separated list of CIDRs, or none)", err)
+	}
+	if _, err := c.Server.InternalAllowedPeerPrefixes(); err != nil {
+		fail("server.internal_allowed_peers", "%v (a comma-separated list of CIDRs, or any)", err)
 	}
 
 	switch {

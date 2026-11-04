@@ -186,3 +186,41 @@ func TestHandler(t *testing.T) {
 		}
 	}
 }
+
+// TestHandlerAllowedPeers: with server.internal_allowed_peers set, only those
+// peers get the configuration; every other peer gets 403, whatever its
+// headers say.
+func TestHandlerAllowedPeers(t *testing.T) {
+	for _, tc := range []struct {
+		name, allowed, peer string
+		want                int
+	}{
+		{"allowed peer", "10.231.0.2/32", "10.231.0.2:41234", http.StatusOK},
+		{"other peer on the network", "10.231.0.2/32", "10.231.0.130:41234", http.StatusForbidden},
+		{"one of several", "10.231.0.2/32, fd00::2/128", "[fd00::2]:41234", http.StatusOK},
+		{"IPv4-mapped peer", "10.231.0.2/32", "[::ffff:10.231.0.2]:41234", http.StatusOK},
+		{"unparsable peer", "10.231.0.2/32", "pipe", http.StatusForbidden},
+		{"default allows any", "", "192.0.2.7:41234", http.StatusOK},
+		{"any", "any", "192.0.2.7:41234", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS": tc.allowed})
+			h, err := NewHandler(cfg, slog.New(slog.DiscardHandler))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, ConfigPath, http.NoBody)
+			req.RemoteAddr = tc.peer
+			// A forwarded header never makes a peer allowed.
+			req.Header.Set("X-Forwarded-For", "10.231.0.2")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Errorf("GET %s from %s = %d, want %d", ConfigPath, tc.peer, rec.Code, tc.want)
+			}
+			if tc.want == http.StatusForbidden && bytes.Contains(rec.Body.Bytes(), []byte("orglane-workspace")) {
+				t.Errorf("refused answer carries the configuration: %s", rec.Body)
+			}
+		})
+	}
+}

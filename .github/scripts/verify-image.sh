@@ -4,15 +4,19 @@
 #
 #   - the index has exactly the expected platforms;
 #   - every platform carries an SBOM and a provenance attestation;
-#   - the binary of every platform reports the release version.
+#   - the binary of every platform reports the release version;
+#   - the agent image (target agent): the Docker CLI and the Compose plugin
+#     run on every platform.
 #
-# Usage: verify-image.sh <image@digest> <version> <platforms>
+# Usage: verify-image.sh <image@digest> <version> <platforms> [<target>]
 #   platforms  comma-separated, for example linux/amd64,linux/arm64
+#   target     the Dockerfile target: core (default) or agent
 #
 # Needs docker with buildx and, for foreign platforms, QEMU (binfmt).
 set -euo pipefail
 
-ref=$1 version=$2 platforms=$3
+ref=$1 version=$2 platforms=$3 target=${4:-core}
+case $target in core | agent) ;; *) echo "unknown target '$target'" >&2; exit 2 ;; esac
 fail() { echo "::error title=Image verification::$*" >&2; exit 1; }
 
 echo "== $ref"
@@ -44,5 +48,12 @@ for p in ${platforms//,/ }; do
   out=$(docker run --rm --platform "$p" "${ref%@*}@$m" cli version)
   [ "$out" = "orglane $version" ] || fail "$p: 'orglane cli version' printed '$out', want 'orglane $version'"
   echo "version ($p, $m): $out"
+  if [ "$target" = agent ]; then
+    docker=$(docker run --rm --platform "$p" --entrypoint /usr/local/bin/docker "${ref%@*}@$m" --version) ||
+      fail "$p: the Docker CLI does not run"
+    compose=$(docker run --rm --platform "$p" --entrypoint /usr/local/bin/docker "${ref%@*}@$m" compose version) ||
+      fail "$p: the Compose plugin does not run"
+    echo "docker tools ($p): $docker; $compose"
+  fi
 done
 echo "OK"

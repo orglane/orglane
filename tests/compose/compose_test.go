@@ -6,7 +6,12 @@
 //
 //   - local mode: plain HTTP routing by Host header to /healthz and /readyz;
 //   - domain mode: certificate issuance against Pebble, Let's Encrypt's ACME
-//     test server, then HTTPS, HSTS and the HTTP to HTTPS redirect.
+//     test server, then HTTPS, HSTS and the HTTP to HTTPS redirect;
+//   - managed services (profile "managed"): the agent image built from this
+//     repository starts, the core reaches it over the shared socket, the core
+//     container has neither the Docker socket nor a Docker CLI, managed
+//     services on the edge network reach the workspace by its name but not
+//     the core's internal listener.
 //
 // Needs Docker with Compose v2. Run with `make test-compose` or
 // `go test -tags integration ./tests/compose/`.
@@ -38,6 +43,8 @@ import (
 const (
 	// image is the core image built from this repository for the tests.
 	image = "orglane:compose-test"
+	// agentImage is the agent image (target agent) built from it.
+	agentImage = "orglane-agent:compose-test"
 	// testDomain resolves to Traefik inside the Compose network only (see
 	// deploy/compose/pebble/compose.pebble.yaml).
 	testDomain = "work.orglane.test"
@@ -57,11 +64,14 @@ func TestMain(m *testing.M) {
 }
 
 func buildImage() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", "build", "--build-arg", "VERSION=compose-test", "-t", image, repoRoot) //nolint:gosec // fixed docker build of this repository
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w\n%s", err, out)
+	for _, args := range [][]string{{"-t", image}, {"--target", "agent", "-t", agentImage}} {
+		args = append(append([]string{"build", "--build-arg", "VERSION=compose-test"}, args...), repoRoot)
+		cmd := exec.CommandContext(ctx, "docker", args...) //nolint:gosec // fixed docker build of this repository
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("%w\n%s", err, out)
+		}
 	}
 	return nil
 }
@@ -517,4 +527,120 @@ func parsePEMCert(data []byte) (*x509.Certificate, error) {
 		return nil, errors.New("no PEM certificate")
 	}
 	return x509.ParseCertificate(block.Bytes)
+}
+
+// TestManagedProfile starts the bundle with managed services enabled, the way
+// install.sh enable-managed does in local mode (workspace orglane.localhost).
+func TestManagedProfile(t *testing.T) {
+	t.Parallel()
+	const (
+		prefix    = "10.231.103"
+		workspace = "orglane.localhost"
+	)
+	b := startBundle(t, []string{"compose.yaml"},
+		"ORGLANE_INGRESS_MODE=local",
+		"ORGLANE_EDGE_NETWORK_PREFIX="+prefix,
+		"ORGLANE_DOMAIN_BASE="+workspace,
+		"COMPOSE_PROFILES=managed",
+		"ORGLANE_AGENT_IMAGE="+agentImage,
+		"ORGLANE_AGENT_SECRET="+randomHex(t, 32),
+	)
+	// compose up --wait returned, so the agent's healthcheck (a signed
+	// request over its socket) passed. The workspace answers on its name.
+	web := "http://" + b.port("traefik", 80)
+	client := &http.Client{CheckRedirect: noRedirects}
+	waitFor(t, client, web+"/readyz", workspace, time.Minute)
+
+	// The agent got the bundle's settings.
+	for name, want := range map[string]string{
+		"ORGLANE_AGENT_COMPOSE_PROJECT": b.project,
+		"ORGLANE_AGENT_DATA_DIR":        b.dataDir,
+		"ORGLANE_AGENT_PEER_UID":        "65532",
+		"ORGLANE_AGENT_PUBLISH_ADDRESS": "127.0.0.1",
+	} {
+		if got := b.containerEnv("agent", name); got != want {
+			t.Errorf("agent %s = %q, want %q", name, got, want)
+		}
+	}
+	if got := b.inspect("agent", "{{.HostConfig.NetworkMode}} {{.Config.User}} {{.HostConfig.ReadonlyRootfs}}"); got != "none 0:0 true" {
+		t.Errorf("agent network mode, user, read-only = %q, want none 0:0 true", got)
+	}
+	// The agent's image carries the Docker CLI and the Compose plugin, and
+	// they reach the daemon through the mounted socket.
+	if out, err := b.compose("exec", "-T", "agent", "/usr/local/bin/docker", "compose", "version"); err != nil || !strings.Contains(out, "Docker Compose version") {
+		t.Errorf("docker compose in the agent: %v\n%s", err, out)
+	}
+	if out, err := b.compose("exec", "-T", "agent", "/usr/local/bin/docker", "ps", "--quiet",
+		"--filter", "label=com.docker.compose.project="+b.project, "--filter", "label=com.docker.compose.service=postgres"); err != nil || strings.TrimSpace(out) == "" {
+		t.Errorf("the agent does not see the bundle's PostgreSQL through the Docker socket: %v\n%s", err, out)
+	}
+
+	// The core (uid 65532) reaches the agent over the agent-run volume with
+	// the shared secret: the signed health request and the signed answer.
+	out, err := b.compose("exec", "-T", "-e", "ORGLANE_AGENT_LISTEN=/run/orglane-agent/agent.sock", "orglane",
+		"/usr/local/bin/orglane", "agent", "healthcheck")
+	if err != nil || !strings.Contains(out, "agent compose-test ready") {
+		t.Errorf("agent health from the core container: %v\n%s", err, out)
+	}
+	if got := b.containerEnv("orglane", "ORGLANE_AGENT_SOCKET"); got != "/run/orglane-agent/agent.sock" {
+		t.Errorf("core ORGLANE_AGENT_SOCKET = %q", got)
+	}
+
+	// The core container never has the Docker socket, nor a Docker CLI.
+	var mounts []struct{ Source, Destination string }
+	if err := json.Unmarshal([]byte(b.inspect("orglane", "{{json .Mounts}}")), &mounts); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range mounts {
+		if strings.Contains(m.Source, "docker.sock") || strings.Contains(m.Destination, "docker.sock") {
+			t.Errorf("the core container mounts %s at %s", m.Source, m.Destination)
+		}
+	}
+	for _, path := range []string{"/usr/local/bin/docker", "/usr/bin/docker", "/var/run/docker.sock", "/run/docker.sock"} {
+		if out, err := b.compose("exec", "-T", "orglane", path, "--version"); err == nil {
+			t.Errorf("the core container has %s:\n%s", path, out)
+		}
+	}
+
+	// PostgreSQL is on the services network, the core is not.
+	if b.containerIP("postgres", "services") == "" {
+		t.Error("PostgreSQL is not on the services network")
+	}
+	var networks map[string]any
+	if err := json.Unmarshal([]byte(b.inspect("orglane", "{{json .NetworkSettings.Networks}}")), &networks); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := networks[b.project+"_services"]; ok {
+		t.Error("the core is on the services network")
+	}
+
+	// A managed service on the edge network reaches the workspace by its
+	// public name (Traefik's alias), but not the core's internal listener,
+	// which answers Traefik only.
+	pg := ""
+	images, err := b.compose("config", "--images")
+	if err != nil {
+		t.Fatalf("compose config --images: %v\n%s", err, images)
+	}
+	for img := range strings.FieldsSeq(images) {
+		if strings.HasPrefix(img, "postgres:") {
+			pg = img
+		}
+	}
+	service := func(url string) (string, error) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "docker", "run", "--rm", "--network", b.project+"_edge", //nolint:gosec // fixed docker run
+			"--entrypoint", "wget", pg, "-q", "-O", "-", "-T", "10", url).CombinedOutput()
+		return string(out), err
+	}
+	if out, err := service("http://" + workspace + "/healthz"); err != nil || !strings.Contains(out, `"ok"`) {
+		t.Errorf("a service on the edge network: GET http://%s/healthz: %v\n%s", workspace, err, out)
+	}
+	if out, err := service("http://orglane:9090/traefik/config"); err == nil || strings.Contains(out, "orglane-workspace") || !strings.Contains(out, "403") {
+		t.Errorf("a service on the edge network got the internal listener (want 403): %v\n%s", err, out)
+	}
+	if got := b.containerEnv("orglane", "ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS"); got != prefix+".2/32" {
+		t.Errorf("internal allowed peers = %q, want Traefik's address %s.2/32", got, prefix)
+	}
 }

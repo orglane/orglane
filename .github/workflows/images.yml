@@ -1,19 +1,28 @@
 # Container images (issue #10). See docs/releasing.md.
 #
-# Builds the root Dockerfile for linux/amd64 and linux/arm64 and publishes it
-# to ghcr.io/orglane/orglane. The image carries an SBOM and a SLSA provenance
-# attestation, and the binary reports the release version
-# (`orglane cli version`).
+# Builds the two images of the root Dockerfile for linux/amd64 and
+# linux/arm64 and publishes them with the same version tags:
+#
+#   ghcr.io/orglane/orglane        the core (default target)
+#   ghcr.io/orglane/orglane-agent  the agent for managed services (target
+#                                  agent: the same binary plus the pinned
+#                                  Docker CLI and Compose plugin, ADR 0019)
+#
+# Each image carries an SBOM and a SLSA provenance attestation, and the
+# binary reports the release version (`orglane cli version`). The installer
+# pins the agent image by the digest of its version tag.
 #
 # Two jobs, so that overlapping releases cannot move an alias backwards:
 #
-#   build    runs per release, in parallel with other releases. It pushes the
-#            image by digest, verifies it, and only then tags the exact
-#            version (0.1.0). Exact tags are never shared between releases.
+#   build    runs per release and image, in parallel with other releases.
+#            It pushes the image by digest, verifies it, and only then tags
+#            the exact version (0.1.0). Exact tags are never shared between
+#            releases.
 #   promote  moves the shared aliases: latest (newest release) and X.Y
 #            (newest patch of each line). It runs in one concurrency group for
-#            all releases and recomputes every alias from the tags in the
-#            registry right before it moves them (`ci release-aliases`), so a
+#            all releases and recomputes every alias of both images from the
+#            tags in the registry right before it moves them
+#            (`ci release-aliases`), after both images are built, so a
 #            release that finishes after a newer one leaves the aliases alone.
 #            GitHub keeps one pending run per group and cancels older pending
 #            ones; that is harmless, since every run reconciles all aliases.
@@ -25,10 +34,11 @@
 #   - a v* tag pushed by a maintainer, for example a prerelease.
 #
 # Minutes: it runs only for release tags, never for pull requests or pushes to
-# main. One amd64 runner builds both architectures without emulation: the
-# Dockerfile's build stage runs on the build platform and cross-compiles Go,
-# and the distroless final stage has no RUN step. QEMU is only used to
-# smoke-test the arm64 image. Layers are cached in the GitHub Actions cache.
+# main. One amd64 runner per image builds both architectures without
+# emulation: the Dockerfile's build and download stages run on the build
+# platform (Go cross-compiles), and the distroless final stages have no RUN
+# step. QEMU is only used to smoke-test the arm64 images. Layers are cached in
+# the GitHub Actions cache, one scope per image.
 #
 # Signing: the image is signed with keyless cosign. The signatures are
 # recorded in Sigstore's public transparency log (Rekor), which publishes the
@@ -56,26 +66,43 @@ permissions: {}
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
-  IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   build:
-    name: Build and publish
+    name: Build and publish (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      # An agent image without its core image (or the reverse) is useless:
+      # the installer needs both of one version. Nothing is tagged before
+      # its own verification, so a failed leg leaves no tag behind; the
+      # other leg finishing does no harm.
+      fail-fast: false
+      matrix:
+        include:
+          - name: orglane
+            suffix: ""
+            target: core
+            description: "Orglane core: server, agent and cli"
+          - name: orglane-agent
+            suffix: -agent
+            target: agent
+            description: "Orglane agent: installs and runs managed services with Docker Compose"
     concurrency:
-      group: images-build-${{ inputs.tag || github.ref_name }}
+      group: images-build-${{ inputs.tag || github.ref_name }}-${{ matrix.target }}
       cancel-in-progress: false
     permissions:
       contents: read
-      packages: write # push to ghcr.io/<repository>
+      packages: write # push to ghcr.io/<repository> and ghcr.io/<repository>-agent
       id-token: write # keyless cosign signing (skipped when the repository is private)
     env:
       PLATFORMS: linux/amd64,linux/arm64
+      # ghcr.io/orglane/orglane or ghcr.io/orglane/orglane-agent.
+      IMAGE: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
+      TARGET: ${{ matrix.target }}
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      # The same for both legs.
       prerelease: ${{ steps.version.outputs.prerelease }}
-      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,6 +140,7 @@ jobs:
           # The checked-out tag, not the Git context of the triggering ref
           # (main when called from the Release workflow).
           context: .
+          target: ${{ matrix.target }}
           platforms: ${{ env.PLATFORMS }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
@@ -121,10 +149,11 @@ jobs:
             org.opencontainers.image.revision=${{ steps.version.outputs.revision }}
             org.opencontainers.image.created=${{ steps.version.outputs.created }}
           # GHCR reads the description and the source of a multi-arch image
-          # from its index.
+          # from its index; the source links a new package (the first agent
+          # image) to this repository.
           annotations: |
-            index:org.opencontainers.image.title=orglane
-            index:org.opencontainers.image.description=Orglane core: server, agent and cli
+            index:org.opencontainers.image.title=${{ matrix.name }}
+            index:org.opencontainers.image.description=${{ matrix.description }}
             index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             index:org.opencontainers.image.licenses=AGPL-3.0-or-later
             index:org.opencontainers.image.version=${{ steps.version.outputs.version }}
@@ -132,14 +161,14 @@ jobs:
             index:org.opencontainers.image.created=${{ steps.version.outputs.created }}
           provenance: mode=max
           sbom: true
-          cache-from: type=gha,scope=images
-          cache-to: type=gha,scope=images,mode=max
+          cache-from: type=gha,scope=images-${{ matrix.target }}
+          cache-to: type=gha,scope=images-${{ matrix.target }},mode=max
 
       - name: Verify the image
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           VERSION: ${{ steps.version.outputs.version }}
-        run: .github/scripts/verify-image.sh "$IMAGE@$DIGEST" "$VERSION" "$PLATFORMS"
+        run: .github/scripts/verify-image.sh "$IMAGE@$DIGEST" "$VERSION" "$PLATFORMS" "$TARGET"
 
       - id: visibility
         name: Check the repository visibility
@@ -204,21 +233,46 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - id: aliases
-        name: Compute the aliases from the registry
+      # The two images one after the other, each recomputed from its own
+      # tags right before its aliases move.
+      - id: aliases-core
+        name: Compute the core image's aliases from the registry
         env:
           CI_TOOL: ${{ steps.tool.outputs.path }}
+          IMAGE: ghcr.io/${{ github.repository }}
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ github.token }}
         run: '"$CI_TOOL" release-aliases -image "$IMAGE"'
 
-      - name: Move the aliases
+      - name: Move the core image's aliases
         env:
-          ALIASES: ${{ steps.aliases.outputs.aliases }}
+          IMAGE: ghcr.io/${{ github.repository }}
+          ALIASES: ${{ steps.aliases-core.outputs.aliases }}
         run: |
           .github/scripts/promote-aliases.sh "$IMAGE" "$ALIASES" | tee promote.log
           {
-            echo "## Aliases after $TAG"
+            echo "## Aliases of $IMAGE after $TAG"
+            echo
+            sed 's/^/- /' promote.log | grep -E '^- [^ ]+: '
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - id: aliases-agent
+        name: Compute the agent image's aliases from the registry
+        env:
+          CI_TOOL: ${{ steps.tool.outputs.path }}
+          IMAGE: ghcr.io/${{ github.repository }}-agent
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ github.token }}
+        run: '"$CI_TOOL" release-aliases -image "$IMAGE"'
+
+      - name: Move the agent image's aliases
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}-agent
+          ALIASES: ${{ steps.aliases-agent.outputs.aliases }}
+        run: |
+          .github/scripts/promote-aliases.sh "$IMAGE" "$ALIASES" | tee promote.log
+          {
+            echo "## Aliases of $IMAGE after $TAG"
             echo
             sed 's/^/- /' promote.log | grep -E '^- [^ ]+: '
           } >> "$GITHUB_STEP_SUMMARY"
