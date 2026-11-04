@@ -511,14 +511,14 @@ CREATE TABLE app_credentials (
     name        text NOT NULL CHECK (name ~ '^[a-z][a-z0-9_]{0,40}$'),
     version     integer NOT NULL CHECK (version > 0),
     ciphertext  bytea NOT NULL,
-    state       text NOT NULL CHECK (state IN ('pending', 'active', 'retiring', 'discarded')),
+    state       text NOT NULL CHECK (state IN ('pending', 'uncertain', 'active', 'retiring', 'discarded')),
     created_at  timestamptz NOT NULL DEFAULT now(),
     activated_at timestamptz,         -- when the provider acknowledged it
     retire_at   timestamptz,          -- retiring versions stay valid until then
     PRIMARY KEY (instance_id, name, version)
 );
 CREATE UNIQUE INDEX app_credentials_active_key ON app_credentials (instance_id, name) WHERE state = 'active';
-CREATE UNIQUE INDEX app_credentials_pending_key ON app_credentials (instance_id, name) WHERE state = 'pending';
+CREATE UNIQUE INDEX app_credentials_pending_key ON app_credentials (instance_id, name) WHERE state IN ('pending', 'uncertain');
 ```
 
 See [Credentials](#credentials).
@@ -720,9 +720,19 @@ Events reference **external accounts**, not people. Recipients are resolved thro
 - **Rotation is staged**, so the working credential is never retired before its replacement works:
   1. Insert the new version as `pending`. The `active` version stays in use for every outgoing call. At most one pending version per name.
   2. A retried job `orglane.apps.rotate_credential` hands the pending value to its consumer: the provider (Forgejo: update the org hook; GitHub: `PATCH /app/hook/config` with the App JWT; Forgejo `admin_token`: mint the new token) or the agent (a new desired generation for `Agent` credentials, acknowledged when the operation succeeds).
-  3. On acknowledgment, in one transaction: pending → `active` (`activated_at` = now), old active → `retiring` with `retire_at = activated_at + Overlap` (24 h for webhook secrets, 1 h for others). For incoming verification (webhooks), `Env.Credentials` returns pending, active and retiring versions, so deliveries signed with either secret verify during the whole changeover, however long the provider update takes.
-  4. If the job exhausts its retries, the pending version becomes `discarded`, the active one stays, and the rotation is reported failed (`app_credential.rotation_failed`); an admin can retry.
-  5. The daily cleanup deletes `retiring` versions after `retire_at` and `discarded` versions after 7 days.
+  3. Each attempt ends in one of three outcomes, and the adapter must classify it:
+     - **Acknowledged** (the provider answered success, or a read-back proves the new value is in use): in one transaction, the candidate → `active` (`activated_at` = now), old active → `retiring` with `retire_at = activated_at + Overlap` (24 h for webhook secrets, 1 h for others).
+     - **Rejected** (a definite answer that the change was not made, such as a validation error before anything was written): the candidate → `discarded`; the active version is untouched. Only a proven rejection discards.
+     - **Unknown** (timeout, connection reset, 5xx, the worker dying mid-call: the provider may or may not have committed the change): the candidate → `uncertain`. It is never discarded and never retired while uncertain.
+  4. **Resolving `uncertain`**, by the same job, retried with backoff capped at one hour and without an attempt limit:
+     - Proof by use: a webhook delivery that verifies only with the uncertain secret proves the provider uses it → acknowledged. A delivery that verifies only with the active secret proves nothing (it may have been sent before the change).
+     - Read-back where the provider offers it: Forgejo `admin_token`: tokens are created with a name that contains the version (`orglane-<version>`); listing the service user's token names shows whether the mint committed; a committed token whose value was lost is deleted and the mint repeated. Agent credentials: the operation ID is persisted, and its state is read from the agent. Webhook secrets: neither Forgejo nor GitHub returns the secret, so there is no read-back.
+     - Re-apply: setting the same value again is idempotent (hook update, `PATCH /app/hook/config`), so the job re-sends the uncertain value until it gets a definite answer; success → acknowledged.
+     - Abandon (admin action only): the job first re-applies the **active** value to the provider until acknowledged, and only then marks the candidate `discarded`.
+     After 24 h in `uncertain` the instance shows `rotation_stuck` to admins (audit `app_credential.rotation_stuck`); nothing is retired or discarded automatically.
+  5. For incoming verification, `Env.Credentials` returns `pending`, `uncertain`, `active` and `retiring` versions, so deliveries signed with whichever secret the provider actually uses verify during the whole changeover.
+  6. The daily cleanup deletes `retiring` versions after `retire_at` and `discarded` versions after 7 days. It never deletes `pending` or `uncertain` versions.
+  7. Tests (#58 with `testprovider`, #63/#66 against the real provider): "provider committed, response lost" by a fault-injecting HTTP transport in front of the real API that forwards the request and then drops the response; across several retries and a worker restart the candidate stays `uncertain`, both secrets verify deliveries, and it becomes `active` after re-apply; a proven rejection discards; abandon re-applies the old value first.
 - **Rollbacks and snapshots:** a snapshot restore can bring back provider-side state from before a rotation (for example Forgejo's stored hook secret or tokens minted later). Therefore, after every rollback or restore, the core runs `Lifecycle.Setup` again (idempotent) before the instance returns to `active`; it re-asserts the admin token and calls `EnsureWebhooks` with the active secrets. The agent's snapshot keeps its own copy of the secrets it was rendered with, so no core-side version has to be kept for it.
 - Each rotation step writes an audit entry (`app_credential.rotated` on activation) with name and version only.
 - **Master secret:** credentials depend on `identity.master_secret` like every other sealed column. It must never change (existing rule); re-encryption under a new master secret is out of scope.
@@ -953,11 +963,12 @@ Open-redirect protection is layered: Orglane validates `to`; the OIDC client has
 
 ### Forgejo OIDC configured automatically (#62)
 
-1. On install, the core creates OIDC client `app-<key>` with `identity.CreateOIDCClient` (confidential, `client_secret_basic`, redirect URI `https://<forgejo host>/user/oauth2/orglane/callback`, audited) and stores the secret as credential `oidc_client_secret`.
+1. On install, the core creates OIDC client `app-<key>` with `identity.CreateOIDCClient` (confidential, `client_secret_basic`, audited) and stores the secret as credential `oidc_client_secret`. The redirect URI is built from the instance's configured base URL, including scheme and port: `BaseURL` + `/user/oauth2/orglane/callback`, so `https://git.acme.com/user/oauth2/orglane/callback` in domain mode and `http://git.orglane.localhost/user/oauth2/orglane/callback` in local mode. The same base URL is Forgejo's `ROOT_URL`, and a change of the instance host updates both (the client's redirect URIs and a new desired generation). No code builds the callback from a hard-coded scheme.
 2. The secret and the issuer URL go to the agent as inputs. The package's `configure` hook runs `forgejo admin auth add-oauth` (or `update-oauth` when the source exists) with `--provider openidConnect` and `--auto-discover-url <issuer>/.well-known/openid-configuration`, reading the secret from the container environment (agent.md "Hooks").
 3. Forgejo settings in the template: registration only through the external source, no local sign-in form for people (the service admin keeps API access), username from `preferred_username`.
 4. Accounts are pre-created by provisioning with `source_id` of that source and `login_name` = the person's OIDC subject, so the first SSO sign-in matches the existing account.
 5. The Forgejo container reaches the issuer through Traefik under its public name (agent.md "Networking").
+6. Tests (#62, required for acceptance): a full OIDC round trip into Forgejo in **both** modes, domain mode (`https`) and local mode (`http://orglane.localhost` issuer, `http://git.orglane.localhost` callback), asserting the registered redirect URI equals the one Forgejo sends.
 
 ### GitHub
 
@@ -1070,7 +1081,7 @@ New target kinds: `app_instance`, `account_link`. System jobs use `audit.System`
 | Framework | Unit tests with `testprovider`: plan/apply ordering, idempotent rerun, partial failure, retry classification, snooze on `RetryAfter`, removal guard, desired access computation, `to` validation corpus, webhook verification and dedupe | #58 |
 | Store | Integration tests (`pgtest`) for every table: constraints, unique links, append-only events, credential sealing and AD binding, migration up/down | #58 |
 | API | Allowed and denied tests for every operation; audit entries per mutation | #58 onward |
-| Forgejo | testcontainers with the **same image reference** as the package manifest (read from the embedded manifest in the test): accounts, teams, webhooks with real signatures, deep link through a real OIDC round trip; agent install path in `tests/integration` | #61–#63 |
+| Forgejo | testcontainers with the **same image reference** as the package manifest (read from the embedded manifest in the test): accounts, teams, webhooks with real signatures, deep link through a real OIDC round trip in domain mode and in local mode (`http://git.orglane.localhost`); agent install path in `tests/integration` | #61–#63 |
 | GitHub | Live tests against a real test organization and test GitHub App (below) | #64–#66 |
 | Web | Playwright: Settings → Apps, install flow, connect up to the GitHub redirect, the link step up to the GitHub redirect | #58, #61, #64, #65 |
 
@@ -1131,7 +1142,7 @@ Behavior:
 | #59 Agent | [agent.md](agent.md): Process model, Transport, Agent API, Desired state and reconciliation, Instance directory, Package format (rendering, policy), Networking, Per-service database, Status and logs; here: Managed instance lifecycle (steps 2–3) |
 | #60 Upgrades | [agent.md](agent.md): Reconcile loop (blocked generations), Snapshots, Upgrade (automatic start, write fence, recovery); here: `app_operations`, Managed instance lifecycle (revert, Setup after rollback) |
 | #61 Forgejo package | [agent.md](agent.md) Package format, Local mode, Forgejo SSH; here: Managed instance lifecycle, Keys and removal, Ingress routes, Provider specifics → Forgejo (install, setup) |
-| #62 Forgejo SSO and provisioning | Deep links and silent SSO, Forgejo OIDC configured automatically, Provisioning, Provider specifics → Forgejo |
+| #62 Forgejo SSO and provisioning | Deep links and silent SSO, Forgejo OIDC configured automatically (redirect URI from the base URL; local-mode round-trip test), Provisioning, Provider specifics → Forgejo |
 | #63 Forgejo webhooks | Webhooks, Normalized events, Provider specifics → Forgejo (webhooks) |
 | #64 GitHub App | Adapter contracts (Connector), Credentials, Provider specifics → GitHub (connect, permissions, tokens), GitHub live tests |
 | #65 GitHub linking and access | Account links, Desired access, Provisioning (removal guard, employee steps), Provider specifics → GitHub |

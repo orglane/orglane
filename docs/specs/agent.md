@@ -23,9 +23,10 @@ It refines [ADR 0006](../adr/0006-agent-and-desired-state.md) and [ADR 0007](../
 ```yaml
 services:
   agent:
-    # Same convention as ORGLANE_IMAGE: the installer writes the release tag
-    # (the same one as the core image) into .env.
-    image: ${ORGLANE_AGENT_IMAGE:-ghcr.io/orglane/orglane-agent:latest}
+    # Pinned by version and digest (AGENTS.md). The bundle names the release
+    # tag; the installer resolves it to the registry digest and writes
+    # ghcr.io/orglane/orglane-agent:<tag>@sha256:<digest> into .env.
+    image: ${ORGLANE_AGENT_IMAGE:-ghcr.io/orglane/orglane-agent:<release tag>}
     profiles: [managed]
     restart: unless-stopped
     command: ["agent"]
@@ -91,8 +92,8 @@ volumes:
 ```
 
 - **Opt-in, off by default (ADR 0006, maintainer decision):** the `agent` service only starts with `COMPOSE_PROFILES=managed`. Without it the core runs unchanged and `GET /api/v1/apps/agent` reports `not_connected`. The core cannot start the agent itself, so Settings → Apps shows the exact one-line command to run on the host, `curl -fsSL https://orglane.app/install.sh | sh -s -- enable-managed` (or `sh install.sh enable-managed` with a local copy), and refreshes when the agent connects.
-- **Installer (#59):** always generates `ORGLANE_AGENT_SECRET` (64 hex characters) into `.env`, so enabling the agent later needs no core restart. The interactive installer does not ask and does not enable managed services; the option `--managed` and the subcommand `enable-managed` write `COMPOSE_PROFILES=managed`, `ORGLANE_AGENT_IMAGE` (same tag as `ORGLANE_IMAGE`), `ORGLANE_AGENT_PUBLISH_ADDRESS` and, in local mode, the `*.localhost` base (see "Local mode"), then run `docker compose up -d`. It creates `instances/` (mode 700). `uninstall` first runs `docker compose down` for every project under `instances/*/compose.yaml`, then the bundle. `status` shows the agent.
-- **Image (#59, maintainer decision):** a separate image `ghcr.io/orglane/orglane-agent`, a second target of the root `Dockerfile`: distroless static base, the `orglane` binary, the static Docker CLI and the Compose plugin, both pinned by version and SHA-256. The core image stays distroless without Docker tooling. Released together with the core image by `images.yml`, same tag. Like `ORGLANE_IMAGE`, the project's own images are referenced by release tag (the installer writes it); third-party images in the bundle and in packages are pinned by version and digest.
+- **Installer (#59):** always generates `ORGLANE_AGENT_SECRET` (64 hex characters) into `.env`, so enabling the agent later needs no core restart. The interactive installer does not ask and does not enable managed services; the option `--managed` and the subcommand `enable-managed` write `COMPOSE_PROFILES=managed`, `ORGLANE_AGENT_IMAGE` (see "Image"), `ORGLANE_AGENT_PUBLISH_ADDRESS` and, in local mode, the `*.localhost` base (see "Local mode"), then run `docker compose up -d`. It creates `instances/` (mode 700). `uninstall` first runs `docker compose down` for every project under `instances/*/compose.yaml`, then the bundle. `status` shows the agent.
+- **Image (#59, maintainer decision):** a separate image `ghcr.io/orglane/orglane-agent`, a second target of the root `Dockerfile`: distroless static base, the `orglane` binary, the static Docker CLI and the Compose plugin, both pinned by version and SHA-256. The core image stays distroless without Docker tooling. Released together with the core image by `images.yml`, same tag. **Pinned by version and digest like every bundle image (AGENTS.md, no exception):** the bundle references the agent image by release tag, and the installer resolves that published tag to its registry digest (the multi-arch index digest, for example by `docker pull` of the tag and reading `RepoDigests`) and writes `ORGLANE_AGENT_IMAGE=ghcr.io/orglane/orglane-agent:<tag>@sha256:<digest>` into `.env`. If no digest can be resolved, the installer stops with an error instead of writing a bare tag. The core's version check against the agent (see "Versions") stays as an extra guard against skew; it does not replace the digest. The core image (`ORGLANE_IMAGE`) still uses a bare release tag today; giving it the same treatment is a follow-up outside M2.
 - **Hardening of the core's internal listener (#59):** since managed services join the edge network, the internal listener (`/traefik/config`) answers only requests from Traefik's fixed address.
 
 ### Configuration
@@ -478,7 +479,8 @@ preflight ─► pulling ─► stopping ─► snapshotting ─► switching �
                                                           awaiting_confirmation ─┤
                                                          confirm ─► committing ─► committed (succeeded)
                                                          abort / confirm_timeout ─► rolling_back
-rolling_back ─► rolled_back (op rolled_back)   |   rolling_back ─► rollback_failed (instance failed)
+rolling_back (fenced restore) ─► restored (journal fsynced) ─► rolled_back (op rolled_back)
+rolling_back ─► rollback_failed (instance failed)
 ```
 
 | Phase | What happens |
@@ -495,9 +497,14 @@ rolling_back ─► rolled_back (op rolled_back)   |   rolling_back ─► rollb
 
 **Journal:** `upgrade.json` holds the operation ID, from/to version and generation, snapshot ID and phase. It is written and fsynced before each phase starts.
 
-**Rollback** (idempotent steps, each safe to repeat): `docker compose down` of the new version; for each data directory, move the current one aside to `data/.<name>.failed-<operation>` and extract the snapshot archive; restore the database (`DROP DATABASE ... WITH (FORCE)`, create, `pg_restore` with objects owned by the service role); write the snapshot's rendered files (unfenced); `up -d --remove-orphans`; wait for health; record the generation as blocked. The moved-aside directories are deleted after the next successful upgrade or after 7 days.
+**Rollback** has two journaled phases, so data is restored at most once and never after a client could have written to the restored version:
 
-**Guarantee (narrowed to what the fence enforces):** after `rolled_back`, the instance runs the previous package version with exactly the data of the snapshot. No write acknowledged to a client through a declared entry point (routes, published ports) is lost, because between the snapshot and the commit no such entry point reaches either version. Not covered: work the candidate did on its own (lost or repeated), and calls made to the candidate's fenced alias by the core itself during verification (read-only checks). Every M2 package must route all client writes through declared routes and ports; the policy check enforces that nothing else is published.
+1. `rolling_back` (restore, fenced): `docker compose down` of the candidate; for each data directory, move the current one aside to `data/.<name>.failed-<operation>` (skipped if already moved) and extract the snapshot archive; restore the database (`DROP DATABASE ... WITH (FORCE)`, create, `pg_restore` with objects owned by the service role); write the snapshot's rendered files **fenced**; `up -d --remove-orphans --wait`. Every step is safe to repeat, and nothing in this phase is reachable by a client (the candidate and the restored version are both fenced). When the restored version is healthy, the journal phase becomes `restored` and is fsynced **before** anything is unfenced.
+2. `restored` (expose, never restore again): write the snapshot's rendered files unfenced; `up -d --remove-orphans --wait`; record the generation as blocked; `current.json` := the snapshot's spec; mark the operation `rolled_back`; delete the journal. Repeating this phase only re-renders and restarts; it never touches data.
+
+The moved-aside directories are deleted after the next successful upgrade or after 7 days. A manual restore (`POST /v1/instances/{key}/restore`) uses the same two phases.
+
+**Guarantee (narrowed to what the fences enforce):** after `rolled_back`, the instance runs the previous package version with the data of the snapshot plus every write made to the restored version after it was exposed. No write acknowledged to a client through a declared entry point (routes, published ports) is lost: between the snapshot and the commit or the `restored` journal entry no such entry point reaches any version, and after `restored` is durable no data is restored again, whatever crashes or restarts follow. Not covered: work the candidate did on its own (lost or repeated), and calls made to the candidate's fenced alias by the core itself during verification (read-only checks). Every M2 package must route all client writes through declared routes and ports; the policy check enforces that nothing else is published.
 
 **Interrupted upgrades** (agent crash, host reboot): on start the agent reads every journal before anything else:
 
@@ -507,9 +514,10 @@ rolling_back ─► rolled_back (op rolled_back)   |   rolling_back ─► rollb
 | `stopping`, `snapshotting` | Delete the partial snapshot; start the current version |
 | `switching`, `migrating`, `verifying`, `awaiting_confirmation` | Roll back from the snapshot; error code `interrupted` |
 | `committing` | Finish the commit: render unfenced and start (confirmation had been received) |
-| `rolling_back` | Continue the rollback |
+| `rolling_back` | Continue the fenced restore (nothing was reachable yet, so restoring again is safe) |
+| `restored` | Only finish exposing: render unfenced and start. Data is **not** restored again: the restored version may already have accepted writes, for example over SSH after Docker restarted it unfenced on a reboot |
 
-Docker may restart the candidate's containers on a reboot before the agent runs; they come back fenced, so no client reaches them, and the agent then rolls them back. The agent never resumes forward. A failed rollback (`rollback_failed`) leaves the snapshot and the moved-aside data in place, marks the instance `failed` and is shown in Settings → Apps with the snapshot ID; `POST /v1/instances/{key}/restore` retries it.
+Docker may restart containers on a reboot before the agent runs. In every phase before `restored` they come back fenced (the fence is in the rendered files), so no client reaches them; from `restored` on they may come back unfenced, which is why recovery never restores data after that point. The agent never resumes forward. A failed rollback (`rollback_failed`) leaves the snapshot and the moved-aside data in place, marks the instance `failed` and is shown in Settings → Apps with the snapshot ID; `POST /v1/instances/{key}/restore` retries it.
 
 ## Status, health and logs
 
@@ -530,6 +538,7 @@ Docker may restart the candidate's containers on a reboot before the agent runs;
 | Upgrades | Successful upgrade v1 → v2; v2 with a failing healthcheck rolls back with the database row and data file intact; abort and confirm timeout roll back; a crash at each journal phase (test hook `ORGLANE_AGENT_TEST_CRASH_AT=<phase>`, only in `agenttest` builds) recovers as the table says; v1 → v3 with `min_from: v2` is refused, v1 → v2 → v3 works | #60 |
 | Rollback stays rolled back | After a rollback, with the core stopped: Docker events (container killed), periodic reconciles and an agent restart keep v1 running and never start v2; a revert spec (v1) is accepted as an apply and unblocks; a retry spec (v2, new generation) runs the upgrade again | #60 |
 | Write fence | A write acknowledged before the snapshot (HTTP and over the published port) survives the rollback; during `verifying` the route answers 503 and the published port refuses connections; a simulated host restart during `verifying` (stop and start every project container and the agent) leaves the candidate fenced and ends rolled back with the acknowledged write intact | #60 |
+| Rollback recovery | Crash (test hook) during `rolling_back` → restart repeats the fenced restore and ends `rolled_back`; crash immediately after the `restored` journal entry and after unfencing, then an acknowledged write over the published SSH port to the restored version before the agent restarts → after recovery the write is still there and data was not restored again | #60 |
 | Keys and instance IDs | A spec with the same key and another instance ID is refused while the directory exists; after purge the key can be used again | #59 |
 | Bundle | `make test-compose`: the bundle with `COMPOSE_PROFILES=managed` starts, the core reports the agent connected, the core container has no Docker socket and no Docker CLI; #61 adds installing Forgejo and reaching it through Traefik | #59, #61 |
 | Installer | `make test-install`: default install has no agent; `--managed`, `enable-managed` (local mode switches to `orglane.localhost`), `uninstall` removes instance projects | #59 |
