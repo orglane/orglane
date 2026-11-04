@@ -50,7 +50,7 @@ The core has no Redis, message broker, search engine, Node.js server or JVM. Job
 - **Person**: base fields (username, display name, work email, avatar, title, manager, teams, timezone, locale, employment dates, status) plus admin-defined **profile fields**, each with type, section, visibility, edit rights and a sensitivity flag.
 - **Team**, **Role** (a bundle of **permissions**), **Membership**.
 - **Device** and **Session**: sessions are bound to devices; devices can be revoked and wiped remotely.
-- **AccountLink**: a person ↔ external account (a GitHub login, a Telegram user ID, ...).
+- **AccountLink**: a person ↔ external account (a GitHub user ID, a Telegram user ID, ...), stored only once ownership is proven (OAuth or an account Orglane created); imported associations stay pending evidence.
 - **Capability** → **Provider** → **Instance** → **Binding**: for example `code` → `forgejo` → `git-main` (managed) or `code` → `github` → `acme-org` (external). An instance records its URL, credentials, version, health, backup policy and `management: managed | connected`.
 - **Event**: a normalized, append-only record (type, actor, subject resource, provider, time).
 - **Notification**: event × recipient, with read state, priority (`normal | time_sensitive | critical`) and grouping key.
@@ -103,6 +103,8 @@ Admin blocks person
 - **Packages:** each managed provider ships a versioned package (manifest, Compose template or Helm chart, health checks, backup hooks, required upgrade stops). Packages are part of an Orglane release, which is a tested version set.
 - **Upgrades:** snapshot → new image → migrate → health check → automatic rollback on failure.
 - **Transparency:** generated Compose files are plain files on disk that anyone can read.
+
+The agent's placement, transport and package format are decided in [ADR 0019](adr/0019-agent-transport-and-packages.md) and specified in [`docs/specs/agent.md`](specs/agent.md). The provider framework (adapters, account links, provisioning, webhooks, events, deep links) is specified in [`docs/specs/providers.md`](specs/providers.md).
 
 ## Deployment models
 
