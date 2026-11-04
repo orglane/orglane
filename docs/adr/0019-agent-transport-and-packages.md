@@ -1,6 +1,6 @@
 # 0019. Agent placement, core–agent transport and trust, managed package format
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-04
 
 ## Context
