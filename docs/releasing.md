@@ -14,7 +14,7 @@ Orglane is released from `main` with [release-please](https://github.com/googlea
 3. The merge changes the manifest, so the Release workflow runs again. release-please tags the merge commit `vX.Y.Z` and publishes the GitHub release with the changelog entry.
 4. In the same run, the **Images** workflow (`.github/workflows/images.yml`) builds and publishes the container images.
 
-Before 1.0, `feat` and breaking changes bump the minor version and everything else the patch version. The first release is `0.1.0`. Only `feat`, `fix`, `perf` and `revert` commits appear in the changelog. To force a version, add `Release-As: X.Y.Z` to the body of a commit on `main`.
+Before 1.0, minor versions belong to the [roadmap](../ROADMAP.md) milestones: pre-alpha releases are `0.0.x` (the first is `0.0.1`) until the v0.1 Developer Preview, which is `0.1.0`, then `0.2.0` for v0.2. Within a line, release-please bumps only the patch version: `feat`, `fix` and everything else go from `0.0.1` to `0.0.2` (`bump-patch-for-minor-pre-major` in `release-please-config.json`). A breaking change (`feat!:` or a `BREAKING CHANGE:` footer) still bumps the minor version, so before v0.1 check the version in the release pull request and avoid `!` (pre-alpha versions have no upgrade path anyway). To start the next line, or to force any version, add `Release-As: X.Y.Z` to the body of a commit on `main` (the squash-merge commit body, when merging a pull request). Only `feat`, `fix`, `perf` and `revert` commits appear in the changelog.
 
 ## Container images
 
