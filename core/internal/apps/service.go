@@ -570,7 +570,7 @@ func (s *Service) RetrySetup(ctx context.Context, actor audit.Actor, id uuid.UUI
 		if out, err = s.transition(ctx, tx, q, actor, id, StateInstalling, ""); err != nil {
 			return err
 		}
-		return s.enqueue(ctx, tx, SetupArgs{InstanceID: id}, nil)
+		return s.enqueue(ctx, tx, SetupArgs{InstanceID: id})
 	})
 	return out, err
 }

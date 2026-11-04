@@ -84,6 +84,8 @@ func (ProvisionPersonArgs) InsertOpts() river.InsertOpts { return uniqueOpts(max
 type ProvisionInstanceArgs struct {
 	InstanceID uuid.UUID `json:"instance_id" river:"unique"`
 	Reason     string    `json:"reason"`
+	// FollowUp marks the one job queued while another runs.
+	FollowUp bool `json:"follow_up,omitempty" river:"unique"`
 }
 
 // Kind implements river.JobArgs.
@@ -95,6 +97,8 @@ func (ProvisionInstanceArgs) InsertOpts() river.InsertOpts { return uniqueOpts(m
 // ApplyRemovalsArgs apply an instance's planned removals through the guard.
 type ApplyRemovalsArgs struct {
 	InstanceID uuid.UUID `json:"instance_id" river:"unique"`
+	// FollowUp marks the one job queued while another runs.
+	FollowUp bool `json:"follow_up,omitempty" river:"unique"`
 }
 
 // Kind implements river.JobArgs.
@@ -285,20 +289,42 @@ func (w *driftCheckWorker) Work(ctx context.Context, _ *river.Job[DriftCheckArgs
 }
 
 // enqueue inserts a job in tx.
-func (s *Service) enqueue(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) error {
+func (s *Service) enqueue(ctx context.Context, tx pgx.Tx, args river.JobArgs) error {
 	queue, err := s.getQueue()
 	if err != nil {
 		return err
 	}
-	if _, err := queue.InsertTx(ctx, tx, args, opts); err != nil {
+	if _, err := queue.InsertTx(ctx, tx, args, nil); err != nil {
 		return fmt.Errorf("apps: queue %s: %w", args.Kind(), err)
+	}
+	return nil
+}
+
+// enqueueOnce inserts a unique job; when its twin is already running (and
+// may have read the state before this change), it inserts the follow-up
+// variant instead, so the change is never lost.
+func (s *Service) enqueueOnce(ctx context.Context, tx pgx.Tx, args, followUp river.JobArgs, opts *river.InsertOpts) error {
+	queue, err := s.getQueue()
+	if err != nil {
+		return err
+	}
+	res, err := queue.InsertTx(ctx, tx, args, opts)
+	if err != nil {
+		return fmt.Errorf("apps: queue %s: %w", args.Kind(), err)
+	}
+	if res.UniqueSkippedAsDuplicate && res.Job != nil && res.Job.State == rivertype.JobStateRunning {
+		if _, err := queue.InsertTx(ctx, tx, followUp, opts); err != nil {
+			return fmt.Errorf("apps: queue %s follow-up: %w", args.Kind(), err)
+		}
 	}
 	return nil
 }
 
 // enqueueInstance queues provision_instance for an instance.
 func (s *Service) enqueueInstance(ctx context.Context, tx pgx.Tx, instanceID uuid.UUID, reason string) error {
-	return s.enqueue(ctx, tx, ProvisionInstanceArgs{InstanceID: instanceID, Reason: reason}, nil)
+	return s.enqueueOnce(ctx, tx,
+		ProvisionInstanceArgs{InstanceID: instanceID, Reason: reason},
+		ProvisionInstanceArgs{InstanceID: instanceID, Reason: reason, FollowUp: true}, nil)
 }
 
 // enqueuePerson marks a person's result queued and queues provision_person.
@@ -333,5 +359,5 @@ func (s *Service) enqueueRemovals(ctx context.Context, tx pgx.Tx, instanceID uui
 	if delay > 0 {
 		opts.ScheduledAt = s.cfg.Now().Add(delay)
 	}
-	return s.enqueue(ctx, tx, ApplyRemovalsArgs{InstanceID: instanceID}, &opts)
+	return s.enqueueOnce(ctx, tx, ApplyRemovalsArgs{InstanceID: instanceID}, ApplyRemovalsArgs{InstanceID: instanceID, FollowUp: true}, &opts)
 }

@@ -142,7 +142,7 @@ func (s *Service) ReceiveWebhook(ctx context.Context, instanceID uuid.UUID, h ht
 			receipt.Duplicate = true
 			return nil
 		}
-		return s.enqueue(ctx, tx, ProcessDeliveryArgs{DeliveryID: id}, nil)
+		return s.enqueue(ctx, tx, ProcessDeliveryArgs{DeliveryID: id})
 	})
 	return receipt, err
 }

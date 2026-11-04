@@ -154,7 +154,7 @@ func (s *Service) RotateCredential(ctx context.Context, actor audit.Actor, insta
 		}); err != nil {
 			return err
 		}
-		return s.enqueue(ctx, tx, RotateCredentialArgs{InstanceID: instanceID, Name: name, Version: version}, nil)
+		return s.enqueue(ctx, tx, RotateCredentialArgs{InstanceID: instanceID, Name: name, Version: version})
 	})
 	return version, err
 }
@@ -182,7 +182,7 @@ func (s *Service) AbandonRotation(ctx context.Context, actor audit.Actor, instan
 		}); err != nil {
 			return err
 		}
-		return s.enqueue(ctx, tx, RotateCredentialArgs{InstanceID: instanceID, Name: name, Version: cand.Version, Abandon: true}, nil)
+		return s.enqueue(ctx, tx, RotateCredentialArgs{InstanceID: instanceID, Name: name, Version: cand.Version, Abandon: true})
 	})
 }
 

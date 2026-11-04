@@ -618,3 +618,57 @@ func TestInstancesAndBindings(t *testing.T) {
 		t.Fatalf("purged key = %v", err)
 	}
 }
+
+// TestChangeWhileJobRuns: a change committed while provision_instance or
+// apply_removals already runs queues one follow-up instead of being
+// deduplicated against the running job (and lost).
+func TestChangeWhileJobRuns(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	// The activation job is "running" (taken by a worker that may have read
+	// the mappings before the change below).
+	h.exec(`UPDATE river_job SET state = 'running', attempted_at = now() WHERE kind = $1`, apps.ProvisionInstanceArgs{}.Kind())
+	team := h.team("platform", h.person("alice"))
+	h.mapTeam(inst, team)
+	h.mapTeam(inst, team) // a second change while it runs: still one follow-up
+	if n := h.count(`SELECT count(*) FROM river_job WHERE kind = $1 AND state = 'available' AND (args->>'follow_up')::bool`, apps.ProvisionInstanceArgs{}.Kind()); n != 1 {
+		t.Fatalf("%d follow-up provision_instance jobs, want 1", n)
+	}
+	h.exec(`DELETE FROM river_job WHERE state = 'running'`)
+	h.drain()
+	if acct, ok := h.tp.Account(inst.ID, "alice"); !ok || !acct.Teams["team-platform"] {
+		t.Fatalf("the change during the run was lost: %+v", acct)
+	}
+
+	// Same for apply_removals.
+	bob := h.person("bob")
+	h.drain()
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, bob.ID, identity.StatusSuspended); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: bob.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	h.exec(`UPDATE river_job SET state = 'running', attempted_at = now() WHERE kind = $1`, apps.ApplyRemovalsArgs{}.Kind())
+	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, alicePerson(h).ID, identity.StatusSuspended); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: alicePerson(h).ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.count(`SELECT count(*) FROM river_job WHERE kind = $1 AND state <> 'running' AND (args->>'follow_up')::bool`, apps.ApplyRemovalsArgs{}.Kind()); n != 1 {
+		t.Fatalf("%d follow-up apply_removals jobs, want 1", n)
+	}
+}
+
+func alicePerson(h *harness) store.Person {
+	h.t.Helper()
+	p, err := h.ids.GetPersonByUsername(h.ctx, "alice")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return p
+}

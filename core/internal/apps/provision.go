@@ -407,7 +407,14 @@ func (s *Service) followUp(err error, conn *pgxpool.Conn, instanceID, personID u
 // unmanaged accounts report and queues provision_person for everyone the
 // instance concerns.
 func (s *Service) RunProvisionInstance(ctx context.Context, args ProvisionInstanceArgs) error {
-	q := store.New(s.pool)
+	// One run per instance at a time (a follow-up may be queued while one
+	// runs): team syncs must not race.
+	conn, release, err := sessionLock(ctx, s.pool, lockID("instance", args.InstanceID.String()))
+	if err != nil {
+		return err
+	}
+	defer release()
+	q := store.New(conn)
 	inst, err := s.loadInstance(ctx, q, args.InstanceID, false)
 	if errors.Is(err, ErrNotFound) {
 		return river.JobCancel(err)
