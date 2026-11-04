@@ -30,7 +30,16 @@ func newProblem(r *http.Request, status int, detail string) apigen.Problem {
 
 // writeProblem writes problem details as the response.
 func writeProblem(w http.ResponseWriter, r *http.Request, status int, detail string) {
-	body, err := json.Marshal(newProblem(r, status, detail))
+	writeProblemCode(w, r, status, "", detail)
+}
+
+// writeProblemCode writes problem details with a stable code, if any.
+func writeProblemCode(w http.ResponseWriter, r *http.Request, status int, code, detail string) {
+	p := newProblem(r, status, detail)
+	if code != "" {
+		p.Code = &code
+	}
+	body, err := json.Marshal(p)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return

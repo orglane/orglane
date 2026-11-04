@@ -10,6 +10,7 @@ import { AppShell } from "./components/app-shell";
 import { type Api, meQuery, setupStatusQuery } from "./lib/api";
 import { safeRedirect, welcomeDestination } from "./lib/utils";
 import { AcceptInvitationPage } from "./routes/accept-invitation";
+import { AppInstancePage, AppsPage, AppsSettingsPage } from "./routes/apps";
 import { EmailSettingsPage } from "./routes/email-settings";
 import { HomePage } from "./routes/home";
 import { InvitationsPage } from "./routes/invitations";
@@ -17,7 +18,7 @@ import { PasskeyOfferPage } from "./routes/passkey-offer";
 import { PeoplePage } from "./routes/people";
 import { PeopleImportPage } from "./routes/people-import";
 import { PersonProfilePage } from "./routes/person-profile";
-import { AppsPage, InboxPage } from "./routes/placeholders";
+import { InboxPage } from "./routes/placeholders";
 import { ProfileFieldsPage } from "./routes/profile-fields";
 import { SecurityPage } from "./routes/security";
 import { SetupPage } from "./routes/setup";
@@ -201,6 +202,19 @@ const invitationsRoute = createRoute({
   path: "/people/invitations",
   component: InvitationsPage,
 });
+const appsSettingsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings/apps",
+  component: AppsSettingsPage,
+});
+const appInstanceRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings/apps/$instanceId",
+  component: function AppInstance() {
+    const { instanceId } = appInstanceRoute.useParams();
+    return <AppInstancePage key={instanceId} instanceId={instanceId} />;
+  },
+});
 const emailSettingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings/email",
@@ -245,6 +259,8 @@ export const routeTree = rootRoute.addChildren([
       invitationsRoute,
       peopleImportRoute,
       emailSettingsRoute,
+      appsSettingsRoute,
+      appInstanceRoute,
     ]),
   ]),
 ]);

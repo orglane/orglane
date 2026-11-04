@@ -17,6 +17,7 @@ import (
 
 	specpkg "github.com/orglane/orglane/core/api"
 	"github.com/orglane/orglane/core/internal/api/apigen"
+	"github.com/orglane/orglane/core/internal/apps"
 	"github.com/orglane/orglane/core/internal/authz"
 	"github.com/orglane/orglane/core/internal/identity/web"
 	"github.com/orglane/orglane/core/internal/mail"
@@ -64,6 +65,9 @@ type Options struct {
 	// Mail serves the system email settings. Without it those operations
 	// fail with 500.
 	Mail *mail.Service
+	// Apps serves the provider framework (app instances, provisioning,
+	// webhooks). Without it those operations fail with 500.
+	Apps *apps.Service
 	// WorkEmail builds the default work email from a username
 	// (config.Config.WorkEmail). Defaults to <username>@<BaseDomain>.
 	WorkEmail func(username string) string
@@ -123,7 +127,7 @@ func newHandler(spec []byte, opts Options) (http.Handler, error) {
 				if apiErr.retryAfter != "" {
 					w.Header().Set("Retry-After", apiErr.retryAfter)
 				}
-				writeProblem(w, r, apiErr.status, apiErr.detail)
+				writeProblemCode(w, r, apiErr.status, apiErr.code, apiErr.detail)
 				return
 			}
 			opts.Logger.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
@@ -163,7 +167,9 @@ func newHandler(spec []byte, opts Options) (http.Handler, error) {
 
 func rejectCrossOriginAPI(a *web.Auth, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != http.MethodGet && r.Method != http.MethodHead &&
+		// Webhooks are authenticated by the provider's signature, not a
+		// session, so CSRF does not apply.
+		if strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/v1/webhooks/") && r.Method != http.MethodGet && r.Method != http.MethodHead &&
 			r.Method != http.MethodOptions && a.CrossOrigin(r) {
 			writeProblem(w, r, http.StatusForbidden, "Cross-origin request rejected.")
 			return

@@ -11,6 +11,124 @@ import (
 	"github.com/google/uuid"
 )
 
+type AccountLink struct {
+	ID         uuid.UUID
+	PersonID   uuid.UUID
+	Provider   string
+	Realm      string
+	ExternalID string
+	Login      string
+	Method     string
+	InstanceID *uuid.UUID
+	State      string
+	Evidence   *string
+	VerifiedAt time.Time
+	RevokedAt  *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type AppBinding struct {
+	Capability string
+	InstanceID uuid.UUID
+	IsDefault  bool
+	CreatedAt  time.Time
+}
+
+type AppCredential struct {
+	InstanceID  uuid.UUID
+	Name        string
+	Version     int32
+	Ciphertext  []byte
+	State       string
+	CreatedAt   time.Time
+	ActivatedAt *time.Time
+	RetireAt    *time.Time
+}
+
+type AppDesiredSpec struct {
+	InstanceID         uuid.UUID
+	Generation         int64
+	PackageVersion     string
+	RunState           string
+	Purge              bool
+	Settings           []byte
+	CredentialVersions []byte
+	Reason             string
+	CreatedAt          time.Time
+}
+
+type AppInstance struct {
+	ID                    uuid.UUID
+	Key                   string
+	Provider              string
+	Management            string
+	DisplayName           string
+	State                 string
+	BaseUrl               *string
+	Settings              []byte
+	AccessPolicy          string
+	ManageExistingMembers bool
+	PackageID             *string
+	PackageVersion        *string
+	DesiredGeneration     int64
+	ObservedGeneration    int64
+	Health                string
+	HealthCode            *string
+	HealthCheckedAt       *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	RemovedAt             *time.Time
+	DataRetained          bool
+}
+
+type AppOauthState struct {
+	ID           uuid.UUID
+	Kind         string
+	StateHash    []byte
+	InstanceID   uuid.UUID
+	PersonID     uuid.UUID
+	SessionID    uuid.UUID
+	Step         *string
+	PkceVerifier []byte
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+	ConsumedAt   *time.Time
+}
+
+type AppOperation struct {
+	ID               uuid.UUID
+	InstanceID       uuid.UUID
+	Generation       *int64
+	Kind             string
+	State            string
+	Phase            *string
+	AgentOperationID *uuid.UUID
+	ErrorCode        *string
+	FromVersion      *string
+	ToVersion        *string
+	StartedBy        *uuid.UUID
+	CreatedAt        time.Time
+	FinishedAt       *time.Time
+}
+
+type AppTeamMapping struct {
+	InstanceID   uuid.UUID
+	TeamID       uuid.UUID
+	ExternalRef  *string
+	ExternalName *string
+	Mode         string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type AppUnmanagedAccount struct {
+	InstanceID uuid.UUID
+	ExternalID string
+	Login      string
+	SeenAt     time.Time
+}
+
 type AuditEntry struct {
 	ID         uuid.UUID
 	OccurredAt time.Time
@@ -46,6 +164,22 @@ type EmailOutbox struct {
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	SentAt        *time.Time
+}
+
+type Event struct {
+	ID            uuid.UUID
+	Type          string
+	SchemaVersion int32
+	InstanceID    uuid.UUID
+	Provider      string
+	DeliveryID    *uuid.UUID
+	DedupeKey     string
+	OccurredAt    time.Time
+	ReceivedAt    time.Time
+	Actor         []byte
+	Subject       []byte
+	Targets       []byte
+	Data          []byte
 }
 
 type InstanceSetting struct {
@@ -265,6 +399,49 @@ type ProfileFieldValue struct {
 	UpdatedAt   time.Time
 }
 
+type ProvisioningRemoval struct {
+	ID          uuid.UUID
+	InstanceID  uuid.UUID
+	PersonID    uuid.UUID
+	Action      []byte
+	ActionKey   string
+	DesiredHash []byte
+	State       string
+	BatchID     *uuid.UUID
+	ErrorCode   *string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type ProvisioningRemovalBatch struct {
+	ID          uuid.UUID
+	InstanceID  uuid.UUID
+	State       string
+	ItemCount   int32
+	ItemsHash   []byte
+	CreatedAt   time.Time
+	ConfirmedBy *uuid.UUID
+	ConfirmedAt *time.Time
+}
+
+type ProvisioningResult struct {
+	InstanceID       uuid.UUID
+	PersonID         uuid.UUID
+	Status           string
+	Access           bool
+	EmployeeStep     *string
+	GrantedByOrglane bool
+	PendingGrant     []byte
+	DesiredHash      []byte
+	AppliedHash      []byte
+	Actions          []byte
+	ErrorCode        *string
+	Attempts         int32
+	LastAttemptAt    *time.Time
+	NextAttemptAt    *time.Time
+	UpdatedAt        time.Time
+}
+
 type Role struct {
 	ID        uuid.UUID
 	Key       string
@@ -334,4 +511,19 @@ type WebauthnCeremony struct {
 	SessionData []byte
 	CreatedAt   time.Time
 	ExpiresAt   time.Time
+}
+
+type WebhookDelivery struct {
+	ID          uuid.UUID
+	InstanceID  uuid.UUID
+	DeliveryID  string
+	EventName   string
+	ReceivedAt  time.Time
+	Body        []byte
+	Headers     []byte
+	BodySha256  []byte
+	Status      string
+	ErrorCode   *string
+	EventCount  int32
+	ProcessedAt *time.Time
 }

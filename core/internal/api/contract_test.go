@@ -130,6 +130,28 @@ func TestContractPermissions(t *testing.T) {
 		"PUT /api/v1/settings/email":                     authz.InstanceManage,
 		"DELETE /api/v1/settings/email":                  authz.InstanceManage,
 		"POST /api/v1/settings/email/test":               authz.InstanceManage,
+		// The provider framework is app management; a person's app access
+		// is people management; own apps are self-service; webhooks are
+		// authenticated by the provider's signature.
+		"GET /api/v1/apps/providers":                                                              authz.AppsManage,
+		"GET /api/v1/apps/instances":                                                              authz.AppsManage,
+		"GET /api/v1/apps/instances/{instanceId}":                                                 authz.AppsManage,
+		"PATCH /api/v1/apps/instances/{instanceId}":                                               authz.AppsManage,
+		"POST /api/v1/apps/instances/{instanceId}/setup":                                          authz.AppsManage,
+		"POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate":            authz.AppsManage,
+		"POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon":           authz.AppsManage,
+		"GET /api/v1/apps/bindings":                                                               authz.AppsManage,
+		"PUT /api/v1/apps/bindings/{capability}":                                                  authz.AppsManage,
+		"GET /api/v1/apps/instances/{instanceId}/team-mappings":                                   authz.AppsManage,
+		"PUT /api/v1/apps/instances/{instanceId}/team-mappings/{teamId}":                          authz.AppsManage,
+		"DELETE /api/v1/apps/instances/{instanceId}/team-mappings/{teamId}":                       authz.AppsManage,
+		"GET /api/v1/apps/instances/{instanceId}/provisioning":                                    authz.AppsManage,
+		"POST /api/v1/apps/instances/{instanceId}/provisioning/plan":                              authz.AppsManage,
+		"POST /api/v1/apps/instances/{instanceId}/provisioning/retry":                             authz.AppsManage,
+		"POST /api/v1/apps/instances/{instanceId}/provisioning/removal-batches/{batchId}/confirm": authz.AppsManage,
+		"GET /api/v1/people/{personId}/apps":                                                      authz.PeopleManage,
+		"GET /api/v1/me/apps":                                                                     authz.Authenticated,
+		"POST /api/v1/webhooks/{instanceId}":                                                      authz.Public,
 		// Demo mode only: not served at all otherwise.
 		"GET /api/v1/demo":          authz.Demo,
 		"POST /api/v1/demo/sign-in": authz.Demo,

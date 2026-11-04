@@ -31,6 +31,7 @@ const messages = defineMessages({
   }),
   security: { id: "profileMenu.security", defaultMessage: "Sign-in & security" },
   email: { id: "profileMenu.email", defaultMessage: "System email" },
+  apps: { id: "profileMenu.apps", defaultMessage: "Apps and access" },
   language: { id: "profileMenu.language", defaultMessage: "Language" },
   signOut: { id: "profileMenu.signOut", defaultMessage: "Sign out" },
 });
@@ -105,6 +106,13 @@ export function ProfileMenu({ variant }: { variant: "sidebar" | "compact" }) {
               <FormattedMessage {...messages.security} />
             </Link>
           </DropdownMenuItem>
+          {me.permissions.includes("apps.manage") && (
+            <DropdownMenuItem asChild>
+              <Link to="/settings/apps">
+                <FormattedMessage {...messages.apps} />
+              </Link>
+            </DropdownMenuItem>
+          )}
           {me.permissions.includes("instance.manage") && (
             <DropdownMenuItem asChild>
               <Link to="/settings/email">

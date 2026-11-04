@@ -299,9 +299,11 @@ type Lifecycle interface {
     // Setup runs once after the first successful install (create the admin
     // API token, the organization, the webhooks). Idempotent; retried on failure.
     Setup(ctx context.Context, env Env, inst Instance) error
-    // Verify is the provider-level health check through inst.Upstream. The
-    // core calls it to confirm upgrades and on every health sync.
-    Verify(ctx context.Context, env Env, inst Instance) error
+    // CheckHealth is the provider-level health check through inst.Upstream.
+    // The core calls it to confirm upgrades and on every health sync. (Not
+    // named Verify: EventSource.Verify has another signature, and a managed
+    // provider such as Forgejo implements both.)
+    CheckHealth(ctx context.Context, env Env, inst Instance) error
 }
 
 // Connector connects an external provider (GitHub App). Steps are provider specific;
@@ -1138,7 +1140,7 @@ Behavior:
 
 | Issue | Sections |
 |---|---|
-| #58 Provider framework | Code layout and registry, Adapter contracts and Shared types, Capability matrix, Data model (all tables incl. OAuth states and removal batches), Credentials (staged rotation), Account links (table only), Desired access, Provisioning (incl. removal guard), Webhooks (endpoint, processing, replay, retention), Normalized events (storage, dedupe keys), API rows marked #58, Permissions, Audit, Testing (framework, store, API) |
+| #58 Provider framework | Spec gaps decided in #58, Code layout and registry, Adapter contracts and Shared types, Capability matrix, Data model (all tables incl. OAuth states and removal batches), Credentials (staged rotation), Account links (table only), Desired access, Provisioning (incl. removal guard), Webhooks (endpoint, processing, replay, retention), Normalized events (storage, dedupe keys), API rows marked #58, Permissions, Audit, Testing (framework, store, API) |
 | #59 Agent | [agent.md](agent.md): Process model, Transport, Agent API, Desired state and reconciliation, Instance directory, Package format (rendering, policy), Networking, Per-service database, Status and logs; here: Managed instance lifecycle (steps 2–3) |
 | #60 Upgrades | [agent.md](agent.md): Reconcile loop (blocked generations), Snapshots, Upgrade (automatic start, write fence, recovery); here: `app_operations`, Managed instance lifecycle (revert, Setup after rollback) |
 | #61 Forgejo package | [agent.md](agent.md) Package format, Local mode, Forgejo SSH; here: Managed instance lifecycle, Keys and removal, Ingress routes, Provider specifics → Forgejo (install, setup) |
@@ -1162,3 +1164,36 @@ The open questions of the first draft were answered by the maintainer (2026-11-0
 | `manage_existing_members` | Off by default; existing members are reported, never removed by default | Desired access, Removal guard |
 | Forgejo organization name | The company slug (first label of `domain.base` until a company slug setting exists) | Provider specifics → Forgejo |
 | Event retention | Kept until M3 defines retention | events, Replay and retention |
+
+## Spec gaps decided in #58
+
+Details the first draft left open, decided while implementing the framework (#58) and agreed with the coordinator. Later issues cite them.
+
+| Gap | Decision | Where |
+|---|---|---|
+| `Lifecycle.Verify` and `EventSource.Verify` had the same name with different signatures, so a managed provider with webhooks (Forgejo) could not implement both | The lifecycle health check is `Lifecycle.CheckHealth(ctx, env, inst) error`; `EventSource.Verify` keeps its name | `providers/provider` |
+| Staged rotation needs a hook that hands a candidate to the provider and classifies the answer | Optional `provider.CredentialRotator`: `ApplyCredential(ctx, env, inst, name, version, value) (Rotation, error)` with outcome `acknowledged`, `rejected` or `unknown` (an error counts as unknown). It must be idempotent. For credentials the provider mints (`Source = provider`, e.g. Forgejo `admin_token`) `value` is nil and the adapter returns the minted value, named after the version so a read-back can tell whether an earlier attempt committed. Agent credentials are not rotated through it (#59/#60: a new desired generation) | `providers/provider`, `core/internal/apps/credentials.go` |
+| The candidate's state while it is handed over | A `pending` candidate becomes `uncertain` before the provider call, so a worker dying mid-call never leaves it looking untried | Credentials, step 3 |
+| Serializing rotation and abandon | Forward and abandon attempts for one credential hold a session advisory lock on (instance, name) across the provider call and recheck the candidate under it. Abandoning is persisted as candidate state `abandoning` (it still verifies deliveries, is never activated by proof of use and blocks a new rotation) until the abandon job has re-applied the active value and discards it | Credentials, step 4 |
+| Per-person order in the removal guard | `apply_removals` stops a person's removals at their first failure in the run; a permanent failure also drops that person's other open removals (they are replanned on retry or a desired-state change). Other people go on | Removal guard |
+| Interrupted confirmed batches | A confirmed batch becomes `applied` only when none of its items is still `held`; a run interrupted (for example by the instance leaving a provisionable state) leaves it `confirmed`, and activation queues `apply_removals`, which resumes it | Removal guard |
+| Drift checks and queued person jobs | `drift` is part of `provision_person` uniqueness, so a queued ordinary job (which may skip planning when the hashes match) never swallows the daily drift plan | Provisioning |
+| Freshness of each removal at apply time | `apply_removals` applies each item under that person's provisioning lock, after re-reading the removal (still in the state it was chosen in), the instance (still provisionable) and the person's desired-access hash; a stale item is dropped and the person replanned | Removal guard |
+| Removals after a failed action | Plan order covers removals too: after the first failure nothing runs and no removal is queued (`not_attempted`) | Idempotency, retries, partial failure |
+| Keeping grant ownership | **Rule: ownership (`granted_by_orglane`) and a verified `provisioned` link come only from provider-verifiable proof that Orglane's call created the account (`create_account`) or the invitation (`invite`), reported by the adapter as `ActionOutcome.Proof`**. Adding an existing account to a team proves only the team membership and never makes the account managed (which would allow removing it from the organization). Proof is: the confirmed response of Orglane's own call (`response`), or a provider-side marker an ensure checks (`marker`; Forgejo: an account bound to Orglane's auth source with this person's subject; GitHub: an invitation or membership created by Orglane's App installation). The core never infers ownership from access being there now. Intent is separate: before a granting action reaches the provider its intent is committed (`provisioning_results.pending_grant`; a failed write sends nothing). A definite rejection, or a grant answered without proof, clears it without ownership. An uncertain outcome keeps it, and the next run replays the action as an ensure. With proof, ownership, link and audit entries are recorded as on the first successful path. When the access is there without proof (or, for a person who lost access meanwhile, a read-only plan shows it exists), the intent is cleared, the access is neither adopted nor verified nor ever removed automatically, and the result becomes `failed` with `ownership_unproven` for an admin's review; the account is listed in the unmanaged accounts report. Retry Failed accepts it as unmanaged; an explicit Adopt action is a follow-up. Replay failures go through the same retry, snooze, exhaustion and permanent-failure handling as any action and stop the person's run. The flag is never reset and is also recovered from a `provisioned` link established by the instance | Desired access |
+| Failed removals and failed results | A permanent removal failure, or a retryable one on the job's last attempt, marks the removal `failed` and the person's result `failed` with the code and the failed action. A failed result is planned again only when the desired-access hash changes or an admin retries (Retry Failed); drift checks and unrelated changes leave it failed | Results, Removal guard |
+| Abandoning an uncertain rotation is an admin action without an API row | `POST /apps/instances/{instanceId}/credentials/{name}/abandon` (`apps.manage`): the job re-applies the active value until acknowledged, then discards the candidate | API |
+| The account realm of an instance | Optional `provider.AccountRealmer.AccountRealm(inst)`; without it the realm is the instance ID (Forgejo). GitHub returns `github.com` (#65) | `providers/provider` |
+| Lifecycle for connected providers | Only managed providers have a lifecycle: the core ignores `Lifecycle` on connected adapters | `core/internal/apps/registry.go` |
+| Storage of the unmanaged accounts report | Table `app_unmanaged_accounts (instance_id, external_id, login, seen_at)`, replaced by each `provision_instance` run from `Members`: provider accounts that no person with a managed result (granted by Orglane, or `manage_existing_members`) is linked to. Rows cascade with the instance; no secrets or audit entries (it is a report, nothing is changed) | Data model |
+| Reason codes of `failed`, `degraded` and `disconnected` states | Stored in `app_instances.health_code` (`setup_failed`, `webhook_deleted`, ...); state changes are audited as `app_instance.state_changed` | Data model, Audit |
+| "At most one queued and one running job per (instance, person)" with River, whose unique states must include `running` | `provision_person` is unique by `(instance_id, person_id, follow_up)` over available, pending, retryable, running and scheduled. An enqueue that finds the job running inserts the one `follow_up` job. The enqueue also stamps `provisioning_results.next_attempt_at`; a run that sees a stamp newer than its start snoozes itself once. The (instance, person) lock is a session advisory lock on a dedicated connection, so actions and their audit entries commit in short transactions. `provision_instance` and `apply_removals` use the same follow-up rule (a change while one runs queues one `follow_up` job) and a session lock per instance | Provisioning |
+| Whether a run may stop early | A run stops without planning when the desired hash equals `applied_hash` and the last run ended without an error or employee step, unless it is a drift check | Provisioning |
+| Results while removals wait for the guard | `queued` (not `done`) with the removal actions' outcome `held`; `apply_removals` queues the person again after applying | Results |
+| Removals planned while a batch is held | They join the held batch (it is superseded by a new one with all items), whatever the threshold says | Removal guard |
+| Managed accounts for the removal threshold | Results with a successful apply (`applied_hash` set) that are managed (`granted_by_orglane`, or the instance manages existing members) | Removal guard |
+| Webhook deliveries without a delivery ID header | Accepted: the delivery ID becomes `body:` + the first 16 bytes of the body's SHA-256 in hex, so a replay of the same signed bytes is still a duplicate (`200`) | Webhooks |
+| Deliveries for instances in other states than `removed` and `connecting` | Stored; processed only in `active`, `degraded` and `upgrading`, otherwise `ignored` with `instance_inactive` | Webhooks |
+| Problem details code | `Problem` has an optional `code` (stable, lower_snake_case) | API |
+| The apps queue size | `jobs.apps_max_workers` (`ORGLANE_JOBS_APPS_MAX_WORKERS`), default 2 | Provisioning |
+| The test provider outside Go tests | Build tag `appstest` registers `providers/testprovider` in the web acceptance binary only, like `githubimporttest`; production binaries never contain it | Code layout and registry |
