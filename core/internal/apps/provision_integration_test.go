@@ -631,6 +631,15 @@ func TestChangeWhileJobRuns(t *testing.T) {
 	team := h.team("platform", h.person("alice"))
 	h.mapTeam(inst, team)
 	h.mapTeam(inst, team) // a second change while it runs: still one follow-up
+	// One job waits besides the running one (deduplicated on the second
+	// change), so the mapping is not lost.
+	if n := h.count(`SELECT count(*) FROM river_job WHERE kind = $1 AND state = 'available'`, apps.ProvisionInstanceArgs{}.Kind()); n != 1 {
+		t.Fatalf("%d queued provision_instance jobs, want 1", n)
+	}
+	// The same reason while its job runs gets the one follow-up.
+	h.exec(`UPDATE river_job SET state = 'running', attempted_at = now() WHERE kind = $1`, apps.ProvisionInstanceArgs{}.Kind())
+	h.mapTeam(inst, team)
+	h.mapTeam(inst, team)
 	if n := h.count(`SELECT count(*) FROM river_job WHERE kind = $1 AND state = 'available' AND (args->>'follow_up')::bool`, apps.ProvisionInstanceArgs{}.Kind()); n != 1 {
 		t.Fatalf("%d follow-up provision_instance jobs, want 1", n)
 	}
