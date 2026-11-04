@@ -664,6 +664,15 @@ func TestRevocationRejectsRepeatedToken(t *testing.T) {
 		{"body and query tokens", url.Values{"token": {y}}, url.Values{"client_id": {"spa"}, "token": {x}}},
 		{"two body tokens", nil, url.Values{"client_id": {"spa"}, "token": {x, y}}},
 		{"two query tokens", url.Values{"token": {x, y}}, url.Values{"client_id": {"spa"}}},
+		// zitadel's decoder matches keys case-insensitively, and the
+		// promoted token field also by its dotted path.
+		{"body token, query Token", url.Values{"Token": {y}}, url.Values{"client_id": {"spa"}, "token": {x}}},
+		{"body TOKEN, query token", url.Values{"token": {y}}, url.Values{"client_id": {"spa"}, "TOKEN": {x}}},
+		{"body token and tOkEn", nil, url.Values{"client_id": {"spa"}, "token": {x}, "tOkEn": {y}}},
+		{"body token, empty body Token", nil, url.Values{"client_id": {"spa"}, "token": {x}, "Token": {""}}},
+		{"query Token and token", url.Values{"Token": {x}, "token": {y}}, url.Values{"client_id": {"spa"}}},
+		{"body token and RevocationRequest.token", nil, url.Values{"client_id": {"spa"}, "token": {x}, "RevocationRequest.token": {y}}},
+		{"body token, query revocationrequest.TOKEN", url.Values{"revocationrequest.TOKEN": {y}}, url.Values{"client_id": {"spa"}, "token": {x}}},
 	} {
 		if status, oauthErr, desc := revoke(c.query, c.body); status != http.StatusBadRequest || oauthErr != "invalid_request" || desc != "token repeated" {
 			t.Errorf("%s = %d %q %q, want 400 invalid_request \"token repeated\"", c.name, status, oauthErr, desc)
@@ -678,15 +687,39 @@ func TestRevocationRejectsRepeatedToken(t *testing.T) {
 		t.Errorf("repeated token without a client = %d %q, want 401 invalid_client", status, oauthErr)
 	}
 
-	// A token given once, in the query only, is revoked.
-	if status, oauthErr, _ := revoke(url.Values{"token": {x}}, url.Values{"client_id": {"spa"}}); status != http.StatusOK {
-		t.Fatalf("query token = %d %q, want 200", status, oauthErr)
+	// A token given once is revoked, in the body or the query, under any
+	// key the decoder reads as the token; given once but empty, it is
+	// missing, as for "token=".
+	for _, key := range []string{"token", "Token", "TOKEN", "RevocationRequest.token"} {
+		for _, inQuery := range []bool{false, true} {
+			name := key + " in the body"
+			query, body := url.Values(nil), url.Values{"client_id": {"spa"}}
+			if inQuery {
+				name, query = key+" in the query", url.Values{}
+			}
+			given := body
+			if inQuery {
+				given = query
+			}
+			given.Set(key, "")
+			if status, oauthErr, desc := revoke(query, body); status != http.StatusBadRequest || oauthErr != "invalid_request" || desc != "token missing" {
+				t.Errorf("empty %s = %d %q %q, want 400 invalid_request \"token missing\"", name, status, oauthErr, desc)
+			}
+			token, other := issue(), issue()
+			given.Set(key, token)
+			if status, oauthErr, desc := revoke(query, body); status != http.StatusOK {
+				t.Errorf("%s = %d %q %q, want 200", name, status, oauthErr, desc)
+			}
+			if accepted(token) {
+				t.Errorf("the token revoked as %s is still accepted", name)
+			}
+			if !accepted(other) {
+				t.Fatalf("revoking %s revoked another token", name)
+			}
+		}
 	}
-	if accepted(x) {
-		t.Fatal("the token revoked from the query is still accepted")
-	}
-	if !accepted(y) {
-		t.Fatal("revoking one token revoked another")
+	if !accepted(x) || !accepted(y) {
+		t.Fatal("a token of the rejected requests was revoked")
 	}
 }
 

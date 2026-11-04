@@ -100,6 +100,7 @@ func New(pool *pgxpool.Pool, opts Options) (*Provider, error) {
 			"name", "preferred_username", "updated_at", "email", "email_verified",
 		},
 	}
+	revocation := &revocationCheck{}
 	options := []op.Option{
 		op.WithCustomEndpoints(
 			op.NewEndpoint(PathAuthorize), op.NewEndpoint(PathToken), op.NewEndpoint(PathUserinfo),
@@ -108,7 +109,7 @@ func New(pool *pgxpool.Pool, opts Options) (*Provider, error) {
 		op.WithCustomIntrospectionEndpoint(op.NewEndpoint(PathIntrospect)),
 		op.WithCustomDeviceAuthorizationEndpoint(op.NewEndpoint(PathDeviceAuthz)),
 		op.WithLogger(opts.Logger.With("component", "oidc")),
-		op.WithHttpInterceptors(checkRevocationToken),
+		op.WithHttpInterceptors(revocation.intercept),
 		// Access tokens are encrypted with AES-256-GCM, and only GCM
 		// decrypts them. zitadel's default also falls back to AES-CFB for
 		// tokens of older zitadel versions; CFB is not authenticated, so it
@@ -124,6 +125,7 @@ func New(pool *pgxpool.Pool, opts Options) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("oidcop: %w", err)
 	}
+	revocation.decoder = provider.Decoder()
 	return &Provider{op: provider, storage: st, issuer: opts.Issuer, crypto: provider.Crypto()}, nil
 }
 
