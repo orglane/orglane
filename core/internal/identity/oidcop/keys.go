@@ -103,18 +103,20 @@ func (m *KeyManager) due(k store.SigningKey) bool {
 func (m *KeyManager) rotate(ctx context.Context, force bool) (bool, error) {
 	// Generate outside the transaction: RSA key generation takes a while.
 	var fresh *rsa.PrivateKey
-	created := false
+	// What the transaction did is logged after it commits: a failure later
+	// in the transaction rolls it back.
+	created, deleted := false, int64(0)
 	err := pgx.BeginFunc(ctx, m.pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		if err := q.AcquireXactLock(ctx, keyLockID); err != nil {
 			return fmt.Errorf("oidcop: key lock: %w", err)
 		}
 		now := m.now().UTC()
-		if n, err := q.DeleteExpiredSigningKeys(ctx, now); err != nil {
+		n, err := q.DeleteExpiredSigningKeys(ctx, now)
+		if err != nil {
 			return fmt.Errorf("oidcop: delete expired keys: %w", err)
-		} else if n > 0 {
-			m.logger.InfoContext(ctx, "deleted expired signing keys", "count", n)
 		}
+		deleted = n
 		active, err := q.GetActiveSigningKey(ctx)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -150,10 +152,16 @@ func (m *KeyManager) rotate(ctx context.Context, force bool) (bool, error) {
 		})
 		return err
 	})
+	if err != nil {
+		return false, err
+	}
+	if deleted > 0 {
+		m.logger.InfoContext(ctx, "deleted expired signing keys", "count", deleted)
+	}
 	if created {
 		m.logger.InfoContext(ctx, "created a new token signing key")
 	}
-	return created, err
+	return created, nil
 }
 
 func (m *KeyManager) storeKey(ctx context.Context, q *store.Queries, key *rsa.PrivateKey, now time.Time) (store.SigningKey, error) {
