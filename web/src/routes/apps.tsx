@@ -26,7 +26,9 @@ import {
   appProvisioningQuery,
   appsKey,
   appTeamMappingsQuery,
+  explainCode,
   featureMessages,
+  guidanceMessages,
   healthMessages,
   label,
   managementMessages,
@@ -42,17 +44,18 @@ import {
 import { errorMessage } from "@/lib/errors";
 import { useMe } from "@/lib/session";
 import { teamsQuery } from "@/lib/teams";
+import { cn } from "@/lib/utils";
 
 const messages = defineMessages({
   description: {
     id: "apps.description",
     defaultMessage: "The services your company uses, with one sign-in.",
   },
-  emptyTitle: { id: "apps.empty.title", defaultMessage: "No apps connected yet" },
+  emptyTitle: { id: "apps.empty.title", defaultMessage: "No apps assigned to you yet" },
   emptyDescription: {
     id: "apps.empty.description",
     defaultMessage:
-      "Code hosting, chat, files and calendars will show up here once they're connected.",
+      "Your company's apps appear here once you have access. Ask an administrator if you need one.",
   },
   manageApps: { id: "apps.manage", defaultMessage: "Manage apps" },
   open: { id: "apps.open", defaultMessage: "Open" },
@@ -101,6 +104,38 @@ const messages = defineMessages({
   }),
   loading: { id: "common.loading", defaultMessage: "Loading" },
   retry: { id: "common.retry", defaultMessage: "Try again" },
+  scrollHint: {
+    id: "appsSettings.scrollHint",
+    defaultMessage: "Scroll sideways to see all columns.",
+  },
+  applying: {
+    id: "appInstance.applying",
+    defaultMessage: "Applying changes in the background. This page updates by itself.",
+  },
+  rotationWaiting: defineMessage<{ version: number }>({
+    id: "appInstance.rotationWaiting",
+    defaultMessage:
+      "Waiting for the provider to confirm version {version}. The current value stays in use, and Orglane keeps retrying automatically.",
+  }),
+  abandonExplain: {
+    id: "appInstance.abandonExplain",
+    defaultMessage:
+      "If the provider never accepted the new value, cancel the rotation: Orglane re-applies the current value first, then discards the new one.",
+  },
+  abandon: defineMessage<{ name: string }>({
+    id: "appInstance.abandon",
+    defaultMessage: "Cancel the rotation of {name} and keep the current value",
+  }),
+  abandonShort: {
+    id: "appInstance.abandonShort",
+    defaultMessage: "Cancel rotation and keep current value",
+  },
+  abandoning: {
+    id: "appInstance.abandoning",
+    defaultMessage:
+      "Cancelling: Orglane is re-applying the current value. The new value is discarded once the provider confirms.",
+  },
+  details: { id: "appInstance.details", defaultMessage: "Details" },
   back: { id: "appInstance.back", defaultMessage: "All apps" },
   notFound: { id: "appInstance.notFound", defaultMessage: "App not found" },
   overview: { id: "appInstance.overview", defaultMessage: "Overview" },
@@ -225,6 +260,38 @@ const messages = defineMessages({
   },
 });
 
+/** How often the instance page refreshes while background work runs. */
+const POLL_MS = 2000;
+/** How long after a change the page keeps refreshing, even before any result exists. */
+const BUSY_MS = 60_000;
+
+/**
+ * Background work (sync, provisioning, rotation) finishes after the change
+ * that started it: `mark` keeps the instance page refreshing for a while.
+ */
+function useBusy() {
+  const [until, setUntil] = useState(0);
+  const [, rerender] = useState(0);
+  useEffect(() => {
+    const left = until - Date.now();
+    if (left <= 0) return;
+    const timer = window.setTimeout(() => rerender((n) => n + 1), left);
+    return () => window.clearTimeout(timer);
+  }, [until]);
+  return { busy: until > Date.now(), mark: () => setUntil(Date.now() + BUSY_MS) };
+}
+
+const transitional = new Set(["connecting", "installing", "upgrading", "removing"]);
+
+/** On narrow screens, says that a wide table scrolls sideways. */
+function ScrollHint() {
+  return (
+    <p className="mb-2 text-muted-foreground text-xs sm:hidden">
+      <FormattedMessage {...messages.scrollHint} />
+    </p>
+  );
+}
+
 function Loading() {
   const intl = useIntl();
   return (
@@ -289,19 +356,30 @@ export function AppsPage() {
           description={<FormattedMessage {...messages.emptyDescription} />}
         />
       ) : (
-        <ul className="grid gap-4 sm:grid-cols-2">
+        <ul className="grid gap-4 lg:grid-cols-2">
           {mine.data.items.map((app) => (
             <li key={app.instanceId}>
               <Card className="flex h-full flex-col gap-4 p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h2 className="truncate font-semibold">{app.displayName}</h2>
-                    <p className="truncate text-muted-foreground text-sm">
+                    <h2 className="break-words font-semibold">{app.displayName}</h2>
+                    <p className="break-all text-muted-foreground text-sm">
                       {app.homeUrl ? new URL(app.homeUrl).host : app.key}
                     </p>
                   </div>
                   <StatusBadge status={app.status} />
                 </div>
+                {app.status !== "done" && (
+                  <p className="text-muted-foreground text-sm">
+                    <FormattedMessage
+                      {...(app.status === "failed"
+                        ? guidanceMessages.myFailed
+                        : app.status === "pending_employee_action"
+                          ? guidanceMessages.myAction
+                          : guidanceMessages.myQueued)}
+                    />
+                  </p>
+                )}
                 <div className="mt-auto flex flex-wrap gap-2">
                   {app.status === "pending_employee_action" && app.actionPath ? (
                     <Button asChild size="sm">
@@ -340,7 +418,7 @@ function CapabilityMatrix({ providers }: { providers: AppProvider[] }) {
   const features = providers[0]?.features.map((f) => f.feature) ?? [];
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[28rem] text-left text-sm">
+      <table className={cn("w-full text-left text-sm", providers.length > 2 && "min-w-[36rem]")}>
         <caption className="sr-only">{intl.formatMessage(messages.providers)}</caption>
         <thead>
           <tr className="border-b text-muted-foreground">
@@ -434,73 +512,78 @@ export function AppsSettingsPage() {
             description={<FormattedMessage {...messages.noInstancesDescription} />}
           />
         ) : (
-          <Card className="overflow-x-auto">
-            <table className="w-full min-w-[36rem] text-left text-sm">
-              <caption className="sr-only">{intl.formatMessage(messages.instances)}</caption>
-              <thead>
-                <tr className="border-b text-muted-foreground">
-                  <th scope="col" className="px-5 py-3 font-medium">
-                    <FormattedMessage {...messages.name} />
-                  </th>
-                  <th scope="col" className="px-5 py-3 font-medium">
-                    <FormattedMessage {...messages.provider} />
-                  </th>
-                  <th scope="col" className="px-5 py-3 font-medium">
-                    <FormattedMessage {...messages.state} />
-                  </th>
-                  <th scope="col" className="px-5 py-3 font-medium">
-                    <FormattedMessage {...messages.address} />
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {instances.data.items.map((inst) => (
-                  <tr key={inst.id} className="border-b last:border-0">
-                    <td className="px-5 py-3">
-                      <Link
-                        to="/settings/apps/$instanceId"
-                        params={{ instanceId: inst.id }}
-                        className="font-medium text-primary hover:underline"
-                      >
-                        {inst.displayName}
-                      </Link>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {defaults(inst.id).map((b) => (
-                          <Badge key={b.capability} variant="brand">
-                            {intl.formatMessage(messages.defaultFor, { capability: b.capability })}
-                          </Badge>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-5 py-3">
-                      {providerName(inst.provider)}
-                      {!inst.providerAvailable && (
-                        <span className="block text-muted-foreground text-xs">
-                          <FormattedMessage {...messages.unavailable} />
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-5 py-3">
-                      <div className="flex flex-wrap gap-1">
-                        <StateBadge state={inst.state} />
-                        {inst.state !== "removed" && inst.health !== "unknown" && (
-                          <Badge variant={inst.health === "healthy" ? "success" : "warning"}>
-                            {intl.formatMessage(healthMessages[inst.health])}
-                          </Badge>
-                        )}
-                      </div>
-                    </td>
-                    <td className="break-all px-5 py-3 text-muted-foreground">
-                      {inst.baseUrl ?? inst.key}
-                      {inst.packageVersion && (
-                        <span className="block text-xs">{inst.packageVersion}</span>
-                      )}
-                    </td>
+          <>
+            <ScrollHint />
+            <Card className="overflow-x-auto">
+              <table className="w-full min-w-[36rem] text-left text-sm">
+                <caption className="sr-only">{intl.formatMessage(messages.instances)}</caption>
+                <thead>
+                  <tr className="border-b text-muted-foreground">
+                    <th scope="col" className="sticky left-0 bg-surface px-5 py-3 font-medium">
+                      <FormattedMessage {...messages.name} />
+                    </th>
+                    <th scope="col" className="px-5 py-3 font-medium">
+                      <FormattedMessage {...messages.provider} />
+                    </th>
+                    <th scope="col" className="px-5 py-3 font-medium">
+                      <FormattedMessage {...messages.state} />
+                    </th>
+                    <th scope="col" className="px-5 py-3 font-medium">
+                      <FormattedMessage {...messages.address} />
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
+                </thead>
+                <tbody>
+                  {instances.data.items.map((inst) => (
+                    <tr key={inst.id} className="border-b last:border-0">
+                      <td className="sticky left-0 bg-surface px-5 py-3">
+                        <Link
+                          to="/settings/apps/$instanceId"
+                          params={{ instanceId: inst.id }}
+                          className="font-medium text-primary hover:underline"
+                        >
+                          {inst.displayName}
+                        </Link>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {defaults(inst.id).map((b) => (
+                            <Badge key={b.capability} variant="brand">
+                              {intl.formatMessage(messages.defaultFor, {
+                                capability: b.capability,
+                              })}
+                            </Badge>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-5 py-3">
+                        {providerName(inst.provider)}
+                        {!inst.providerAvailable && (
+                          <span className="block text-muted-foreground text-xs">
+                            <FormattedMessage {...messages.unavailable} />
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-5 py-3">
+                        <div className="flex flex-wrap gap-1">
+                          <StateBadge state={inst.state} />
+                          {inst.state !== "removed" && inst.health !== "unknown" && (
+                            <Badge variant={inst.health === "healthy" ? "success" : "warning"}>
+                              {intl.formatMessage(healthMessages[inst.health])}
+                            </Badge>
+                          )}
+                        </div>
+                      </td>
+                      <td className="break-all px-5 py-3 text-muted-foreground">
+                        {inst.baseUrl ?? inst.key}
+                        {inst.packageVersion && (
+                          <span className="block text-xs">{inst.packageVersion}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          </>
         )}
       </section>
       <section aria-labelledby="apps-matrix">
@@ -528,7 +611,7 @@ export function AppsSettingsPage() {
   );
 }
 
-function AccessSettings({ instance }: { instance: AppInstance }) {
+function AccessSettings({ instance, onChange }: { instance: AppInstance; onChange: () => void }) {
   const api = useApi();
   const intl = useIntl();
   const queryClient = useQueryClient();
@@ -549,7 +632,10 @@ function AccessSettings({ instance }: { instance: AppInstance }) {
           body: { accessPolicy: policy, manageExistingMembers: manageExisting },
         }),
       ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: appsKey }),
+    onSuccess: () => {
+      onChange();
+      return queryClient.invalidateQueries({ queryKey: appsKey });
+    },
   });
   return (
     <Card>
@@ -625,10 +711,12 @@ function Credentials({
   instanceId,
   provider,
   detail,
+  onChange,
 }: {
   instanceId: string;
   provider: AppProvider | undefined;
   detail: Schema<"AppInstanceDetail">;
+  onChange: () => void;
 }) {
   const api = useApi();
   const intl = useIntl();
@@ -640,7 +728,25 @@ function Credentials({
           params: { path: { instanceId, credentialName } },
         }),
       ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: appsKey }),
+    onSuccess: () => {
+      onChange();
+      return queryClient.invalidateQueries({ queryKey: appsKey });
+    },
+  });
+  const abandon = useMutation({
+    mutationFn: (credentialName: string) =>
+      call(
+        api.client.POST(
+          "/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon",
+          {
+            params: { path: { instanceId, credentialName } },
+          },
+        ),
+      ),
+    onSuccess: () => {
+      onChange();
+      return queryClient.invalidateQueries({ queryKey: appsKey });
+    },
   });
   const rotatable = (name: string) =>
     provider?.credentials.some(
@@ -667,6 +773,7 @@ function Credentials({
         {rotate.isError && (
           <Alert>{errorMessage(intl, rotate.error, { 409: messages.rotationConflict })}</Alert>
         )}
+        {abandon.isError && <Alert>{errorMessage(intl, abandon.error)}</Alert>}
         {rotate.isSuccess && (
           <Alert variant="success">
             <FormattedMessage {...messages.rotating} />
@@ -674,30 +781,56 @@ function Credentials({
         )}
         <ul className="divide-y">
           {active.map((c) => {
-            const pending = detail.credentials.some(
+            const candidate = detail.credentials.find(
               (o) =>
                 o.name === c.name &&
                 (o.state === "pending" || o.state === "uncertain" || o.state === "abandoning"),
             );
             return (
-              <li key={c.name} className="flex items-center justify-between gap-3 py-2 text-sm">
-                <span>
-                  <code className="font-mono">{c.name}</code>
-                  <span className="ml-2 text-muted-foreground">
-                    {intl.formatMessage(messages.credentialVersion, { version: c.version })}
+              <li key={c.name} className="space-y-2 py-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span>
+                    <code className="font-mono">{c.name}</code>
+                    <span className="ml-2 text-muted-foreground">
+                      {intl.formatMessage(messages.credentialVersion, { version: c.version })}
+                    </span>
                   </span>
-                </span>
-                {rotatable(c.name) && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    aria-label={intl.formatMessage(messages.rotate, { name: c.name })}
-                    disabled={pending || rotate.isPending}
-                    onClick={() => rotate.mutate(c.name)}
-                  >
-                    <RefreshCw aria-hidden="true" />
-                    <FormattedMessage {...messages.rotateShort} />
-                  </Button>
+                  {rotatable(c.name) && !candidate && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      aria-label={intl.formatMessage(messages.rotate, { name: c.name })}
+                      disabled={rotate.isPending}
+                      onClick={() => rotate.mutate(c.name)}
+                    >
+                      <RefreshCw aria-hidden="true" />
+                      <FormattedMessage {...messages.rotateShort} />
+                    </Button>
+                  )}
+                </div>
+                {candidate?.state === "abandoning" && (
+                  <p role="status" className="text-muted-foreground">
+                    <FormattedMessage {...messages.abandoning} />
+                  </p>
+                )}
+                {candidate && candidate.state !== "abandoning" && (
+                  <div className="space-y-2 rounded-lg border p-3">
+                    <p role="status">
+                      {intl.formatMessage(messages.rotationWaiting, { version: candidate.version })}
+                    </p>
+                    <p className="text-muted-foreground">
+                      <FormattedMessage {...messages.abandonExplain} />
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      aria-label={intl.formatMessage(messages.abandon, { name: c.name })}
+                      loading={abandon.isPending}
+                      onClick={() => abandon.mutate(c.name)}
+                    >
+                      <FormattedMessage {...messages.abandonShort} />
+                    </Button>
+                  </div>
                 )}
               </li>
             );
@@ -708,15 +841,31 @@ function Credentials({
   );
 }
 
-function TeamMappings({ instanceId }: { instanceId: string }) {
+function TeamMappings({
+  instanceId,
+  busy,
+  onChange,
+}: {
+  instanceId: string;
+  busy: boolean;
+  onChange: () => void;
+}) {
   const api = useApi();
   const intl = useIntl();
   const queryClient = useQueryClient();
   const selectId = useId();
   const [teamId, setTeamId] = useState("");
-  const mappings = useQuery(appTeamMappingsQuery(api, instanceId));
+  const mappings = useQuery({
+    ...appTeamMappingsQuery(api, instanceId),
+    // Until the provider team exists, the mapping is "waiting for sync".
+    refetchInterval: (q) =>
+      busy || q.state.data?.items.some((m) => !m.externalRef && !m.teamArchived) ? POLL_MS : false,
+  });
   const teams = useQuery(teamsQuery(api));
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: appsKey });
+  const invalidate = () => {
+    onChange();
+    return queryClient.invalidateQueries({ queryKey: appsKey });
+  };
   const add = useMutation({
     mutationFn: () =>
       call(
@@ -849,12 +998,26 @@ function ActionList({
   );
 }
 
-function Provisioning({ instanceId }: { instanceId: string }) {
+function Provisioning({
+  instanceId,
+  busy,
+  onChange,
+}: {
+  instanceId: string;
+  busy: boolean;
+  onChange: () => void;
+}) {
   const api = useApi();
   const intl = useIntl();
   const queryClient = useQueryClient();
-  const status = useQuery(appProvisioningQuery(api, instanceId));
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: appsKey });
+  const status = useQuery({
+    ...appProvisioningQuery(api, instanceId),
+    refetchInterval: (q) => (busy || (q.state.data?.counts.queued ?? 0) > 0 ? POLL_MS : false),
+  });
+  const invalidate = () => {
+    onChange();
+    return queryClient.invalidateQueries({ queryKey: appsKey });
+  };
   const retry = useMutation({
     mutationFn: () =>
       call(
@@ -1006,59 +1169,76 @@ function Provisioning({ instanceId }: { instanceId: string }) {
               )}
             </section>
           )}
-          {items.length === 0 ? (
-            <p className="text-muted-foreground text-sm">
-              <FormattedMessage {...messages.noResults} />
+          {(busy || counts.queued > 0) && (
+            <p role="status" className="flex items-center gap-2 text-muted-foreground text-sm">
+              <Spinner />
+              <FormattedMessage {...messages.applying} />
             </p>
+          )}
+          {items.length === 0 ? (
+            !busy && (
+              <p className="text-muted-foreground text-sm">
+                <FormattedMessage {...messages.noResults} />
+              </p>
+            )
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[30rem] text-left text-sm">
-                <caption className="sr-only">{intl.formatMessage(messages.provisioning)}</caption>
-                <thead>
-                  <tr className="border-b text-muted-foreground">
-                    <th scope="col" className="py-2 pr-4 font-medium">
-                      <FormattedMessage {...messages.person} />
-                    </th>
-                    <th scope="col" className="py-2 pr-4 font-medium">
-                      <FormattedMessage {...messages.status} />
-                    </th>
-                    <th scope="col" className="py-2 font-medium">
-                      <FormattedMessage {...messages.lastActions} />
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((r) => (
-                    <tr key={r.person.id} className="border-b align-top last:border-0">
-                      <td className="py-2 pr-4">
-                        <Link
-                          to="/people/$personId"
-                          params={{ personId: r.person.id }}
-                          className="font-medium text-primary hover:underline"
-                        >
-                          {r.person.displayName}
-                        </Link>
-                        {!r.access && (
-                          <span className="block text-muted-foreground text-xs">
-                            <FormattedMessage {...messages.noAccess} />
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2 pr-4">
-                        <StatusBadge status={r.status} />
-                        {r.errorCode && (
-                          <code className="mt-1 block font-mono text-muted-foreground text-xs">
-                            {r.errorCode}
-                          </code>
-                        )}
-                      </td>
-                      <td className="py-2">
-                        <ActionList actions={r.actions} />
-                      </td>
+            <div>
+              <ScrollHint />
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[30rem] text-left text-sm">
+                  <caption className="sr-only">{intl.formatMessage(messages.provisioning)}</caption>
+                  <thead>
+                    <tr className="border-b text-muted-foreground">
+                      <th scope="col" className="sticky left-0 bg-surface py-2 pr-4 font-medium">
+                        <FormattedMessage {...messages.person} />
+                      </th>
+                      <th scope="col" className="py-2 pr-4 font-medium">
+                        <FormattedMessage {...messages.status} />
+                      </th>
+                      <th scope="col" className="py-2 font-medium">
+                        <FormattedMessage {...messages.lastActions} />
+                      </th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {items.map((r) => (
+                      <tr key={r.person.id} className="border-b align-top last:border-0">
+                        <td className="sticky left-0 bg-surface py-2 pr-4">
+                          <Link
+                            to="/people/$personId"
+                            params={{ personId: r.person.id }}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {r.person.displayName}
+                          </Link>
+                          {!r.access && (
+                            <span className="block text-muted-foreground text-xs">
+                              <FormattedMessage {...messages.noAccess} />
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 pr-4">
+                          <StatusBadge status={r.status} />
+                          {r.status === "failed" && (
+                            <p className="mt-1 max-w-xs text-xs">
+                              {explainCode(intl, r.errorCode) ??
+                                intl.formatMessage(guidanceMessages.resultFailed)}
+                            </p>
+                          )}
+                          {r.errorCode && (
+                            <code className="mt-1 block font-mono text-muted-foreground text-xs">
+                              {r.errorCode}
+                            </code>
+                          )}
+                        </td>
+                        <td className="py-2">
+                          <ActionList actions={r.actions} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </CardContent>
@@ -1094,7 +1274,23 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
   const intl = useIntl();
   const queryClient = useQueryClient();
   const manage = useMe().permissions.includes("apps.manage");
-  const detail = useQuery({ ...appInstanceQuery(api, instanceId), enabled: manage });
+  const { busy, mark } = useBusy();
+  const detail = useQuery({
+    ...appInstanceQuery(api, instanceId),
+    enabled: manage,
+    refetchInterval: (q) => {
+      const d = q.state.data;
+      const working =
+        busy ||
+        (d &&
+          (transitional.has(d.instance.state) ||
+            d.provisioning.queued > 0 ||
+            d.credentials.some(
+              (c) => c.state === "pending" || c.state === "uncertain" || c.state === "abandoning",
+            )));
+      return working ? POLL_MS : false;
+    },
+  });
   const providers = useQuery({ ...appProvidersQuery(api), enabled: manage });
   const setup = useMutation({
     mutationFn: () =>
@@ -1103,7 +1299,10 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
           params: { path: { instanceId } },
         }),
       ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: appsKey }),
+    onSuccess: () => {
+      mark();
+      return queryClient.invalidateQueries({ queryKey: appsKey });
+    },
   });
   const back = (
     <Button asChild variant="ghost" size="sm">
@@ -1164,6 +1363,14 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
               </Alert>
             )}
             {setup.isError && <Alert>{errorMessage(intl, setup.error)}</Alert>}
+            {(instance.state === "degraded" ||
+              instance.state === "disconnected" ||
+              (instance.state === "failed" && instance.healthCode !== "setup_failed")) && (
+              <Alert>
+                {explainCode(intl, instance.healthCode) ??
+                  intl.formatMessage(guidanceMessages.instanceProblem)}
+              </Alert>
+            )}
             <dl className="grid gap-4 text-sm sm:grid-cols-2">
               <div>
                 <dt className="text-muted-foreground">
@@ -1245,12 +1452,17 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
         </Card>
         {instance.state !== "removed" && provisioningEnabled && (
           <>
-            <AccessSettings instance={instance} />
-            <TeamMappings instanceId={instanceId} />
-            <Provisioning instanceId={instanceId} />
+            <AccessSettings instance={instance} onChange={mark} />
+            <TeamMappings instanceId={instanceId} busy={busy} onChange={mark} />
+            <Provisioning instanceId={instanceId} busy={busy} onChange={mark} />
           </>
         )}
-        <Credentials instanceId={instanceId} provider={provider} detail={detail.data} />
+        <Credentials
+          instanceId={instanceId}
+          provider={provider}
+          detail={detail.data}
+          onChange={mark}
+        />
       </div>
     </Page>
   );

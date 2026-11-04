@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import { repo } from "./env";
 import { expect, test } from "./fixtures";
 
@@ -113,7 +114,7 @@ test("an Admin sees Settings → Apps, maps a team and its members get access; a
         headers: { Origin: instance.url },
       });
       await page2.goto(`${instance.url}/apps`);
-      await expect(page2.getByText("No apps connected yet")).toBeVisible();
+      await expect(page2.getByText("No apps assigned to you yet")).toBeVisible();
     } finally {
       await outsider.close();
     }
@@ -125,9 +126,9 @@ test("an Admin sees Settings → Apps, maps a team and its members get access; a
 // Review captures for the PR (not committed):
 //   ORGLANE_SCREENSHOTS=1 pnpm --filter @orglane/web test:e2e apps
 // writes .github/pr-assets/apps/<screen>-<viewport>-<theme>.png.
-test("apps screenshots", async ({ page, instance }) => {
+test("apps screenshots", async ({ page, instance, browser }) => {
   test.skip(!process.env.ORGLANE_SCREENSHOTS, "set ORGLANE_SCREENSHOTS=1 to capture screenshots");
-  test.setTimeout(120_000);
+  test.setTimeout(240_000);
   const instanceId = instance.sql(createInstance).split("\n")[0] ?? "";
   instance.sql(
     `INSERT INTO app_bindings (capability, instance_id, is_default) VALUES ('code', '${instanceId}', true)`,
@@ -139,39 +140,61 @@ test("apps screenshots", async ({ page, instance }) => {
   await page.goto(`${instance.url}/settings/apps/${instanceId}`);
   await page.getByLabel("Team to map").selectOption({ label: "Platform" });
   await page.getByRole("button", { name: "Map team" }).click();
-  await expect(async () => {
-    await page.reload();
-    await expect(page.getByText(/^5 up to date/)).toBeVisible({ timeout: 1000 });
-  }).toPass({ timeout: 45_000 });
+  // The page refreshes by itself while the jobs run.
+  await expect(page.getByText(/^5 up to date/)).toBeVisible({ timeout: 45_000 });
 
-  const screens: [string, string][] = [
-    ["settings-apps", "/settings/apps"],
-    ["app-instance", `/settings/apps/${instanceId}`],
-    ["my-apps", "/apps"],
-  ];
   const priya = await page.request.get(`${instance.url}/api/v1/people?q=priya`);
-  const priyaId = ((await priya.json()) as { items: { id: string }[] }).items[0]?.id;
-  if (priyaId) screens.push(["person-apps", `/people/${priyaId}`]);
-  for (const [viewport, size] of [
+  const priyaId = ((await priya.json()) as { items: { id: string }[] }).items[0]?.id ?? "";
+  const viewports = [
     ["desktop", { width: 1280, height: 900 }],
-    ["mobile", { width: 390, height: 844 }],
-  ] as const) {
-    await page.setViewportSize(size);
-    for (const [name, path] of screens) {
-      await page.goto(`${instance.url}${path}`);
-      await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    ["tablet", { width: 768, height: 1024 }],
+    ["mobile", { width: 360, height: 780 }],
+  ] as const;
+  async function shoot(target: Page, name: string, path: string) {
+    for (const [viewport, size] of viewports) {
+      await target.setViewportSize(size);
+      await target.goto(`${instance.url}${path}`);
+      await expect(target.getByRole("heading", { level: 1 })).toBeVisible();
       if (name === "person-apps") {
-        await page.getByRole("heading", { name: "Apps and accounts" }).scrollIntoViewIfNeeded();
+        await target.getByRole("heading", { name: "Apps and accounts" }).scrollIntoViewIfNeeded();
       }
       for (const theme of ["light", "dark"] as const) {
-        await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
-        await expect(page.locator("html")).toHaveClass(new RegExp(`\\b${theme}\\b`));
-        await page.screenshot({
+        await target.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
+        await expect(target.locator("html")).toHaveClass(new RegExp(`\\b${theme}\\b`));
+        await target.screenshot({
           path: `${repo}.github/pr-assets/apps/${name}-${viewport}-${theme}.png`,
           animations: "disabled",
           fullPage: name !== "person-apps",
         });
       }
     }
+  }
+  await shoot(page, "settings-apps", "/settings/apps");
+  await shoot(page, "app-instance", `/settings/apps/${instanceId}`);
+  await shoot(page, "my-apps", "/apps");
+  await shoot(page, "person-apps", `/people/${priyaId}`);
+
+  // Problems: the agent is unreachable, a rotation has waited for a day and
+  // one person's access failed.
+  instance.sql(
+    `UPDATE app_instances SET state = 'degraded', health = 'unhealthy', health_code = 'agent_unavailable' WHERE id = '${instanceId}'`,
+  );
+  instance.sql(`INSERT INTO app_credentials (instance_id, name, version, ciphertext, state, created_at, activated_at) VALUES
+    ('${instanceId}', 'webhook_secret', 1, '\\x00', 'active', now() - interval '3 days', now() - interval '3 days'),
+    ('${instanceId}', 'webhook_secret', 2, '\\x00', 'uncertain', now() - interval '25 hours', NULL)`);
+  instance.sql(`UPDATE provisioning_results SET status = 'failed', error_code = 'seat_limit'
+    WHERE instance_id = '${instanceId}' AND person_id = (SELECT id FROM people WHERE username = 'sofia.petrova')`);
+  await shoot(page, "app-instance-problems", `/settings/apps/${instanceId}`);
+
+  const context = await browser.newContext();
+  try {
+    const outsider = await context.newPage();
+    await context.request.post(`${instance.url}/api/v1/demo/sign-in`, {
+      data: { username: "fatima.alsayed" },
+      headers: { Origin: instance.url },
+    });
+    await shoot(outsider, "my-apps-empty", "/apps");
+  } finally {
+    await context.close();
   }
 });

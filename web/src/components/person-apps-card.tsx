@@ -7,7 +7,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useApi } from "@/lib/api-context";
-import { personAppsQuery, statusMessages, statusVariant } from "@/lib/apps";
+import {
+  explainCode,
+  guidanceMessages,
+  personAppsQuery,
+  statusMessages,
+  statusVariant,
+} from "@/lib/apps";
 import { errorMessage } from "@/lib/errors";
 
 const messages = defineMessages({
@@ -92,6 +98,12 @@ export function PersonAppsCard({
                           <Badge>
                             <FormattedMessage {...messages.noAccess} />
                           </Badge>
+                        )}
+                        {r.status === "failed" && (
+                          <span className="text-xs">
+                            {explainCode(intl, r.errorCode) ??
+                              intl.formatMessage(guidanceMessages.resultFailed)}
+                          </span>
                         )}
                         {r.errorCode && (
                           <code className="font-mono text-muted-foreground text-xs">

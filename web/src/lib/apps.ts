@@ -195,3 +195,84 @@ export function label(
   const m = map[key];
   return m ? intl.formatMessage(m) : key;
 }
+
+/**
+ * Explanations of the stable codes of instance states and provisioning
+ * results: what happened, whether Orglane retries, and what to do. The
+ * code itself stays visible as a secondary detail.
+ */
+export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
+  setup_failed: {
+    id: "apps.code.setupFailed",
+    defaultMessage: "Setting up this app failed. Check the service, then retry the setup.",
+  },
+  agent_unavailable: {
+    id: "apps.code.agentUnavailable",
+    defaultMessage:
+      "Waiting for the agent that runs this app. Orglane keeps trying; check that the agent is running.",
+  },
+  install_failed: {
+    id: "apps.code.installFailed",
+    defaultMessage: "Installing this app failed. Check the server's resources, then retry.",
+  },
+  webhook_deleted: {
+    id: "apps.code.webhookDeleted",
+    defaultMessage: "The app no longer sends events to Orglane. Reconnect it to restore them.",
+  },
+  provider_unavailable: {
+    id: "apps.code.providerUnavailable",
+    defaultMessage: "This version of Orglane cannot talk to this app.",
+  },
+  provider_error: {
+    id: "apps.code.providerError",
+    defaultMessage: "The app did not answer as expected. Orglane retries automatically.",
+  },
+  rate_limited: {
+    id: "apps.code.rateLimited",
+    defaultMessage: "The app asked Orglane to slow down. It retries once the app allows it.",
+  },
+  seat_limit: {
+    id: "apps.code.seatLimit",
+    defaultMessage: "The app has no free seats. Add seats in the app, then retry.",
+  },
+  owner_protected: {
+    id: "apps.code.ownerProtected",
+    defaultMessage: "Owners of the app's organization are never removed by Orglane.",
+  },
+  invalid_login: {
+    id: "apps.code.invalidLogin",
+    defaultMessage: "The app refused this person's username. Change the username, then retry.",
+  },
+});
+
+export const guidanceMessages = defineMessages({
+  instanceProblem: {
+    id: "apps.guidance.instanceProblem",
+    defaultMessage:
+      "This app has a problem. Orglane keeps checking it; if it stays like this, check the service.",
+  },
+  resultFailed: {
+    id: "apps.guidance.resultFailed",
+    defaultMessage:
+      "Orglane couldn't update this person's access. Fix the cause in the app, then use Retry failed.",
+  },
+  myFailed: {
+    id: "apps.guidance.myFailed",
+    defaultMessage:
+      "We couldn't update your access to this app. If it stays like this, ask an administrator.",
+  },
+  myQueued: {
+    id: "apps.guidance.myQueued",
+    defaultMessage: "Your access is being set up. This usually takes a moment.",
+  },
+  myAction: {
+    id: "apps.guidance.myAction",
+    defaultMessage: "This app needs something from you before you can use it.",
+  },
+});
+
+/** The explanation of a code, if it is a known one. */
+export function explainCode(intl: IntlShape, code: string | undefined): string | undefined {
+  const m = code ? codeMessages[code] : undefined;
+  return m ? intl.formatMessage(m) : undefined;
+}

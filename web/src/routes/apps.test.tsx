@@ -87,7 +87,7 @@ describe("Apps", () => {
       "GET /api/v1/me": { status: 200, body: admin },
       "GET /api/v1/me/apps": { status: 200, body: { items: [] } },
     });
-    expect(await screen.findByText("No apps connected yet")).toBeInTheDocument();
+    expect(await screen.findByText("No apps assigned to you yet")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Manage apps" })).toHaveAttribute(
       "href",
       "/settings/apps",
@@ -240,5 +240,173 @@ describe("Settings → Apps", () => {
     expect(screen.getByText(/checked again before it is applied/)).toBeInTheDocument();
     // Rotating a credential is a labeled action.
     expect(screen.getByRole("button", { name: "Rotate webhook_secret" })).toBeEnabled();
+  });
+});
+
+const detailWith = (credentials: unknown[], extra: Record<string, unknown> = {}) => ({
+  instance: { ...instance, ...extra },
+  bindings: [],
+  operations: [],
+  credentials,
+  rotationStuck: true,
+  unmanagedAccountCount: 0,
+  provisioning: { queued: 0, done: 0, pendingEmployeeAction: 0, failed: 0 },
+});
+
+describe("Instance page guidance", () => {
+  it("offers to cancel a stalled rotation and keep the current value", async () => {
+    const abandonPath = `/api/v1/apps/instances/${instanceId}/credentials/webhook_secret/abandon`;
+    const app = renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: {
+        status: 200,
+        body: detailWith(
+          [
+            {
+              name: "webhook_secret",
+              version: 1,
+              state: "active",
+              createdAt: "2026-11-01T10:00:00Z",
+            },
+            {
+              name: "webhook_secret",
+              version: 2,
+              state: "uncertain",
+              createdAt: "2026-11-01T10:00:00Z",
+            },
+          ],
+          { state: "degraded", health: "unhealthy", healthCode: "agent_unavailable" },
+        ),
+      },
+      [`GET /api/v1/apps/instances/${instanceId}/team-mappings`]: {
+        status: 200,
+        body: { items: [] },
+      },
+      "GET /api/v1/teams": { status: 200, body: { items: [] } },
+      [`GET /api/v1/apps/instances/${instanceId}/provisioning`]: {
+        status: 200,
+        body: {
+          items: [
+            {
+              person: person("0190a1b2-0000-7000-8000-0000000000b1", "Priya"),
+              status: "failed",
+              access: true,
+              grantedByOrglane: true,
+              actions: [],
+              errorCode: "seat_limit",
+              attempts: 1,
+              updatedAt: "2026-11-01T10:00:00Z",
+            },
+          ],
+          counts: { queued: 0, done: 0, pendingEmployeeAction: 0, failed: 1 },
+          unmanagedAccounts: [],
+        },
+      },
+      [`POST ${abandonPath}`]: { status: 202 },
+    });
+    // Failure states explain themselves; codes stay secondary.
+    expect(await screen.findByText(/Waiting for the agent that runs this app/)).toBeInTheDocument();
+    expect(await screen.findByText(/The app has no free seats/)).toBeInTheDocument();
+    // A stalled rotation says what happens and offers the way out.
+    expect(screen.getByText(/Waiting for the provider to confirm version 2/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rotate webhook_secret" })).not.toBeInTheDocument();
+    await app.user.click(
+      screen.getByRole("button", {
+        name: "Cancel the rotation of webhook_secret and keep the current value",
+      }),
+    );
+    await waitFor(() => expect(app.called("POST", abandonPath)).toHaveLength(1));
+  });
+
+  it("keeps refreshing after a mapping until the background work shows up", async () => {
+    let syncs = 0;
+    const provisioningPath = `/api/v1/apps/instances/${instanceId}/provisioning`;
+    const app = renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: { status: 200, body: detailWith([]) },
+      [`GET /api/v1/apps/instances/${instanceId}/team-mappings`]: {
+        status: 200,
+        body: { items: [] },
+      },
+      "GET /api/v1/teams": {
+        status: 200,
+        body: {
+          items: [
+            {
+              id: "0190a1b2-0000-7000-8000-0000000000d1",
+              slug: "platform",
+              name: "Platform",
+              memberCount: 1,
+              createdAt: "2026-11-01T10:00:00Z",
+              updatedAt: "2026-11-01T10:00:00Z",
+            },
+          ],
+        },
+      },
+      [`PUT /api/v1/apps/instances/${instanceId}/team-mappings/0190a1b2-0000-7000-8000-0000000000d1`]:
+        {
+          status: 200,
+          body: {},
+        },
+      [`GET ${provisioningPath}`]: () => {
+        syncs++;
+        return {
+          status: 200,
+          body: {
+            items:
+              syncs > 2
+                ? [
+                    {
+                      person: person("0190a1b2-0000-7000-8000-0000000000b1", "Priya"),
+                      status: "done",
+                      access: true,
+                      grantedByOrglane: true,
+                      actions: [],
+                      attempts: 0,
+                      updatedAt: "2026-11-01T10:00:00Z",
+                    },
+                  ]
+                : [],
+            counts: { queued: 0, done: syncs > 2 ? 1 : 0, pendingEmployeeAction: 0, failed: 0 },
+            unmanagedAccounts: [],
+          },
+        };
+      },
+    });
+    expect(await screen.findByText("Nobody has access yet.")).toBeInTheDocument();
+    await app.user.selectOptions(screen.getByLabelText("Team to map"), "Platform");
+    await app.user.click(screen.getByRole("button", { name: "Map team" }));
+    // Not a definitive empty state while the jobs run.
+    expect(await screen.findByText(/Applying changes in the background/)).toBeInTheDocument();
+    expect(screen.queryByText("Nobody has access yet.")).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("link", { name: "Priya" }, { timeout: 8000 }),
+    ).toBeInTheDocument();
+  }, 15_000);
+});
+
+describe("Apps guidance", () => {
+  it("explains a failed access and what to do", async () => {
+    renderApp("/apps", {
+      "GET /api/v1/me": { status: 200, body: me },
+      "GET /api/v1/me/apps": {
+        status: 200,
+        body: {
+          items: [
+            {
+              instanceId,
+              key: "test",
+              displayName: "Code",
+              provider: "testprovider",
+              capabilities: ["code"],
+              status: "failed",
+            },
+          ],
+        },
+      },
+    });
+    expect(await screen.findByText(/ask an administrator/)).toBeInTheDocument();
   });
 });
