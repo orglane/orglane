@@ -357,22 +357,34 @@ func (s *Service) RevokeInvitation(ctx context.Context, actor audit.Actor, id uu
 // PreviewInvitation returns the invited person for a valid token. It fails
 // with ErrInvitationInvalid, ErrInvitationExpired or ErrInvitationUsed.
 func (s *Service) PreviewInvitation(ctx context.Context, token string) (InvitationPreview, error) {
-	q := s.queries()
-	inv, err := invitationByToken(ctx, q, token)
+	var preview InvitationPreview
+	// The invitation and its person are read from one snapshot. With a
+	// snapshot per statement, an acceptance committing between the two
+	// reads shows an open invitation of an already active person, which
+	// reads as invalid instead of already accepted.
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		q := store.New(tx)
+		inv, err := invitationByToken(ctx, q, token)
+		if err != nil {
+			return err
+		}
+		person, err := q.GetPerson(ctx, inv.PersonID)
+		if err != nil {
+			return notFound(err, "person")
+		}
+		if err := checkInvitation(inv, person); err != nil {
+			return err
+		}
+		if err := checkInvitationGrant(ctx, q, inv); err != nil {
+			return err
+		}
+		preview = InvitationPreview{Person: person, ExpiresAt: inv.ExpiresAt}
+		return nil
+	})
 	if err != nil {
 		return InvitationPreview{}, err
 	}
-	person, err := q.GetPerson(ctx, inv.PersonID)
-	if err != nil {
-		return InvitationPreview{}, notFound(err, "person")
-	}
-	if err := checkInvitation(inv, person); err != nil {
-		return InvitationPreview{}, err
-	}
-	if err := checkInvitationGrant(ctx, q, inv); err != nil {
-		return InvitationPreview{}, err
-	}
-	return InvitationPreview{Person: person, ExpiresAt: inv.ExpiresAt}, nil
+	return preview, nil
 }
 
 // AcceptInvitation accepts a valid invitation: it sets the person's password

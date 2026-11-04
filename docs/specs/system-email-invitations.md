@@ -89,7 +89,10 @@ distinct active teams. Resending preserves the person's current memberships.
 Acceptance checks
 the token under locks, sets a policy-compliant password, activates the person
 and creates a device-bound session. The existing passkey offer follows with
-an explicit **Skip for now** action. Invitations cannot be accepted twice.
+an explicit **Skip for now** action. Invitations cannot be accepted twice:
+a repeated or losing concurrent acceptance answers "already accepted" (409).
+Link lookups read the invitation and its person from one snapshot, so an
+acceptance committing meanwhile never makes the link look invalid.
 
 Resending replaces the token and expiry and cancels a queued earlier message.
 Revoking invalidates the link and cancels queued delivery, keeping the person
