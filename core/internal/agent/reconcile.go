@@ -152,9 +152,14 @@ func (a *Agent) record(key string, st *instanceState, target *agentapi.Spec, isO
 		if !isOp {
 			return nil
 		}
+		// blocked.json first: current.json advances only when every other
+		// file is durable, so a failed write leaves the generation pending.
 		blocked := st.blocked
 		blocked.Failures = nil
-		return errors.Join(writeSpec(filepath.Join(dir, currentFile), target), writeJSON(filepath.Join(dir, blockedFile), blocked))
+		if err := writeJSON(filepath.Join(dir, blockedFile), blocked); err != nil {
+			return err
+		}
+		return writeSpec(filepath.Join(dir, currentFile), target)
 	}
 	if !isOp {
 		return nil // drift repair of current failed; the next trigger tries again

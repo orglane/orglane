@@ -73,6 +73,41 @@ func TestFailedStateWriteIsNotSuccess(t *testing.T) {
 	}
 }
 
+// TestFailedBlockedWriteKeepsCurrent: when blocked.json cannot be written,
+// current.json does not advance and the operation fails as internal.
+func TestFailedBlockedWriteKeepsCurrent(t *testing.T) {
+	now := time.Now()
+	a, _ := newTestAgent(t, func() time.Time { return now })
+	rec := put(t, a, now, "git", mustJSON(t, testSpec(1)))
+	var op agentapi.Operation
+	if err := json.Unmarshal(rec.Body.Bytes(), &op); err != nil {
+		t.Fatal(err)
+	}
+	dir := a.instanceDir("git")
+	if err := os.MkdirAll(filepath.Join(dir, blockedFile, "obstacle"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := loadStateIgnoringCurrent(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := a.finish(a.instance("git"), st, st.desired, &op, nil); code != agentapi.CodeInternal {
+		t.Fatalf("finish with an unwritable blocked.json = %q, want internal", code)
+	}
+	if got, _ := a.ops.get(op.ID); got.State != agentapi.OpFailed || got.ErrorCode != agentapi.CodeInternal {
+		t.Fatalf("operation = %+v, want failed", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, currentFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("current.json advanced although blocked.json failed: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, blockedFile)); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = loadState(dir); err != nil || !st.pending() {
+		t.Fatalf("generation not pending: %v", err)
+	}
+}
+
 // loadStateIgnoringCurrent reads the state while current.json is an
 // obstacle directory.
 func loadStateIgnoringCurrent(dir string) (*instanceState, error) {
