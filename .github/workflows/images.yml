@@ -187,6 +187,7 @@ jobs:
         run: cosign sign --yes "$IMAGE@$DIGEST"
 
       - name: Publish the exact version
+        shell: bash
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -251,6 +252,7 @@ jobs:
         run: '"$CI_TOOL" release-aliases -image "$CORE_IMAGE" -image "$AGENT_IMAGE"'
 
       - name: Move the aliases of both images
+        shell: bash
         env:
           CORE_IMAGE: ghcr.io/${{ github.repository }}
           AGENT_IMAGE: ghcr.io/${{ github.repository }}-agent
