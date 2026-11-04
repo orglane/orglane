@@ -77,12 +77,13 @@ func buildImage() error {
 	return nil
 }
 
-// startMu lets one bundle start at a time. On Docker Desktop (macOS),
-// PostgreSQL containers initializing bind-mounted data directories at the
-// same time sometimes fail with "data directory has wrong ownership", the
-// more so under the load of the whole integration suite (make test). The
-// tests still run in parallel once their bundles are up.
-var startMu sync.Mutex
+// lifecycleMu lets one bundle start or stop at a time. On Docker Desktop
+// (macOS), a PostgreSQL container initializing its bind-mounted data
+// directory while another bundle starts, or deletes its data directory,
+// sometimes fails with "data directory has wrong ownership", the more so
+// under the load of the whole integration suite (make test). The tests still
+// run in parallel while their bundles are up.
+var lifecycleMu sync.Mutex
 
 // bundle is one Compose project started for a test.
 type bundle struct {
@@ -134,9 +135,9 @@ func startBundle(t *testing.T, files []string, env ...string) *bundle {
 		}, env...),
 	}
 	t.Cleanup(b.down)
-	startMu.Lock()
+	lifecycleMu.Lock()
 	out, err := b.compose("up", "--detach", "--wait", "--wait-timeout", "180")
-	startMu.Unlock()
+	lifecycleMu.Unlock()
 	if err != nil {
 		t.Fatalf("compose up: %v\n%s", err, out)
 	}
@@ -168,6 +169,8 @@ func (b *bundle) compose(args ...string) (string, error) {
 
 func (b *bundle) down() {
 	t := b.t
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
 	if t.Failed() {
 		logs, _ := b.compose("logs", "--no-color", "--timestamps")
 		t.Logf("compose logs:\n%s", logs)

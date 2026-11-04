@@ -209,16 +209,18 @@ test-go:
 test-unit: ## Run Go unit tests only
 	go test -race -count=1 ./...
 
-# The installer tests run on their own afterwards: on Docker Desktop (macOS),
-# PostgreSQL containers initializing bind-mounted data directories next to
-# those of tests/compose sometimes fail with "wrong ownership". The package
-# list is built in separate, checked steps: a failing `go list` inside the
-# `go test` arguments would not stop it.
+# The Compose bundle tests and the installer tests run on their own
+# afterwards, one package after the other: on Docker Desktop (macOS),
+# PostgreSQL containers initializing bind-mounted data directories while
+# other packages start and remove containers sometimes fail with "wrong
+# ownership". The package list is built in separate, checked steps: a failing
+# `go list` inside the `go test` arguments would not stop it.
 test-integration: ## Run Go unit and integration tests (needs Docker)
 	pkgs="$$(go list -tags integration ./...)"; \
-	pkgs="$$(printf '%s\n' "$$pkgs" | grep -v '/tests/install$$')"; \
+	pkgs="$$(printf '%s\n' "$$pkgs" | grep -v -e '/tests/install$$' -e '/tests/compose$$')"; \
 	if [ -z "$$pkgs" ]; then echo "error: go list found no packages to test"; exit 1; fi; \
 	go test -race -count=1 -tags integration $$pkgs
+	$(MAKE) --no-print-directory test-compose
 	$(MAKE) --no-print-directory test-install
 
 test-compose: ## Start the Compose bundle (local mode, domain mode with Pebble) and test it (needs Docker)
