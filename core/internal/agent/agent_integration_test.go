@@ -67,7 +67,10 @@ services:
     environment: {POSTGRES_USER: orglane, POSTGRES_DB: orglane, POSTGRES_PASSWORD: bundle-test}
     networks: [database, services]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U orglane -d orglane"]
+      # Over TCP: the image's temporary server during initialization only
+      # listens on the socket, and a socket check would pass before the
+      # restart that follows it.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U orglane -d orglane"]
       interval: 1s
       retries: 60
   traefik:
