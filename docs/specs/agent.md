@@ -206,13 +206,14 @@ type Operation struct {
     State      string    `json:"state"` // "queued" | "running" | "awaiting_confirmation" | "succeeded" | "failed" | "rolled_back"
     Phase      string    `json:"phase,omitempty"`
     ErrorCode  string    `json:"error_code,omitempty"`
+    Rule       string    `json:"rule,omitempty"` // the policy rule, with policy_violation
     SnapshotID string    `json:"snapshot_id,omitempty"`
     StartedAt  time.Time `json:"started_at"`
     FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 ```
 
-Operations are persisted under `instances/.agent/operations/<id>.json` and kept 7 days, so the core can poll them across agent restarts. Error codes: `unauthenticated`, `agent_busy`, `instance_mismatch`, `stale_generation`, `generation_conflict`, `unknown_package_version`, `invalid_input`, `policy_violation`, `upgrade_path_blocked`, `insufficient_disk`, `pull_failed`, `compose_failed`, `database_failed`, `hook_failed`, `health_timeout`, `confirm_timeout`, `aborted`, `snapshot_failed`, `rollback_failed`, `interrupted`.
+Operations are persisted under `instances/.agent/operations/<id>.json` and kept 7 days, so the core can poll them across agent restarts. Error codes: `unauthenticated`, `agent_busy`, `instance_mismatch`, `stale_generation`, `generation_conflict`, `unknown_package_version`, `invalid_input`, `policy_violation`, `upgrade_path_blocked`, `insufficient_disk`, `pull_failed`, `compose_failed`, `database_failed`, `hook_failed`, `health_timeout`, `confirm_timeout`, `aborted`, `snapshot_failed`, `rollback_failed`, `interrupted`, plus `not_found` (unknown instance, operation or endpoint), `superseded` (a queued operation whose spec was replaced by a newer generation before it ran) and `internal`.
 
 ## Desired state and reconciliation
 
@@ -544,6 +545,21 @@ Docker may restart containers on a reboot before the agent runs. In every phase 
 | Installer | `make test-install`: default install has no agent; `--managed`, `enable-managed` (local mode switches to `orglane.localhost`), `uninstall` removes instance projects | #59 |
 | Local mode | Forgejo installed in local mode reaches the issuer at `http://orglane.localhost` through the Traefik alias; Playwright signs in to `http://git.orglane.localhost` through Orglane | #61, #62 |
 | Forgejo package | Package unit tests; integration install through the agent; idle memory measured and reported | #61 |
+
+## Implementation notes (#59)
+
+Details the sections above leave open, as implemented by the agent process (#59):
+
+- **Routes:** #59 serves `GET /v1/health`, `GET /v1/instances`, `GET`/`PUT /v1/instances/{key}`, `GET /v1/instances/{key}/logs` and `GET /v1/operations/{id}`. Snapshots, restore, confirm and abort come with the upgrade flow (#60), which extends the route table test. Until then a spec whose package version differs from `current.json` is refused with `422 upgrade_path_blocked` (`required_version` = the running version); a removal (`state: absent`) is accepted for any version.
+- **Spec decoding:** unknown JSON fields are refused (`400 invalid_input`), so a spec cannot carry an image, a Compose file or a command. Every route name of the manifest plus `workspace` must be in `hosts`, and every declared secret in `secrets`. Settings are `int`, `string` or `bool`; strings never contain control characters (newlines included), whatever the pattern.
+- **Authentication:** answers to requests that fail verification (401, and 413 for bodies over 1 MiB) are not signed, so the agent is no signing oracle; the client reports them as `agent_untrusted`. The nonce of a request is recorded only after its MAC verified. Besides `agent.peer_uid`, the agent's own uid may connect (the container healthcheck `orglane agent healthcheck` runs as the agent's user). The socket's group is set only when the agent runs as root.
+- **Docker environment:** `docker` and `docker compose` get only `PATH`, `HOME`, `TMPDIR`, `XDG_RUNTIME_DIR` and `DOCKER_*` from the agent's environment, so neither `ORGLANE_AGENT_SECRET` nor `COMPOSE_*` overrides reach Compose interpolation.
+- **Templates:** `file "."` is the rendered `files/` directory (mount it rather than single files: files are replaced one by one inside it, so running containers see updates). Files ending in `.sh` are rendered `0755`, others `0644`. `data_dirs[].owner` is optional (the agent's user); it is applied only when the agent runs as root.
+- **Manifest:** images need a registry host, a tag and a SHA-256 digest; the bundle's service names (`postgres`, `traefik`, `orglane`, `agent`) cannot be package services.
+- **Policy:** service keys are an allowlist (`cap_add`, `cap_drop`, `command`, `depends_on`, `entrypoint`, `environment`, `expose`, `healthcheck`, `image`, `init`, `labels`, `logging`, `networks`, `ports`, `pull_policy`, `read_only`, `restart`, `security_opt`, `shm_size`, `stop_grace_period`, `stop_signal`, `tmpfs`, `user`, `volumes`, `working_dir`); everything else (`build`, `configs`, `volumes_from`, `extra_hosts`, `container_name`, `sysctls`, ...) is refused, and top-level keys other than `name`, `services`, `networks` (and an empty `volumes`) too. `security_opt` may only add `no-new-privileges`. Per-service network settings are limited to `aliases` (no fixed addresses). Bind sources are checked as written and with symlinks resolved; bind propagation must stay private. Labels under `com.docker.` are refused. A `docker compose config` that fails is `compose_failed`.
+- **Retries:** an operation ends with its first attempt. The periodic reconcile's retries of a failed apply create a new operation each; after four failed attempts (the first and three retries) the generation is blocked.
+- **Hooks:** configure hooks run after the first install, after a reinstall of a removed instance, and when the rendered output differs from the running spec's; never for drift repair.
+- **Logs:** `tail` is 1–1000 (default 100); `since` is an RFC 3339 time or a positive Go duration up to 31 days.
 
 ## Non-goals (M2)
 

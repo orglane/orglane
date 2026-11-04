@@ -445,3 +445,70 @@ func TestDemo(t *testing.T) {
 		t.Fatalf("demo.enabled in the file: err = %v", err)
 	}
 }
+
+func TestAgentCoreSettings(t *testing.T) {
+	cfg, err := Load("", env(minimalEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agent.Enabled() || cfg.Agent.SyncInterval != 5*time.Minute {
+		t.Fatalf("agent defaults = %+v", cfg.Agent)
+	}
+	vars := maps.Clone(minimalEnv)
+	vars["ORGLANE_AGENT_SOCKET"] = "/run/orglane-agent/agent.sock"
+	vars["ORGLANE_AGENT_SECRET"] = strings.Repeat("s", 64)
+	if cfg, err = Load("", env(vars)); err != nil || !cfg.Agent.Enabled() {
+		t.Fatalf("enabled agent: %+v, %v", cfg, err)
+	}
+	vars["ORGLANE_AGENT_SECRET"] = "short"
+	if _, err := Load("", env(vars)); err == nil || !strings.Contains(err.Error(), "ORGLANE_AGENT_SECRET") {
+		t.Fatalf("short agent secret: %v", err)
+	}
+	// An empty secret disables managed services; the server still starts.
+	vars["ORGLANE_AGENT_SECRET"] = ""
+	if cfg, err = Load("", env(vars)); err != nil || cfg.Agent.Enabled() {
+		t.Fatalf("empty agent secret: %v", err)
+	}
+}
+
+func TestLoadAgent(t *testing.T) {
+	// The agent needs neither a database nor a domain.
+	vars := map[string]string{"ORGLANE_AGENT_SECRET": strings.Repeat("s", 64)}
+	cfg, err := LoadAgent("", env(vars))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := cfg.Agent
+	if a.Listen != "/run/orglane-agent/agent.sock" || a.DataDir != "/var/lib/orglane" || a.PeerUID != 65532 ||
+		a.ComposeProject != "orglane" || a.EdgeNetwork != "orglane_edge" || a.ServicesNetwork != "orglane_services" ||
+		a.PostgresService != "postgres" || a.PostgresUser != "orglane" || a.PublishAddress != "127.0.0.1" ||
+		a.ReconcileInterval != 10*time.Minute || a.SnapshotRetention != 2 {
+		t.Fatalf("agent defaults = %+v", a)
+	}
+	vars["ORGLANE_AGENT_COMPOSE_PROJECT"] = "acme"
+	vars["ORGLANE_AGENT_PEER_UID"] = "-1"
+	if cfg, err = LoadAgent("", env(vars)); err != nil || cfg.Agent.EdgeNetwork != "acme_edge" || cfg.Agent.PeerUID != -1 {
+		t.Fatalf("overrides: %+v, %v", cfg.Agent, err)
+	}
+
+	for name, bad := range map[string]map[string]string{
+		"no secret":        {"ORGLANE_AGENT_SECRET": ""},
+		"short secret":     {"ORGLANE_AGENT_SECRET": "short"},
+		"relative listen":  {"ORGLANE_AGENT_LISTEN": "agent.sock"},
+		"relative data":    {"ORGLANE_AGENT_DATA_DIR": "data"},
+		"peer uid":         {"ORGLANE_AGENT_PEER_UID": "-2"},
+		"project":          {"ORGLANE_AGENT_COMPOSE_PROJECT": "Orglane Prod"},
+		"postgres user":    {"ORGLANE_AGENT_POSTGRES_USER": "orglane; drop"},
+		"publish address":  {"ORGLANE_AGENT_PUBLISH_ADDRESS": "localhost"},
+		"reconcile period": {"ORGLANE_AGENT_RECONCILE_INTERVAL": "0s"},
+		"network":          {"ORGLANE_AGENT_EDGE_NETWORK": "a/b"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := maps.Clone(vars)
+			maps.Copy(v, bad)
+			if _, err := LoadAgent("", env(v)); err == nil {
+				t.Fatal("invalid agent configuration accepted")
+			}
+		})
+	}
+}

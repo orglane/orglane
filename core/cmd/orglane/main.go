@@ -2,7 +2,9 @@
 //
 //	orglane server         run the server (API, jobs, migrations on start);
 //	                       --demo loads the demo dataset (demo mode)
-//	orglane agent          run the local agent (not implemented yet)
+//	orglane agent          run the local agent, the only component with Docker
+//	                       access (managed services); `agent healthcheck`
+//	                       checks a running agent
 //	orglane cli <command>  administrative commands (migrate, healthcheck,
 //	                       setup-token, oidc-client add, version)
 //
@@ -27,11 +29,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/orglane/orglane/core/internal/agent"
+	"github.com/orglane/orglane/core/internal/agentclient"
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/database"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/logging"
+	"github.com/orglane/orglane/core/internal/packages"
 	"github.com/orglane/orglane/core/internal/server"
 )
 
@@ -42,7 +47,9 @@ const usage = `Usage: orglane <mode> [flags]
 
 Modes:
   server             Run the Orglane server
-  agent              Run the local agent (not implemented yet)
+  agent              Run the local agent: the only component with Docker
+                     access; installs the embedded managed packages
+  agent healthcheck  Exit 0 if the local agent answers (container healthcheck)
   cli migrate        Apply database migrations, seed built-in roles and exit
   cli setup-token    Print a new one-time setup token for creating the first
                      owner (only while no owner exists)
@@ -55,7 +62,7 @@ Modes:
   cli healthcheck    Exit 0 if the local server is ready (container healthcheck)
   cli version        Print the version
 
-Flags for server and the cli commands that use the database:
+Flags for server, agent and the cli commands that use the database:
   -config <path>     YAML config file (default: $ORGLANE_CONFIG)
 
 Flags for server:
@@ -103,7 +110,7 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer, look
 	case "server":
 		return runServer(ctx, rest, stderr, lookupEnv)
 	case "agent":
-		return runAgent(stderr)
+		return runAgent(ctx, rest, stdout, stderr, lookupEnv)
 	case "cli":
 		return runCLI(ctx, rest, stdout, stderr, lookupEnv)
 	case "-h", "-help", "--help", "help":
@@ -153,9 +160,59 @@ func runServer(ctx context.Context, args []string, stderr io.Writer, lookupEnv f
 	return server.Run(ctx, cfg, version, logger)
 }
 
-func runAgent(stderr io.Writer) error {
-	logging.New(stderr, "text", "info").Info("agent mode is not implemented yet", "version", version)
-	return nil
+func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) error {
+	healthcheck := len(args) > 0 && args[0] == "healthcheck"
+	if healthcheck {
+		args = args[1:]
+	}
+	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	defaultPath, _ := lookupEnv(config.EnvConfigFile)
+	path := fs.String("config", defaultPath, "YAML config file")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return err
+		}
+		return fmt.Errorf("%w: %w", errUsage, err)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("%w: unexpected arguments %v", errUsage, fs.Args())
+	}
+	cfg, err := config.LoadAgent(*path, lookupEnv)
+	if err != nil {
+		return err
+	}
+	if healthcheck {
+		return agentHealthcheck(ctx, cfg, stdout)
+	}
+	logger := logging.New(stderr, cfg.Log.Format, cfg.Log.Level)
+	slog.SetDefault(logger)
+	registry, err := packages.Embedded()
+	if err != nil {
+		return err
+	}
+	a, err := agent.New(agent.Options{Config: cfg.Agent, Version: version, Registry: registry, Logger: logger})
+	if err != nil {
+		return err
+	}
+	return a.Run(ctx)
+}
+
+// agentHealthcheck asks the local agent for its signed health answer.
+func agentHealthcheck(ctx context.Context, cfg *config.Config, stdout io.Writer) error {
+	client, err := agentclient.New(cfg.Agent.Listen, cfg.Agent.Secret, version)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	h, err := client.Health(ctx)
+	if err != nil {
+		return fmt.Errorf("healthcheck: %w", err)
+	}
+	_, err = fmt.Fprintf(stdout, "agent %s ready (boot %s)\n", h.Version, h.BootID)
+	return err
 }
 
 func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) error {

@@ -18,7 +18,9 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -65,7 +67,60 @@ type Config struct {
 	Identity    Identity  `yaml:"identity"`
 	Email       Email     `yaml:"email"`
 	Demo        Demo      `yaml:"demo"`
+	Agent       Agent     `yaml:"agent"`
 }
+
+// Agent configures managed services: the core's connection to the agent
+// (socket, secret, sync_interval) and the agent itself (`orglane agent`, the
+// other keys). See docs/specs/agent.md "Configuration".
+type Agent struct {
+	// Socket is the agent's socket path, as the core sees it. Empty, or an
+	// empty secret, disables managed services.
+	Socket string `yaml:"socket"`
+	// Secret is the shared secret of the core and the agent (at least 32
+	// characters). It is never the master secret (ADR 0019).
+	Secret string `yaml:"secret"`
+	// SyncInterval is how often the core syncs instance status and re-pushes
+	// lagging desired state. Defaults to 5m.
+	SyncInterval time.Duration `yaml:"sync_interval"`
+
+	// Listen is the socket the agent listens on.
+	Listen string `yaml:"listen"`
+	// DataDir holds the instances (instances/<key>) and the agent state
+	// (instances/.agent). Mounted at the same path as on the host.
+	DataDir string `yaml:"data_dir"`
+	// PeerUID is the uid allowed to connect (the core, 65532); -1 disables
+	// the check (tests, development).
+	PeerUID int `yaml:"peer_uid"`
+	// ComposeProject is the bundle's Compose project name.
+	ComposeProject string `yaml:"compose_project"`
+	// PostgresService and PostgresUser find and use the bundle's PostgreSQL.
+	PostgresService string `yaml:"postgres_service"`
+	PostgresUser    string `yaml:"postgres_user"`
+	// EdgeNetwork and ServicesNetwork default to <compose_project>_edge and
+	// <compose_project>_services.
+	EdgeNetwork     string `yaml:"edge_network"`
+	ServicesNetwork string `yaml:"services_network"`
+	// PublishAddress is the host address published instance ports bind to.
+	PublishAddress string `yaml:"publish_address"`
+	// ReconcileInterval is how often the agent reconciles every instance.
+	ReconcileInterval time.Duration `yaml:"reconcile_interval"`
+	// SnapshotRetention is how many upgrade snapshots are kept per instance.
+	SnapshotRetention int `yaml:"snapshot_retention"`
+}
+
+// Enabled reports whether the core uses managed services.
+func (a Agent) Enabled() bool { return a.Socket != "" && a.Secret != "" }
+
+// MinAgentSecretLength is the minimum length of agent.secret.
+const MinAgentSecretLength = 32
+
+// Agent defaults.
+const (
+	DefaultAgentListen  = "/run/orglane-agent/agent.sock"
+	DefaultAgentDataDir = "/var/lib/orglane"
+	DefaultAgentPeerUID = 65532
+)
 
 // SMTP TLS modes (Email.SMTP.TLS).
 const (
@@ -364,6 +419,18 @@ func Default() Config {
 			MaxAttempts: 6,
 			RetryDelay:  30 * time.Second,
 		},
+		Agent: Agent{
+			SyncInterval:      5 * time.Minute,
+			Listen:            DefaultAgentListen,
+			DataDir:           DefaultAgentDataDir,
+			PeerUID:           DefaultAgentPeerUID,
+			ComposeProject:    "orglane",
+			PostgresService:   "postgres",
+			PostgresUser:      "orglane",
+			PublishAddress:    "127.0.0.1",
+			ReconcileInterval: 10 * time.Minute,
+			SnapshotRetention: 2,
+		},
 	}
 }
 
@@ -371,6 +438,16 @@ func Default() Config {
 // path is not empty) and the environment, then validates it. lookupEnv is
 // usually os.LookupEnv.
 func Load(path string, lookupEnv func(string) (string, bool)) (*Config, error) {
+	return load(path, lookupEnv, (*Config).Validate)
+}
+
+// LoadAgent is Load for `orglane agent`: it validates only the log and
+// agent settings, so the agent needs no database or domain settings.
+func LoadAgent(path string, lookupEnv func(string) (string, bool)) (*Config, error) {
+	return load(path, lookupEnv, (*Config).ValidateAgent)
+}
+
+func load(path string, lookupEnv func(string) (string, bool), validate func(*Config) error) (*Config, error) {
 	cfg := Default()
 	if path != "" {
 		if err := cfg.loadFile(path); err != nil {
@@ -381,7 +458,7 @@ func Load(path string, lookupEnv func(string) (string, bool)) (*Config, error) {
 		return nil, err
 	}
 	cfg.normalize()
-	if err := cfg.Validate(); err != nil {
+	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("invalid configuration:\n%w", err)
 	}
 	return &cfg, nil
@@ -484,6 +561,17 @@ func (c *Config) normalize() {
 	c.Ingress.Mode = strings.ToLower(strings.TrimSpace(c.Ingress.Mode))
 	c.Ingress.UpstreamURL = strings.TrimSpace(c.Ingress.UpstreamURL)
 	c.Ingress.CertResolver = strings.TrimSpace(c.Ingress.CertResolver)
+	c.Agent.Socket = strings.TrimSpace(c.Agent.Socket)
+	c.Agent.Listen = strings.TrimSpace(c.Agent.Listen)
+	c.Agent.DataDir = strings.TrimSpace(c.Agent.DataDir)
+	c.Agent.ComposeProject = strings.TrimSpace(c.Agent.ComposeProject)
+	if c.Agent.EdgeNetwork == "" {
+		c.Agent.EdgeNetwork = c.Agent.ComposeProject + "_edge"
+	}
+	if c.Agent.ServicesNetwork == "" {
+		c.Agent.ServicesNetwork = c.Agent.ComposeProject + "_services"
+	}
+	c.Agent.PublishAddress = strings.TrimSpace(c.Agent.PublishAddress)
 }
 
 func normalizeHost(h string) string {
@@ -580,6 +668,76 @@ func (c *Config) Validate() error {
 	}
 	c.validateIdentity(fail)
 	c.validateEmail(fail)
+	if c.Agent.Secret != "" && len(c.Agent.Secret) < MinAgentSecretLength {
+		fail("agent.secret", "must be at least %d characters (empty disables managed services)", MinAgentSecretLength)
+	}
+	if c.Agent.Socket != "" && !filepath.IsAbs(c.Agent.Socket) {
+		fail("agent.socket", "must be an absolute path")
+	}
+	if c.Agent.SyncInterval < 10*time.Second {
+		fail("agent.sync_interval", "must be at least 10s")
+	}
+	return errors.Join(errs...)
+}
+
+// composeNamePattern is the pattern of Compose project and network names.
+var composeNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+
+// postgresNamePattern restricts the PostgreSQL service and user names the
+// agent passes to docker exec.
+var postgresNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,62}$`)
+
+// ValidateAgent checks the settings of `orglane agent` and reports every
+// problem at once.
+func (c *Config) ValidateAgent() error {
+	var errs []error
+	fail := func(setting, format string, args ...any) {
+		env := EnvPrefix + strings.ToUpper(strings.ReplaceAll(setting, ".", "_"))
+		errs = append(errs, fmt.Errorf("  %s (%s): %s", setting, env, fmt.Sprintf(format, args...)))
+	}
+	if !slices.Contains([]string{"debug", "info", "warn", "error"}, c.Log.Level) {
+		fail("log.level", "must be debug, info, warn or error, got %q", c.Log.Level)
+	}
+	if c.Log.Format != "json" && c.Log.Format != "text" {
+		fail("log.format", "must be json or text, got %q", c.Log.Format)
+	}
+	a := c.Agent
+	if len(a.Secret) < MinAgentSecretLength {
+		fail("agent.secret", "required, at least %d characters (the same value as the core's)", MinAgentSecretLength)
+	}
+	if !filepath.IsAbs(a.Listen) {
+		fail("agent.listen", "must be an absolute path")
+	}
+	if !filepath.IsAbs(a.DataDir) {
+		fail("agent.data_dir", "must be an absolute path")
+	}
+	if a.PeerUID < -1 {
+		fail("agent.peer_uid", "must be a uid, or -1 to disable the check")
+	}
+	if !composeNamePattern.MatchString(a.ComposeProject) {
+		fail("agent.compose_project", "must be a Compose project name (lowercase letters, digits, - and _)")
+	}
+	if !composeNamePattern.MatchString(a.EdgeNetwork) {
+		fail("agent.edge_network", "must be a Docker network name")
+	}
+	if !composeNamePattern.MatchString(a.ServicesNetwork) {
+		fail("agent.services_network", "must be a Docker network name")
+	}
+	if !postgresNamePattern.MatchString(a.PostgresService) {
+		fail("agent.postgres_service", "must be a Compose service name")
+	}
+	if !postgresNamePattern.MatchString(a.PostgresUser) {
+		fail("agent.postgres_user", "must be a PostgreSQL role name")
+	}
+	if addr, err := netip.ParseAddr(a.PublishAddress); err != nil || addr.Zone() != "" {
+		fail("agent.publish_address", "must be an IP address, got %q", a.PublishAddress)
+	}
+	if a.ReconcileInterval < time.Second {
+		fail("agent.reconcile_interval", "must be at least 1s")
+	}
+	if a.SnapshotRetention < 1 {
+		fail("agent.snapshot_retention", "must be at least 1")
+	}
 	return errors.Join(errs...)
 }
 
