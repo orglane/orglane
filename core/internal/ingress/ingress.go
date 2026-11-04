@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/orglane/orglane/core/internal/config"
@@ -180,11 +181,46 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 	logger.Info("serving traefik dynamic configuration", "path", ConfigPath, "mode", cfg.Ingress.Mode,
 		"workspace_host", cfg.WorkspaceHostname())
 
+	allowed, err := cfg.Server.InternalAllowedPeerPrefixes()
+	if err != nil {
+		return nil, fmt.Errorf("server.internal_allowed_peers: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+ConfigPath, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(body)
 	})
-	return mux, nil
+	if len(allowed) == 0 {
+		return mux, nil
+	}
+	return allowPeers(mux, allowed, logger), nil
+}
+
+// allowPeers answers 403 to requests whose peer address is not in allowed.
+// The peer is the TCP connection's address, never a forwarded header.
+func allowPeers(next http.Handler, allowed []netip.Prefix, logger *slog.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !peerAllowed(r.RemoteAddr, allowed) {
+			logger.WarnContext(r.Context(), "internal listener: request from a peer that is not allowed", "peer", r.RemoteAddr)
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func peerAllowed(remoteAddr string, allowed []netip.Prefix) bool {
+	addrPort, err := netip.ParseAddrPort(remoteAddr)
+	if err != nil {
+		return false
+	}
+	addr := addrPort.Addr().Unmap()
+	for _, p := range allowed {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }

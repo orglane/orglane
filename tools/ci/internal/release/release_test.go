@@ -208,3 +208,114 @@ func permute[T any](s []T, f func([]T)) {
 		}
 	}
 }
+
+func TestCommon(t *testing.T) {
+	tests := []struct {
+		name string
+		sets [][]string
+		want []string
+	}{
+		{name: "no sets"},
+		{name: "one set", sets: [][]string{{"0.1.0", "latest", "0.1.0"}}, want: []string{"0.1.0", "latest"}},
+		{name: "only shared tags", sets: [][]string{{"0.1.0", "0.2.0", "0.1.1"}, {"0.1.1", "0.1.0", "0.3.0"}}, want: []string{"0.1.0", "0.1.1"}},
+		{name: "an empty set", sets: [][]string{{"0.1.0"}, nil}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Common(tt.sets...); !slices.Equal(got, tt.want) {
+				t.Errorf("Common(%q) = %q, want %q", tt.sets, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPairedImagesKeepMatchingAliases simulates the Images workflow for two
+// images released together (core and agent): each release publishes the
+// exact tag of each image in its own matrix leg, in any order, and promotes
+// once both legs succeeded. Release 0.1.1's agent leg fails (or is still
+// running), so 0.1.1 is published for the core only and never promoted. In
+// every order of events, with the shared plan (Aliases of Common):
+//
+//   - every alias of both images names the same version after each
+//     promotion, and only versions published for both;
+//   - no alias moves to an older version;
+//   - in the end the aliases are those of the releases published for both.
+func TestPairedImagesKeepMatchingAliases(t *testing.T) {
+	type event struct {
+		kind    string // "core", "agent" (publish the exact tag) or "promote"
+		version string
+	}
+	events := []event{
+		{"core", "0.1.0"}, {"agent", "0.1.0"}, {"promote", "0.1.0"},
+		{"core", "0.1.1"}, // agent leg failed: no agent tag, no promotion
+		{"core", "0.2.0"}, {"agent", "0.2.0"}, {"promote", "0.2.0"},
+	}
+	want := map[string]string{"latest": "0.2.0", "0.2": "0.2.0", "0.1": "0.1.0"}
+
+	sequences := 0
+	permute(events, func(seq []event) {
+		published := map[string]map[string]bool{"core": {}, "agent": {}}
+		for _, e := range seq {
+			if e.kind == "promote" && (!published["core"][e.version] || !published["agent"][e.version]) {
+				return // a release promotes only after both of its legs
+			}
+			if e.kind != "promote" {
+				published[e.kind][e.version] = true
+			}
+		}
+		sequences++
+		registries := map[string]map[string]string{"core": {}, "agent": {}} // tag -> version
+		tags := func(image string) []string {
+			out := make([]string, 0, len(registries[image]))
+			for tag := range registries[image] {
+				out = append(out, tag)
+			}
+			return out
+		}
+		for _, e := range seq {
+			if e.kind != "promote" {
+				registries[e.kind][e.version] = e.version
+				continue
+			}
+			plan := Aliases(Common(tags("core"), tags("agent")))
+			for _, image := range []string{"core", "agent"} {
+				for _, a := range plan {
+					if old, ok := registries[image][a.Tag]; ok && less(a.Version, old) {
+						t.Fatalf("events %v: %s %s moved back from %s to %s", seq, image, a.Tag, old, a.Version)
+					}
+					registries[image][a.Tag] = a.Version
+				}
+			}
+			for _, alias := range []string{"latest", "0.1", "0.2"} {
+				core, agent := registries["core"][alias], registries["agent"][alias]
+				if core != agent {
+					t.Fatalf("events %v: %s is %q for the core and %q for the agent", seq, alias, core, agent)
+				}
+				if core == "0.1.1" {
+					t.Fatalf("events %v: %s points at 0.1.1, which has no agent image", seq, alias)
+				}
+			}
+		}
+		for alias, v := range want {
+			if registries["core"][alias] != v || registries["agent"][alias] != v {
+				t.Fatalf("events %v: %s = core %q, agent %q, want %q", seq, alias, registries["core"][alias], registries["agent"][alias], v)
+			}
+		}
+	})
+	if sequences == 0 {
+		t.Fatal("no event sequences were simulated")
+	}
+	t.Logf("simulated %d event sequences", sequences)
+}
+
+// TestIndependentPlansDiverge documents why the images share one plan: a
+// plan per image moves the core to a release whose agent image is missing.
+func TestIndependentPlansDiverge(t *testing.T) {
+	core, agent := []string{"0.1.0", "0.2.0"}, []string{"0.1.0"} // 0.2.0's agent leg failed
+	if Aliases(core)[0].Version == Aliases(agent)[0].Version {
+		t.Fatal("independent plans agree; the shared plan would not be needed")
+	}
+	if got := Aliases(Common(core, agent)); got[0] != (Alias{"latest", "0.1.0"}) {
+		t.Errorf("shared plan latest = %v, want 0.1.0", got[0])
+	}
+}

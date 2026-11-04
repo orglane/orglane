@@ -8,8 +8,11 @@
 # Commands:
 #
 #   install.sh [install] [options]   install, or upgrade/repair an existing install
+#   install.sh enable-managed [opts] enable managed services on an existing
+#                                    install (starts the agent, ADR 0019)
 #   install.sh status    [options]   show the state of an install
-#   install.sh uninstall [options]   stop and remove the containers (keeps data;
+#   install.sh uninstall [options]   stop and remove the containers, including
+#                                    those of managed services (keeps data;
 #                                    --purge deletes it)
 #
 # Run `install.sh --help` for the options. Everything the installer writes
@@ -27,6 +30,11 @@ umask 077
 INSTALLER_VERSION=1
 REPO=${ORGLANE_INSTALL_REPO:-orglane/orglane}
 IMAGE_REPO=${ORGLANE_INSTALL_IMAGE_REPO:-ghcr.io/orglane/orglane}
+AGENT_IMAGE_REPO=${ORGLANE_INSTALL_AGENT_IMAGE_REPO:-ghcr.io/orglane/orglane-agent}
+# Local mode with managed services: the bare name localhost cannot be the
+# workspace host, because inside a container it is the container itself
+# (docs/specs/agent.md, "Local mode").
+MANAGED_LOCAL_BASE=orglane.localhost
 # Minimum versions: `docker compose up --wait` and `env_file` with `path:`
 # need Compose 2.24, healthcheck start_interval needs Docker Engine 25.
 MIN_COMPOSE=2.24.0
@@ -62,8 +70,14 @@ Orglane installer
 
 Usage:
   install.sh [install] [options]   install, or upgrade/repair an existing install
+  install.sh enable-managed [options]
+                                   enable managed services (such as Forgejo) on
+                                   an existing install: starts the agent, the
+                                   only container with access to Docker. Keeps
+                                   the installed version unless --version is given
   install.sh status [options]      show the state of an install
-  install.sh uninstall [options]   remove the containers; --purge also deletes the data
+  install.sh uninstall [options]   remove the containers (also those of managed
+                                   services); --purge also deletes the data
 
 Options:
   --mode <mode>            demo    try Orglane on this computer with the "Acme
@@ -91,6 +105,13 @@ Options:
                            repository (or its deploy/compose directory)
                            instead of downloading it; needs --version or --image
   --image <image>          core image to run instead of the release image
+  --managed                enable managed services (same as enable-managed
+                           afterwards). Local and demo modes then use
+                           http://orglane.localhost instead of http://localhost
+  --agent-image <image>    agent image to run instead of the release's
+                           ghcr.io/orglane/orglane-agent:<version>, e.g.
+                           orglane-agent:dev from
+                           'docker build --target agent -t orglane-agent:dev .'
   --http-port <port>       HTTP port (default 80)
   --https-port <port>      HTTPS port (default 443, domain mode)
   --public-ip <ip>         this server's public IPv4 address for the DNS check
@@ -108,6 +129,7 @@ Examples:
   curl -fsSL https://orglane.app/install.sh | sh -s -- --mode demo --yes
   curl -fsSL https://orglane.app/install.sh | sudo sh -s -- --mode domain \
       --domain acme.com --workspace-host work.acme.com --yes
+  curl -fsSL https://orglane.app/install.sh | sudo sh -s -- enable-managed
   sh install.sh status
   sh install.sh uninstall --purge
 EOF
@@ -240,6 +262,43 @@ valid_ipv4() {
 # env_get <file> <key>: the value of KEY= in an env file (last one wins).
 env_get() {
 	sed -n "s/^$2=//p" "$1" | tail -n 1
+}
+
+# image_repo <ref>: the image reference without its tag.
+image_repo() {
+	case ${1##*/} in
+	*:*) printf '%s\n' "${1%:*}" ;;
+	*) printf '%s\n' "$1" ;;
+	esac
+}
+
+# has_registry_host <ref>: the reference names a registry host (ghcr.io/...,
+# localhost:5000/...), not only a Docker Hub or local name.
+has_registry_host() {
+	case $1 in
+	*/*) ;;
+	*) return 1 ;;
+	esac
+	case ${1%%/*} in
+	*.* | *:* | localhost) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+# repo_digest <ref>: the registry digest (sha256:...) Docker recorded for the
+# repository of a pulled image reference, or nothing (an image built
+# locally). For a tag of a multi-arch image it is the index digest.
+repo_digest() {
+	repo=$(image_repo "$1")
+	# Docker records Docker Hub images by their short name.
+	repo=${repo#docker.io/}
+	repo=${repo#library/}
+	docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$1" 2>/dev/null |
+		awk -v repo="$repo" '{
+			name = $0; sub(/@.*$/, "", name); sub(/^docker\.io\//, "", name); sub(/^library\//, "", name)
+			d = $0; sub(/^[^@]*@/, "", d)
+			if (name == repo && d ~ /^sha256:[0-9a-f]+$/ && length(d) == 71) { print d; exit }
+		}'
 }
 
 # The containers' view of the data directory must be a real path: Docker
@@ -389,6 +448,10 @@ load_existing() {
 	OLD_HTTPS_PORT=$(env_get "$ENV_FILE" ORGLANE_INSTALL_HTTPS_PORT)
 	OLD_HTTP_PUBLISH=$(env_get "$ENV_FILE" ORGLANE_HTTP_PUBLISH)
 	OLD_HTTPS_PUBLISH=$(env_get "$ENV_FILE" ORGLANE_HTTPS_PUBLISH)
+	# Installs older than managed services have none: a secret is generated.
+	OLD_AGENT_SECRET=$(env_get "$ENV_FILE" ORGLANE_AGENT_SECRET)
+	OLD_MANAGED=$(env_get "$ENV_FILE" ORGLANE_INSTALL_MANAGED)
+	OLD_MANAGED=${OLD_MANAGED:-false}
 	[ -n "$OLD_MODE" ] || die "$ENV_FILE was not written by this installer: refusing to change it. Use another --data-dir"
 	[ -n "$OLD_PG_PASSWORD" ] && [ -n "$OLD_MASTER_SECRET" ] ||
 		die "$ENV_FILE lacks ORGLANE_POSTGRES_PASSWORD or ORGLANE_IDENTITY_MASTER_SECRET: restore them from a backup"
@@ -565,6 +628,61 @@ fetch_bundle() {
 	if [ -d "$src/pebble" ]; then cp -R "$src/pebble" "$WORK/bundle/"; fi
 }
 
+# resolve_agent_image: sets AGENT_IMAGE, the agent image for managed
+# services, pinned by version and digest (AGENTS.md, docs/specs/agent.md).
+# The release's agent image has the core's version as its tag; --agent-image
+# names another one. A registry image is pulled and pinned by the digest the
+# registry gives for its tag (<repo>:<tag>@sha256:<digest>). If no digest can
+# be resolved, it stops: a bare tag is never written. The one exception is
+# for development, in local and demo mode only: an image given with
+# --agent-image under a name without a registry host that can't be pulled
+# but exists on this machine (built here with `make image-agent`) is used as
+# it is, like --image for the core. Domain mode never takes it.
+resolve_agent_image() {
+	if [ -n "$OPT_AGENT_IMAGE" ]; then
+		ref=$OPT_AGENT_IMAGE
+	elif [ "$VERSION" = custom ]; then
+		die "this is a custom build (--source without --version): it has no released agent image. Pass --agent-image (e.g. orglane-agent:dev from 'docker build --target agent -t orglane-agent:dev .')"
+	else
+		ref=$AGENT_IMAGE_REPO:$VERSION
+	fi
+	# No characters that Compose would interpolate in .env.
+	matches '^[A-Za-z0-9][A-Za-z0-9._/:-]*(@sha256:[0-9a-f]{64})?$' "$ref" ||
+		die "invalid agent image '$ref' (example: ghcr.io/orglane/orglane-agent:$VERSION)"
+	case $ref in
+	*@sha256:*)
+		# Already pinned: the digest is checked by the pull.
+		if ! docker image inspect "$ref" >/dev/null 2>&1; then
+			say "  pulling $ref"
+			out=$(docker pull "$ref" 2>&1) || die "could not pull the agent image $ref, so nothing was changed: $out"
+		fi
+		AGENT_IMAGE=$ref
+		return 0
+		;;
+	esac
+	say "  pulling $ref"
+	if ! out=$(docker pull "$ref" 2>&1); then
+		# Development only (local and demo mode): a name without a registry
+		# host that can't be pulled, but exists on this machine, such as an
+		# image built from a checkout. Domain mode is production: there the
+		# agent image is always pinned by digest, or nothing is changed.
+		if [ "$INGRESS_MODE" = local ] && [ -n "$OPT_AGENT_IMAGE" ] && ! has_registry_host "$ref" &&
+			docker image inspect "$ref" >/dev/null 2>&1; then
+			warn "the agent image $ref can't be pulled from a registry: using the image on this machine as it is, not pinned by a digest (development only; domain mode refuses this)"
+			AGENT_IMAGE=$ref
+			return 0
+		fi
+		if [ "$INGRESS_MODE" = domain ] && docker image inspect "$ref" >/dev/null 2>&1; then
+			die "could not pull the agent image $ref, so managed services were not enabled and nothing was changed. Domain mode runs only agent images pinned by a registry digest: push $ref to a registry and pass that reference, or a reference with @sha256:<digest>. $out"
+		fi
+		die "could not pull the agent image $ref, so managed services were not enabled and nothing was changed: $out"
+	fi
+	digest=$(repo_digest "$ref")
+	[ -n "$digest" ] ||
+		die "could not resolve the agent image $ref to its registry digest, so managed services were not enabled and nothing was changed"
+	AGENT_IMAGE=$ref@$digest
+}
+
 # install_bundle: replaces the bundle files in DATA_DIR (data and .env stay).
 install_bundle() {
 	rm -rf "$DATA_DIR/modes" "$DATA_DIR/pebble"
@@ -607,6 +725,9 @@ ORGLANE_DATA_DIR=$DATA_DIR
 
 ORGLANE_POSTGRES_PASSWORD=$PG_PASSWORD
 ORGLANE_IDENTITY_MASTER_SECRET=$MASTER_SECRET
+# Shared by the core and the agent (managed services). Always present, so
+# enabling managed services later needs no new secret.
+ORGLANE_AGENT_SECRET=$AGENT_SECRET
 
 ORGLANE_INGRESS_MODE=$INGRESS_MODE
 ORGLANE_DEMO_ENABLED=$DEMO_ENABLED
@@ -627,7 +748,20 @@ ORGLANE_POSTGRES_EFFECTIVE_CACHE_SIZE=${PG_CACHE}MB
 ORGLANE_POSTGRES_WORK_MEM=${PG_WORK_MEM}MB
 ORGLANE_POSTGRES_MAINTENANCE_WORK_MEM=${PG_MAINT}MB
 ORGLANE_POSTGRES_MAX_CONNECTIONS=$PG_MAX_CONN
+
+# Managed services (install.sh enable-managed, docs/specs/agent.md). The
+# agent runs only with COMPOSE_PROFILES=managed.
+ORGLANE_INSTALL_MANAGED=$MANAGED
+# Managed services reach the workspace by this name (a Traefik alias).
+ORGLANE_EDGE_WORKSPACE_ALIAS=$EDGE_ALIAS
 EOF
+		if [ "$MANAGED" = true ]; then
+			cat <<EOF
+COMPOSE_PROFILES=managed
+ORGLANE_AGENT_IMAGE=$AGENT_IMAGE
+ORGLANE_AGENT_PUBLISH_ADDRESS=$AGENT_PUBLISH_ADDRESS
+EOF
+		fi
 		extra=$(
 			passthrough ORGLANE_EDGE_NETWORK_PREFIX
 			passthrough COMPOSE_PROJECT_NAME
@@ -953,6 +1087,21 @@ cmd_install() {
 	check_docker
 	load_existing
 
+	MANAGED=false
+	if [ "$OPT_MANAGED" = 1 ] || [ "$COMMAND" = enable-managed ] || { [ "$EXISTING" = 1 ] && [ "$OLD_MANAGED" = true ]; }; then
+		MANAGED=true
+	fi
+	if [ "$COMMAND" = enable-managed ]; then
+		[ "$EXISTING" = 1 ] ||
+			die "no Orglane install in $DATA_DIR: install it first (with --managed to enable managed services right away), or pass --data-dir"
+		# Enabling managed services is not an upgrade: the agent must have
+		# the core's version.
+		if [ -z "$OPT_VERSION" ] && [ -z "$OPT_SOURCE" ]; then
+			[ "$OLD_VERSION" != custom ] ||
+				die "this install runs a custom build: run enable-managed with --source, --image and --agent-image again"
+			OPT_VERSION=$OLD_VERSION
+		fi
+	fi
 	if [ "$EXISTING" = 1 ]; then
 		say ""
 		say "Orglane is already installed in $DATA_DIR ($OLD_MODE mode, version $OLD_VERSION)."
@@ -960,7 +1109,20 @@ cmd_install() {
 			die "this install runs in $OLD_MODE mode; changing it to $OPT_MODE is not supported. Remove it first with 'install.sh uninstall --purge' (deletes its data) or use another --data-dir"
 		fi
 		MODE=$OLD_MODE
-		confirm "Upgrade or repair it? Secrets and data are kept" y || die "cancelled"
+		if [ "$COMMAND" = enable-managed ]; then
+			if [ "$OLD_MANAGED" = true ]; then
+				say "Managed services are already enabled: repairing them."
+			else
+				say ""
+				say "Managed services (such as Forgejo) run as Docker Compose projects next to"
+				say "Orglane. They are installed by the agent, a container with access to Docker"
+				say "(the Docker socket, which is root-equivalent on this machine). The Orglane"
+				say "core itself never gets access to Docker."
+			fi
+			confirm "Enable managed services? Secrets and data are kept" y || die "cancelled"
+		else
+			confirm "Upgrade or repair it? Secrets and data are kept" y || die "cancelled"
+		fi
 	else
 		choose_mode
 	fi
@@ -989,8 +1151,9 @@ cmd_install() {
 		fi
 	else
 		DOMAIN=localhost
-		WORKSPACE_HOST=localhost
-		if [ "$HTTP_PORT" != 80 ]; then WORKSPACE_HOST=localhost:$HTTP_PORT; fi
+		if [ "$MANAGED" = true ]; then DOMAIN=$MANAGED_LOCAL_BASE; fi
+		WORKSPACE_HOST=$DOMAIN
+		if [ "$HTTP_PORT" != 80 ]; then WORKSPACE_HOST=$DOMAIN:$HTTP_PORT; fi
 		ACME_EMAIL=''
 		[ -z "$OPT_ACME_CA" ] || die "--acme-ca applies to domain mode only"
 		ACME_CA=${OLD_ACME_CA:-$LE_PRODUCTION}
@@ -1027,6 +1190,24 @@ cmd_install() {
 		die "invalid ORGLANE_EDGE_NETWORK_PREFIX '$edge' in $edge_from: give the first three octets of a free /24, e.g. 10.232.0"
 	fi
 
+	# Managed services reach the workspace by its host name (without a
+	# port) through Traefik's alias on the edge network.
+	EDGE_ALIAS=${WORKSPACE_HOST%:*}
+	if [ "$MANAGED" = true ]; then
+		AGENT_PUBLISH_ADDRESS=127.0.0.1
+		[ "$INGRESS_MODE" != domain ] || AGENT_PUBLISH_ADDRESS=0.0.0.0
+		if [ "$INGRESS_MODE" = local ] && [ "$EXISTING" = 1 ] && [ "$OLD_DOMAIN" != "$MANAGED_LOCAL_BASE" ]; then
+			say ""
+			say "  Managed services need a workspace name other than localhost: the workspace"
+			say "  moves from $(workspace_url local "$OLD_WORKSPACE_HOST") to $(workspace_url local "$WORKSPACE_HOST")."
+			say "  People sign in again there; the old address stops working."
+			confirm "Move the workspace to $(workspace_url local "$WORKSPACE_HOST")?" y || die "cancelled; nothing was changed"
+		fi
+		if [ "$INGRESS_MODE" = local ] && [ "$HTTP_PORT" != 80 ]; then
+			warn "managed services reach the workspace inside Docker on port 80 only: with --http-port $HTTP_PORT, services that sign in with Orglane (OIDC) can't reach $(workspace_url local "$WORKSPACE_HOST")"
+		fi
+	fi
+
 	check_resources
 	size_postgres
 
@@ -1037,6 +1218,12 @@ cmd_install() {
 	fi
 	fetch_bundle
 	ok "image $IMAGE"
+	if [ "$MANAGED" = true ]; then
+		grep -q '^  agent:' "$WORK/bundle/compose.yaml" ||
+			die "Orglane $VERSION has no managed services: upgrade it first (run the installer without enable-managed), then enable them"
+		resolve_agent_image
+		ok "agent image $AGENT_IMAGE"
+	fi
 
 	running=''
 	if [ "$EXISTING" = 1 ]; then running=$(dc ps --quiet traefik 2>/dev/null || true); fi
@@ -1070,10 +1257,20 @@ cmd_install() {
 		[ "${#PG_PASSWORD}" -eq 48 ] && [ "${#MASTER_SECRET}" -eq 64 ] || die "could not generate secrets"
 		ok "generated the database password and the master secret"
 	fi
+	AGENT_SECRET=${OLD_AGENT_SECRET:-}
+	if [ -z "$AGENT_SECRET" ]; then
+		AGENT_SECRET=$(random_hex 32)
+		[ "${#AGENT_SECRET}" -eq 64 ] || die "could not generate the agent secret"
+	fi
 	mkdir -p "$DATA_DIR" || die "could not create $DATA_DIR: run the installer as root (curl ... | sudo sh) or pass --data-dir"
 	chmod 700 "$DATA_DIR"
 	DATA_DIR=$(abs_path "$DATA_DIR")
 	install_bundle
+	if [ "$MANAGED" = true ]; then
+		# The agent writes the services' projects here (docs/specs/agent.md).
+		mkdir -p "$DATA_DIR/instances"
+		chmod 700 "$DATA_DIR/instances"
+	fi
 	write_env
 	ok "Compose bundle and settings (.env, mode 600)"
 
@@ -1099,6 +1296,18 @@ cmd_install() {
 		else
 			say "  and sign in (setup is complete)."
 		fi
+	fi
+	if [ "$INGRESS_MODE" = local ] && [ "$MANAGED" = true ]; then
+		say "  Chrome and Firefox open *.localhost addresses as they are; Safari needs entries in"
+		say "  /etc/hosts (see deploy/README.md)."
+	fi
+	say ""
+	if [ "$MANAGED" = true ]; then
+		ok "managed services are enabled: the agent is running"
+		say "    Services:   $DATA_DIR/instances (generated, rewritten by the agent)"
+	else
+		say "  Managed services (such as Forgejo) are off. To enable them:"
+		say "    $INSTALLER enable-managed${OPT_DATA_DIR:+ --data-dir $DATA_DIR}"
 	fi
 	say ""
 	say "  Data, settings and secrets: $DATA_DIR (back up .env with the data)"
@@ -1134,12 +1343,68 @@ cmd_status() {
 	say ""
 	dc ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' >&2 || die "docker compose failed"
 	say ""
+	failed=0
 	if workspace_ready; then
 		ok "the workspace is ready"
 	else
 		say "${C_RED}the workspace is not ready${C_RESET}: see 'cd $DATA_DIR && docker compose logs'"
-		exit 1
+		failed=1
 	fi
+	if [ "$OLD_MANAGED" = true ]; then
+		if out=$(dc exec -T agent /usr/local/bin/orglane agent healthcheck 2>&1); then
+			ok "managed services: $out"
+		else
+			say "${C_RED}managed services: the agent is not ready${C_RESET}: see 'cd $DATA_DIR && docker compose logs agent'"
+			failed=1
+		fi
+		for f in "$DATA_DIR"/instances/*/compose.yaml; do
+			[ -f "$f" ] || continue
+			say "  service project: $(basename "$(dirname "$f")")"
+		done
+	else
+		say "  Managed services are off ($INSTALLER enable-managed${OPT_DATA_DIR:+ --data-dir $DATA_DIR} enables them)"
+	fi
+	[ "$failed" = 0 ] || exit 1
+}
+
+# remove_instances: stops the agent, then removes the containers of every
+# managed service project under instances/ (docs/specs/agent.md). Their data
+# stays. The agent would otherwise start them again, and the bundle's
+# networks can't be removed while the services use them.
+remove_instances() {
+	project=$(env_get "$ENV_FILE" COMPOSE_PROJECT_NAME)
+	project=${project:-orglane}
+	# By label, not by service name: that works whether the managed profile
+	# is on or not. Nothing is removed unless no agent container runs.
+	agents=$(docker ps --quiet --filter "label=com.docker.compose.project=$project" \
+		--filter "label=com.docker.compose.service=agent") || die "could not list the agent's containers"
+	if [ -n "$agents" ]; then
+		# shellcheck disable=SC2086 # container IDs, one per word
+		docker stop --time 30 $agents >/dev/null || die "could not stop the agent: nothing was removed"
+		agents=$(docker ps --quiet --filter "label=com.docker.compose.project=$project" \
+			--filter "label=com.docker.compose.service=agent") || die "could not list the agent's containers"
+		[ -z "$agents" ] || die "the agent is still running (it would start the services again): nothing was removed"
+		ok "stopped the agent"
+	fi
+	[ -d "$DATA_DIR/instances" ] || return 0
+	for f in "$DATA_DIR"/instances/*/compose.yaml; do
+		[ -f "$f" ] || continue
+		dir=$(dirname "$f")
+		key=$(basename "$dir")
+		if ! matches '^[a-z0-9][a-z0-9-]*$' "$key"; then
+			warn "skipped $dir: not a service project of the agent"
+			continue
+		fi
+		(
+			for v in $(env | sed -n -e 's/^\(ORGLANE_[A-Za-z0-9_]*\)=.*/\1/p' -e 's/^\(COMPOSE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+				unset "$v"
+			done
+			set -- --project-name "$project-$key" --project-directory "$dir" -f "$f"
+			if [ -r "$dir/.env" ]; then set -- "$@" --env-file "$dir/.env"; fi
+			docker compose "$@" down --remove-orphans --timeout 30 >&2
+		) || die "could not remove the containers of the service project $key ($dir)"
+		ok "removed the containers of the service project $key"
+	done
 }
 
 cmd_uninstall() {
@@ -1152,6 +1417,7 @@ cmd_uninstall() {
 		[ "$ANSWER" = delete ] || die "cancelled; nothing was changed"
 	fi
 	step "Removing the Orglane containers ($DATA_DIR)"
+	remove_instances
 	dc down --remove-orphans --timeout 30 >&2 || die "docker compose down failed"
 	ok "containers and networks removed"
 	if [ "$OPT_PURGE" = 0 ]; then
@@ -1185,7 +1451,9 @@ main() {
 	OPT_MODE='' OPT_DOMAIN='' OPT_WORKSPACE_HOST='' OPT_ACME_EMAIL='' OPT_ACME_CA=''
 	OPT_DATA_DIR='' OPT_VERSION='' OPT_SOURCE='' OPT_IMAGE='' OPT_HTTP_PORT='' OPT_HTTPS_PORT=''
 	OPT_PUBLIC_IP='' OPT_SKIP_CHECKS=0 OPT_INSTALL_DOCKER=0 OPT_PURGE=0 OPT_YES=0
+	OPT_MANAGED=0 OPT_AGENT_IMAGE=''
 	OLD_HTTP_PORT='' OLD_HTTPS_PORT='' OLD_ACME_CA='' OLD_HTTP_PUBLISH='' OLD_HTTPS_PUBLISH='' PROBE='' WORK=''
+	OLD_MANAGED=false OLD_AGENT_SECRET='' AGENT_IMAGE='' AGENT_PUBLISH_ADDRESS=''
 	# How to run the installer again, for the summary.
 	case $0 in
 	*install.sh) INSTALLER="sh $0" ;;
@@ -1193,7 +1461,7 @@ main() {
 	esac
 
 	case ${1:-} in
-	install | status | uninstall)
+	install | enable-managed | status | uninstall)
 		COMMAND=$1
 		shift
 		;;
@@ -1209,7 +1477,7 @@ main() {
 		esac
 		case $opt in
 		--mode | --domain | --workspace-host | --acme-email | --acme-ca | --data-dir | --version | --source | --image | \
-			--http-port | --https-port | --public-ip)
+			--agent-image | --http-port | --https-port | --public-ip)
 			if [ -z "$val" ]; then
 				[ $# -ge 2 ] || die "$opt needs a value (see --help)"
 				val=$2
@@ -1234,6 +1502,8 @@ main() {
 			OPT_SOURCE=$(abs_path "$val")
 			;;
 		--image) OPT_IMAGE=$val ;;
+		--agent-image) OPT_AGENT_IMAGE=$val ;;
+		--managed) OPT_MANAGED=1 ;;
 		--http-port) OPT_HTTP_PORT=$val ;;
 		--https-port) OPT_HTTPS_PORT=$val ;;
 		--public-ip)
@@ -1258,7 +1528,7 @@ main() {
 	trap 'exit 130' INT TERM
 
 	case $COMMAND in
-	install) cmd_install ;;
+	install | enable-managed) cmd_install ;;
 	status) cmd_status ;;
 	uninstall) cmd_uninstall ;;
 	esac

@@ -59,10 +59,12 @@ DEV_COMPOSE := docker compose -f deploy/dev/compose.yaml
 DEMO_DB     := orglane_demo
 DEMO_DB_URL := postgres://orglane:orglane@127.0.0.1:5432/$(DEMO_DB)?sslmode=disable
 
-# Core container image built by `make image` (Dockerfile).
+# Core container image built by `make image` (Dockerfile), and the agent
+# image built by `make image-agent` (Dockerfile target agent).
 IMAGE ?= orglane:dev
+AGENT_IMAGE ?= orglane-agent:dev
 
-.PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image website website-dev generate check-generate check-generate-go check-generate-ts \
+.PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image image-agent website website-dev generate check-generate check-generate-go check-generate-ts \
 	test test-go test-unit test-integration test-compose test-install measure-memory conformance test-ts test-e2e test-e2e-if-available test-website test-website-if-available \
 	lint lint-go lint-ts lint-sh fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
@@ -180,6 +182,9 @@ build-ts:
 image: ## Build the core container image (IMAGE, default orglane:dev)
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
 
+image-agent: ## Build the agent image for managed services (AGENT_IMAGE, default orglane-agent:dev)
+	docker build --build-arg VERSION=$(VERSION) --target agent -t $(AGENT_IMAGE) .
+
 # The orglane.app website (website/, Astro): a static site in website/dist
 # that serves deploy/install.sh at /install.sh. Deployed to GitHub Pages by
 # .github/workflows/website.yml.
@@ -204,20 +209,22 @@ test-go:
 test-unit: ## Run Go unit tests only
 	go test -race -count=1 ./...
 
-# The installer tests run on their own afterwards: on Docker Desktop (macOS),
-# PostgreSQL containers initializing bind-mounted data directories next to
-# those of tests/compose sometimes fail with "wrong ownership". The package
-# list is built in separate, checked steps: a failing `go list` inside the
-# `go test` arguments would not stop it.
+# The Compose bundle tests and the installer tests run on their own
+# afterwards, one package after the other: on Docker Desktop (macOS),
+# PostgreSQL containers initializing bind-mounted data directories while
+# other packages start and remove containers sometimes fail with "wrong
+# ownership". The package list is built in separate, checked steps: a failing
+# `go list` inside the `go test` arguments would not stop it.
 test-integration: ## Run Go unit and integration tests (needs Docker)
 	pkgs="$$(go list -tags integration ./...)"; \
-	pkgs="$$(printf '%s\n' "$$pkgs" | grep -v '/tests/install$$')"; \
+	pkgs="$$(printf '%s\n' "$$pkgs" | grep -v -e '/tests/install$$' -e '/tests/compose$$')"; \
 	if [ -z "$$pkgs" ]; then echo "error: go list found no packages to test"; exit 1; fi; \
 	go test -race -count=1 -tags integration $$pkgs
+	$(MAKE) --no-print-directory test-compose
 	$(MAKE) --no-print-directory test-install
 
 test-compose: ## Start the Compose bundle (local mode, domain mode with Pebble) and test it (needs Docker)
-	go test -count=1 -tags integration -v ./tests/compose/
+	go test -race -count=1 -tags integration -v ./tests/compose/
 
 test-install: ## Run the installer end to end: local, demo and domain mode with Pebble (needs Docker)
 	go test -count=1 -tags integration -v ./tests/install/

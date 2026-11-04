@@ -1,4 +1,5 @@
-# Orglane Compose bundle: Traefik + the Orglane core + PostgreSQL.
+# Orglane Compose bundle: Traefik + the Orglane core + PostgreSQL, and the
+# agent for managed services (profile "managed", off by default).
 #
 # Settings come from environment variables, usually an .env file next to this
 # file (see .env.example and deploy/README.md). Two modes:
@@ -12,6 +13,12 @@
 # Traefik has no Docker socket (ADR 0008): it polls its routes from the core's
 # internal listener (Traefik HTTP provider). Data lives under ORGLANE_DATA_DIR
 # (default /var/lib/orglane).
+#
+# Managed services (ADR 0019, docs/specs/agent.md): COMPOSE_PROFILES=managed
+# starts the agent, the only container with the Docker socket. It renders the
+# services' Compose projects under ORGLANE_DATA_DIR/instances and talks to the
+# core over a Unix socket in the agent-run volume. The core never gets the
+# Docker socket. Enable it with `install.sh enable-managed`.
 #
 # Images are pinned by version and digest; Orglane releases bump them.
 name: orglane
@@ -62,8 +69,14 @@ services:
     networks:
       edge:
         # Fixed, so the core can trust exactly this peer for X-Forwarded-For
-        # (server.trusted_proxies).
+        # (server.trusted_proxies) and its internal listener.
         ipv4_address: ${ORGLANE_EDGE_NETWORK_PREFIX:-10.231.0}.2
+        # Containers on the edge network (managed services) resolve the
+        # workspace host to Traefik, so they reach Orglane by its public
+        # name. A host name without a port: the installer writes
+        # ORGLANE_EDGE_WORKSPACE_ALIAS when the workspace host carries one.
+        aliases:
+          - ${ORGLANE_EDGE_WORKSPACE_ALIAS:-${ORGLANE_DOMAIN_WORKSPACE_HOST:-${ORGLANE_DOMAIN_BASE:-localhost}}}
     healthcheck:
       # No flags: they would make Traefik ignore the environment config.
       test: ["CMD", "traefik", "healthcheck"]
@@ -101,14 +114,23 @@ services:
       ORGLANE_SERVER_LISTEN: ":8080"
       # Only Traefik may name the client in X-Forwarded-For.
       ORGLANE_SERVER_TRUSTED_PROXIES: ${ORGLANE_EDGE_NETWORK_PREFIX:-10.231.0}.2/32
-      # Internal listener for Traefik's HTTP provider. Not published, and
-      # not routed by Traefik.
+      # Internal listener for Traefik's HTTP provider. Not published, not
+      # routed by Traefik, and answering Traefik's address only: managed
+      # services share the edge network.
       ORGLANE_SERVER_INTERNAL_LISTEN: ":9090"
+      ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS: ${ORGLANE_EDGE_NETWORK_PREFIX:-10.231.0}.2/32
       ORGLANE_INGRESS_UPSTREAM_URL: http://orglane:8080
       # Demo mode (install.sh --mode demo): loads the "Acme Robotics" dataset
       # into an empty database and allows one-click sign-in as any demo
       # person. Local mode only: anyone who reaches the workspace can sign in.
       ORGLANE_DEMO_ENABLED: ${ORGLANE_DEMO_ENABLED:-false}
+      # Managed services: the agent's socket in the agent-run volume. An
+      # empty secret disables them (the agent is not running).
+      ORGLANE_AGENT_SOCKET: /run/orglane-agent/agent.sock
+      ORGLANE_AGENT_SECRET: ${ORGLANE_AGENT_SECRET:-}
+    volumes:
+      # The agent's socket only; never the Docker socket.
+      - agent-run:/run/orglane-agent
     networks:
       edge: {}
       database: {}
@@ -151,6 +173,8 @@ services:
       - ${ORGLANE_DATA_DIR:-/var/lib/orglane}/postgres:/var/lib/postgresql
     networks:
       database: {}
+      # Managed services reach their databases here (svc_<key>).
+      services: {}
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "orglane", "-d", "orglane"]
       interval: 10s
@@ -160,6 +184,60 @@ services:
       start_interval: 1s
     stop_grace_period: 60s
     security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+  # Managed services (profile "managed"): installs the services' Compose
+  # projects and keeps them running. See docs/specs/agent.md.
+  agent:
+    # Pinned by version and digest: install.sh enable-managed resolves the
+    # release tag to its registry digest and writes
+    # ORGLANE_AGENT_IMAGE=ghcr.io/orglane/orglane-agent:<tag>@sha256:<digest>
+    # into .env. The tag must be the core's version.
+    image: ${ORGLANE_AGENT_IMAGE:-ghcr.io/orglane/orglane-agent:0.0.1} # x-release-please-version
+    profiles: [managed]
+    restart: unless-stopped
+    command: ["agent"]
+    # Root: the Docker socket is root-equivalent anyway (ADR 0019).
+    user: "0:0"
+    # The core reaches it over the Unix socket; Docker pulls the images.
+    network_mode: none
+    environment:
+      ORGLANE_LOG_LEVEL: ${ORGLANE_LOG_LEVEL:-info}
+      ORGLANE_LOG_FORMAT: json
+      ORGLANE_AGENT_LISTEN: /run/orglane-agent/agent.sock
+      # Not ":?": a required variable would break existing .env files even
+      # with the profile off. The agent itself refuses to start without one.
+      ORGLANE_AGENT_SECRET: ${ORGLANE_AGENT_SECRET:-}
+      ORGLANE_AGENT_DATA_DIR: ${ORGLANE_DATA_DIR:-/var/lib/orglane}
+      # Only the core's uid (distroless nonroot) may connect.
+      ORGLANE_AGENT_PEER_UID: "65532"
+      # The bundle's project: finds PostgreSQL and the networks, and prefixes
+      # the services' projects, so two installs on one host stay apart.
+      ORGLANE_AGENT_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-orglane}
+      # Where published service ports (Forgejo SSH) bind: 127.0.0.1 in local
+      # mode, all interfaces in domain mode. Written by the installer.
+      ORGLANE_AGENT_PUBLISH_ADDRESS: ${ORGLANE_AGENT_PUBLISH_ADDRESS:-127.0.0.1}
+      DOCKER_CONFIG: /tmp/docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Same path inside and outside: the Docker daemon resolves the bind
+      # mounts of the generated projects on the host.
+      - ${ORGLANE_DATA_DIR:-/var/lib/orglane}/instances:${ORGLANE_DATA_DIR:-/var/lib/orglane}/instances
+      - agent-run:/run/orglane-agent
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    # Data directories belong to the services' uids.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/orglane", "agent", "healthcheck"]
+      interval: 10s
+      timeout: 12s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    stop_grace_period: 30s
     logging: *logging
 
 networks:
@@ -176,3 +254,11 @@ networks:
   # Core <-> PostgreSQL, without outside access.
   database:
     internal: true
+  # Managed services <-> PostgreSQL, without outside access. The core is not
+  # on it.
+  services:
+    internal: true
+
+volumes:
+  # The agent's Unix socket, shared by the core and the agent only.
+  agent-run: {}

@@ -13,7 +13,7 @@
 //	go run ./tools/ci policy -from-event -apply
 //	go run ./tools/ci licenses -policy server|apache -format pnpm|go-licenses < report
 //	go run ./tools/ci release-version -tag v1.2.3
-//	go run ./tools/ci release-aliases -image ghcr.io/orglane/orglane
+//	go run ./tools/ci release-aliases -image ghcr.io/orglane/orglane -image ghcr.io/orglane/orglane-agent
 package main
 
 import (

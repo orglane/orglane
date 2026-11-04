@@ -14,7 +14,15 @@
 //     are refused and leave .env alone;
 //   - domain mode: the DNS check refuses an unresolvable workspace host
 //     before anything starts, and an install against Pebble (Let's
-//     Encrypt's ACME test server, deploy/compose/pebble) gets a certificate.
+//     Encrypt's ACME test server, deploy/compose/pebble) gets a certificate;
+//     enable-managed then adds the agent and keeps the certificate;
+//   - managed services (docs/specs/agent.md): a default install has no
+//     agent; enable-managed on an existing local install refuses an agent
+//     image it can't pin by digest and leaves .env alone, pins a registry
+//     image by digest, moves the workspace to orglane.localhost and starts
+//     the agent, which the core reaches; --managed on a fresh install;
+//     uninstall removes the services' Compose projects; the core container
+//     never has the Docker socket.
 //
 // Each test runs its own Compose project on its own edge network and ports,
 // so it can run next to tests/compose. The tests run one after another: on
@@ -54,8 +62,15 @@ import (
 	"github.com/orglane/orglane/tests/demotest"
 )
 
-// image is the core image built from this repository for the tests.
-const image = "orglane:install-test"
+// image is the core image built from this repository for the tests, and
+// agentImage its agent image (Dockerfile target agent).
+const (
+	image      = "orglane:install-test"
+	agentImage = "orglane-agent:install-test"
+	// registryImage serves agent images to pin by digest (a registry on the
+	// daemon's localhost is trusted over plain HTTP).
+	registryImage = "registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e"
+)
 
 var (
 	repoRoot   string
@@ -78,11 +93,14 @@ func TestMain(m *testing.M) {
 }
 
 func buildImage() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", "build", "--build-arg", "VERSION=install-test", "-t", image, repoRoot) //nolint:gosec // fixed docker build of this repository
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w\n%s", err, out)
+	for _, args := range [][]string{{"-t", image}, {"--target", "agent", "-t", agentImage}} {
+		args = append(append([]string{"build", "--build-arg", "VERSION=install-test"}, args...), repoRoot)
+		cmd := exec.CommandContext(ctx, "docker", args...) //nolint:gosec // fixed docker build of this repository
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("%w\n%s", err, out)
+		}
 	}
 	return nil
 }
@@ -373,6 +391,21 @@ func TestLocalMode(t *testing.T) {
 	if strings.Contains(out, password) || strings.Contains(out, secret) {
 		t.Error("the installer printed a secret")
 	}
+	// Managed services are off by default, but the agent secret is there
+	// for enabling them later.
+	agentSecret := env["ORGLANE_AGENT_SECRET"]
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(agentSecret) || strings.Contains(out, agentSecret) {
+		t.Errorf("agent secret has an unexpected form (length %d) or was printed", len(agentSecret))
+	}
+	if env["ORGLANE_INSTALL_MANAGED"] != "false" || env["COMPOSE_PROFILES"] != "" || env["ORGLANE_AGENT_IMAGE"] != "" {
+		t.Errorf(".env enables managed services by default: %q %q %q", env["ORGLANE_INSTALL_MANAGED"], env["COMPOSE_PROFILES"], env["ORGLANE_AGENT_IMAGE"])
+	}
+	if c := in.serviceContainers("agent"); len(c) > 0 {
+		t.Errorf("a default install runs the agent: %v", c)
+	}
+	if !strings.Contains(out, "enable-managed") {
+		t.Errorf("the output does not say how to enable managed services:\n%s", out)
+	}
 
 	// The printed setup token creates the owner: a working sign-in.
 	token := setupToken.FindString(out)
@@ -396,7 +429,7 @@ func TestLocalMode(t *testing.T) {
 		t.Errorf("re-run after setup printed a setup token or no sign-in hint:\n%s", out)
 	}
 	env = in.envFile()
-	if env["ORGLANE_POSTGRES_PASSWORD"] != password || env["ORGLANE_IDENTITY_MASTER_SECRET"] != secret {
+	if env["ORGLANE_POSTGRES_PASSWORD"] != password || env["ORGLANE_IDENTITY_MASTER_SECRET"] != secret || env["ORGLANE_AGENT_SECRET"] != agentSecret {
 		t.Error("re-run changed the secrets")
 	}
 	checkWorkspace(t, http.DefaultClient, base, host)
@@ -721,6 +754,50 @@ func TestDomainModeWithPebble(t *testing.T) {
 		t.Errorf("--acme-ca ftp://example.test: exit %d\n%s", code, out)
 	}
 
+	// Domain mode is production: an agent image that can't be pinned by a
+	// registry digest is refused, even one that exists on this machine, and
+	// .env stays as it is.
+	managed := []string{"enable-managed", "--yes", "--source", repoRoot, "--image", image, "--data-dir", in.dataDir}
+	envPath := filepath.Join(in.dataDir, ".env")
+	before, err := os.ReadFile(envPath) //nolint:gosec // the test's own data directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, code := in.run(append(managed, "--agent-image", agentImage)...); code == 0 || !strings.Contains(out, "pinned by a registry digest") {
+		t.Errorf("domain mode with a local agent image: exit %d, want a refusal\n%s", code, out)
+	}
+	if after, err := os.ReadFile(envPath); err != nil || !bytes.Equal(after, before) { //nolint:gosec // the test's own data directory
+		t.Errorf("the refused enable-managed changed .env (%v)", err)
+	}
+	if c := in.serviceContainers("agent"); len(c) > 0 {
+		t.Errorf("the refused enable-managed started the agent: %v", c)
+	}
+
+	// Enabling managed services on the domain install, with an agent image
+	// from a registry, pins it by digest and keeps the address, CA and
+	// certificate; service ports are published on every interface.
+	reg := startRegistry(t)
+	ref := reg.push(agentImage, "orglane-agent", "install-test")
+	digest, err := reg.manifestDigest("orglane-agent", "install-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	account = in.acmeStorage()
+	out = in.mustRun(append(managed, "--agent-image", ref)...)
+	if got := lastLine(out); got != "https://"+host {
+		t.Errorf("enable-managed: printed URL = %q, want https://%s", got, host)
+	}
+	env = in.envFile()
+	if env["ORGLANE_DOMAIN_WORKSPACE_HOST"] != host || env["ORGLANE_EDGE_WORKSPACE_ALIAS"] != host || env["ORGLANE_ACME_CA_SERVER"] != production {
+		t.Errorf("enable-managed changed the domain settings: host %q, alias %q, CA %q",
+			env["ORGLANE_DOMAIN_WORKSPACE_HOST"], env["ORGLANE_EDGE_WORKSPACE_ALIAS"], env["ORGLANE_ACME_CA_SERVER"])
+	}
+	if in.acmeStorage() != account {
+		t.Error("enable-managed reset the ACME storage")
+	}
+	in.checkManaged(ref+"@"+digest, "0.0.0.0")
+	checkWorkspace(t, in.pebbleClient(), "https://"+host, host)
+
 	in.mustRun("uninstall", "--purge", "--yes", "--data-dir", in.dataDir)
 	if c := in.containers(); len(c) > 0 {
 		t.Errorf("containers left after uninstall: %v", c)
@@ -790,4 +867,335 @@ func (in *install) pebbleRoot() *x509.Certificate {
 		t.Fatal(err)
 	}
 	return cert
+}
+
+// serviceContainers lists the running containers of one service of the
+// installation's Compose project.
+func (in *install) serviceContainers(service string) []string {
+	in.t.Helper()
+	return projectContainers(in.t, in.project, "label=com.docker.compose.service="+service, "status=running")
+}
+
+// projectContainers lists the containers of a Compose project.
+func projectContainers(t *testing.T, project string, filters ...string) []string {
+	t.Helper()
+	args := []string{"ps", "--all", "--quiet", "--filter", "label=com.docker.compose.project=" + project}
+	for _, f := range filters {
+		args = append(args, "--filter", f)
+	}
+	out, err := exec.CommandContext(t.Context(), "docker", args...).CombinedOutput() //nolint:gosec // fixed docker ps
+	if err != nil {
+		t.Fatalf("docker ps: %v\n%s", err, out)
+	}
+	return strings.Fields(string(out))
+}
+
+// checkManaged checks a running install with managed services: the agent
+// runs from the expected image and answers the core (uid 65532) over the
+// shared socket with the shared secret, the core container has no Docker
+// socket, and instances/ exists with mode 700.
+func (in *install) checkManaged(wantImage, publishAddress string) {
+	t := in.t
+	t.Helper()
+	env := in.envFile()
+	for key, want := range map[string]string{
+		"ORGLANE_INSTALL_MANAGED":       "true",
+		"COMPOSE_PROFILES":              "managed",
+		"ORGLANE_AGENT_IMAGE":           wantImage,
+		"ORGLANE_AGENT_PUBLISH_ADDRESS": publishAddress,
+	} {
+		if env[key] != want {
+			t.Errorf(".env %s = %q, want %q", key, env[key], want)
+		}
+	}
+	if c := in.serviceContainers("agent"); len(c) != 1 {
+		t.Fatalf("agent containers = %v, want one running", c)
+	}
+	if got := in.inspect("agent", "{{.Config.Image}}"); got != wantImage {
+		t.Errorf("the agent runs %q, want %q", got, wantImage)
+	}
+	out, err := in.compose("exec", "-T", "-e", "ORGLANE_AGENT_LISTEN=/run/orglane-agent/agent.sock", "orglane",
+		"/usr/local/bin/orglane", "agent", "healthcheck")
+	if err != nil || !strings.Contains(out, "agent install-test ready") {
+		t.Errorf("agent health from the core container: %v\n%s", err, out)
+	}
+	in.checkNoDockerSocket()
+	if fi, err := os.Stat(filepath.Join(in.dataDir, "instances")); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("instances/ = %v (%v), want a directory with mode 700", fi, err)
+	}
+	if out := in.mustRun("status", "--data-dir", in.dataDir); !strings.Contains(out, "managed services: agent install-test ready") {
+		t.Errorf("status does not show the ready agent:\n%s", out)
+	}
+}
+
+// checkNoDockerSocket: the core container never mounts the Docker socket.
+func (in *install) checkNoDockerSocket() {
+	t := in.t
+	t.Helper()
+	var mounts []struct{ Source, Destination string }
+	if err := json.Unmarshal([]byte(in.inspect("orglane", "{{json .Mounts}}")), &mounts); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range mounts {
+		if strings.Contains(m.Source, "docker.sock") || strings.Contains(m.Destination, "docker.sock") {
+			t.Errorf("the core container mounts %s at %s", m.Source, m.Destination)
+		}
+	}
+	if out, err := in.compose("exec", "-T", "orglane", "/usr/local/bin/docker", "--version"); err == nil {
+		t.Errorf("the core container has a Docker CLI:\n%s", out)
+	}
+}
+
+// inspect runs docker inspect with a Go template on a service's container.
+func (in *install) inspect(service, format string) string {
+	in.t.Helper()
+	ids := in.serviceContainers(service)
+	if len(ids) != 1 {
+		in.t.Fatalf("containers of %s: %v, want one", service, ids)
+	}
+	out, err := exec.CommandContext(in.t.Context(), "docker", "inspect", "--format", format, ids[0]).CombinedOutput() //nolint:gosec // fixed docker inspect
+	if err != nil {
+		in.t.Fatalf("docker inspect %s: %v\n%s", service, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// startInstanceProject starts a stand-in for a managed service's Compose
+// project under instances/<key>, attached to the bundle's edge network like
+// the agent's projects, and returns its project name.
+func (in *install) startInstanceProject(key string) string {
+	t := in.t
+	t.Helper()
+	pg := ""
+	raw, err := os.ReadFile(filepath.Join(in.dataDir, "compose.yaml")) //nolint:gosec // the test's own data directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := regexp.MustCompile(`(?m)^\s*image: (postgres:\S+)`).FindSubmatch(raw); m != nil {
+		pg = string(m[1])
+	}
+	dir := filepath.Join(in.dataDir, "instances", key)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	project := in.project + "-" + key
+	compose := fmt.Sprintf(`name: %s
+services:
+  app:
+    image: %s
+    entrypoint: ["sleep", "infinity"]
+    networks: [edge]
+networks:
+  edge:
+    name: %s_edge
+    external: true
+`, project, pg, in.project)
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(compose), 0o600); err != nil { //nolint:gosec // the test's own data directory
+		t.Fatal(err)
+	}
+	args := []string{"compose", "--project-name", project, "--project-directory", dir, "-f", filepath.Join(dir, "compose.yaml")}
+	t.Cleanup(func() {
+		_, _ = exec.CommandContext(context.Background(), "docker", append(args, "down", "--timeout", "1")...).CombinedOutput() //nolint:gosec // fixed docker compose
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", append(args, "up", "--detach", "--wait")...) //nolint:gosec // fixed docker compose
+	cmd.Env = cleanEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("start the service project %s: %v\n%s", project, err, out)
+	}
+	return project
+}
+
+// registry is a throwaway image registry on the Docker daemon's loopback
+// (host network), which Docker trusts over plain HTTP.
+type registry struct {
+	t    *testing.T
+	id   string
+	addr string
+}
+
+func startRegistry(t *testing.T) *registry {
+	t.Helper()
+	// A free port on this machine; with Docker Desktop the host network is
+	// the VM's, where a clash is just as unlikely.
+	addr := "127.0.0.1:" + freePort(t)
+	if out, err := exec.CommandContext(t.Context(), "docker", "pull", "--quiet", registryImage).CombinedOutput(); err != nil { //nolint:gosec // fixed docker pull
+		t.Fatalf("pull %s: %v\n%s", registryImage, err, out)
+	}
+	// Standard output only: the container ID.
+	out, err := exec.CommandContext(t.Context(), "docker", "run", "--detach", "--rm", "--network", "host", //nolint:gosec // fixed docker run
+		"--env", "REGISTRY_HTTP_ADDR="+addr, registryImage).Output()
+	if err != nil {
+		t.Fatalf("start a registry: %v\n%s", err, out)
+	}
+	r := &registry{t: t, id: strings.TrimSpace(string(out)), addr: addr}
+	t.Cleanup(func() {
+		_, _ = exec.CommandContext(context.Background(), "docker", "rm", "--force", r.id).CombinedOutput() //nolint:gosec // fixed docker rm
+	})
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		out, err := exec.CommandContext(t.Context(), "docker", "exec", r.id, "wget", "-q", "-O", "/dev/null", "http://"+addr+"/v2/").CombinedOutput() //nolint:gosec // fixed docker exec
+		if err == nil {
+			return r
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the registry did not start: %v\n%s", err, out)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// push pushes a local image as localhost:<port>/<name>:<tag>, removes the
+// local tag (so the installer has to pull it) and returns the reference.
+func (r *registry) push(local, name, tag string) string {
+	t := r.t
+	t.Helper()
+	ref := strings.Replace(r.addr, "127.0.0.1", "localhost", 1) + "/" + name + ":" + tag
+	for _, args := range [][]string{{"tag", local, ref}, {"push", "--quiet", ref}, {"image", "rm", ref}} {
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput() //nolint:gosec // fixed docker commands
+		cancel()
+		if err != nil {
+			t.Fatalf("docker %v: %v\n%s", args, err, out)
+		}
+	}
+	return ref
+}
+
+// manifestDigest asks the registry for the digest of a tag.
+func (r *registry) manifestDigest(name, tag string) (string, error) {
+	out, err := exec.CommandContext(r.t.Context(), "docker", "exec", r.id, "wget", "-q", "-S", "-O", "/dev/null", //nolint:gosec // fixed docker exec
+		"--header", "Accept: application/vnd.oci.image.index.v1+json",
+		"--header", "Accept: application/vnd.docker.distribution.manifest.list.v2+json",
+		"--header", "Accept: application/vnd.oci.image.manifest.v1+json",
+		"--header", "Accept: application/vnd.docker.distribution.manifest.v2+json",
+		"http://"+r.addr+"/v2/"+name+"/manifests/"+tag).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, out)
+	}
+	m := regexp.MustCompile(`(?i)Docker-Content-Digest:\s*(sha256:[0-9a-f]{64})`).FindSubmatch(out)
+	if m == nil {
+		return "", fmt.Errorf("no digest in %s", out)
+	}
+	return string(m[1]), nil
+}
+
+// TestEnableManagedLocal enables managed services on an existing local
+// install: refusals that leave .env alone, an agent image pinned by the
+// registry digest of its tag, the move to orglane.localhost, the agent
+// reachable from the core, a re-run that keeps managed services, and an
+// uninstall that removes the services' projects.
+func TestEnableManagedLocal(t *testing.T) {
+	in := newInstall(t, "10.231.117")
+	port := freePort(t)
+	source := []string{"--yes", "--source", repoRoot, "--image", image, "--data-dir", in.dataDir}
+	in.mustRun(append([]string{"--mode", "local", "--http-port", port}, source...)...)
+	envPath := filepath.Join(in.dataDir, ".env")
+	before, err := os.ReadFile(envPath) //nolint:gosec // the test's own data directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentSecret := in.envFile()["ORGLANE_AGENT_SECRET"]
+	refused := func(what, want string, args ...string) {
+		t.Helper()
+		if out, code := in.run(append([]string{"enable-managed"}, args...)...); code == 0 || !strings.Contains(out, want) {
+			t.Errorf("%s: exit %d, want a refusal with %q\n%s", what, code, want, out)
+		}
+		if after, err := os.ReadFile(envPath); err != nil || !bytes.Equal(after, before) { //nolint:gosec // the test's own data directory
+			t.Errorf("%s: .env changed (%v)", what, err)
+		}
+		if c := in.serviceContainers("agent"); len(c) > 0 {
+			t.Errorf("%s: the agent runs: %v", what, c)
+		}
+	}
+	// A custom build has no released agent image.
+	refused("custom build without --agent-image", "--agent-image", source...)
+	// An agent image that can't be pulled, so no digest: never a bare tag.
+	missing := "localhost:" + freePort(t) + "/orglane-agent:install-test"
+	refused("unreachable agent image", "nothing was changed", append(source, "--agent-image", missing)...)
+	// No install there.
+	if out, code := in.run("enable-managed", "--yes", "--data-dir", filepath.Join(t.TempDir(), "none")); code == 0 || !strings.Contains(out, "no Orglane install") {
+		t.Errorf("enable-managed without an install: exit %d\n%s", code, out)
+	}
+
+	// An agent image from a registry is pinned by the digest of its tag.
+	reg := startRegistry(t)
+	ref := reg.push(agentImage, "orglane-agent", "install-test")
+	digest, err := reg.manifestDigest("orglane-agent", "install-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := in.mustRun(append([]string{"enable-managed", "--agent-image", ref}, source...)...)
+	workspace := "orglane.localhost:" + port
+	if got := lastLine(out); got != "http://"+workspace {
+		t.Errorf("printed URL = %q, want http://%s", got, workspace)
+	}
+	if !strings.Contains(out, "moves from http://localhost:"+port+" to http://"+workspace) {
+		t.Errorf("the output does not announce the new workspace address:\n%s", out)
+	}
+	in.checkManaged(ref+"@"+digest, "127.0.0.1")
+	env := in.envFile()
+	for key, want := range map[string]string{
+		"ORGLANE_DOMAIN_BASE":           "orglane.localhost",
+		"ORGLANE_DOMAIN_WORKSPACE_HOST": workspace,
+		"ORGLANE_EDGE_WORKSPACE_ALIAS":  "orglane.localhost",
+		"ORGLANE_AGENT_SECRET":          agentSecret,
+	} {
+		if env[key] != want {
+			t.Errorf(".env %s = %q, want %q", key, env[key], want)
+		}
+	}
+	if strings.Contains(out, agentSecret) {
+		t.Error("the installer printed the agent secret")
+	}
+	base := "http://127.0.0.1:" + port
+	checkWorkspace(t, http.DefaultClient, base, workspace)
+
+	// A re-run keeps managed services; a locally built agent image (no
+	// registry digest) is used as it is, like --image.
+	out = in.mustRun(append([]string{"--agent-image", agentImage}, source...)...)
+	if !strings.Contains(out, "not pinned by a digest") {
+		t.Errorf("re-run with a local agent image: no warning about the missing digest:\n%s", out)
+	}
+	in.checkManaged(agentImage, "127.0.0.1")
+	checkWorkspace(t, http.DefaultClient, base, workspace)
+
+	// Uninstall removes the services' projects too, then the bundle.
+	project := in.startInstanceProject("svc1")
+	out = in.mustRun("uninstall", "--data-dir", in.dataDir)
+	if !strings.Contains(out, "stopped the agent") || !strings.Contains(out, "service project svc1") {
+		t.Errorf("uninstall output does not name the service project:\n%s", out)
+	}
+	for _, p := range []string{project, in.project} {
+		if c := projectContainers(t, p); len(c) > 0 {
+			t.Errorf("containers of %s left after uninstall: %v", p, c)
+		}
+	}
+	in.mustRun("uninstall", "--purge", "--yes", "--data-dir", in.dataDir)
+	if _, err := os.Stat(in.dataDir); !os.IsNotExist(err) {
+		t.Errorf("data directory after purge: %v, want it deleted", err)
+	}
+}
+
+// TestManagedFreshInstall: --managed on a new local install starts the agent
+// right away, on orglane.localhost.
+func TestManagedFreshInstall(t *testing.T) {
+	in := newInstall(t, "10.231.118")
+	port := freePort(t)
+	out := in.mustRun("--mode", "local", "--managed", "--yes", "--source", repoRoot, "--image", image,
+		"--agent-image", agentImage, "--data-dir", in.dataDir, "--http-port", port)
+	workspace := "orglane.localhost:" + port
+	if got := lastLine(out); got != "http://"+workspace {
+		t.Errorf("printed URL = %q, want http://%s", got, workspace)
+	}
+	if !setupToken.MatchString(out) {
+		t.Errorf("no setup token in the output:\n%s", out)
+	}
+	in.checkManaged(agentImage, "127.0.0.1")
+	checkWorkspace(t, http.DefaultClient, "http://127.0.0.1:"+port, workspace)
+	in.mustRun("uninstall", "--purge", "--yes", "--data-dir", in.dataDir)
+	if c := in.containers(); len(c) > 0 {
+		t.Errorf("containers left after uninstall: %v", c)
+	}
 }

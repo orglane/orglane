@@ -149,6 +149,31 @@ func TestSchemeAndIdentitySettings(t *testing.T) {
 	}
 }
 
+func TestInternalAllowedPeers(t *testing.T) {
+	cfg, err := Load("", env(minimalEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := cfg.Server.InternalAllowedPeerPrefixes(); err != nil || len(p) != 0 {
+		t.Errorf("default internal allowed peers = %v, %v; want none (any peer)", p, err)
+	}
+
+	traefik := maps.Clone(minimalEnv)
+	traefik["ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS"] = " 10.231.0.2/32, fd00::2/128 "
+	if cfg, err = Load("", env(traefik)); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := cfg.Server.InternalAllowedPeerPrefixes(); err != nil || len(p) != 2 || p[0].String() != "10.231.0.2/32" {
+		t.Errorf("internal allowed peers = %v, %v", p, err)
+	}
+
+	bad := maps.Clone(minimalEnv)
+	bad["ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS"] = "10.231.0.2"
+	if _, err := Load("", env(bad)); err == nil || !strings.Contains(err.Error(), "server.internal_allowed_peers (ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS)") {
+		t.Errorf("a bare address: error %v, want server.internal_allowed_peers", err)
+	}
+}
+
 func TestIngress(t *testing.T) {
 	base := maps.Clone(minimalEnv)
 	maps.Copy(base, map[string]string{

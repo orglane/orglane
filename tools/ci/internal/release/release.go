@@ -12,6 +12,11 @@
 // Prereleases (anything with a "-" suffix) publish only their exact version
 // and never move an alias.
 //
+// Images released together (the core and the agent) share one alias plan,
+// computed from the versions published for all of them (Common): a release
+// whose build published one image but not the other moves no alias, so the
+// aliases of the images always name the same version.
+//
 // Because the aliases are recomputed from the set of published versions,
 // which only grows, they can only move forward: a release that finishes
 // after a newer one (v0.1.0 after v0.1.1, or v0.1.5 after v0.2.0) leaves
@@ -130,4 +135,29 @@ func Aliases(registryTags []string) []Alias {
 		aliases = append(aliases, Alias{Tag: v.Line(), Version: v.String()})
 	}
 	return aliases
+}
+
+// Common returns the tags present in every one of the tag sets, in the order
+// of the first set. With no sets it returns nil.
+func Common(tagSets ...[]string) []string {
+	if len(tagSets) == 0 {
+		return nil
+	}
+	var out []string
+	for _, tag := range tagSets[0] {
+		if slices.Contains(out, tag) {
+			continue
+		}
+		inAll := true
+		for _, set := range tagSets[1:] {
+			if !slices.Contains(set, tag) {
+				inAll = false
+				break
+			}
+		}
+		if inAll {
+			out = append(out, tag)
+		}
+	}
+	return out
 }
