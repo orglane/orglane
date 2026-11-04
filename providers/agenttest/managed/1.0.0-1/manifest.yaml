@@ -1,0 +1,37 @@
+# agenttest: test-only package for the agent (see ../embed.go). The images
+# are pinned by version and digest like every managed package.
+format: 1
+id: agenttest
+version: 1.0.0-1
+provider: agenttest
+images:
+  web: docker.io/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+  psql: docker.io/library/postgres:18.6-alpine3.24@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+services: [web, worker]
+routes:
+  - { name: web, service: web, port: 8080, host_label: agenttest }
+ports:
+  - { name: http, service: web, container: 8080, setting: http_port }
+database:
+  enabled: true
+data_dirs:
+  - { name: www, mode: "0755" }
+settings:
+  - { name: http_port, type: int, min: 1024, max: 65535, default: 18080 }
+  - { name: message, type: string, default: hello }
+secrets: [db_password]
+capabilities_add: []
+resources:
+  memory: { min: 16Mi, recommended: 32Mi }
+  disk: { min: 1Mi }
+health:
+  start_timeout: 2m
+hooks:
+  configure:
+    - { service: worker, command: ["sh", "/orglane/files/configure.sh"], timeout: 1m }
+backup:
+  database: true
+  data_dirs: [www]
+  stop_services: [web, worker]
+upgrade:
+  confirm_timeout: 2m

@@ -41,6 +41,10 @@ const (
 	PurposeEmailSettings Purpose = "orglane/v1/email-settings"
 	// PurposeEmailOutbox encrypts queued emails (they carry invitation links).
 	PurposeEmailOutbox Purpose = "orglane/v1/email-outbox"
+	// PurposeAgentTransport signs requests and responses between the core and
+	// the agent (docs/specs/agent.md). It is derived from ORGLANE_AGENT_SECRET,
+	// never from the master secret (ADR 0019).
+	PurposeAgentTransport Purpose = "orglane/v1/agent-transport"
 )
 
 // keySize is the size of every derived key (256 bits).

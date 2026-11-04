@@ -206,13 +206,14 @@ type Operation struct {
     State      string    `json:"state"` // "queued" | "running" | "awaiting_confirmation" | "succeeded" | "failed" | "rolled_back"
     Phase      string    `json:"phase,omitempty"`
     ErrorCode  string    `json:"error_code,omitempty"`
+    Rule       string    `json:"rule,omitempty"` // the policy rule, with policy_violation
     SnapshotID string    `json:"snapshot_id,omitempty"`
     StartedAt  time.Time `json:"started_at"`
     FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 ```
 
-Operations are persisted under `instances/.agent/operations/<id>.json` and kept 7 days, so the core can poll them across agent restarts. Error codes: `unauthenticated`, `agent_busy`, `instance_mismatch`, `stale_generation`, `generation_conflict`, `unknown_package_version`, `invalid_input`, `policy_violation`, `upgrade_path_blocked`, `insufficient_disk`, `pull_failed`, `compose_failed`, `database_failed`, `hook_failed`, `health_timeout`, `confirm_timeout`, `aborted`, `snapshot_failed`, `rollback_failed`, `interrupted`.
+Operations are persisted under `instances/.agent/operations/<id>.json` and kept 7 days, so the core can poll them across agent restarts. Error codes: `unauthenticated`, `agent_busy`, `instance_mismatch`, `stale_generation`, `generation_conflict`, `unknown_package_version`, `invalid_input`, `policy_violation`, `upgrade_path_blocked`, `insufficient_disk`, `pull_failed`, `compose_failed`, `database_failed`, `hook_failed`, `health_timeout`, `confirm_timeout`, `aborted`, `snapshot_failed`, `rollback_failed`, `interrupted`, plus `not_found` (unknown instance, operation or endpoint), `superseded` (a queued operation whose spec was replaced by a newer generation before it ran) and `internal`.
 
 ## Desired state and reconciliation
 
@@ -220,7 +221,7 @@ Operations are persisted under `instances/.agent/operations/<id>.json` and kept 
 
 **Push:** the core's `orglane.apps.agent_apply` job pushes a spec and polls its operation (snoozing between polls). An unreachable agent is a retryable error (`agent_unavailable`); the job keeps retrying with backoff and the UI shows "waiting for the agent".
 
-**Sync:** `orglane.apps.agent_sync` runs every `agent.sync_interval`, at core start, and when `GET /v1/health` shows a new boot ID. It reads all instance statuses, updates `app_instances` (phase, health, observed generation, running version), calls `Lifecycle.Verify` for active instances, and re-pushes the current spec of every instance whose accepted generation is behind the database (or unknown to the agent, e.g. after its data was lost).
+**Sync:** `orglane.apps.agent_sync` runs every `agent.sync_interval`, at core start, and when `GET /v1/health` shows a new boot ID. It reads all instance statuses, updates `app_instances` (phase, health, observed generation, running version), calls `Lifecycle.CheckHealth` for active instances, and re-pushes the current spec of every instance whose accepted generation is behind the database (or unknown to the agent, e.g. after its data was lost).
 
 **Reconcile loop (agent):**
 
@@ -492,7 +493,7 @@ rolling_back ─► rollback_failed (instance failed)
 | `switching` | Write the new rendered files, fenced; `up -d --remove-orphans` |
 | `migrating` | Run the `migrate` hook if declared |
 | `verifying` | Wait for all healthchecks within `health.start_timeout` |
-| `awaiting_confirmation` | The core runs `Lifecycle.Verify` through the fenced alias and calls `confirm` or `abort`. No answer within `confirm_timeout` rolls back |
+| `awaiting_confirmation` | The core runs `Lifecycle.CheckHealth` through the fenced alias and calls `confirm` or `abort`. No answer within `confirm_timeout` rolls back |
 | `committing` | Render unfenced, `up -d --remove-orphans --wait` (containers are recreated with the real aliases and ports); `current.json` := new spec; delete the journal; prune old snapshots beyond retention |
 
 **Journal:** `upgrade.json` holds the operation ID, from/to version and generation, snapshot ID and phase. It is written and fsynced before each phase starts.
@@ -522,7 +523,7 @@ Docker may restart containers on a reboot before the agent runs. In every phase 
 ## Status, health and logs
 
 - Instance status: phase, `observed_generation`, `accepted_generation`, running package version, services (`docker compose ps --format json`: state, health), current operation, snapshot count, `data_retained` for removed instances without purge.
-- Health has two levels: container healthchecks (agent) and `Lifecycle.Verify` through the provider's API (core). The core shows the worse of the two.
+- Health has two levels: container healthchecks (agent) and `Lifecycle.CheckHealth` through the provider's API (core). The core shows the worse of the two.
 - `GET /v1/health` includes `mem_total`, `mem_available` and `disk_free` (of `instances/`); the core uses them with the manifests' resource hints: install is refused when total memory is below the sum of `min` of all instances plus 1 GiB for the bundle, or free disk is below `disk.min`; below `recommended` it warns.
 - Logs: `docker compose logs --no-color --timestamps --tail <n> <service>`, `tail` at most 1000 lines and the response at most 1 MiB; every secret value of the instance is replaced by `[redacted]`. The core exposes them only to `apps.manage` and audits each read (`app_instance.logs_read`).
 - The agent logs JSON to stdout (container logs) and never logs specs, secrets or `.env` contents.
@@ -544,6 +545,23 @@ Docker may restart containers on a reboot before the agent runs. In every phase 
 | Installer | `make test-install`: default install has no agent; `--managed`, `enable-managed` (local mode switches to `orglane.localhost`), `uninstall` removes instance projects | #59 |
 | Local mode | Forgejo installed in local mode reaches the issuer at `http://orglane.localhost` through the Traefik alias; Playwright signs in to `http://git.orglane.localhost` through Orglane | #61, #62 |
 | Forgejo package | Package unit tests; integration install through the agent; idle memory measured and reported | #61 |
+
+## Implementation notes (#59)
+
+Details the sections above leave open, as implemented by the agent process (#59):
+
+- **Routes:** #59 serves `GET /v1/health`, `GET /v1/instances`, `GET`/`PUT /v1/instances/{key}`, `GET /v1/instances/{key}/logs` and `GET /v1/operations/{id}`. Snapshots, restore, confirm and abort come with the upgrade flow (#60), which extends the route table test. Until then a spec whose package version differs from `current.json` is refused with `422 upgrade_path_blocked` (`required_version` = the running version); a removal (`state: absent`) is accepted for any version.
+- **Spec decoding:** unknown JSON fields are refused (`400 invalid_input`), so a spec cannot carry an image, a Compose file or a command. Every route name of the manifest plus `workspace` must be in `hosts`, and every declared secret in `secrets`. Settings are `int`, `string` or `bool`; strings never contain control characters (newlines included), whatever the pattern.
+- **Authentication:** answers to requests that fail verification (401, and 413 for bodies over 1 MiB) are not signed, so the agent is no signing oracle; the client reports them as `agent_untrusted`. The nonce of a request is recorded only after its MAC verified. Besides `agent.peer_uid`, the agent's own uid may connect (the container healthcheck `orglane agent healthcheck` runs as the agent's user). The socket's group is set only when the agent runs as root.
+- **Docker environment:** `docker` and `docker compose` get only `PATH`, `HOME`, `TMPDIR`, `XDG_RUNTIME_DIR` and `DOCKER_*` from the agent's environment, so neither `ORGLANE_AGENT_SECRET` nor `COMPOSE_*` overrides reach Compose interpolation.
+- **Templates:** `file "."` is the rendered `files/` directory (mount it rather than single files: files are replaced one by one inside it, so running containers see updates). Files ending in `.sh` are rendered `0755`, others `0644`. `data_dirs[].owner` is optional (the agent's user); it is applied only when the agent runs as root.
+- **Manifest:** images need a registry host, a tag and a SHA-256 digest; the bundle's service names (`postgres`, `traefik`, `orglane`, `agent`) cannot be package services.
+- **Policy:** service keys are an allowlist (`cap_add`, `cap_drop`, `command`, `depends_on`, `entrypoint`, `environment`, `expose`, `healthcheck`, `image`, `init`, `labels`, `logging`, `networks`, `ports`, `pull_policy`, `read_only`, `restart`, `security_opt`, `shm_size`, `stop_grace_period`, `stop_signal`, `tmpfs`, `user`, `volumes`, `working_dir`); everything else (`build`, `configs`, `volumes_from`, `extra_hosts`, `container_name`, `sysctls`, ...) is refused, and top-level keys other than `name`, `services`, `networks` (and an empty `volumes`) too. `security_opt` may only add `no-new-privileges`. Per-service network settings are limited to `aliases` (no fixed addresses). Bind sources are checked as written and with symlinks resolved; bind propagation must stay private. Labels under `com.docker.` are refused. A `docker compose config` that fails is `compose_failed`.
+- **Retries:** an operation ends with its first attempt. The periodic reconcile's retries of a failed apply create a new operation each; after four failed attempts (the first and three retries) the generation is blocked.
+- **Hooks:** configure hooks run whenever an instance starts with a render other than the one they last completed for, recorded in `instances/<key>/configured.json` (0600): the first start (also of an instance installed stopped), a start after settings changed (also while stopped), and a reinstall after a removal (which deletes the record). Never for drift repair.
+- **Durable results:** an operation reports `succeeded` only after `blocked.json` and then `current.json` are written (in that order, so `current.json` never advances past a failed write); if either write fails it reports `failed` with `internal`, and the generation stays pending for the next reconcile. For `state: absent` with `purge: true`, success means the instance directory was removed and no state file is written; only if a newer spec arrived during the purge does the directory keep `instance.json` and `desired.json`, with the purge recorded as `current.json` so the newer spec applies next.
+- **Logs:** `tail` is 1–1000 (default 100); `since` is an RFC 3339 time or a positive Go duration up to 31 days. The agent keeps only a bounded tail of the output while draining it (lines can be long); a cut drops the cut line, so no fragment of a secret escapes redaction, and the answer then starts with `[earlier output truncated]`. Other Docker output is bounded too (16 MiB for standard output, the last 64 KiB of standard error).
+- **Socket directory:** the directory of `agent.listen` must hold nothing but the socket (the agent sets its mode and group); a shared directory such as `/tmp` is refused.
 
 ## Non-goals (M2)
 

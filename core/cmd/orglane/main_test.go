@@ -3,10 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func noEnv(string) (string, bool) { return "", false }
@@ -27,11 +33,81 @@ func TestVersion(t *testing.T) {
 	}
 }
 
-func TestAgentStub(t *testing.T) {
+func TestAgentRequiresSecret(t *testing.T) {
 	code, _, errOut := runArgs(t, "agent")
-	if code != 0 || !strings.Contains(errOut, "not implemented") {
+	if code != 1 || !strings.Contains(errOut, "agent.secret") {
 		t.Fatalf("agent: code %d, stderr %q", code, errOut)
 	}
+}
+
+// TestAgentRunsAndHealthcheck starts `orglane agent` and checks it with
+// `orglane agent healthcheck`, and that a wrong secret fails the check.
+func TestAgentRunsAndHealthcheck(t *testing.T) {
+	sockDir, err := os.MkdirTemp("", "orglane-agent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	env := map[string]string{
+		"ORGLANE_AGENT_SECRET":   strings.Repeat("s", 40),
+		"ORGLANE_AGENT_LISTEN":   filepath.Join(sockDir, "agent.sock"),
+		"ORGLANE_AGENT_DATA_DIR": t.TempDir(),
+		"ORGLANE_AGENT_PEER_UID": "-1",
+		"ORGLANE_LOG_FORMAT":     "text",
+	}
+	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	var agentErr syncBuffer
+	go func() { done <- run(ctx, []string{"agent"}, io.Discard, &agentErr, lookup) }()
+	defer func() {
+		cancel()
+		if code := <-done; code != 0 {
+			t.Errorf("agent exited with %d: %s", code, agentErr.String())
+		}
+	}()
+
+	var out, errOut bytes.Buffer
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		out.Reset()
+		errOut.Reset()
+		if run(context.Background(), []string{"agent", "healthcheck"}, &out, &errOut, lookup) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("healthcheck failed: %s\nagent: %s", errOut.String(), agentErr.String())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !strings.Contains(out.String(), "ready") {
+		t.Fatalf("healthcheck output %q", out.String())
+	}
+
+	wrong := maps.Clone(env)
+	wrong["ORGLANE_AGENT_SECRET"] = strings.Repeat("x", 40)
+	errOut.Reset()
+	if code := run(context.Background(), []string{"agent", "healthcheck"}, io.Discard, &errOut, func(k string) (string, bool) { v, ok := wrong[k]; return v, ok }); code != 1 || !strings.Contains(errOut.String(), "agent_untrusted") {
+		t.Fatalf("healthcheck with a wrong secret: code %d, stderr %q", code, errOut.String())
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent use.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 func TestHelp(t *testing.T) {
