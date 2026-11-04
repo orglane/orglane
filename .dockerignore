@@ -1,9 +1,11 @@
 # Only what the image build needs reaches the build context: the Go module
-# (core/, demo/, web/web.go) and the pnpm workspace that builds web/dist.
+# (core/, providers/, demo/, web/web.go) and the pnpm workspace that builds
+# web/dist.
 *
 !go.mod
 !go.sum
 !core/
+!providers/
 !demo/
 !web/
 !packages/

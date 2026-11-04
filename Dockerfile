@@ -29,6 +29,7 @@ WORKDIR /src
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
 COPY go.mod go.sum ./
 COPY core/ core/
+COPY providers/ providers/
 COPY demo/ demo/
 COPY web/web.go web/
 COPY --from=web /src/web/dist/ web/dist/
