@@ -205,14 +205,41 @@ func cleanupProject(t *testing.T, project, key string) {
 	})
 }
 
-// TestUpgradeWithDocker: v1 -> v3 is refused (required stop), v1 -> v2 ->
-// v3 upgrades with snapshots, fenced candidates and confirmations; the
-// acknowledged writes survive.
-func TestUpgradeWithDocker(t *testing.T) {
-	project := startBundle(t)
+// upgradeSuite runs the upgrade tests as parallel subtests against one
+// bundle, so they fit CI's time budget.
+type upgradeSuite struct {
+	project  string
+	registry *packages.Registry
+}
+
+// run adds a parallel subtest that holds a Docker slot (dockerSlots).
+func (s *upgradeSuite) run(t *testing.T, name string, fn func(t *testing.T)) {
+	t.Run(name, func(t *testing.T) {
+		t.Parallel()
+		holdDockerSlot(t)
+		fn(t)
+	})
+}
+
+// TestUpgrades runs the upgrade tests (docs/specs/agent.md "Testing").
+func TestUpgrades(t *testing.T) {
+	t.Parallel()
+	s := &upgradeSuite{project: startBundle(t), registry: agenttestRegistry(t)}
+	s.run(t, "path", s.testPath)
+	s.rollback(t)
+	s.run(t, "stays-rolled-back", s.testStaysRolledBack)
+	s.crashRecovery(t)
+	s.run(t, "snapshot-restore", s.testSnapshotAndRestore)
+}
+
+// testPath: v1 -> v3 is refused (required stop), v1 -> v2 -> v3 upgrades
+// with snapshots, fenced candidates and confirmations; the acknowledged
+// writes survive.
+func (s *upgradeSuite) testPath(t *testing.T) {
+	project := s.project
 	const key = "up1"
 	cleanupProject(t, project, key) // registered first: runs after the agent stopped
-	e := startAgent(t, project, agenttestRegistry(t))
+	e := startAgent(t, project, s.registry)
 	id := uuid.Must(uuid.NewV7())
 	port := freePort(t)
 	e.installV1(key, id, port)
@@ -307,12 +334,11 @@ func TestUpgradeWithDocker(t *testing.T) {
 	e.checkAudit(map[string]bool{key: true})
 }
 
-// TestUpgradeRollback: a failing healthcheck, a failing migration, an abort
-// and a missing confirmation each roll back with the acknowledged writes
-// intact and the generation blocked; a failed rollback waits for a restore.
-func TestUpgradeRollback(t *testing.T) {
-	project := startBundle(t)
-	registry := agenttestRegistry(t)
+// rollback: a failing healthcheck, a failing migration, an abort and a
+// missing confirmation each roll back with the acknowledged writes intact
+// and the generation blocked; a failed rollback waits for a restore.
+func (s *upgradeSuite) rollback(t *testing.T) {
+	project, registry := s.project, s.registry
 	for _, c := range []struct {
 		name, fault, code string
 		decide            func(e *testEnv, op *agentapi.Operation)
@@ -329,8 +355,7 @@ func TestUpgradeRollback(t *testing.T) {
 			e.waitAwaiting(op.ID)
 		}},
 	} {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
+		s.run(t, "rollback-"+c.name, func(t *testing.T) {
 			key := "rb-" + c.name
 			cleanupProject(t, project, key)
 			e := startAgent(t, project, registry)
@@ -359,8 +384,7 @@ func TestUpgradeRollback(t *testing.T) {
 		})
 	}
 
-	t.Run("rollback-failed", func(t *testing.T) {
-		t.Parallel()
+	s.run(t, "rollback-failed", func(t *testing.T) {
 		const key = "rb-failed"
 		cleanupProject(t, project, key)
 		e := startAgent(t, project, registry)
@@ -418,13 +442,12 @@ func TestUpgradeRollback(t *testing.T) {
 	})
 }
 
-// TestRollbackStaysRolledBack: after a rollback, with no core, Docker
+// testStaysRolledBack: after a rollback, with no core, Docker
 // events, periodic reconciles and an agent restart keep 1.0.0-1 running and
 // never start 2.0.0-1; a revert spec is a plain apply, and a retry spec
 // with a new generation runs the upgrade again.
-func TestRollbackStaysRolledBack(t *testing.T) {
-	project := startBundle(t)
-	registry := agenttestRegistry(t)
+func (s *upgradeSuite) testStaysRolledBack(t *testing.T) {
+	project, registry := s.project, s.registry
 	const key = "stay"
 	cleanupProject(t, project, key)
 	e := launchAgent(t, project, registry, agentOptions{})
@@ -498,16 +521,12 @@ func TestRollbackStaysRolledBack(t *testing.T) {
 	}
 }
 
-// TestUpgradeCrashRecovery crashes the agent (test hook) at every journal
+// crashRecovery crashes the agent (test hook) at every journal
 // phase and checks the recovery of docs/specs/agent.md "Interrupted
 // upgrades". During verifying the host restart is simulated: every project
 // container and the agent stop and start, and the candidate stays fenced.
-func TestUpgradeCrashRecovery(t *testing.T) {
-	project := startBundle(t)
-	registry := agenttestRegistry(t)
-	// Each instance creates a network; Docker's default address pools are
-	// small and shared with whatever else runs on the host.
-	slots := make(chan struct{}, 3)
+func (s *upgradeSuite) crashRecovery(t *testing.T) {
+	project, registry := s.project, s.registry
 	for i, c := range []struct {
 		at, fault, state, code string
 		confirm                bool
@@ -529,10 +548,7 @@ func TestUpgradeCrashRecovery(t *testing.T) {
 		{at: agentapi.PhaseRestored, fault: "health", state: agentapi.OpRolledBack, code: agentapi.CodeHealthTimeout},
 		{at: "restored:exposed", fault: "health", state: agentapi.OpRolledBack, code: agentapi.CodeHealthTimeout, writeAfterExpose: true},
 	} {
-		t.Run(strings.ReplaceAll(c.at, ":", "-"), func(t *testing.T) {
-			t.Parallel()
-			slots <- struct{}{}
-			defer func() { <-slots }()
+		s.run(t, "crash-"+strings.ReplaceAll(c.at, ":", "-"), func(t *testing.T) {
 			key := "cr" + strconv.Itoa(i)
 			cleanupProject(t, project, key)
 			e := launchAgent(t, project, registry, agentOptions{crashAt: c.at})
@@ -617,14 +633,14 @@ func (e *testEnv) restartContainers(key string) {
 	docker(e.t, append([]string{"start"}, ids...)...)
 }
 
-// TestSnapshotAndRestore takes a manual snapshot and restores it: later
+// testSnapshotAndRestore takes a manual snapshot and restores it: later
 // writes are moved aside, not deleted, and the restore's generation becomes
 // the running one.
-func TestSnapshotAndRestore(t *testing.T) {
-	project := startBundle(t)
+func (s *upgradeSuite) testSnapshotAndRestore(t *testing.T) {
+	project := s.project
 	const key = "snap"
 	cleanupProject(t, project, key)
-	e := startAgent(t, project, agenttestRegistry(t))
+	e := startAgent(t, project, s.registry)
 	id := uuid.Must(uuid.NewV7())
 	port := freePort(t)
 	e.installV1(key, id, port)

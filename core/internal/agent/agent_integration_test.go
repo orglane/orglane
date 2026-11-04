@@ -50,6 +50,27 @@ func docker(t *testing.T, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// dockerSlots bounds the instance projects this package's tests run at
+// once: each creates a network, and Docker's default address pools (about
+// 30 networks) are shared with everything else on the host, other test
+// packages included. ORGLANE_TEST_DOCKER_SLOTS overrides it on crowded
+// hosts.
+var dockerSlots = make(chan struct{}, dockerSlotCount())
+
+func dockerSlotCount() int {
+	if n, err := strconv.Atoi(os.Getenv("ORGLANE_TEST_DOCKER_SLOTS")); err == nil && n > 0 {
+		return n
+	}
+	return 6
+}
+
+// holdDockerSlot takes a slot until the test's cleanups ran.
+func holdDockerSlot(t *testing.T) {
+	t.Helper()
+	dockerSlots <- struct{}{}
+	t.Cleanup(func() { <-dockerSlots })
+}
+
 // startBundle starts a minimal stand-in for the Compose bundle: PostgreSQL
 // on the services network and a container on the edge network, labeled by
 // Compose like the bundle's.
@@ -65,7 +86,7 @@ services:
   postgres:
     image: %s
     environment: {POSTGRES_USER: orglane, POSTGRES_DB: orglane, POSTGRES_PASSWORD: bundle-test}
-    networks: [database, services]
+    networks: [services]
     healthcheck:
       # Over TCP: the image's temporary server during initialization only
       # listens on the socket, and a socket check would pass before the
@@ -80,7 +101,6 @@ services:
     networks: [edge]
 networks:
   edge: {}
-  database: {internal: true}
   services: {internal: true}
 `, project, postgresImage, busyboxImage)
 	if err := os.WriteFile(file, []byte(bundle), 0o600); err != nil {
@@ -319,20 +339,19 @@ func fileMode(t *testing.T, path string) os.FileMode {
 // repairs drift, changes settings, stops, removes and purges it, and reuses
 // its key (docs/specs/agent.md "Testing").
 func TestAgentWithDocker(t *testing.T) {
+	t.Parallel() // its own bundle; overlaps the other long Docker tests
+	holdDockerSlot(t)
 	project := startBundle(t)
 	registry, err := packages.NewRegistry(agenttest.FS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := startAgent(t, project, registry)
 	const key = "at1"
+	cleanupProject(t, project, key) // leave nothing behind if a step failed
+	e := startAgent(t, project, registry)
 	id := uuid.Must(uuid.NewV7())
 	port := freePort(t)
 	dir := e.agent.instanceDir(key)
-	t.Cleanup(func() {
-		// Leave nothing behind if a step failed.
-		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", packages.InstanceProject(project, key), "down", "--remove-orphans").Run() //nolint:gosec // test commands
-	})
 
 	// Install.
 	e.mustApply(integrationSpec(id, 1, port, hostile, agentapi.StateRunning))
@@ -609,18 +628,18 @@ func TestUnauthenticatedSocketClient(t *testing.T) {
 // an instance installed stopped, and on the start after its settings
 // changed while it was stopped.
 func TestConfigureHooksAfterStopped(t *testing.T) {
+	t.Parallel() // its own bundle; overlaps the other long Docker tests
+	holdDockerSlot(t)
 	project := startBundle(t)
 	registry, err := packages.NewRegistry(agenttest.FS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := startAgent(t, project, registry)
 	const key = "at2"
+	cleanupProject(t, project, key)
+	e := startAgent(t, project, registry)
 	id := uuid.Must(uuid.NewV7())
 	port := freePort(t)
-	t.Cleanup(func() {
-		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", packages.InstanceProject(project, key), "down", "--remove-orphans").Run() //nolint:gosec // test commands
-	})
 	row := func() string {
 		return e.psql("svc_at2", "select coalesce((select message from agenttest_config where id = 1), 'none')")
 	}
