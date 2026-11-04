@@ -478,6 +478,13 @@ func (s *Service) mutate(ctx context.Context, tx pgx.Tx, q *store.Queries, actor
 			return "conflict", previewState{}, errConflict
 		}
 	}
+	// GitHub association evidence must never replace an existing local profile,
+	// including on later stable-ID reimports. Keep supplied identities above
+	// for conflict checks, then discard all other mapped mutation values.
+	if rec.GitHub != nil && id != uuid.Nil {
+		v = map[string]string{"external_id": v["external_id"]}
+		teams = nil
+	}
 	// Lock field definitions before taking the version, including their edit,
 	// sensitivity and archive settings. The profile service uses these locks too.
 	if _, err = q.ListActiveProfileFieldsForShare(ctx); err != nil {

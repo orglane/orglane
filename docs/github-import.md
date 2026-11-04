@@ -30,6 +30,10 @@ Credentials never enter React Query variables/data, browser persistent storage,
 background jobs, staging, pending links, audit metadata or error text. Memory is
 released normally by the runtimes; this is not a claim of secure memory erasure.
 
+Member logins support GitHub Enterprise Managed User underscores within the
+39-character bound; organization slugs keep their separate strict path validation.
+See [GitHub username considerations](https://docs.github.com/en/enterprise-cloud%40latest/admin/managing-iam/iam-configuration-reference/username-considerations-for-external-authentication).
+
 Production requests go only to `https://api.github.com`, with redirects disabled.
 Page URLs are constructed locally, ignoring all Link headers and source URLs.
 Fetching continues until an empty page, including after a short nonempty page.
@@ -57,7 +61,12 @@ work-address or account-ownership claim. New people still require a username,
 full name and work email; missing values produce existing `invalid_fields`
 conflicts. An administrator may explicitly map the public-email column to work
 email after assessing its suitability, or create/correct the person through the
-normal directory/CSV flow and reimport. Existing people match by supplied email
+normal directory/CSV flow and reimport. Existing people preserve all local base/contact/custom fields, roles, teams and
+manager, even when those columns are mapped. GitHub imports only add/update
+their pending account association and source identity mapping, including on
+subsequent stable-ID reimports and login renames. Use the normal directory or
+CSV/XLSX flow for deliberate local-person updates. New-person creation still
+uses the selected mapping and normal required fields. Existing people match by supplied email
 and stable external ID, never display name or login alone. All supplied identities
 must agree. The external-ID column is mandatory and cannot be remapped away for
 GitHub runs. Absent names/emails never receive fabricated replacements.

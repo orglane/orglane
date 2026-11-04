@@ -58,3 +58,10 @@ matching across login changes. Pending account evidence is included in person
 snapshots for stale-preview checks, and is written by the identity domain in the
 same row transaction. See [GitHub import](../github-import.md) for API/token
 bounds, minimum permissions, missing-data semantics and manual real-API smoke.
+
+For every GitHub row matched to an existing person, including stable-ID reimports,
+only pending account evidence and the source identity mapping may change. All
+local base/contact/profile fields, roles, teams and manager are preserved even
+when mapped. Supplied identities still participate in conflict checks before
+mutation values are discarded; current grants and local-state stale snapshots
+remain enforced. New-person mapping and file-source updates are unchanged.

@@ -83,7 +83,7 @@
   "import.forbidden": "You don't have permission to import people.",
   "import.github": "GitHub organization",
   "import.githubFailure": "GitHub fetch failed. Check organization membership, token access, rate limits and the 2,000-member limit, then retry. No partial run was saved.",
-  "import.githubHint": "Up to 2,000 members. Use a short-lived token with organization Members read access. Failed or incomplete fetches create no run. The token is discarded after fetching. Public email is optional; new people still need a work email and full name. Account associations remain unverified. Avatars are recorded as source evidence only.",
+  "import.githubHint": "Up to 2,000 members. Use a short-lived token with organization Members read access. Failed or incomplete fetches create no run. The token is discarded after fetching. Public email is optional; new people still need a work email and full name. Existing people keep all local fields and grants; only their pending account association is updated. Account associations remain unverified. Avatars are recorded as source evidence only.",
   "import.githubPending": "Fetching members. This can take up to five minutes.",
   "import.ignore": "Ignore this column",
   "import.invalid": "Check the file limits and column mapping, then try again.",

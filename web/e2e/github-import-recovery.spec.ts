@@ -135,3 +135,44 @@ test("GitHub pending feedback and disabled controls restore after failure and su
     }
   }
 });
+
+for (const [failure, message] of [
+  [400, "GitHub fetch failed"],
+  [403, "You don't have permission to import people."],
+  [503, "Something went wrong on our side."],
+  [401, "Your session has ended."],
+  ["network", "Can't reach the server."],
+] as const) {
+  test(`GitHub fetch describes ${failure} without retaining response diagnostics`, async ({
+    page,
+    instance,
+    webauthn: _,
+  }) => {
+    await start(page, instance);
+    await credentials(page);
+    await page.route(path, (r) =>
+      failure === "network"
+        ? r.abort("failed")
+        : r.fulfill({
+            ...problem(failure),
+            body: JSON.stringify({
+              type: "about:blank",
+              title: "synthetic-github-token",
+              detail: "synthetic-github-token",
+              status: failure,
+            }),
+          }),
+    );
+    await page.getByRole("button", { name: "Fetch members", exact: true }).click();
+    if (failure === 401) {
+      await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toBeVisible();
+      await expect(page.getByRole("status")).toContainText(message);
+      await expect(page).toHaveURL(/\/sign-in\?.*redirect=%2Fpeople%2Fimport/);
+      return;
+    }
+    await expect(page.getByRole("alert")).toContainText(message);
+    await expect(page.getByRole("alert")).not.toContainText("synthetic-github-token");
+    await expect(page.getByLabel("Short-lived fine-grained token")).toHaveValue("");
+    await expect(page.getByLabel("Short-lived fine-grained token")).toBeEnabled();
+  });
+}

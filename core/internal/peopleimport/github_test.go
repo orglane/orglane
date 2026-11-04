@@ -149,3 +149,41 @@ func TestGitHubIncompleteOrRepeatedSourceFails(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubMemberLoginValidation(t *testing.T) {
+	for _, login := range []string{"member_shortcode", "a_b", strings.Repeat("a", 39), "bad/login", "bad?login", "", strings.Repeat("a", 40)} {
+		t.Run(login, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/orgs/acme":
+					_, _ = fmt.Fprint(w, `{"id":42}`)
+				case "/orgs/acme/members":
+					if r.URL.Query().Get("page") == "1" {
+						_, _ = fmt.Fprint(w, `[{"id":1}]`)
+					} else {
+						_, _ = fmt.Fprint(w, `[]`)
+					}
+				case "/user/1":
+					_ = json.NewEncoder(w).Encode(githubUser{ID: 1, Login: login, Name: "Example"})
+				default:
+					t.Error("unexpected URL")
+					w.WriteHeader(404)
+				}
+			}))
+			defer server.Close()
+			source := &githubSource{ctx: t.Context(), organization: "acme", origin: server.URL, client: server.Client()}
+			data, err := source.Read(nil)
+			valid := login == "member_shortcode" || login == "a_b" || len(login) == 39
+			if valid {
+				if err != nil || len(data.Rows) != 1 {
+					t.Fatalf("valid member rejected: %v", err)
+				}
+			} else if !errors.Is(err, ErrGitHub) || len(data.Rows) != 0 {
+				t.Fatal("malformed member accepted")
+			}
+		})
+	}
+	if githubSlug.MatchString("org_shortcode") {
+		t.Fatal("organization validation relaxed")
+	}
+}

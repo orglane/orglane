@@ -8,10 +8,11 @@ import { Page } from "@/components/page";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { call, type Schema } from "@/lib/api";
+import { ApiError, call, hasStatus, NetworkError, type Schema } from "@/lib/api";
 import { useApi } from "@/lib/api-context";
 import { errorMessage } from "@/lib/errors";
 import { useMe } from "@/lib/session";
+import { useEndSession } from "@/lib/session-guard";
 
 const messages = defineMessages({
   githubPending: {
@@ -32,7 +33,7 @@ const messages = defineMessages({
   githubHint: {
     id: "import.githubHint",
     defaultMessage:
-      "Up to 2,000 members. Use a short-lived token with organization Members read access. Failed or incomplete fetches create no run. The token is discarded after fetching. Public email is optional; new people still need a work email and full name. Account associations remain unverified. Avatars are recorded as source evidence only.",
+      "Up to 2,000 members. Use a short-lived token with organization Members read access. Failed or incomplete fetches create no run. The token is discarded after fetching. Public email is optional; new people still need a work email and full name. Existing people keep all local fields and grants; only their pending account association is updated. Account associations remain unverified. Avatars are recorded as source evidence only.",
   },
 
   title: { id: "import.title", defaultMessage: "Import people" },
@@ -220,6 +221,7 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const me = useMe();
+  const endSession = useEndSession();
   const allowed = me.permissions.includes("people.manage");
   const [source, setSource] = useState("file");
   const [organization, setOrganization] = useState("");
@@ -383,8 +385,24 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
       setEditing(true);
       setNeedsPreview(false);
       await navigate({ to: "/people/import", search: { runId: next.id }, replace: true });
-    } catch {
-      if (isCurrent()) setFetchError(new Error(intl.formatMessage(messages.invalid)));
+    } catch (err) {
+      if (!isCurrent()) return;
+      if (hasStatus(err, 401)) {
+        await endSession("expired");
+      } else {
+        // Retain only the category/status needed for localized feedback.
+        // Problem details, network causes and request diagnostics may be untrusted.
+        setFetchError(
+          err instanceof ApiError
+            ? new ApiError(
+                { type: "about:blank", title: "Import request failed", status: err.status },
+                err.retryAfter,
+              )
+            : err instanceof NetworkError
+              ? new NetworkError("Import network request failed")
+              : new Error("Import request failed"),
+        );
+      }
     } finally {
       if (currentFetch.current === controller) {
         currentFetch.current = null;
@@ -455,13 +473,11 @@ export function PeopleImportPage({ runId }: { runId?: string | undefined }) {
         <div className="flex max-w-4xl flex-col gap-6">
           {error && (
             <Alert role="alert">
-              {fetchError
-                ? intl.formatMessage(messages.githubFailure)
-                : errorMessage(intl, error, {
-                    400: messages.invalid,
-                    403: messages.forbidden,
-                    409: messages.stale,
-                  })}
+              {errorMessage(intl, error, {
+                400: fetchError ? messages.githubFailure : messages.invalid,
+                403: messages.forbidden,
+                409: messages.stale,
+              })}
             </Alert>
           )}
           {!run ? (

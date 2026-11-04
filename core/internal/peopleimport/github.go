@@ -22,6 +22,8 @@ const githubOrigin = "https://api.github.com"
 const githubMaxResponse = 1 << 20
 const githubMaxBytes = 32 << 20
 const githubMaxRequests = 2022 // org + 21 member pages (overflow probe) + 2000 profiles
+// Organization slugs remain path-safe; member logins also support EMU shortcodes.
+var githubLogin = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,37}[A-Za-z0-9])?$`)
 var githubSlug = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
 
 // ErrGitHub is a fixed, credential-free failure for incomplete source reads.
@@ -133,7 +135,7 @@ func (s *githubSource) Read(io.Reader) (Dataset, error) {
 			}
 			seen[member.ID] = true
 			var user githubUser
-			if s.get("/user/"+strconv.FormatInt(member.ID, 10), &user) != nil || user.ID != member.ID || !githubSlug.MatchString(user.Login) {
+			if s.get("/user/"+strconv.FormatInt(member.ID, 10), &user) != nil || user.ID != member.ID || !githubLogin.MatchString(user.Login) {
 				return Dataset{}, ErrGitHub
 			}
 			// Even a malformed upstream response must not reflect the credential

@@ -15,6 +15,7 @@ import (
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/authz"
 	"github.com/orglane/orglane/core/internal/identity"
+	"github.com/orglane/orglane/core/internal/store"
 
 	"github.com/orglane/orglane/core/internal/peopleimport"
 )
@@ -208,4 +209,115 @@ type countGitHubRequests func()
 func (f countGitHubRequests) RoundTrip(*http.Request) (*http.Response, error) {
 	f()
 	return nil, fmt.Errorf("unexpected outbound request")
+}
+
+func TestGitHubExistingPersonOnlyAssociatesAndFilesStillUpdate(t *testing.T) {
+	f := newFixture(t)
+	manager, err := f.ids.CreatePerson(f.ctx, f.actor, identity.NewPerson{Username: "other-manager", WorkEmail: "other-manager@acme.test", DisplayName: "Other Manager", Status: identity.StatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := f.uploadText("username,work_email,contact_email,display_name,title,teams,role,manager_email,profile.employee_code\nlocal-person,local@acme.test,public@home.test,Local Name,Local Title,Local Team,member," + f.owner.WorkEmail + ",local-code\n")
+	f.apply(f.preview(setup, mapping("username", "work_email", "contact_email", "display_name", "title", "teams", "role", "manager_email", "profile.employee_code")))
+	local, err := f.ids.GetPersonByWorkEmail(f.ctx, "local@acme.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func() string {
+		t.Helper()
+		b, e := store.New(f.pool).PeopleImportSnapshot(f.ctx, local.ID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var v map[string]json.RawMessage
+		if e = json.Unmarshal(b, &v); e != nil {
+			t.Fatal(e)
+		}
+		delete(v, "pending_accounts")
+		delete(v, "external")
+		b, e = json.Marshal(v)
+		if e != nil {
+			t.Fatal(e)
+		}
+		return string(b)
+	}
+	before := snapshot()
+	teamCount := f.count("SELECT count(*) FROM teams")
+	login, name, email := "remote-person", "Remote Name", "public@home.test"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/orgs/fixture":
+			_, _ = fmt.Fprint(w, `{"id":4242}`)
+		case "/orgs/fixture/members":
+			if r.URL.Query().Get("page") == "1" {
+				_, _ = fmt.Fprint(w, `[{"id":101}]`)
+			} else {
+				_, _ = fmt.Fprint(w, `[]`)
+			}
+		case "/user/101":
+			_, _ = fmt.Fprintf(w, `{"id":101,"login":%q,"name":%q,"email":%q}`, login, name, email)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+	run := func(targets ...string) {
+		t.Helper()
+		r, e := f.imports.Upload(f.ctx, f.actor, peopleimport.GitHubTestSource(f.ctx, server.URL, server.Client()), nil)
+		if e != nil {
+			t.Fatal(e)
+		}
+		m := mapping(targets...)
+		r, e = f.imports.Preview(f.ctx, f.actor, r.ID, m)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if r.Rows[0].Decision == "conflict" {
+			t.Fatalf("association preview failed: %+v", r.Rows)
+		}
+		if snapshot() != before {
+			t.Fatal("preview changed local state")
+		}
+		r, e = f.imports.Apply(f.ctx, f.actor, r.ID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if r.Rows[0].Result == "failed" {
+			t.Fatalf("association apply failed: %+v", r.Rows)
+		}
+		if snapshot() != before {
+			t.Fatal("GitHub association overwrote local fields/grants/profile")
+		}
+		if f.count("SELECT count(*) FROM teams") != teamCount {
+			t.Fatal("GitHub association created team")
+		}
+	}
+	run("username", "display_name", "contact_email", "external_id")
+	login = "renamed_remote"
+	email = ""
+	run("username", "display_name", "contact_email", "external_id")
+	var storedLogin string
+	if err = f.pool.QueryRow(f.ctx, "SELECT login FROM pending_account_links WHERE organization_id=4242 AND external_id=101 AND person_id=$1", local.ID).Scan(&storedLogin); err != nil || storedLogin != login {
+		t.Fatal("pending rename lost", err)
+	}
+	name = "Remote Contact Name"
+	email = "redirect@elsewhere.test"
+	run("username", "display_name", "contact_email", "external_id")
+	name = "Remote Title"
+	email = "remote-work@example.test"
+	run("username", "title", "work_email", "external_id")
+	name = "admin"
+	email = "Attempted Team"
+	run("username", "role", "teams", "external_id")
+	name = "remote-code"
+	email = manager.WorkEmail
+	run("username", "profile.employee_code", "manager_email", "external_id")
+	control := f.apply(f.preview(f.uploadText("work_email,title\nlocal@acme.test,CSV controlled update\n"), mapping("work_email", "title")))
+	if control.Rows[0].Result != "updated" {
+		t.Fatal("file update lost")
+	}
+	updated, err := f.ids.GetPersonByWorkEmail(f.ctx, "local@acme.test")
+	if err != nil || updated.Title == nil || *updated.Title != "CSV controlled update" {
+		t.Fatal("CSV update not applied", err)
+	}
 }

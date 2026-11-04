@@ -21,6 +21,7 @@ import (
 
 // ImportedPerson is one mapped row. Empty mapped cells leave existing values.
 // Role is an additive bundle; imports never silently revoke existing roles.
+// Existing GitHub matches preserve all local person fields and grants.
 type ImportedPerson struct {
 	GitHub                                                *PendingGitHubAccount
 	ID                                                    uuid.UUID
@@ -53,6 +54,11 @@ func LockImportTx(ctx context.Context, q *store.Queries) error {
 // use the identity domain. Caller takes LockImportTx first and rolls back the
 // entire row on any error; no generated invitation token is returned.
 func (s *Service) ImportPersonTx(ctx context.Context, tx pgx.Tx, q *store.Queries, actor audit.Actor, in ImportedPerson) (store.Person, error) {
+	// Existing GitHub matches only add/update pending evidence. Keep this
+	// invariant in the identity domain as well as the shared import mapper.
+	if in.GitHub != nil && in.ID != uuid.Nil {
+		in = ImportedPerson{ID: in.ID, GitHub: in.GitHub}
+	}
 	roleKey := in.Role
 	if in.ID == uuid.Nil && roleKey == "" {
 		roleKey = authz.RoleMember
