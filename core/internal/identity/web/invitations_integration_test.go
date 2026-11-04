@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -298,6 +299,90 @@ func TestInvitationConcurrentAccept(t *testing.T) {
 	}
 	if winners != 1 || e.auditCount(audit.InvitationAccepted) != 1 {
 		t.Fatalf("single-use violation: statuses %v", statuses)
+	}
+}
+
+// An acceptance that commits while a request is between reading the
+// invitation and reading the invited person must not make the request answer
+// 404. The test holds an exclusive lock on people (blocking reads of it) and
+// commits the acceptance once the request waits on that lock, so the
+// interleaving that made TestInvitationConcurrentAccept flaky happens every
+// time. The losing accept answers 409; a preview may still see the
+// invitation as it was before the acceptance (200), but never as invalid.
+func TestInvitationAcceptedDuringLookupAnswersConflict(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want []int
+	}{
+		{"/api/v1/auth/invitation", []int{http.StatusOK, http.StatusConflict}},
+		{"/api/v1/auth/invitation/accept", []int{http.StatusConflict}},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			e := newEnv(t)
+			admin := e.browser()
+			e.setupOwner(admin)
+			issued := admin.invite("Maya Okafor", "maya@example.test", "maya")
+			token := tokenOf(t, *issued.Link)
+			ctx := t.Context()
+
+			tx, err := e.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(context.Background()) }()
+			// The winner's committed changes, held back behind the lock.
+			for _, stmt := range []struct {
+				sql string
+				arg []any
+			}{
+				{"LOCK TABLE people IN ACCESS EXCLUSIVE MODE", nil},
+				{"UPDATE invitations SET accepted_at = now() WHERE id = $1", []any{issued.Invitation.ID}},
+				{"UPDATE people SET status = 'active' WHERE id = $1", []any{issued.Invitation.PersonID}},
+			} {
+				if _, err := tx.Exec(ctx, stmt.sql, stmt.arg...); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			status := make(chan int, 1)
+			b := e.browser()
+			go func() {
+				status <- b.req("POST", tc.path, map[string]string{"token": token, "password": ownerPassword}).StatusCode
+			}()
+			waiting := false
+			for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+				var n int
+				if err := e.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid)) AND wait_event_type = 'Lock'`, int(tx.Conn().PgConn().PID())).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if n > 0 {
+					waiting = true
+					break
+				}
+				select {
+				case s := <-status:
+					t.Fatalf("lookup finished without reading the invited person: status %d", s)
+				default:
+				}
+			}
+			if !waiting {
+				t.Fatal("the lookup never waited on the people lock")
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case s := <-status:
+				if !slices.Contains(tc.want, s) {
+					t.Errorf("status = %d, want one of %v for an invitation accepted during the request", s, tc.want)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the lookup stayed blocked after the acceptance committed")
+			}
+			if n := e.auditCount(audit.InvitationAccepted); n != 0 {
+				t.Errorf("invitation.accepted entries = %d, want 0 (the request lost)", n)
+			}
+		})
 	}
 }
 
