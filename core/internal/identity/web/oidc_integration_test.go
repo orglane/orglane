@@ -566,6 +566,21 @@ func TestRevocationRequiresToken(t *testing.T) {
 		})
 	}
 
+	// An ID token is not a token this endpoint revokes, but it is a token:
+	// zitadel hands it to the storage with an empty ID (it has no jti), and
+	// it must still be answered with 200.
+	p := newPKCE()
+	q := clientRedirect(t, b.authorize(authParams("spa", p)))
+	if status, tr := b.token(url.Values{"grant_type": {"authorization_code"}, "code": {q.Get("code")}, "redirect_uri": {redirectURI}, "client_id": {"spa"}, "code_verifier": {p.verifier}}); status != http.StatusOK || tr.IDToken == "" {
+		t.Fatalf("token exchange = %d %+v", status, tr)
+	} else {
+		for _, hint := range []string{"", "access_token"} {
+			if status, res := revoke(url.Values{"client_id": {"spa"}, "token": {tr.IDToken}, "token_type_hint": {hint}}); status != http.StatusOK {
+				t.Errorf("ID token (hint %q) = %d %+v, want 200", hint, status, res)
+			}
+		}
+	}
+
 	// Without a token, a client that does not authenticate gets the client
 	// authentication error, as before.
 	for name, req := range map[string]struct {
