@@ -20,10 +20,11 @@
 #            releases.
 #   promote  moves the shared aliases: latest (newest release) and X.Y
 #            (newest patch of each line). It runs in one concurrency group for
-#            all releases and recomputes every alias of both images from the
-#            tags in the registry right before it moves them
-#            (`ci release-aliases`), after both images are built, so a
-#            release that finishes after a newer one leaves the aliases alone.
+#            all releases and recomputes one plan for both images from the
+#            versions published for both (`ci release-aliases`), right before
+#            it moves them. So the core and agent aliases always name the
+#            same release, and a release that finishes after a newer one
+#            leaves the aliases alone.
 #            GitHub keeps one pending run per group and cancels older pending
 #            ones; that is harmless, since every run reconciles all aliases.
 #            Prereleases (v0.2.0-rc.1) are never promoted.
@@ -233,46 +234,34 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      # The two images one after the other, each recomputed from its own
-      # tags right before its aliases move.
-      - id: aliases-core
-        name: Compute the core image's aliases from the registry
+      # One plan for both images, from the versions published for both
+      # (`ci release-aliases` with two -image flags): a release that
+      # published only one of them (its other matrix leg failed or still
+      # runs) moves no alias, so core and agent aliases always name the same
+      # version (ADR 0019: the core works only with an agent of its version).
+      # Both images are then moved to that same plan.
+      - id: aliases
+        name: Compute the aliases of both images from the registry
         env:
           CI_TOOL: ${{ steps.tool.outputs.path }}
-          IMAGE: ghcr.io/${{ github.repository }}
+          CORE_IMAGE: ghcr.io/${{ github.repository }}
+          AGENT_IMAGE: ghcr.io/${{ github.repository }}-agent
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ github.token }}
-        run: '"$CI_TOOL" release-aliases -image "$IMAGE"'
+        run: '"$CI_TOOL" release-aliases -image "$CORE_IMAGE" -image "$AGENT_IMAGE"'
 
-      - name: Move the core image's aliases
+      - name: Move the aliases of both images
         env:
-          IMAGE: ghcr.io/${{ github.repository }}
-          ALIASES: ${{ steps.aliases-core.outputs.aliases }}
+          CORE_IMAGE: ghcr.io/${{ github.repository }}
+          AGENT_IMAGE: ghcr.io/${{ github.repository }}-agent
+          ALIASES: ${{ steps.aliases.outputs.aliases }}
         run: |
-          .github/scripts/promote-aliases.sh "$IMAGE" "$ALIASES" | tee promote.log
+          : > promote.log
+          for image in "$CORE_IMAGE" "$AGENT_IMAGE"; do
+            .github/scripts/promote-aliases.sh "$image" "$ALIASES" | sed "s|^|$image |" | tee -a promote.log
+          done
           {
-            echo "## Aliases of $IMAGE after $TAG"
+            echo "## Aliases after $TAG"
             echo
-            sed 's/^/- /' promote.log | grep -E '^- [^ ]+: '
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - id: aliases-agent
-        name: Compute the agent image's aliases from the registry
-        env:
-          CI_TOOL: ${{ steps.tool.outputs.path }}
-          IMAGE: ghcr.io/${{ github.repository }}-agent
-          REGISTRY_USERNAME: ${{ github.actor }}
-          REGISTRY_PASSWORD: ${{ github.token }}
-        run: '"$CI_TOOL" release-aliases -image "$IMAGE"'
-
-      - name: Move the agent image's aliases
-        env:
-          IMAGE: ghcr.io/${{ github.repository }}-agent
-          ALIASES: ${{ steps.aliases-agent.outputs.aliases }}
-        run: |
-          .github/scripts/promote-aliases.sh "$IMAGE" "$ALIASES" | tee promote.log
-          {
-            echo "## Aliases of $IMAGE after $TAG"
-            echo
-            sed 's/^/- /' promote.log | grep -E '^- [^ ]+: '
+            sed 's/^/- /' promote.log | grep -E '^- [^ ]+ [^ ]+: '
           } >> "$GITHUB_STEP_SUMMARY"

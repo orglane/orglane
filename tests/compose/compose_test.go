@@ -36,6 +36,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -75,6 +76,13 @@ func buildImage() error {
 	}
 	return nil
 }
+
+// startMu lets one bundle start at a time. On Docker Desktop (macOS),
+// PostgreSQL containers initializing bind-mounted data directories at the
+// same time sometimes fail with "data directory has wrong ownership", the
+// more so under the load of the whole integration suite (make test). The
+// tests still run in parallel once their bundles are up.
+var startMu sync.Mutex
 
 // bundle is one Compose project started for a test.
 type bundle struct {
@@ -126,7 +134,10 @@ func startBundle(t *testing.T, files []string, env ...string) *bundle {
 		}, env...),
 	}
 	t.Cleanup(b.down)
-	if out, err := b.compose("up", "--detach", "--wait", "--wait-timeout", "180"); err != nil {
+	startMu.Lock()
+	out, err := b.compose("up", "--detach", "--wait", "--wait-timeout", "180")
+	startMu.Unlock()
+	if err != nil {
 		t.Fatalf("compose up: %v\n%s", err, out)
 	}
 	return b

@@ -8,7 +8,7 @@
 | `policy` | `Policy` workflow, orchestrator | **Trusted:** computes the risk tier, sets exactly one `risk/*` label and the `merge-gate` status, and decides whether the pull request may be merged without a maintainer |
 | `licenses` | `make licenses` | Checks dependency licenses against the [ADR 0016](../../docs/adr/0016-licensing.md) policy |
 | `release-version` | `Images` workflow (build) | Validates a release tag (`vX.Y.Z[-pre]`) and prints its image version |
-| `release-aliases` | `Images` workflow (promote) | Lists the image's tags in the registry and computes where `latest` and every `X.Y` alias must point, see [docs/releasing.md](../../docs/releasing.md) |
+| `release-aliases` | `Images` workflow (promote) | Lists the tags of the images released together (core and agent) and computes one plan from the versions published for all of them: where `latest` and every `X.Y` alias must point, see [docs/releasing.md](../../docs/releasing.md) |
 
 ### Trust model
 

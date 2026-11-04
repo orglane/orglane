@@ -99,6 +99,48 @@ func TestRunReleaseAliases(t *testing.T) {
 	}
 }
 
+// TestRunReleaseAliasesForPairedImages: with two images the plan comes from
+// the versions published for both. 0.2.0 is published for the core only (its
+// agent leg failed), 0.3.0 for the agent only (its core leg still runs).
+func TestRunReleaseAliasesForPairedImages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/orglane/orglane/tags/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tags": []string{"0.1.0", "0.1.1", "0.2.0", "latest"}})
+		case "/v2/orglane/orglane-agent/tags/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tags": []string{"0.1.0", "0.1.1", "0.3.0"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	output := filepath.Join(t.TempDir(), "output")
+	var out bytes.Buffer
+	err := run(t.Context(), []string{"release-aliases", "-image", "ghcr.io/orglane/orglane", "-image", "ghcr.io/orglane/orglane-agent",
+		"-registry-url", srv.URL, "-github-output", output}, nil, &out)
+	if err != nil {
+		t.Fatalf("release-aliases: %v\n%s", err, out.String())
+	}
+	got, err := os.ReadFile(output) //nolint:gosec // test file in a temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "aliases<<EOF\nlatest 0.1.1\n0.1 0.1.1\nEOF\n"; string(got) != want {
+		t.Errorf("outputs = %q, want %q", got, want)
+	}
+	if !strings.Contains(out.String(), "2 tags published for every image, 2 aliases") {
+		t.Errorf("report = %q", out.String())
+	}
+
+	// An image whose tags can't be listed fails the whole plan.
+	err = run(t.Context(), []string{"release-aliases", "-image", "ghcr.io/orglane/orglane", "-image", "ghcr.io/orglane/missing",
+		"-registry-url", srv.URL, "-github-output", filepath.Join(t.TempDir(), "output")}, nil, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "ghcr.io/orglane/missing") {
+		t.Errorf("release-aliases with an unlistable image: err = %v, want an error naming it", err)
+	}
+}
+
 func TestRunReleaseAliasesValidatesTheImage(t *testing.T) {
 	for _, image := range []string{
 		"",

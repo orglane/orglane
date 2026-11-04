@@ -633,10 +633,11 @@ fetch_bundle() {
 # The release's agent image has the core's version as its tag; --agent-image
 # names another one. A registry image is pulled and pinned by the digest the
 # registry gives for its tag (<repo>:<tag>@sha256:<digest>). If no digest can
-# be resolved, it stops: a bare tag is never written. Only an image given
-# with --agent-image under a name without a registry host that can't be
-# pulled but exists on this machine (built here with `docker build --target
-# agent`) is used as it is, like --image for the core.
+# be resolved, it stops: a bare tag is never written. The one exception is
+# for development, in local and demo mode only: an image given with
+# --agent-image under a name without a registry host that can't be pulled
+# but exists on this machine (built here with `make image-agent`) is used as
+# it is, like --image for the core. Domain mode never takes it.
 resolve_agent_image() {
 	if [ -n "$OPT_AGENT_IMAGE" ]; then
 		ref=$OPT_AGENT_IMAGE
@@ -661,12 +662,18 @@ resolve_agent_image() {
 	esac
 	say "  pulling $ref"
 	if ! out=$(docker pull "$ref" 2>&1); then
-		# A name without a registry host that no registry has, but this
-		# machine has: an image built here.
-		if [ -n "$OPT_AGENT_IMAGE" ] && ! has_registry_host "$ref" && docker image inspect "$ref" >/dev/null 2>&1; then
-			warn "the agent image $ref was built on this machine (no registry has it): it runs as it is, not pinned by a registry digest"
+		# Development only (local and demo mode): a name without a registry
+		# host that can't be pulled, but exists on this machine, such as an
+		# image built from a checkout. Domain mode is production: there the
+		# agent image is always pinned by digest, or nothing is changed.
+		if [ "$INGRESS_MODE" = local ] && [ -n "$OPT_AGENT_IMAGE" ] && ! has_registry_host "$ref" &&
+			docker image inspect "$ref" >/dev/null 2>&1; then
+			warn "the agent image $ref can't be pulled from a registry: using the image on this machine as it is, not pinned by a digest (development only; domain mode refuses this)"
 			AGENT_IMAGE=$ref
 			return 0
+		fi
+		if [ "$INGRESS_MODE" = domain ] && docker image inspect "$ref" >/dev/null 2>&1; then
+			die "could not pull the agent image $ref, so managed services were not enabled and nothing was changed. Domain mode runs only agent images pinned by a registry digest: push $ref to a registry and pass that reference, or a reference with @sha256:<digest>. $out"
 		fi
 		die "could not pull the agent image $ref, so managed services were not enabled and nothing was changed: $out"
 	fi
@@ -1365,10 +1372,21 @@ cmd_status() {
 # stays. The agent would otherwise start them again, and the bundle's
 # networks can't be removed while the services use them.
 remove_instances() {
-	dc stop --timeout 30 agent >/dev/null 2>&1 || true
-	[ -d "$DATA_DIR/instances" ] || return 0
 	project=$(env_get "$ENV_FILE" COMPOSE_PROJECT_NAME)
 	project=${project:-orglane}
+	# By label, not by service name: that works whether the managed profile
+	# is on or not. Nothing is removed unless no agent container runs.
+	agents=$(docker ps --quiet --filter "label=com.docker.compose.project=$project" \
+		--filter "label=com.docker.compose.service=agent") || die "could not list the agent's containers"
+	if [ -n "$agents" ]; then
+		# shellcheck disable=SC2086 # container IDs, one per word
+		docker stop --time 30 $agents >/dev/null || die "could not stop the agent: nothing was removed"
+		agents=$(docker ps --quiet --filter "label=com.docker.compose.project=$project" \
+			--filter "label=com.docker.compose.service=agent") || die "could not list the agent's containers"
+		[ -z "$agents" ] || die "the agent is still running (it would start the services again): nothing was removed"
+		ok "stopped the agent"
+	fi
+	[ -d "$DATA_DIR/instances" ] || return 0
 	for f in "$DATA_DIR"/instances/*/compose.yaml; do
 		[ -f "$f" ] || continue
 		dir=$(dirname "$f")

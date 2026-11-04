@@ -754,11 +754,36 @@ func TestDomainModeWithPebble(t *testing.T) {
 		t.Errorf("--acme-ca ftp://example.test: exit %d\n%s", code, out)
 	}
 
-	// Enabling managed services on the domain install keeps its address,
-	// CA and certificate; service ports are published on every interface.
+	// Domain mode is production: an agent image that can't be pinned by a
+	// registry digest is refused, even one that exists on this machine, and
+	// .env stays as it is.
+	managed := []string{"enable-managed", "--yes", "--source", repoRoot, "--image", image, "--data-dir", in.dataDir}
+	envPath := filepath.Join(in.dataDir, ".env")
+	before, err := os.ReadFile(envPath) //nolint:gosec // the test's own data directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, code := in.run(append(managed, "--agent-image", agentImage)...); code == 0 || !strings.Contains(out, "pinned by a registry digest") {
+		t.Errorf("domain mode with a local agent image: exit %d, want a refusal\n%s", code, out)
+	}
+	if after, err := os.ReadFile(envPath); err != nil || !bytes.Equal(after, before) { //nolint:gosec // the test's own data directory
+		t.Errorf("the refused enable-managed changed .env (%v)", err)
+	}
+	if c := in.serviceContainers("agent"); len(c) > 0 {
+		t.Errorf("the refused enable-managed started the agent: %v", c)
+	}
+
+	// Enabling managed services on the domain install, with an agent image
+	// from a registry, pins it by digest and keeps the address, CA and
+	// certificate; service ports are published on every interface.
+	reg := startRegistry(t)
+	ref := reg.push(agentImage, "orglane-agent", "install-test")
+	digest, err := reg.manifestDigest("orglane-agent", "install-test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	account = in.acmeStorage()
-	out = in.mustRun("enable-managed", "--agent-image", agentImage, "--yes",
-		"--source", repoRoot, "--image", image, "--data-dir", in.dataDir)
+	out = in.mustRun(append(managed, "--agent-image", ref)...)
 	if got := lastLine(out); got != "https://"+host {
 		t.Errorf("enable-managed: printed URL = %q, want https://%s", got, host)
 	}
@@ -770,7 +795,7 @@ func TestDomainModeWithPebble(t *testing.T) {
 	if in.acmeStorage() != account {
 		t.Error("enable-managed reset the ACME storage")
 	}
-	in.checkManaged(agentImage, "0.0.0.0")
+	in.checkManaged(ref+"@"+digest, "0.0.0.0")
 	checkWorkspace(t, in.pebbleClient(), "https://"+host, host)
 
 	in.mustRun("uninstall", "--purge", "--yes", "--data-dir", in.dataDir)
@@ -1130,7 +1155,7 @@ func TestEnableManagedLocal(t *testing.T) {
 	// A re-run keeps managed services; a locally built agent image (no
 	// registry digest) is used as it is, like --image.
 	out = in.mustRun(append([]string{"--agent-image", agentImage}, source...)...)
-	if !strings.Contains(out, "built on this machine") {
+	if !strings.Contains(out, "not pinned by a digest") {
 		t.Errorf("re-run with a local agent image: no warning about the missing digest:\n%s", out)
 	}
 	in.checkManaged(agentImage, "127.0.0.1")
@@ -1139,7 +1164,7 @@ func TestEnableManagedLocal(t *testing.T) {
 	// Uninstall removes the services' projects too, then the bundle.
 	project := in.startInstanceProject("svc1")
 	out = in.mustRun("uninstall", "--data-dir", in.dataDir)
-	if !strings.Contains(out, "service project svc1") {
+	if !strings.Contains(out, "stopped the agent") || !strings.Contains(out, "service project svc1") {
 		t.Errorf("uninstall output does not name the service project:\n%s", out)
 	}
 	for _, p := range []string{project, in.project} {
