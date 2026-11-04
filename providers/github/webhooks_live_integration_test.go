@@ -116,6 +116,12 @@ func TestGitHubLiveWebhookDeliveries(t *testing.T) {
 		checked++
 	}
 	if checked == 0 {
+		// A required run must prove real payload semantics. Without a handled
+		// delivery, skipping would make the protected workflow green without
+		// exercising the webhook contract; only an ordinary local run skips.
+		if os.Getenv("ORGLANE_REQUIRE_GITHUB_LIVE") == "1" {
+			t.Fatal("the test App's delivery log has no deliveries of events the adapter reads yet; generate an issue or comment in a selected sandbox repository (docs/github-live.md) and retry")
+		}
 		t.Skip("the test App's delivery log has no deliveries of events the adapter reads yet")
 	}
 	t.Logf("Checked %d real App deliveries: payload semantics with the fixture secret, and the logged signatures over the logged bytes.", checked)

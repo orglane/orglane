@@ -306,12 +306,46 @@ identity. The webhook secret remains reserved for #66.
 | Variable | `ORGLANE_TEST_GITHUB_USER_LOGIN` | Dedicated non-owner bot login |
 | Variable | `ORGLANE_TEST_GITHUB_USER_ID` | Bot's immutable user ID |
 | Secret | `ORGLANE_TEST_GITHUB_WEBHOOK_SECRET` | Test App's webhook secret (#66) |
-| Secret | `ORGLANE_TEST_GITHUB_USER_TOKEN` | Fine-grained token belonging to that bot |
+| Secret | `ORGLANE_TEST_GITHUB_USER_TOKEN` | Classic token belonging to that bot (see the token note below) |
+
+Create the test App **inside the organization**: organization **Settings →
+Developer settings → GitHub Apps**. An App created on a personal account with
+**Only on this account** cannot be installed on the organization; transfer it
+with the App's **Advanced → Transfer ownership** page instead. The bot must be
+an ordinary organization **Member**, and the maintainer's own account the
+**Owner**. If the organization was created from the bot account, invite the
+maintainer as an Owner first and demote the bot before the live tests.
+
+The test App's **webhook URL can be any valid https URL**, even one nobody
+serves: the live checks read the App's delivery log, and GitHub cannot reach a
+CI runner. Generate a delivery by opening an issue or adding a comment in a
+sandbox repository in the test organization; if the App installation uses
+selected repositories, select that sandbox repository first or the event creates
+no App delivery. The real-signature check remains the manual check in the
+[provider specification](specs/providers.md#github-live-tests).
+
+`ORGLANE_TEST_GITHUB_USER_TOKEN` must be a **classic personal access token owned
+by the bot**. The provisioning test removes the bot from the organization and
+then accepts the re-invitation with `PATCH /user/memberships/orgs/{org}`. A
+fine-grained token is tied to a resource owner and becomes inactive when the
+user loses access to that resource, so an organization-owned fine-grained token
+is expected to stop working once the bot is removed; a classic token is tied
+only to the user and survives the re-invitation. The maintainer used a classic
+token with scope `admin:org`. GitHub documents `write:org` as the narrower
+scope for organization membership read/write; it is the minimum expected to
+cover `PATCH /user/memberships/orgs/{org}` and should replace `admin:org` once
+a live run confirms it. Do not add repository scopes for the current harness:
+it creates no repository, pull request or comment. A future test that creates
+issues, pull requests or comments needs an explicitly selected disposable
+repository and only the repository permissions that test uses; never select
+every repository in the organization.
 
 The connection test itself makes no membership or repository mutations. Configure an environment named `github-live`, restrict deployment
-branches to `main` and explicitly authorized manual-dispatch branches, and never
-expose it to untrusted PR code. The workflow maps secret/variable names to the
-same process environment names and serializes runs (`concurrency: github-live`).
+branches to exactly `main` under the current maintainer policy (the pre-merge
+and bootstrap procedures are in the [live test operations guide](github-live.md)),
+and never expose it to untrusted PR code. The workflow maps secret/variable
+names to the same process environment names and serializes runs
+(`concurrency: github-live`).
 
 Run the shared target, which also runs the M2 acceptance scenario's GitHub
 part through the core's provisioning pipeline:
@@ -333,16 +367,19 @@ the bot from the organization, cancels an invitation and restores the bot's
 membership; it also re-runs the invitation ensure and requires GitHub to
 attribute the invitation to the App's bot (`<app-slug>[bot]`). Tests use real
 GitHub with no API mocks; temporary teams follow the naming convention above and
-are deleted by the test. The workflow should run the
-same package target as #65/#66 extend it.
+are deleted by the test. The workflow runs the same two commands as
+`make test-github-live` (provider live tests without the janitor, then the M2
+acceptance test), followed by the janitor as a separate final step; see the
+[live test operations guide](github-live.md#workflow-steps).
 
 The M2 acceptance scenario adds the core's side of the same live resources:
 `TestM2AcceptanceGitHubLive` (in `core/internal/apps`, build tag `integration`)
 connects the App through the provisioning pipeline, adds the verified bot
 account to a mapped team, verifies the membership with the real API and
 deletes the temporary team. It creates no repository and does not open pull
-requests or comments; those need a repository explicitly selected for the
-bot's fine-grained token (see below). Without the nine settings the test
+requests or comments; those need an explicitly selected sandbox repository and
+a bot token with write access to it, which the current classic `admin:org`
+token deliberately does not grant (see below). Without the nine settings the test
 skips with a message naming them, and `ORGLANE_REQUIRE_GITHUB_LIVE=1` turns
 that into a failure.
 
@@ -394,23 +431,32 @@ cleanup. Missing originating attempts are preserved as
 unverifiable, rather than guessed old.
 
 Team cleanup uses the App's existing Members write permission. Repository
-cleanup uses the existing `ORGLANE_TEST_GITHUB_USER_TOKEN`, never a broader App
-permission. Only when repository cleanup is exercised, the bot needs an admin
-role on the explicitly selected disposable test repositories and the token
-needs repository **Administration: write** for those selected repositories.
-GitHub documents both requirements for
-[deleting a repository](https://docs.github.com/en/rest/repos/repos#delete-a-repository).
-This is conditional test-only access: it is not a product App permission, is
-not needed by #64's connection check, and is not required when the janitor finds
-no eligible repository to delete. No new secret, classic `delete_repo` scope,
-all-organization repository selection, host credential fallback or external
-token-permission change is authorized or performed by the harness.
+cleanup, when an owned repository older than a day exists, uses the existing
+`ORGLANE_TEST_GITHUB_USER_TOKEN`, never a broader App permission. GitHub
+requires repository admin access and either repository **Administration:
+write** (fine-grained token, selected repositories) or the classic `delete_repo`
+scope for [deleting a repository](https://docs.github.com/en/rest/repos/repos#delete-a-repository).
+The current harness creates no repositories, so this path is not exercised, and
+the verified classic `admin:org` token deliberately has no repository deletion
+scope. Do not broaden it to all repositories or add `delete_repo` without a
+maintainer decision; a future test that needs repository cleanup must bring an
+explicitly selected disposable repository and a separately chosen, minimal
+capability: a separate fine-grained janitor credential with Administration:
+write on those repositories (and the workflow change to pass it), or a
+maintainer-approved classic `delete_repo` scope on the bot token. This is
+conditional test-only access: it is not a product App
+permission, is not needed by #64's connection check, and is not required when
+the janitor finds no eligible repository to delete.
 
-If the bot cannot delete an eligible test repository, the janitor fails clearly
-and preserves the external acceptance failure. A selected-repository token may
-not see newly created repositories until the maintainer explicitly selects
-them. #66's webhook live test creates no repositories or teams: it reads the
-App's delivery log, so it needs no repository cleanup; a test that opens pull
+If the bot cannot delete an eligible repository it can see, the janitor fails
+clearly and preserves the external acceptance failure. A successful janitor run
+proves only that no visible eligible resource remained; it cannot see or delete
+repositories outside the token's access, so a maintainer who exercises
+repository cleanup must inventory the organization separately. A
+selected-repository fine-grained token may not see newly created repositories
+until the maintainer explicitly selects them. #66's webhook live test creates no
+repositories or teams: it reads
+the App's delivery log, so it needs no repository cleanup; a test that opens pull
 requests or comments to trigger deliveries still has to bring a selected
 disposable repository, and must not solve it by broadening the token to all
 repositories. #64 creates no test teams or repositories, so a
