@@ -22,6 +22,7 @@ import (
 func TestGitHubPipelinePendingLinkAndRepeat(t *testing.T) {
 	f := newFixture(t)
 	login := "github-fixture"
+	email := "fixture@example.test"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/orgs/fixture":
@@ -33,7 +34,7 @@ func TestGitHubPipelinePendingLinkAndRepeat(t *testing.T) {
 			}
 			_, _ = fmt.Fprint(w, `[{"id":101},{"id":102}]`)
 		case "/user/101":
-			_, _ = fmt.Fprintf(w, `{"id":101,"login":%q,"name":"Fixture Person","email":"fixture@example.test"}`, login)
+			_, _ = fmt.Fprintf(w, `{"id":101,"login":%q,"name":"Fixture Person","email":%q}`, login, email)
 		case "/user/102":
 			_, _ = fmt.Fprint(w, `{"id":102,"login":"no-email","name":"Missing Email"}`)
 		default:
@@ -91,6 +92,32 @@ func TestGitHubPipelinePendingLinkAndRepeat(t *testing.T) {
 	}
 	if repeated.Rows[0].Result != "updated" {
 		t.Fatalf("rename failed: %+v", repeated.Rows)
+	}
+
+	// A supplied email pointing elsewhere must not override the stable pending account.
+	other, err := f.ids.CreatePerson(f.ctx, f.actor, identity.NewPerson{Username: "unrelated-person", WorkEmail: "unrelated@example.test", DisplayName: "Unrelated Person", Status: identity.StatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	email = other.WorkEmail
+	conflict := upload()
+	conflict, err = f.imports.Preview(f.ctx, f.actor, conflict.ID, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conflict.Rows[0].Decision != "conflict" || conflict.Rows[0].Error != "identity_conflict" {
+		t.Fatalf("stable account/email conflict lost: %+v", conflict.Rows)
+	}
+	conflict, err = f.imports.Apply(f.ctx, f.actor, conflict.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conflict.Rows[0].Result != "failed" {
+		t.Fatal("conflicting source overwrote a person")
+	}
+	var reassigned bool
+	if err = f.pool.QueryRow(f.ctx, "SELECT person_id=$1 FROM pending_account_links WHERE organization_id=4242 AND external_id=101", other.ID).Scan(&reassigned); err != nil || reassigned {
+		t.Fatal("pending association reassigned", err)
 	}
 	var leaked bool
 	if e = f.pool.QueryRow(f.ctx, `SELECT EXISTS(SELECT 1 FROM audit_entries WHERE metadata::text LIKE '%test-only-token%')`).Scan(&leaked); e != nil || leaked {
