@@ -499,6 +499,275 @@ func TestRevokeRefreshTokenWithAccessTokenHint(t *testing.T) {
 	}
 }
 
+// TestRevocationRequiresToken is a regression test: a revocation request
+// without a token (RFC 7009, section 2.1: REQUIRED) is answered with 400
+// invalid_request (RFC 6749, section 5.2), once the client is
+// authenticated. A token the provider does not know is still answered with
+// 200 (RFC 7009, section 2.2), and client authentication errors take
+// precedence over the missing token.
+func TestRevocationRequiresToken(t *testing.T) {
+	e := newEnv(t)
+	b := e.browser()
+	e.setupOwner(b)
+	e.registerClient(identity.NewOIDCClient{ID: "spa", Public: true})
+	secret := e.registerClient(identity.NewOIDCClient{ID: "forgejo"})
+	basic := func(id, secret string) []string {
+		return []string{"Authorization", "Basic " + base64.StdEncoding.EncodeToString([]byte(id+":"+secret))}
+	}
+	type oauthError struct {
+		Error       string `json:"error"`
+		Description string `json:"error_description"`
+	}
+	revoke := func(body any, headers ...string) (int, oauthError) {
+		t.Helper()
+		r := b.req("POST", "/oidc/revoke", body, append([]string{"Origin", ""}, headers...)...)
+		var res oauthError
+		if len(r.body) > 0 && string(r.body) != "null" {
+			r.json(t, &res)
+		}
+		return r.StatusCode, res
+	}
+
+	for _, c := range []struct {
+		name    string
+		form    url.Values
+		headers []string
+	}{
+		{"public client", url.Values{"client_id": {"spa"}}, nil},
+		{"confidential client", url.Values{}, basic("forgejo", secret)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			with := func(kv ...string) url.Values {
+				f := maps.Clone(c.form)
+				for i := 0; i+1 < len(kv); i += 2 {
+					f.Add(kv[i], kv[i+1])
+				}
+				return f
+			}
+			for name, form := range map[string]url.Values{
+				"missing token":           with(),
+				"empty token":             with("token", ""),
+				"only a hint":             with("token_type_hint", "refresh_token"),
+				"empty token with a hint": with("token", "", "token_type_hint", "access_token"),
+			} {
+				if status, res := revoke(form, c.headers...); status != http.StatusBadRequest || res.Error != "invalid_request" {
+					t.Errorf("%s = %d %+v, want 400 invalid_request", name, status, res)
+				}
+			}
+			for _, hint := range []string{"", "access_token", "refresh_token"} {
+				form := with("token", "unknown-token")
+				if hint != "" {
+					form.Set("token_type_hint", hint)
+				}
+				if status, res := revoke(form, c.headers...); status != http.StatusOK {
+					t.Errorf("unknown token (hint %q) = %d %+v, want 200", hint, status, res)
+				}
+			}
+		})
+	}
+
+	// An ID token is not a token this endpoint revokes, but it is a token:
+	// zitadel hands it to the storage with an empty ID (it has no jti), and
+	// it must still be answered with 200.
+	p := newPKCE()
+	q := clientRedirect(t, b.authorize(authParams("spa", p)))
+	if status, tr := b.token(url.Values{"grant_type": {"authorization_code"}, "code": {q.Get("code")}, "redirect_uri": {redirectURI}, "client_id": {"spa"}, "code_verifier": {p.verifier}}); status != http.StatusOK || tr.IDToken == "" {
+		t.Fatalf("token exchange = %d %+v", status, tr)
+	} else {
+		for _, hint := range []string{"", "access_token"} {
+			if status, res := revoke(url.Values{"client_id": {"spa"}, "token": {tr.IDToken}, "token_type_hint": {hint}}); status != http.StatusOK {
+				t.Errorf("ID token (hint %q) = %d %+v, want 200", hint, status, res)
+			}
+		}
+	}
+
+	// Without a token, a client that does not authenticate gets the client
+	// authentication error, as before.
+	for name, req := range map[string]struct {
+		form    url.Values
+		headers []string
+	}{
+		"no client":      {url.Values{}, nil},
+		"unknown client": {url.Values{"client_id": {"nope"}}, nil},
+		"wrong secret":   {url.Values{}, basic("forgejo", "wrong-secret")},
+		"no secret":      {url.Values{"client_id": {"forgejo"}}, nil},
+	} {
+		if status, res := revoke(req.form, req.headers...); status != http.StatusUnauthorized || res.Error != "invalid_client" {
+			t.Errorf("missing token, %s = %d %+v, want 401 invalid_client", name, status, res)
+		}
+	}
+
+	// A form that cannot be read is an invalid request, as before.
+	if status, res := revoke([]byte("client_id=spa&token=%zz"), "Content-Type", "application/x-www-form-urlencoded"); status != http.StatusBadRequest || res.Error != "invalid_request" {
+		t.Errorf("unreadable form = %d %+v, want 400 invalid_request", status, res)
+	}
+
+	// The error goes through the provider's CORS handling, so a browser
+	// client can read it.
+	const app = "https://app.acme.test"
+	r := b.req("POST", "/oidc/revoke", url.Values{"client_id": {"spa"}}, "Origin", app)
+	if r.StatusCode != http.StatusBadRequest || r.Header.Get("Access-Control-Allow-Origin") != app {
+		t.Errorf("missing token from a browser = %d, Access-Control-Allow-Origin %q; want 400 and %q", r.StatusCode, r.Header.Get("Access-Control-Allow-Origin"), app)
+	}
+}
+
+// TestRevocationTokenAsDecoded checks that the missing-token check and
+// zitadel's revocation agree on the token of a request: whatever keys carry
+// it (zitadel's form decoder matches them case-insensitively and by the
+// dotted path of the promoted field, takes the last value of a key, and
+// skips a key whose last value is empty), an empty decoded token is answered with 400
+// invalid_request and revokes nothing, and otherwise the token the decoder
+// picks is revoked, and no other.
+func TestRevocationTokenAsDecoded(t *testing.T) {
+	e := newEnv(t)
+	b := e.browser()
+	e.setupOwner(b)
+	e.registerClient(identity.NewOIDCClient{ID: "spa", Public: true})
+	p := newPKCE()
+	api := e.browser()
+	issue := func() string {
+		t.Helper()
+		q := clientRedirect(t, b.authorize(authParams("spa", p)))
+		status, tr := b.token(url.Values{"grant_type": {"authorization_code"}, "code": {q.Get("code")}, "redirect_uri": {redirectURI}, "client_id": {"spa"}, "code_verifier": {p.verifier}})
+		if status != http.StatusOK || tr.AccessToken == "" {
+			t.Fatalf("token exchange = %d %+v", status, tr)
+		}
+		return tr.AccessToken
+	}
+	accepted := func(token string) bool {
+		t.Helper()
+		return api.req("GET", "/api/v1/me", nil, bearer(token)...).StatusCode == http.StatusOK
+	}
+	revoke := func(query, body url.Values) (int, string, string) {
+		t.Helper()
+		target := "/oidc/revoke"
+		if len(query) > 0 {
+			target += "?" + query.Encode()
+		}
+		r := b.req("POST", target, body, "Origin", "")
+		var res struct {
+			Error       string `json:"error"`
+			Description string `json:"error_description"`
+		}
+		if len(r.body) > 0 && string(r.body) != "null" {
+			r.json(t, &res)
+		}
+		return r.StatusCode, res.Error, res.Description
+	}
+	// kv builds form values; "X" and "Y" stand for two live tokens.
+	type kv [][2]string
+
+	for _, c := range []struct {
+		name        string
+		query, body kv
+		// revoked lists the tokens the decoder may pick: exactly one of
+		// them is revoked. Empty means the decoded token is empty.
+		revoked []string
+	}{
+		{"body token, empty query token", kv{{"token", ""}}, kv{{"token", "X"}}, nil},
+		{"empty body token, query token", kv{{"token", "X"}}, kv{{"token", ""}}, []string{"X"}},
+		{"body and query tokens", kv{{"token", "Y"}}, kv{{"token", "X"}}, []string{"Y"}},
+		{"two body tokens", nil, kv{{"token", "X"}, {"token", "Y"}}, []string{"Y"}},
+		{"two query tokens", kv{{"token", "X"}, {"token", "Y"}}, nil, []string{"Y"}},
+		{"body token, then empty", nil, kv{{"token", "X"}, {"token", ""}}, nil},
+		{"two empty keys", nil, kv{{"token", ""}, {"Token", ""}}, nil},
+		{"body token, empty Token", nil, kv{{"token", "X"}, {"Token", ""}}, []string{"X"}},
+		{"empty token, body TOKEN", nil, kv{{"token", ""}, {"TOKEN", "X"}}, []string{"X"}},
+		{"body token, query Token", kv{{"Token", "Y"}}, kv{{"token", "X"}}, []string{"X", "Y"}},
+		{"body TOKEN, query token", kv{{"token", "Y"}}, kv{{"TOKEN", "X"}}, []string{"X", "Y"}},
+		{"body token and tOkEn", nil, kv{{"token", "X"}, {"tOkEn", "Y"}}, []string{"X", "Y"}},
+		{"body token and RevocationRequest.token", nil, kv{{"token", "X"}, {"RevocationRequest.token", "Y"}}, []string{"X", "Y"}},
+		{"query revocationrequest.TOKEN, body token", kv{{"revocationrequest.TOKEN", "Y"}}, kv{{"token", "X"}}, []string{"X", "Y"}},
+		{"empty ClientAssertionParams, no token", kv{{"ClientAssertionParams", ""}}, nil, nil},
+		{"empty ClientAssertionParams, two tokens", kv{{"ClientAssertionParams", ""}}, kv{{"token", "X"}, {"token", "Y"}}, []string{"Y"}},
+		{"empty RevocationRequest, no token", nil, kv{{"RevocationRequest", ""}}, nil},
+		{"empty RevocationRequest, token", nil, kv{{"RevocationRequest", ""}, {"token", "X"}}, []string{"X"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tokens := map[string]string{"X": issue(), "Y": issue()}
+			bystander := issue()
+			form := func(pairs kv, base url.Values) url.Values {
+				for _, p := range pairs {
+					v := p[1]
+					if tok, ok := tokens[v]; ok {
+						v = tok
+					}
+					base.Add(p[0], v)
+				}
+				return base
+			}
+			query, body := form(c.query, url.Values{}), form(c.body, url.Values{"client_id": {"spa"}})
+
+			status, oauthErr, desc := revoke(query, body)
+			var revoked []string
+			for _, name := range []string{"X", "Y"} {
+				if !accepted(tokens[name]) {
+					revoked = append(revoked, name)
+				}
+			}
+			if !accepted(bystander) {
+				t.Fatal("a token that was not in the request was revoked")
+			}
+			if len(c.revoked) == 0 {
+				if status != http.StatusBadRequest || oauthErr != "invalid_request" || desc != "token missing" || len(revoked) > 0 {
+					t.Fatalf("= %d %q %q, revoked %v; want 400 invalid_request \"token missing\" and nothing revoked", status, oauthErr, desc, revoked)
+				}
+				return
+			}
+			if status != http.StatusOK || len(revoked) != 1 || !slices.Contains(c.revoked, revoked[0]) {
+				t.Fatalf("= %d %q %q, revoked %v; want 200 and exactly one of %v revoked", status, oauthErr, desc, revoked, c.revoked)
+			}
+		})
+	}
+
+	// A token given once is revoked, in the body or the query, under any
+	// key the decoder reads as the token; given once but empty, it is
+	// missing, as for "token=".
+	for _, key := range []string{"token", "Token", "TOKEN", "RevocationRequest.token"} {
+		for _, inQuery := range []bool{false, true} {
+			name := key + " in the body"
+			query, body := url.Values{}, url.Values{"client_id": {"spa"}}
+			given := body
+			if inQuery {
+				name, given = key+" in the query", query
+			}
+			given.Set(key, "")
+			if status, oauthErr, desc := revoke(query, body); status != http.StatusBadRequest || oauthErr != "invalid_request" || desc != "token missing" {
+				t.Errorf("empty %s = %d %q %q, want 400 invalid_request \"token missing\"", name, status, oauthErr, desc)
+			}
+			token, other := issue(), issue()
+			given.Set(key, token)
+			if status, oauthErr, desc := revoke(query, body); status != http.StatusOK {
+				t.Errorf("%s = %d %q %q, want 200", name, status, oauthErr, desc)
+			}
+			if accepted(token) {
+				t.Errorf("the token revoked as %s is still accepted", name)
+			}
+			if !accepted(other) {
+				t.Fatalf("revoking %s revoked another token", name)
+			}
+		}
+	}
+
+	// A form zitadel's decoder rejects is answered as before, before client
+	// authentication, and revokes nothing.
+	x := issue()
+	if status, oauthErr, _ := revoke(url.Values{"ClientAssertionParams": {"x"}}, url.Values{"client_id": {"spa"}, "token": {x}}); status != http.StatusBadRequest || oauthErr != "invalid_request" {
+		t.Errorf("undecodable form = %d %q, want 400 invalid_request", status, oauthErr)
+	}
+	if status, oauthErr, _ := revoke(url.Values{"ClientAssertionParams": {"x"}}, url.Values{"token": {x}}); status != http.StatusBadRequest || oauthErr != "invalid_request" {
+		t.Errorf("undecodable form without a client = %d %q, want 400 invalid_request", status, oauthErr)
+	}
+	if !accepted(x) {
+		t.Fatal("an undecodable request revoked a token")
+	}
+
+	// Client authentication errors still come before the token check.
+	if status, oauthErr, _ := revoke(url.Values{"token": {""}}, url.Values{"token": {x}}); status != http.StatusUnauthorized || oauthErr != "invalid_client" {
+		t.Errorf("empty token without a client = %d %q, want 401 invalid_client", status, oauthErr)
+	}
+}
+
 func TestOIDCEndSession(t *testing.T) {
 	e := newEnv(t)
 	b := e.browser()
