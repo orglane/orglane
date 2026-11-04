@@ -13,6 +13,8 @@ export interface Instance {
   setupToken(): string;
   /** Runs `orglane cli <args>` against this instance and returns its output. */
   cli(...args: string[]): string;
+  /** Runs SQL in this instance's database (test setup only) and returns its output. */
+  sql(query: string): string;
   /** The server's log so far, for failures. */
   log(): string;
 }
@@ -130,6 +132,20 @@ export const test = base.extend<{
         setupToken: () =>
           /ost_[A-Za-z0-9_-]+/.exec(run(state.binary, ["cli", "setup-token"], { env }))?.[0] ?? "",
         cli: (...args) => run(state.binary, ["cli", ...args], { env }),
+        sql: (query) =>
+          run("docker", [
+            "exec",
+            state.container,
+            "psql",
+            "-U",
+            "orglane",
+            "-d",
+            db,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-tAc",
+            query,
+          ]),
         log: () => log,
       });
     } catch (error) {

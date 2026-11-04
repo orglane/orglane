@@ -7,6 +7,7 @@ import { Choice } from "@/components/choice";
 import { Field } from "@/components/field";
 import { OnboardingChecklist } from "@/components/onboarding-checklist";
 import { Page } from "@/components/page";
+import { PersonAppsCard } from "@/components/person-apps-card";
 import { ProfileFieldsCard } from "@/components/profile-fields-card";
 import { Alert } from "@/components/ui/alert";
 import { Avatar } from "@/components/ui/avatar";
@@ -370,6 +371,14 @@ export function PersonProfilePage({ personId }: { personId: string }) {
           {manage && (
             <div className="mt-5">
               <OnboardingChecklist personId={personId} />
+            </div>
+          )}
+          {manage && (
+            <div className="mt-5">
+              <PersonAppsCard
+                personId={personId}
+                manageApps={me.permissions.includes("apps.manage")}
+              />
             </div>
           )}
         </>

@@ -4,11 +4,13 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project status
 
-Pre-alpha (releases 0.0.x until the v0.1 Developer Preview). M0 (Foundation) and M1 (People) are done; M2 (Code) is next (see [ROADMAP.md](ROADMAP.md)).
+Pre-alpha (releases 0.0.x until the v0.1 Developer Preview). M0 (Foundation) and M1 (People) are done; M2 (Code) is in progress (see [ROADMAP.md](ROADMAP.md)).
 
 In place from M0: the monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the data model (people, roles, devices, sessions, audit log), identity (embedded OpenID Provider, password and passkey sign-in, sessions), the web skeleton (React SPA embedded into the binary, design tokens, i18n), the Compose bundle with Traefik, the one-command installer (`deploy/install.sh`) and the orglane.app website (`website/`).
 
 In place from M1: teams and memberships, profile fields (field library, custom fields, visibility), the people directory and profile pages, system email over SMTP and invitations, the onboarding checklist and welcome flow, and the staged people import from CSV/XLSX and from a GitHub organization. Their specs are in [docs/specs/](docs/specs/), the GitHub import setup in [docs/github-import.md](docs/github-import.md).
+
+In place from M2 so far: the provider framework ([docs/specs/providers.md](docs/specs/providers.md)): adapter contracts in `providers/provider`, the registry, app instances, bindings, sealed credentials with staged rotation, team mappings, provisioning with the removal guard, webhook ingestion and normalized events in `core/internal/apps` (River queue `apps`), and Settings → Apps. The in-repo fake provider `providers/testprovider` is only for framework tests and the web acceptance build (build tag `appstest`); no real adapter exists yet.
 
 ## Toolchain
 

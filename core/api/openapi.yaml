@@ -3872,7 +3872,18 @@ components:
       enum: [all_people, mapped_teams]
     AppInstanceState:
       type: string
-      enum: [connecting, installing, active, degraded, upgrading, failed, disconnected, removing, removed]
+      enum:
+        [
+          connecting,
+          installing,
+          active,
+          degraded,
+          upgrading,
+          failed,
+          disconnected,
+          removing,
+          removed,
+        ]
     AppHealth:
       type: string
       enum: [unknown, healthy, unhealthy]
@@ -3954,7 +3965,22 @@ components:
           type: boolean
     AppProvider:
       type: object
-      required: [id, name, capabilities, management, features, credentials, settings, employeeSteps, defaultKey, defaultPolicy, provisioning, webhooks, lifecycle]
+      required:
+        [
+          id,
+          name,
+          capabilities,
+          management,
+          features,
+          credentials,
+          settings,
+          employeeSteps,
+          defaultKey,
+          defaultPolicy,
+          provisioning,
+          webhooks,
+          lifecycle,
+        ]
       properties:
         id:
           type: string
@@ -4012,7 +4038,23 @@ components:
             $ref: "#/components/schemas/AppProvider"
     AppInstance:
       type: object
-      required: [id, key, provider, providerAvailable, management, displayName, state, health, accessPolicy, manageExistingMembers, settings, dataRetained, createdAt, updatedAt]
+      required:
+        [
+          id,
+          key,
+          provider,
+          providerAvailable,
+          management,
+          displayName,
+          state,
+          health,
+          accessPolicy,
+          manageExistingMembers,
+          settings,
+          dataRetained,
+          createdAt,
+          updatedAt,
+        ]
       properties:
         id:
           type: string
@@ -4144,7 +4186,16 @@ components:
           type: integer
     AppInstanceDetail:
       type: object
-      required: [instance, bindings, operations, credentials, rotationStuck, unmanagedAccountCount, provisioning]
+      required:
+        [
+          instance,
+          bindings,
+          operations,
+          credentials,
+          rotationStuck,
+          unmanagedAccountCount,
+          provisioning,
+        ]
       properties:
         instance:
           $ref: "#/components/schemas/AppInstance"
@@ -4198,7 +4249,16 @@ components:
           type: integer
     AppBinding:
       type: object
-      required: [capability, instanceId, instanceKey, instanceDisplayName, provider, instanceState, isDefault]
+      required:
+        [
+          capability,
+          instanceId,
+          instanceKey,
+          instanceDisplayName,
+          provider,
+          instanceState,
+          isDefault,
+        ]
       properties:
         capability:
           type: string
@@ -4457,7 +4517,17 @@ components:
           pattern: "^[0-9a-f]{64}$"
     PersonAppResult:
       type: object
-      required: [instanceId, instanceKey, instanceDisplayName, provider, instanceState, status, access, updatedAt]
+      required:
+        [
+          instanceId,
+          instanceKey,
+          instanceDisplayName,
+          provider,
+          instanceState,
+          status,
+          access,
+          updatedAt,
+        ]
       properties:
         instanceId:
           type: string
