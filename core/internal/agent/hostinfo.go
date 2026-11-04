@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package agent
 
 import "golang.org/x/sys/unix"

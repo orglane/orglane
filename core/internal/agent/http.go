@@ -408,15 +408,12 @@ func (a *Agent) handleLogs(w http.ResponseWriter, r *http.Request) {
 		secrets = append(secrets, st.desired.SecretValues()...)
 	}
 	c := a.compose(key, secrets)
-	out, err := c.logs(r.Context(), service, tail, since)
+	out, truncated, err := c.logs(r.Context(), service, tail, since, agentapi.MaxLogBytes+logMargin)
 	if err != nil {
 		a.internalError(w, r, err)
 		return
 	}
-	out = redact(out, secrets)
-	if len(out) > agentapi.MaxLogBytes {
-		out = out[len(out)-agentapi.MaxLogBytes:]
-	}
+	out = boundLogs(out, truncated, secrets, agentapi.MaxLogBytes)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)

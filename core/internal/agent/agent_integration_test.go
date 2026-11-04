@@ -111,6 +111,11 @@ func (r *auditRunner) run(ctx context.Context, stdin []byte, args ...string) ([]
 	return r.inner.run(ctx, stdin, args...)
 }
 
+func (r *auditRunner) tail(ctx context.Context, limit int, args ...string) ([]byte, bool, []byte, error) {
+	r.record(args)
+	return r.inner.tail(ctx, limit, args...)
+}
+
 func (r *auditRunner) stream(ctx context.Context, args ...string) (io.ReadCloser, func() error, error) {
 	r.record(args)
 	return r.inner.stream(ctx, args...)
@@ -217,9 +222,10 @@ func (e *testEnv) apply(key string, spec *agentapi.Spec) *agentapi.Operation {
 	return op
 }
 
-func (e *testEnv) mustApply(spec *agentapi.Spec) {
+func (e *testEnv) mustApply(spec *agentapi.Spec) { e.t.Helper(); e.mustApplyKey("at1", spec) }
+
+func (e *testEnv) mustApplyKey(key string, spec *agentapi.Spec) {
 	e.t.Helper()
-	const key = "at1"
 	if op := e.apply(key, spec); op.State != agentapi.OpSucceeded {
 		e.t.Fatalf("operation for %s generation %d: %+v", key, spec.Generation, op)
 	}
@@ -544,4 +550,50 @@ func TestUnauthenticatedSocketClient(t *testing.T) {
 	if _, err := os.Stat(e.agent.instanceDir("un")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("an unsigned request created an instance")
 	}
+}
+
+// TestConfigureHooksAfterStopped: configure hooks run on the first start of
+// an instance installed stopped, and on the start after its settings
+// changed while it was stopped.
+func TestConfigureHooksAfterStopped(t *testing.T) {
+	project := startBundle(t)
+	registry, err := packages.NewRegistry(agenttest.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := startAgent(t, project, registry)
+	const key = "at2"
+	id := uuid.Must(uuid.NewV7())
+	port := freePort(t)
+	t.Cleanup(func() {
+		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", packages.InstanceProject(project, key), "down", "--remove-orphans").Run() //nolint:gosec // test commands
+	})
+	row := func() string {
+		return e.psql("svc_at2", "select coalesce((select message from agenttest_config where id = 1), 'none')")
+	}
+
+	// Installed stopped: nothing runs, no hook yet.
+	e.mustApplyKey(key, integrationSpec(id, 1, port, "first", agentapi.StateStopped))
+	if _, err := httpGet(port); err == nil {
+		t.Fatal("an instance installed stopped serves")
+	}
+	// The first start runs the hooks for the unchanged render.
+	e.mustApplyKey(key, integrationSpec(id, 2, port, "first", agentapi.StateRunning))
+	if got := row(); got != "first" {
+		t.Fatalf("after the first start the database row is %q", got)
+	}
+	// Reconfigured while stopped: the next start runs the hooks again.
+	e.mustApplyKey(key, integrationSpec(id, 3, port, "first", agentapi.StateStopped))
+	e.mustApplyKey(key, integrationSpec(id, 4, port, "changed", agentapi.StateStopped))
+	e.mustApplyKey(key, integrationSpec(id, 5, port, "changed", agentapi.StateRunning))
+	if got := row(); got != "changed" {
+		t.Fatalf("after a start with settings changed while stopped the database row is %q", got)
+	}
+	if body, err := httpGet(port); err != nil || body != "changed\n" {
+		t.Fatalf("served %q, %v", body, err)
+	}
+	purge := integrationSpec(id, 6, port, "changed", agentapi.StateAbsent)
+	purge.Purge = true
+	e.mustApplyKey(key, purge)
+	e.checkAudit(map[string]bool{key: true})
 }

@@ -24,6 +24,18 @@ func listen(ctx context.Context, path string, peerUID int, log *slog.Logger) (ne
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("agent socket: %w", err)
 	}
+	// The directory's mode and owner are changed below, so it must belong to
+	// the agent alone (by default the agent-run volume): a shared directory
+	// such as /tmp is refused.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("agent socket: %w", err)
+	}
+	for _, e := range entries {
+		if e.Name() != filepath.Base(path) {
+			return nil, fmt.Errorf("agent socket: %s must be a directory for the agent socket only, but it contains %s", dir, e.Name())
+		}
+	}
 	if err := os.Chmod(dir, 0o750); err != nil { //nolint:gosec // the group is the core's
 		return nil, fmt.Errorf("agent socket: %w", err)
 	}

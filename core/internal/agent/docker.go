@@ -28,7 +28,12 @@ var dockerEnv = []string{"PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "DOCKER_HO
 // from its configuration, validated instance keys and the reviewed package;
 // nothing a client sends becomes a command (ADR 0019).
 type runner interface {
+	// run returns standard output (at most maxCommandOutput bytes, else
+	// errOutputTooLarge) and the end of standard error.
 	run(ctx context.Context, stdin []byte, args ...string) (stdout, stderr []byte, err error)
+	// tail keeps only the last limit bytes of standard output (logs) and
+	// reports whether earlier output was dropped; see tailBuffer.text.
+	tail(ctx context.Context, limit int, args ...string) (stdout []byte, truncated bool, stderr []byte, err error)
 	stream(ctx context.Context, args ...string) (io.ReadCloser, func() error, error)
 }
 
@@ -55,15 +60,35 @@ func (d *dockerCLI) command(ctx context.Context, args []string) *exec.Cmd {
 	return cmd
 }
 
-func (d *dockerCLI) run(ctx context.Context, stdin []byte, args ...string) ([]byte, []byte, error) {
+// exec runs a command, writing standard output to stdout, and returns the
+// end of standard error. Output is drained to its end, never buffered
+// without bound.
+func (d *dockerCLI) exec(ctx context.Context, stdin []byte, stdout io.Writer, args []string) ([]byte, error) {
 	cmd := d.command(ctx, args)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	stderr := newTailBuffer(maxStderr)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	err := cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
+	text, _ := stderr.text()
+	return text, err
+}
+
+func (d *dockerCLI) run(ctx context.Context, stdin []byte, args ...string) ([]byte, []byte, error) {
+	out := &capBuffer{limit: maxCommandOutput}
+	stderr, err := d.exec(ctx, stdin, out, args)
+	if err == nil && out.overflow {
+		err = errOutputTooLarge
+	}
+	return out.buf.Bytes(), stderr, err
+}
+
+func (d *dockerCLI) tail(ctx context.Context, limit int, args ...string) ([]byte, bool, []byte, error) {
+	out := newTailBuffer(limit)
+	stderr, err := d.exec(ctx, nil, out, args)
+	text, truncated := out.text()
+	return text, truncated, stderr, err
 }
 
 func (d *dockerCLI) stream(ctx context.Context, args ...string) (io.ReadCloser, func() error, error) {
@@ -153,12 +178,19 @@ func (c compose) exec(ctx context.Context, service string, argv []string) error 
 	return err
 }
 
-func (c compose) logs(ctx context.Context, service string, tail int, since string) ([]byte, error) {
+// logs returns the end of a service's logs, at most limit bytes, and
+// whether earlier output was dropped (at a line boundary).
+func (c compose) logs(ctx context.Context, service string, tail int, since string, limit int) ([]byte, bool, error) {
 	args := []string{"logs", "--no-color", "--timestamps", "--tail", strconv.Itoa(tail)}
 	if since != "" {
 		args = append(args, "--since", since)
 	}
-	return c.do(ctx, append(args, service)...)
+	args = c.args(filepath.Join(c.dir, composeFile), filepath.Join(c.dir, envFile), append(args, service)...)
+	out, truncated, stderr, err := c.r.tail(ctx, limit, args...)
+	if err != nil {
+		return nil, false, &commandError{args: "compose logs", err: err, stderr: truncate(redact(stderr, c.secrets))}
+	}
+	return out, truncated, nil
 }
 
 // ps returns the state of the project's containers.

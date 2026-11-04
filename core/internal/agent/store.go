@@ -22,8 +22,11 @@ const (
 	desiredFile  = "desired.json"
 	currentFile  = "current.json"
 	blockedFile  = "blocked.json"
-	stagingDir   = ".staging"
-	dataDir      = "data"
+	// configuredFile holds the render hash the configure hooks last
+	// completed for.
+	configuredFile = "configured.json"
+	stagingDir     = ".staging"
+	dataDir        = "data"
 )
 
 // maxApplyAttempts is how often a failed apply of a generation runs before

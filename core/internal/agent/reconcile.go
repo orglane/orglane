@@ -96,24 +96,39 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 		a.clearBusy(in, "")
 		return
 	}
-	code, rule := "", ""
 	if err != nil {
-		code, rule = errorCode(err)
+		code, rule := errorCode(err)
 		a.log.Error("reconcile failed", "instance", in.key, "generation", target.Generation, "code", code, "rule", rule, "error", err)
 	} else {
 		a.log.Info("reconciled", "instance", in.key, "generation", target.Generation, "state", target.State, "duration", a.now().Sub(start).Round(time.Millisecond))
 	}
+	a.clearBusy(in, a.finish(in, st, target, op, err))
+}
 
+// finish records the result of a reconcile durably and only then publishes
+// it on the operation: an operation never reports success while
+// current.json (or blocked.json) still holds the old state. It returns the
+// error code of the reconcile, "" on success.
+func (a *Agent) finish(in *instance, st *instanceState, target *agentapi.Spec, op *agentapi.Operation, err error) string {
+	code, rule := "", ""
+	if err != nil {
+		code, rule = errorCode(err)
+	}
 	in.files.Lock()
 	recordErr := a.record(in.key, st, target, op != nil, err == nil, code)
 	in.files.Unlock()
 	if recordErr != nil {
-		a.log.Error("record reconcile result", "instance", in.key, "error", recordErr)
+		a.log.Error("record reconcile result", "instance", in.key, "generation", target.Generation, "error", recordErr)
+		if err == nil {
+			// Converged, but the new state is not durable: the generation
+			// stays pending and the next reconcile applies it again.
+			code, rule = agentapi.CodeInternal, ""
+		}
 	}
 	if op != nil {
 		if _, uerr := a.ops.update(op.ID, func(o *agentapi.Operation) {
 			o.Phase = ""
-			if err == nil {
+			if code == "" {
 				o.State = agentapi.OpSucceeded
 				return
 			}
@@ -122,7 +137,7 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 			a.log.Error("update operation", "operation", op.ID, "error", uerr)
 		}
 	}
-	a.clearBusy(in, code)
+	return code
 }
 
 // record persists the result of a reconcile: current.json on success,
@@ -240,9 +255,12 @@ func (a *Agent) converge(ctx context.Context, in *instance, target, prev *agenta
 		return failed(agentapi.CodeComposeFailed, err)
 	}
 
-	// Configure hooks run after the first install and whenever the rendered
-	// output changes; never for a plain drift repair.
-	if prev == nil || prev.State == agentapi.StateAbsent || a.renderHash(prev, rc) != rendered.Hash() {
+	// Configure hooks run whenever the running render differs from the last
+	// one they configured successfully (configured.json): after the first
+	// start, also when the instance was installed or reconfigured while
+	// stopped, and after a reinstall. Never for a plain drift repair.
+	hash := rendered.Hash()
+	if configuredHash(c.dir) != hash {
 		setPhase(agentapi.PhaseConfiguring)
 		for _, h := range pkg.Manifest.Hooks.Configure {
 			hctx, cancel := context.WithTimeout(ctx, h.Timeout)
@@ -252,25 +270,29 @@ func (a *Agent) converge(ctx context.Context, in *instance, target, prev *agenta
 				return failed(agentapi.CodeHookFailed, err)
 			}
 		}
+		if err := writeConfigured(c.dir, hash); err != nil {
+			return failed(agentapi.CodeInternal, err)
+		}
 	}
 	return nil
 }
 
-// renderHash renders a previous spec for comparison, "" if that fails.
-func (a *Agent) renderHash(spec *agentapi.Spec, rc packages.RenderContext) string {
-	pkg, ok := a.registry.Get(spec.Package)
-	if !ok {
+// configuredHash returns the render hash the configure hooks last ran for,
+// "" if they never completed.
+func configuredHash(dir string) string {
+	var c struct {
+		RenderHash string `json:"render_hash"`
+	}
+	if ok, err := readJSON(filepath.Join(dir, configuredFile), &c); !ok || err != nil {
 		return ""
 	}
-	in, err := pkg.Inputs(spec)
-	if err != nil {
-		return ""
-	}
-	r, err := pkg.Render(spec, in, rc)
-	if err != nil {
-		return ""
-	}
-	return r.Hash()
+	return c.RenderHash
+}
+
+func writeConfigured(dir, hash string) error {
+	return writeJSON(filepath.Join(dir, configuredFile), struct {
+		RenderHash string `json:"render_hash"`
+	}{hash})
 }
 
 // checkPolicy writes the rendered project to the staging directory,
@@ -427,6 +449,10 @@ func (a *Agent) remove(ctx context.Context, in *instance, target, prev *agentapi
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return failed(agentapi.CodeComposeFailed, err)
+	}
+	// A reinstall configures the new containers again.
+	if err := os.Remove(filepath.Join(c.dir, configuredFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return failed(agentapi.CodeInternal, err)
 	}
 	if !target.Purge {
 		return nil

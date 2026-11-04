@@ -84,7 +84,8 @@ type Agent struct {
 	// lagging desired state. Defaults to 5m.
 	SyncInterval time.Duration `yaml:"sync_interval"`
 
-	// Listen is the socket the agent listens on.
+	// Listen is the socket the agent listens on. Its directory must hold
+	// nothing else: the agent sets its mode and group.
 	Listen string `yaml:"listen"`
 	// DataDir holds the instances (instances/<key>) and the agent state
 	// (instances/.agent). Mounted at the same path as on the host.

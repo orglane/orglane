@@ -42,6 +42,11 @@ func (r *recordingRunner) run(_ context.Context, _ []byte, args ...string) ([]by
 	return nil, []byte("no docker in unit tests"), errors.New("no docker")
 }
 
+func (r *recordingRunner) tail(ctx context.Context, _ int, args ...string) ([]byte, bool, []byte, error) {
+	out, stderr, err := r.run(ctx, nil, args...)
+	return out, false, stderr, err
+}
+
 func (r *recordingRunner) stream(context.Context, ...string) (io.ReadCloser, func() error, error) {
 	return nil, nil, errors.New("no docker")
 }
@@ -583,6 +588,12 @@ func TestPeerUIDCheck(t *testing.T) {
 	if _, err := listen(t.Context(), other, -1, testLogger(t)); err == nil {
 		t.Fatal("listen replaced a regular file")
 	}
+
+	// A directory that holds anything else is not used for the socket: the
+	// agent would change its mode and group.
+	if _, err := listen(t.Context(), filepath.Join(dir, "agent2.sock"), -1, testLogger(t)); err == nil {
+		t.Fatal("listen used a shared directory")
+	}
 }
 
 func testLogger(t *testing.T) *slog.Logger {
@@ -636,6 +647,10 @@ type fixedRunner string
 
 func (f fixedRunner) run(context.Context, []byte, ...string) ([]byte, []byte, error) {
 	return []byte(f), nil, nil
+}
+
+func (f fixedRunner) tail(context.Context, int, ...string) ([]byte, bool, []byte, error) {
+	return []byte(f), false, nil, nil
 }
 
 func (f fixedRunner) stream(context.Context, ...string) (io.ReadCloser, func() error, error) {
