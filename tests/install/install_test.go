@@ -10,6 +10,7 @@
 //   - demo mode: install and one-click sign-in as the demo owner;
 //   - an edge subnet taken by another Docker network: the failure names
 //     ORGLANE_EDGE_NETWORK_PREFIX, and a re-run with a free one installs;
+//     malformed or multi-line settings are refused and leave .env alone;
 //   - domain mode: the DNS check refuses an unresolvable workspace host
 //     before anything starts, and an install against Pebble (Let's
 //     Encrypt's ACME test server, deploy/compose/pebble) gets a certificate.
@@ -483,13 +484,16 @@ func TestEdgeSubnetClash(t *testing.T) {
 	port := freePort(t)
 	args := []string{"--mode", "local", "--yes", "--source", repoRoot, "--image", image, "--data-dir", in.dataDir, "--http-port", port}
 
-	// A malformed prefix is refused before anything is written.
-	in.setEnv("ORGLANE_EDGE_NETWORK_PREFIX", "10.232.0.0")
-	if out, code := in.run(args...); code == 0 || !strings.Contains(out, "invalid ORGLANE_EDGE_NETWORK_PREFIX") {
-		t.Errorf("malformed prefix: exit %d\n%s", code, out)
-	}
-	if _, err := os.Stat(in.dataDir); !os.IsNotExist(err) {
-		t.Errorf("the refused install created the data directory: %v", err)
+	// A malformed prefix, or one that would add lines to .env, is refused
+	// before anything is written.
+	for _, prefix := range badPrefixes {
+		in.setEnv("ORGLANE_EDGE_NETWORK_PREFIX", prefix)
+		if out, code := in.run(args...); code == 0 || !strings.Contains(out, "invalid ORGLANE_EDGE_NETWORK_PREFIX") {
+			t.Errorf("prefix %q: exit %d\n%s", prefix, code, out)
+		}
+		if _, err := os.Stat(in.dataDir); !os.IsNotExist(err) {
+			t.Fatalf("prefix %q: the refused install created the data directory: %v", prefix, err)
+		}
 	}
 
 	in.setEnv("ORGLANE_EDGE_NETWORK_PREFIX", clash)
@@ -526,10 +530,48 @@ func TestEdgeSubnetClash(t *testing.T) {
 	}
 	checkWorkspace(t, http.DefaultClient, "http://127.0.0.1:"+port, "localhost:"+port)
 
+	// On a re-run, a bad prefix, a multi-line setting from the environment
+	// or a multi-line option is refused and .env stays as it is.
+	envPath := filepath.Join(in.dataDir, ".env")
+	before, err := os.ReadFile(envPath) //nolint:gosec // the test's own data directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := func(what, want string, extra ...string) {
+		t.Helper()
+		if out, code := in.run(append(args, extra...)...); code == 0 || !strings.Contains(out, want) {
+			t.Errorf("%s: exit %d, want a refusal with %q\n%s", what, code, want, out)
+		}
+		if after, err := os.ReadFile(envPath); err != nil || !bytes.Equal(after, before) { //nolint:gosec // the test's own data directory
+			t.Errorf("%s: .env changed (%v)", what, err)
+		}
+	}
+	for _, prefix := range badPrefixes {
+		in.setEnv("ORGLANE_EDGE_NETWORK_PREFIX", prefix)
+		refused(fmt.Sprintf("re-run with prefix %q", prefix), "invalid ORGLANE_EDGE_NETWORK_PREFIX")
+	}
+	in.setEnv("ORGLANE_EDGE_NETWORK_PREFIX", free)
+	in.setEnv("COMPOSE_PROJECT_NAME", in.project+"\nORGLANE_DEMO_ENABLED=true")
+	refused("multi-line COMPOSE_PROJECT_NAME", "invalid COMPOSE_PROJECT_NAME")
+	in.setEnv("COMPOSE_PROJECT_NAME", in.project)
+	refused("multi-line --version", "invalid --version", "--version", "0.1.0\nORGLANE_DEMO_ENABLED=true")
+	checkWorkspace(t, http.DefaultClient, "http://127.0.0.1:"+port, "localhost:"+port)
+
 	in.mustRun("uninstall", "--purge", "--yes", "--data-dir", in.dataDir)
 	if c := in.containers(); len(c) > 0 {
 		t.Errorf("containers left after uninstall: %v", c)
 	}
+}
+
+// badPrefixes are ORGLANE_EDGE_NETWORK_PREFIX values the installer refuses:
+// not three octets, or with extra lines that would end up in .env.
+var badPrefixes = []string{
+	"10.232.0.0",
+	"10.232.256",
+	"10.232.0\nORGLANE_DEMO_ENABLED=true",
+	"ORGLANE_DEMO_ENABLED=true\n10.232.0",
+	"10.232.0\n",
+	"10.232.0\r",
 }
 
 // createNetwork creates a Docker network with the given options and returns

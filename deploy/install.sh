@@ -204,8 +204,21 @@ fetch() {
 	fi
 }
 
+# one_line <value>: no line breaks or other control characters. A value with
+# a newline would add lines to .env, and grep checks each line on its own.
+one_line() {
+	case $1 in
+	*[[:cntrl:]]*) return 1 ;;
+	esac
+}
+
+# matches <ERE> <value>: the whole value, one line, matches the expression.
+matches() {
+	one_line "$2" && printf '%s\n' "$2" | grep -Eq "$1"
+}
+
 valid_hostname() {
-	printf '%s' "$1" | grep -Eq '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+	matches '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$' "$1"
 }
 
 valid_port() {
@@ -217,11 +230,11 @@ valid_port() {
 
 # valid_edge_prefix <a.b.c>: the first three octets of an IPv4 /24.
 valid_edge_prefix() {
-	printf '%s' "$1" | grep -Eq '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){2}$'
+	matches '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){2}$' "$1"
 }
 
 valid_ipv4() {
-	printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+	matches '^([0-9]{1,3}\.){3}[0-9]{1,3}$' "$1"
 }
 
 # env_get <file> <key>: the value of KEY= in an env file (last one wins).
@@ -447,7 +460,7 @@ choose_domain() {
 		ACME_EMAIL=$ANSWER
 	fi
 	if [ -n "$ACME_EMAIL" ]; then
-		printf '%s' "$ACME_EMAIL" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' ||
+		matches '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' "$ACME_EMAIL" ||
 			die "invalid email: '$ACME_EMAIL'"
 	fi
 }
@@ -464,7 +477,7 @@ choose_acme_ca() {
 	*) ACME_CA=$OPT_ACME_CA ;;
 	esac
 	# No characters that Compose would interpolate in .env.
-	printf '%s' "$ACME_CA" | grep -Eq '^https://[A-Za-z0-9._~:/?=&%-]+$' ||
+	matches '^https://[A-Za-z0-9._~:/?=&%-]+$' "$ACME_CA" ||
 		die "invalid --acme-ca '$OPT_ACME_CA': use production, staging or an https:// ACME directory URL"
 	if [ "$ACME_CA" = "$LE_STAGING" ]; then
 		warn "Let's Encrypt staging: browsers don't trust its certificates. Switch with --acme-ca production"
@@ -514,7 +527,7 @@ resolve_release() {
 			[ -n "$VERSION" ] || die "could not read the latest release from the GitHub API"
 		fi
 	fi
-	printf '%s' "$VERSION" | grep -Eq '^([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?|custom)$' ||
+	matches '^([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?|custom)$' "$VERSION" ||
 		die "invalid version: '$VERSION' (example: 0.1.0)"
 	if [ -n "$OPT_IMAGE" ]; then
 		IMAGE=$OPT_IMAGE
@@ -568,6 +581,7 @@ install_bundle() {
 passthrough() {
 	eval "val=\${$1:-}"
 	if [ -z "$val" ] && [ "$EXISTING" = 1 ]; then val=$(env_get "$ENV_FILE" "$1"); fi
+	one_line "$val" || die "invalid $1: it must be a single line"
 	if [ -n "$val" ]; then printf '%s=%s\n' "$1" "$val"; fi
 }
 
@@ -996,6 +1010,11 @@ cmd_install() {
 	fi
 	HTTP_PUBLISH=${HTTP_PUBLISH:-$DEFAULT_HTTP_PUBLISH}
 	HTTPS_PUBLISH=${HTTPS_PUBLISH:-$DEFAULT_HTTPS_PUBLISH}
+	# Settings from the environment go into .env as they are: one line each.
+	for v in ORGLANE_HTTP_PUBLISH ORGLANE_HTTPS_PUBLISH ORGLANE_EDGE_NETWORK_PREFIX COMPOSE_PROJECT_NAME COMPOSE_FILE; do
+		eval "val=\${$v:-}"
+		one_line "$val" || die "invalid $v: it must be a single line"
+	done
 	if [ -n "${ORGLANE_EDGE_NETWORK_PREFIX:-}" ] && ! valid_edge_prefix "$ORGLANE_EDGE_NETWORK_PREFIX"; then
 		die "invalid ORGLANE_EDGE_NETWORK_PREFIX '$ORGLANE_EDGE_NETWORK_PREFIX': give the first three octets of a free /24, e.g. 10.232.0"
 	fi
@@ -1188,6 +1207,7 @@ main() {
 				val=$2
 				shift
 			fi
+			one_line "$val" || die "invalid $opt: the value must be a single line"
 			;;
 		esac
 		case $opt in

@@ -80,7 +80,7 @@ curl -fsSL https://orglane.app/install.sh | sudo sh -s -- --acme-ca production
 
 ### Advanced settings
 
-These environment variables are kept in `.env`; a re-run uses the value from its environment if set, else the kept one: `ORGLANE_HTTP_PUBLISH` and `ORGLANE_HTTPS_PUBLISH` (where Traefik is published), `ORGLANE_EDGE_NETWORK_PREFIX` (see [Configuration](#configuration)), `COMPOSE_PROJECT_NAME` (to run several installs on one machine) and `COMPOSE_FILE` (extra Compose files; the installer tests use it for the Pebble overlay). `--http-port` moves local and demo mode to another port, for example `--http-port 8080` for `http://localhost:8080`.
+These environment variables are kept in `.env` (each must be a single line); a re-run uses the value from its environment if set, else the kept one: `ORGLANE_HTTP_PUBLISH` and `ORGLANE_HTTPS_PUBLISH` (where Traefik is published), `ORGLANE_EDGE_NETWORK_PREFIX` (see [Configuration](#configuration)), `COMPOSE_PROJECT_NAME` (to run several installs on one machine) and `COMPOSE_FILE` (extra Compose files; the installer tests use it for the Pebble overlay). `--http-port` moves local and demo mode to another port, for example `--http-port 8080` for `http://localhost:8080`.
 
 ### Troubleshooting
 
@@ -98,7 +98,7 @@ These environment variables are kept in `.env`; a re-run uses the value from its
 
 - **local mode:** the web UI and `/readyz` through Traefik; `.env` mode 600; the printed setup token creates the owner; a re-run keeps the secrets and the owner; `status`; and `uninstall` with and without `--purge`;
 - **demo mode:** one-click sign-in as the demo owner;
-- **an edge subnet clash:** with another Docker network on the edge subnet (the same /24, or a partial overlap) the install fails with a message that names `ORGLANE_EDGE_NETWORK_PREFIX`, and a re-run with a free prefix installs and keeps it in `.env`; a malformed prefix is refused before anything is written;
+- **an edge subnet clash:** with another Docker network on the edge subnet (the same /24, or a partial overlap) the install fails with a message that names `ORGLANE_EDGE_NETWORK_PREFIX`, and a re-run with a free prefix installs and keeps it in `.env`; a malformed prefix, and settings or options with more than one line, are refused before anything is written, and `.env` stays as it is;
 - **domain mode against Pebble:** a certificate is issued and HTTPS works; a re-run keeps the CA stored in `.env` (`--acme-ca staging`) and `acme.json`; `--acme-ca production` switches the CA, resets `acme.json` and gets a new certificate;
 - **domain mode without DNS:** the install is refused before anything is written or started.
 
