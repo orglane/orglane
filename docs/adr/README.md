@@ -24,5 +24,6 @@ Each ADR records one significant decision: the context, the decision and its con
 | [0016](0016-licensing.md) | Licensing: AGPL core, Apache clients and SDKs, no CLA | Accepted |
 | [0017](0017-development-process.md) | Agent-driven development process, risk tiers, auto-merge | Accepted |
 | [0018](0018-domain-model.md) | Domain model: project domain, customer domain, company domains | Accepted |
+| [0019](0019-agent-transport-and-packages.md) | Agent placement, core–agent transport and trust, managed package format | Proposed |
 
 Template: [`0000-template.md`](0000-template.md)
