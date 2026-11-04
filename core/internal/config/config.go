@@ -320,6 +320,10 @@ type Ingress struct {
 type Jobs struct {
 	// MaxWorkers caps concurrently running jobs. Defaults to 5.
 	MaxWorkers int `yaml:"max_workers"`
+	// AppsMaxWorkers caps concurrently running provider jobs (provisioning,
+	// webhooks) on their own queue, so provider slowness never blocks
+	// email or identity jobs. Defaults to 2.
+	AppsMaxWorkers int `yaml:"apps_max_workers"`
 	// FetchPollInterval is the fallback poll interval for new jobs; new jobs
 	// are normally picked up through LISTEN/NOTIFY. Defaults to 5s.
 	FetchPollInterval time.Duration `yaml:"fetch_poll_interval"`
@@ -398,6 +402,7 @@ func Default() Config {
 		Ingress:     Ingress{Mode: IngressDomain, CertResolver: DefaultCertResolver, HSTSMaxAge: 365 * 24 * time.Hour},
 		Jobs: Jobs{
 			MaxWorkers:        5,
+			AppsMaxWorkers:    2,
 			FetchPollInterval: 5 * time.Second,
 			Noop:              PeriodicJob{Interval: time.Hour},
 		},
@@ -660,6 +665,9 @@ func (c *Config) Validate() error {
 
 	if c.Jobs.MaxWorkers < 1 {
 		fail("jobs.max_workers", "must be at least 1")
+	}
+	if c.Jobs.AppsMaxWorkers < 1 {
+		fail("jobs.apps_max_workers", "must be at least 1")
 	}
 	if c.Jobs.FetchPollInterval < 100*time.Millisecond {
 		fail("jobs.fetch_poll_interval", "must be at least 100ms")

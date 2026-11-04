@@ -20,6 +20,7 @@ import (
 // error handler renders it as problem details with its status.
 type apiError struct {
 	status     int
+	code       string
 	detail     string
 	retryAfter string
 }
@@ -27,6 +28,11 @@ type apiError struct {
 func (e *apiError) Error() string { return e.detail }
 
 func problemErr(status int, detail string) error { return &apiError{status: status, detail: detail} }
+
+// codedProblem is a problem with a stable machine-readable code.
+func codedProblem(status int, code, detail string) error {
+	return &apiError{status: status, code: code, detail: detail}
+}
 
 // httpKey carries the request and response writer into strict handlers,
 // which need cookies, headers and the client address.

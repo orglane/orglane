@@ -159,6 +159,52 @@ const (
 	EmailSettingsRemoved Action = "email_settings.removed"
 	// EmailSettingsTested: a test email was queued.
 	EmailSettingsTested Action = "email_settings.tested"
+
+	// App instances (docs/specs/providers.md "Audit"). Metadata never holds
+	// secrets, tokens or payloads; it carries the provider.
+	AppInstanceCreated        Action = "app_instance.created"
+	AppInstanceUpdated        Action = "app_instance.updated"
+	AppInstanceRemoved        Action = "app_instance.removed"
+	AppInstanceReinstalled    Action = "app_instance.reinstalled"
+	AppInstancePurged         Action = "app_instance.purged"
+	AppInstanceUpgradeStarted Action = "app_instance.upgrade_started"
+	AppInstanceUpgraded       Action = "app_instance.upgraded"
+	AppInstanceRolledBack     Action = "app_instance.rolled_back"
+	AppInstanceLogsRead       Action = "app_instance.logs_read"
+	// AppInstanceStateChanged: an instance changed state (activated,
+	// degraded, failed, setup retried); metadata names both states and the
+	// reason code.
+	AppInstanceStateChanged Action = "app_instance.state_changed"
+	// AppCredentialCreated: a credential version was stored (name and
+	// version only).
+	AppCredentialCreated Action = "app_credential.created" //nolint:gosec // an action name, not a credential
+	// AppCredentialRotationStarted: an admin asked for a new version.
+	AppCredentialRotationStarted Action = "app_credential.rotation_started" //nolint:gosec // an action name, not a credential
+	// AppCredentialRotated: a new version was acknowledged and is active.
+	AppCredentialRotated Action = "app_credential.rotated" //nolint:gosec // an action name, not a credential
+	// AppCredentialRotationFailed: the provider rejected a new version; it
+	// was discarded and the active version is unchanged.
+	AppCredentialRotationFailed Action = "app_credential.rotation_failed" //nolint:gosec // an action name, not a credential
+	// AppCredentialRotationStuck: a candidate has been uncertain for 24
+	// hours.
+	AppCredentialRotationStuck Action = "app_credential.rotation_stuck" //nolint:gosec // an action name, not a credential
+	// AppCredentialRotationAbandoned: an admin abandoned an uncertain
+	// candidate after the active value was re-applied.
+	AppCredentialRotationAbandoned Action = "app_credential.rotation_abandoned" //nolint:gosec // an action name, not a credential
+	AppBindingSet                  Action = "app_binding.set"
+	AppTeamMappingSet              Action = "app_team_mapping.set"
+	AppTeamMappingRemoved          Action = "app_team_mapping.removed"
+	AccountLinkVerified            Action = "account_link.verified"
+	AccountLinkRevoked             Action = "account_link.revoked"
+	// ProvisioningActionApplied: an action changed provider state (target:
+	// the person; metadata: instance, action kind, key).
+	ProvisioningActionApplied Action = "provisioning.action_applied"
+	// ProvisioningRemovalsConfirmed: an admin released a held removal batch.
+	ProvisioningRemovalsConfirmed Action = "provisioning.removals_confirmed"
+	// ProvisioningRemovalsHeld: the removal guard held a batch of removals.
+	ProvisioningRemovalsHeld Action = "provisioning.removals_held"
+	// ProvisioningRetried: an admin retried failed provisioning results.
+	ProvisioningRetried Action = "provisioning.retried"
 )
 
 // TargetKind is the kind of object an action applies to.
@@ -178,6 +224,8 @@ const (
 	// TargetProfileField is a profile field definition.
 	TargetProfileField TargetKind = "profile_field"
 	TargetInvitation   TargetKind = "invitation"
+	TargetAppInstance  TargetKind = "app_instance"
+	TargetAccountLink  TargetKind = "account_link"
 )
 
 // Target is the object an action applies to. The zero Target means the

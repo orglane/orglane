@@ -12,6 +12,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/orglane/orglane/core/internal/apps"
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/crypto"
 	"github.com/orglane/orglane/core/internal/identity"
@@ -20,6 +21,7 @@ import (
 	"github.com/orglane/orglane/core/internal/peopleimport"
 	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/core/internal/store"
+	adapter "github.com/orglane/orglane/providers/provider"
 )
 
 // Stack is the identity subsystem wired from the configuration, with the
@@ -33,6 +35,9 @@ type Stack struct {
 	Auth     *Auth
 	// Mail sends system email; the job queue delivers what it queues.
 	Mail *mail.Service
+	// Apps is the provider framework; it observes directory changes to
+	// queue provisioning.
+	Apps *apps.Service
 }
 
 // StackOptions adjust a Stack, mostly for tests.
@@ -42,6 +47,9 @@ type StackOptions struct {
 	Hasher *crypto.PasswordHasher
 	// Now replaces the clock of signing key rotation.
 	Now func() time.Time
+	// Adapters replaces the compiled provider adapters (tests register the
+	// test provider).
+	Adapters []adapter.CapabilityManifest
 }
 
 // NewStack builds the identity subsystem: the identity service with
@@ -118,7 +126,21 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 		return nil, err
 	}
 	profiles := profile.NewService(pool, keyring, profile.WithTeams(svc))
-	return &Stack{Identity: svc, Profile: profiles, Imports: peopleimport.NewService(pool, svc, profiles, keyring, peopleimport.WithLogger(logger)), Keys: keys, Provider: provider, Auth: auth, Mail: mailer}, nil
+	adapters := opts.Adapters
+	if adapters == nil {
+		adapters = apps.Compiled()
+	}
+	registry, err := apps.NewRegistry(adapters...)
+	if err != nil {
+		return nil, err
+	}
+	issuer, err := url.Parse(provider.Issuer())
+	if err != nil {
+		return nil, err
+	}
+	appsSvc := apps.NewService(pool, registry, keyring, apps.Config{WorkspaceURL: u, IssuerURL: issuer, Logger: logger})
+	svc.SetDirectoryObserver(appsSvc)
+	return &Stack{Identity: svc, Profile: profiles, Imports: peopleimport.NewService(pool, svc, profiles, keyring, peopleimport.WithLogger(logger)), Keys: keys, Provider: provider, Auth: auth, Mail: mailer, Apps: appsSvc}, nil
 }
 
 // Maintain rotates the signing key when due, deletes expired sign-in and

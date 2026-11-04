@@ -299,9 +299,11 @@ type Lifecycle interface {
     // Setup runs once after the first successful install (create the admin
     // API token, the organization, the webhooks). Idempotent; retried on failure.
     Setup(ctx context.Context, env Env, inst Instance) error
-    // Verify is the provider-level health check through inst.Upstream. The
-    // core calls it to confirm upgrades and on every health sync.
-    Verify(ctx context.Context, env Env, inst Instance) error
+    // CheckHealth is the provider-level health check through inst.Upstream.
+    // The core calls it to confirm upgrades and on every health sync. (Not
+    // named Verify: EventSource.Verify has another signature, and a managed
+    // provider such as Forgejo implements both.)
+    CheckHealth(ctx context.Context, env Env, inst Instance) error
 }
 
 // Connector connects an external provider (GitHub App). Steps are provider specific;

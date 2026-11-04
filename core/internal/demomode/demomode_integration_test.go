@@ -411,7 +411,7 @@ func TestOneClickSignIn(t *testing.T) {
 	for _, p := range people.Items {
 		want, ok := e.dataset.Person(p.Username)
 		if !ok || p.DisplayName != want.DisplayName || p.Title == nil || *p.Title != want.Title ||
-			!slices.Equal(p.Roles, []string{want.Role}) || p.AvatarUrl == nil || p.Status != apigen.Active {
+			!slices.Equal(p.Roles, []string{want.Role}) || p.AvatarUrl == nil || p.Status != apigen.PersonStatusActive {
 			t.Errorf("directory entry %+v does not match the dataset", p)
 		}
 		if p.Username == owner.Username {

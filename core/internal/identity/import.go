@@ -198,6 +198,9 @@ func (s *Service) ImportPersonTx(ctx context.Context, tx pgx.Tx, q *store.Querie
 		if _, err = audit.Record(ctx, q, audit.Entry{Actor: actor, Action: audit.TeamMemberAdded, Target: teamTarget(id), Metadata: map[string]any{"person_id": in.ID, "role": TeamRoleMember}}); err != nil {
 			return store.Person{}, err
 		}
+		if err := s.directoryChanged(ctx, q, []uuid.UUID{in.ID}); err != nil {
+			return store.Person{}, err
+		}
 	}
 	if created {
 		if err := s.issueImportedInvitation(ctx, tx, q, actor, person, in.SendInvitation); err != nil {

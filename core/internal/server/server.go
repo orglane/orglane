@@ -63,6 +63,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			return err
 		},
 		Mail: stack.Mail,
+		Apps: stack.Apps,
 	})
 	if err != nil {
 		return err
@@ -89,6 +90,8 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		Profile:       stack.Profile,
 		Imports:       stack.Imports,
 		Mail:          stack.Mail,
+		Apps:          stack.Apps,
+		EmployeeSteps: stack.Apps.EmployeeSteps(),
 		WorkEmail:     cfg.WorkEmail,
 		Demo:          dataset,
 		ReadinessChecks: []api.ReadinessCheck{

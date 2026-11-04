@@ -1192,6 +1192,391 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Compiled providers
+         * @description The provider adapters compiled into this server, with their
+         *     capability matrix (every feature, including unsupported and planned
+         *     ones), credentials (names only), settings schema and employee steps.
+         */
+        get: operations["listAppProviders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * App instances
+         * @description Every app instance with its state, health and version, oldest first. Removed instances are included.
+         */
+        get: operations["listAppInstances"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * An app instance
+         * @description State, settings, bindings, the last operations, credential versions
+         *     (names, versions and states, never values), the unmanaged account
+         *     count and provisioning result counts.
+         */
+        get: operations["getAppInstance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change an app instance
+         * @description Changes the display name, the access policy, whether existing
+         *     provider members are managed (removable) and provider settings.
+         *     Omitted fields stay unchanged; a `null` setting removes it.
+         *     Immutable settings cannot change (400). Removed instances cannot
+         *     change (409). Changes that affect access queue provisioning.
+         */
+        patch: operations["updateAppInstance"];
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry the setup of a managed instance
+         * @description Retries `Lifecycle.Setup` of a managed instance that is `failed`
+         *     with `setup_failed`: it goes back to `installing` and the setup job
+         *     runs again. Other states are refused (409, `invalid_state`).
+         */
+        post: operations["retryAppInstanceSetup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate a credential
+         * @description Starts a staged rotation of a rotatable credential: the new version
+         *     is stored as `pending` and handed to the provider by a job. The
+         *     active version stays in use until the provider acknowledges the new
+         *     one; a definite rejection discards it, an unknown answer keeps it
+         *     `uncertain` and retries. At most one rotation per credential runs
+         *     (409, `rotation_in_progress`). Credentials the agent consumes rotate
+         *     with the managed service and are refused (409, `not_supported`).
+         */
+        post: operations["rotateAppCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Abandon a rotation
+         * @description Gives up the pending or uncertain version of a credential. A job
+         *     first re-applies the active value to the provider until it is
+         *     acknowledged, and only then discards the candidate. Without a
+         *     rotation in progress: 409, `no_rotation`.
+         */
+        post: operations["abandonAppCredentialRotation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Capability bindings
+         * @description Capability → app instance bindings, at most one default per capability.
+         */
+        get: operations["listAppBindings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/bindings/{capability}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the default instance of a capability
+         * @description The instance must already be bound to the capability (it is once it is active); otherwise 404.
+         */
+        put: operations["setDefaultAppBinding"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/team-mappings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Team mappings
+         * @description The Orglane teams mapped to provider teams of the instance, with the provider team names.
+         */
+        get: operations["listAppTeamMappings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/team-mappings/{teamId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Create or change a team mapping
+         * @description `create`: Orglane creates a provider team named after the team's
+         *     slug. `existing`: maps to the provider team `externalRef`. Archived
+         *     teams cannot be mapped (400). Queues provisioning for the instance.
+         */
+        put: operations["setAppTeamMapping"];
+        post?: never;
+        /**
+         * Remove a team mapping
+         * @description Members lose what the mapping granted, through the removal guard.
+         */
+        delete: operations["removeAppTeamMapping"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/provisioning": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Provisioning status
+         * @description A page of provisioning results (by display name), the unmanaged
+         *     accounts report and the held removal batch, if any.
+         */
+        get: operations["getAppProvisioning"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/provisioning/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dry run
+         * @description Plans every person the instance concerns (at most 1000) without
+         *     changing anything: no provider state, results or jobs. Removals of
+         *     accounts Orglane does not manage are never planned.
+         */
+        post: operations["planAppProvisioning"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/provisioning/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry failed results
+         * @description Queues provisioning again for every failed result of the instance, or for one person's.
+         */
+        post: operations["retryAppProvisioning"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/provisioning/removal-batches/{batchId}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Release a held removal batch
+         * @description Confirms the held batch with the `itemsHash` the admin saw. A batch
+         *     that is no longer held or whose items changed is refused (409,
+         *     `batch_changed`). Each item is re-checked before it is applied: an
+         *     item whose person's desired access changed since the preview is
+         *     dropped, never applied.
+         */
+        post: operations["confirmAppRemovalBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/people/{personId}/apps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A person's app access and links
+         * @description The person's provisioning results in every app instance, their
+         *     verified account links and their unverified import evidence
+         *     (`pending`, which never grants access).
+         */
+        get: operations["getPersonApps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/apps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My apps
+         * @description The active app instances the caller has access to, with their home URLs and the state of the caller's access.
+         */
+        get: operations["listMyApps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/{instanceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Provider webhooks
+         * @description Webhook deliveries from providers. The provider's signature over
+         *     the exact raw body is the authentication; the body is opaque here
+         *     (usually JSON) and is never decoded before verification. Unknown,
+         *     removed or connecting instances answer 404 without saying which. A
+         *     body over 5 MiB answers 413 and nothing is stored. A bad signature
+         *     answers 401 and nothing is stored. A new delivery is stored and
+         *     queued (202); one whose signed body or delivery ID was seen before
+         *     is a duplicate (200, nothing queued).
+         */
+        post: operations["receiveWebhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1276,6 +1661,8 @@ export interface components {
             detail?: string;
             /** @description A URI reference identifying this occurrence (the request path). */
             instance?: string;
+            /** @description A stable, machine-readable error code where the operation documents one, e.g. key_reserved or batch_changed. */
+            code?: string;
         };
         Health: {
             /** @enum {string} */
@@ -2003,6 +2390,409 @@ export interface components {
             /** @example alex@example.com */
             to: string;
         };
+        /**
+         * @description `managed`: Orglane runs the service through the agent; `connected`: an external service Orglane talks to.
+         * @enum {string}
+         */
+        AppManagement: "managed" | "connected";
+        /**
+         * @description `all_people`: every active person; `mapped_teams`: members of mapped teams only.
+         * @enum {string}
+         */
+        AppAccessPolicy: "all_people" | "mapped_teams";
+        /** @enum {string} */
+        AppInstanceState: "connecting" | "installing" | "active" | "degraded" | "upgrading" | "failed" | "disconnected" | "removing" | "removed";
+        /** @enum {string} */
+        AppHealth: "unknown" | "healthy" | "unhealthy";
+        /** @description One cell of the capability matrix. */
+        AppFeatureSupport: {
+            /** @example accounts.create */
+            feature: string;
+            /** @enum {string} */
+            support: "supported" | "partial" | "planned" | "unsupported";
+            /**
+             * @description An i18n key explaining the cell.
+             * @example providers.github.features.accounts_invite_only
+             */
+            note?: string;
+            /** @description For `planned`, the milestone, e.g. M5. */
+            milestone?: string;
+        };
+        AppCredentialSpec: {
+            /** @example webhook_secret */
+            name: string;
+            /** @enum {string} */
+            source: "generated" | "provider" | "upload";
+            rotatable: boolean;
+            /** @description Passed to the agent as a secret input (managed packages); rotates with the managed service. */
+            agent: boolean;
+        };
+        AppSettingSpec: {
+            name: string;
+            /** @enum {string} */
+            type: "string" | "int" | "bool";
+            /** @description Strings only; an RE2 pattern the whole value must match. */
+            pattern?: string;
+            enum?: string[];
+            /** Format: int64 */
+            min?: number;
+            /** Format: int64 */
+            max?: number;
+            /** @description The default value (a JSON scalar). */
+            default?: unknown;
+            /** @description False if fixed once the instance is created. */
+            mutable: boolean;
+        };
+        AppEmployeeStep: {
+            /** @example github.link-account */
+            id: string;
+            /** @description English fallback; the UI translates `onboarding.steps.<id>.title`. */
+            title: string;
+            description: string;
+            actionPath: string;
+            required: boolean;
+        };
+        AppProvider: {
+            /** @example forgejo */
+            id: string;
+            /** @description English display name; the UI translates `providers.<id>.name`. */
+            name: string;
+            capabilities: string[];
+            management: components["schemas"]["AppManagement"];
+            /** @description The managed package ID (managed providers only). */
+            package?: string;
+            /** @description The capability matrix, every feature in matrix order. */
+            features: components["schemas"]["AppFeatureSupport"][];
+            credentials: components["schemas"]["AppCredentialSpec"][];
+            settings: components["schemas"]["AppSettingSpec"][];
+            employeeSteps: components["schemas"]["AppEmployeeStep"][];
+            defaultKey: string;
+            defaultPolicy: components["schemas"]["AppAccessPolicy"];
+            /** @description The adapter provisions people. */
+            provisioning: boolean;
+            /** @description The adapter receives webhooks. */
+            webhooks: boolean;
+            /** @description The adapter has a managed lifecycle (setup, health). */
+            lifecycle: boolean;
+        };
+        AppProviderList: {
+            items: components["schemas"]["AppProvider"][];
+        };
+        AppInstance: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description Short, stable, immutable ID (directory, Compose project and database names).
+             * @example git
+             */
+            key: string;
+            /** @example forgejo */
+            provider: string;
+            /** @description False if the provider is not compiled into this server. */
+            providerAvailable: boolean;
+            management: components["schemas"]["AppManagement"];
+            displayName: string;
+            state: components["schemas"]["AppInstanceState"];
+            health: components["schemas"]["AppHealth"];
+            /** @description Stable reason code of the health or state, e.g. setup_failed. */
+            healthCode?: string;
+            /** Format: date-time */
+            healthCheckedAt?: string;
+            /** @description The public base URL, once known. */
+            baseUrl?: string;
+            accessPolicy: components["schemas"]["AppAccessPolicy"];
+            /** @description Pre-existing provider members are managed (and may be removed). Off by default. */
+            manageExistingMembers: boolean;
+            packageId?: string;
+            packageVersion?: string;
+            /** @description Non-secret provider settings. */
+            settings: {
+                [key: string]: unknown;
+            };
+            /** @description Where the provider delivers webhooks (providers that take webhooks). */
+            webhookUrl?: string;
+            dataRetained: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            removedAt?: string;
+        };
+        AppInstanceList: {
+            items: components["schemas"]["AppInstance"][];
+        };
+        AppOperation: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            generation?: number;
+            /** @enum {string} */
+            kind: "apply" | "upgrade" | "snapshot" | "restore" | "remove";
+            /** @enum {string} */
+            state: "queued" | "running" | "awaiting_confirmation" | "succeeded" | "failed" | "rolled_back";
+            phase?: string;
+            errorCode?: string;
+            fromVersion?: string;
+            toVersion?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            finishedAt?: string;
+        };
+        /** @description A credential version, never its value. */
+        AppCredentialVersion: {
+            name: string;
+            version: number;
+            /** @enum {string} */
+            state: "pending" | "uncertain" | "active" | "retiring";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            activatedAt?: string;
+            /** Format: date-time */
+            retireAt?: string;
+        };
+        AppProvisioningCounts: {
+            queued: number;
+            done: number;
+            pendingEmployeeAction: number;
+            failed: number;
+        };
+        AppInstanceDetail: {
+            instance: components["schemas"]["AppInstance"];
+            bindings: {
+                capability: string;
+                isDefault: boolean;
+            }[];
+            /** @description The last 10 agent operations (managed instances). */
+            operations: components["schemas"]["AppOperation"][];
+            credentials: components["schemas"]["AppCredentialVersion"][];
+            /** @description A credential rotation has been uncertain for more than 24 hours. */
+            rotationStuck: boolean;
+            unmanagedAccountCount: number;
+            provisioning: components["schemas"]["AppProvisioningCounts"];
+        };
+        UpdateAppInstanceRequest: {
+            displayName?: string;
+            accessPolicy?: components["schemas"]["AppAccessPolicy"];
+            manageExistingMembers?: boolean;
+            settings?: {
+                [key: string]: unknown;
+            };
+        };
+        AppCredentialRotation: {
+            name: string;
+            version: number;
+        };
+        AppBinding: {
+            /** @example code */
+            capability: string;
+            /** Format: uuid */
+            instanceId: string;
+            instanceKey: string;
+            instanceDisplayName: string;
+            provider: string;
+            instanceState: components["schemas"]["AppInstanceState"];
+            isDefault: boolean;
+        };
+        AppBindingList: {
+            items: components["schemas"]["AppBinding"][];
+        };
+        SetDefaultAppBindingRequest: {
+            /** Format: uuid */
+            instanceId: string;
+        };
+        /**
+         * @description `create`: Orglane creates a provider team named after the team slug; `existing`: an existing provider team.
+         * @enum {string}
+         */
+        AppTeamMappingMode: "create" | "existing";
+        AppTeamMapping: {
+            /** Format: uuid */
+            teamId: string;
+            teamSlug: string;
+            teamName: string;
+            /** @description Archived teams keep their mapping but grant nothing. */
+            teamArchived: boolean;
+            mode: components["schemas"]["AppTeamMappingMode"];
+            /** @description The provider team ID, once created or chosen. */
+            externalRef?: string;
+            externalName?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        AppTeamMappingList: {
+            items: components["schemas"]["AppTeamMapping"][];
+        };
+        SetAppTeamMappingRequest: {
+            mode: components["schemas"]["AppTeamMappingMode"];
+            /** @description The provider team (mode existing only). */
+            externalRef?: string;
+            externalName?: string;
+        };
+        /**
+         * @description `queued`: a change was detected, the job has not finished;
+         *     `done`: the provider matches the desired access;
+         *     `pending_employee_action`: nothing can happen until the person acts
+         *     (`employeeStep` names the step); `failed`: an action failed
+         *     permanently or its retries are exhausted (`errorCode`).
+         * @enum {string}
+         */
+        ProvisioningStatus: "queued" | "done" | "pending_employee_action" | "failed";
+        ProvisioningActionResult: {
+            /** @example add_to_team */
+            kind: string;
+            key: string;
+            /** @enum {string} */
+            outcome: "changed" | "unchanged" | "failed" | "not_attempted" | "held";
+            removal: boolean;
+            errorCode?: string;
+        };
+        ProvisioningResult: {
+            person: components["schemas"]["PersonCard"];
+            status: components["schemas"]["ProvisioningStatus"];
+            /** @description The desired access at the last plan. */
+            access: boolean;
+            employeeStep?: string;
+            grantedByOrglane: boolean;
+            actions: components["schemas"]["ProvisioningActionResult"][];
+            errorCode?: string;
+            attempts: number;
+            /** Format: date-time */
+            lastAttemptAt?: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        UnmanagedAccount: {
+            externalId: string;
+            login: string;
+            /** Format: date-time */
+            seenAt: string;
+        };
+        HeldRemoval: {
+            /** Format: uuid */
+            id: string;
+            person: components["schemas"]["PersonCard"];
+            /** @example remove_from_team */
+            kind: string;
+            key: string;
+        };
+        HeldRemovalBatch: {
+            /** Format: uuid */
+            id: string;
+            itemCount: number;
+            /** @description Hex SHA-256 over the batch items; send it back to confirm exactly what was shown. */
+            itemsHash: string;
+            /** Format: date-time */
+            createdAt: string;
+            items: components["schemas"]["HeldRemoval"][];
+        };
+        AppProvisioning: {
+            items: components["schemas"]["ProvisioningResult"][];
+            counts: components["schemas"]["AppProvisioningCounts"];
+            /** @description Provider accounts Orglane does not manage. Reported, never removed. */
+            unmanagedAccounts: components["schemas"]["UnmanagedAccount"][];
+            heldRemovals?: components["schemas"]["HeldRemovalBatch"];
+        };
+        PlannedAction: {
+            kind: string;
+            key: string;
+            removal: boolean;
+        };
+        PlannedPerson: {
+            person: components["schemas"]["PersonCard"];
+            access: boolean;
+            actions: components["schemas"]["PlannedAction"][];
+            employeeStep?: string;
+            errorCode?: string;
+        };
+        AppProvisioningPlan: {
+            items: components["schemas"]["PlannedPerson"][];
+            /** @description More than 1000 people; only the first were planned. */
+            truncated: boolean;
+        };
+        RetryAppProvisioningRequest: {
+            /**
+             * Format: uuid
+             * @description Only this person's failed result.
+             */
+            personId?: string;
+        };
+        AppProvisioningRetry: {
+            queued: number;
+        };
+        ConfirmAppRemovalBatchRequest: {
+            itemsHash: string;
+        };
+        PersonAppResult: {
+            /** Format: uuid */
+            instanceId: string;
+            instanceKey: string;
+            instanceDisplayName: string;
+            provider: string;
+            instanceState: components["schemas"]["AppInstanceState"];
+            status: components["schemas"]["ProvisioningStatus"];
+            access: boolean;
+            employeeStep?: string;
+            errorCode?: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /**
+         * @description A link between a person and a provider account. `verified` links are
+         *     proven (OAuth from the person's own session, or an account Orglane
+         *     created); `pending` is import evidence that proves nothing.
+         */
+        AccountLinkView: {
+            /**
+             * Format: uuid
+             * @description Verified links only.
+             */
+            id?: string;
+            provider: string;
+            realm?: string;
+            login: string;
+            externalId: string;
+            /** @enum {string} */
+            state: "verified" | "pending";
+            /** @enum {string} */
+            method?: "oauth" | "provisioned";
+            /** @enum {string} */
+            evidence?: "matched" | "mismatched" | "none";
+            /**
+             * Format: int64
+             * @description Pending GitHub evidence only.
+             */
+            organizationId?: number;
+            /** Format: uuid */
+            instanceId?: string;
+            /** Format: date-time */
+            verifiedAt?: string;
+        };
+        PersonApps: {
+            results: components["schemas"]["PersonAppResult"][];
+            links: components["schemas"]["AccountLinkView"][];
+        };
+        MyApp: {
+            /** Format: uuid */
+            instanceId: string;
+            key: string;
+            displayName: string;
+            provider: string;
+            capabilities: string[];
+            /** @description The instance's base URL, once known. */
+            homeUrl?: string;
+            status: components["schemas"]["ProvisioningStatus"];
+            employeeStep?: string;
+            /** @description Where the caller completes `employeeStep` (a local path). */
+            actionPath?: string;
+        };
+        MyAppList: {
+            items: components["schemas"]["MyApp"][];
+        };
     };
     responses: {
         /** @description The request is invalid. */
@@ -2095,6 +2885,10 @@ export interface components {
         TeamId: string;
         PersonId: string;
         InvitationId: string;
+        /** @description An app instance ID. */
+        InstanceId: string;
+        /** @description A credential name declared by the instance's provider. */
+        CredentialName: string;
     };
     requestBodies: never;
     headers: never;
@@ -3801,6 +4595,556 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listAppProviders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The providers, by ID. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppProviderList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listAppInstances: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The app instances. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppInstanceList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getAppInstance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The app instance. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppInstanceDetail"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    updateAppInstance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAppInstanceRequest"];
+            };
+        };
+        responses: {
+            /** @description The changed app instance. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppInstance"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    retryAppInstanceSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Setup was queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppInstance"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    rotateAppCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+                /** @description A credential name declared by the instance's provider. */
+                credentialName: components["parameters"]["CredentialName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rotation started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppCredentialRotation"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    abandonAppCredentialRotation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+                /** @description A credential name declared by the instance's provider. */
+                credentialName: components["parameters"]["CredentialName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Abandoning was queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listAppBindings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The bindings, by capability. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppBindingList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    setDefaultAppBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                capability: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetDefaultAppBindingRequest"];
+            };
+        };
+        responses: {
+            /** @description The bindings of the capability. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppBindingList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listAppTeamMappings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The mappings, by team name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppTeamMappingList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    setAppTeamMapping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+                teamId: components["parameters"]["TeamId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAppTeamMappingRequest"];
+            };
+        };
+        responses: {
+            /** @description The mapping. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppTeamMapping"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    removeAppTeamMapping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+                teamId: components["parameters"]["TeamId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getAppProvisioning: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The provisioning status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppProvisioning"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    planAppProvisioning: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The planned actions per person. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppProvisioningPlan"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    retryAppProvisioning: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RetryAppProvisioningRequest"];
+            };
+        };
+        responses: {
+            /** @description The retries were queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppProvisioningRetry"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    confirmAppRemovalBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmAppRemovalBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description The removals were released and queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getPersonApps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The person's app access. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonApps"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listMyApps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's apps. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyAppList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    receiveWebhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "*/*": string;
+            };
+        };
+        responses: {
+            /** @description A duplicate delivery; nothing was queued. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The delivery was stored and queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description The body is larger than 5 MiB. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             500: components["responses"]["InternalError"];
         };
     };

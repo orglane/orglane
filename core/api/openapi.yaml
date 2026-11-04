@@ -1919,6 +1919,634 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/apps/providers:
+    get:
+      operationId: listAppProviders
+      summary: Compiled providers
+      description: |
+        The provider adapters compiled into this server, with their
+        capability matrix (every feature, including unsupported and planned
+        ones), credentials (names only), settings schema and employee steps.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The providers, by ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppProviderList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances:
+    get:
+      operationId: listAppInstances
+      summary: App instances
+      description: Every app instance with its state, health and version, oldest first. Removed instances are included.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The app instances.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppInstanceList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}:
+    get:
+      operationId: getAppInstance
+      summary: An app instance
+      description: |
+        State, settings, bindings, the last operations, credential versions
+        (names, versions and states, never values), the unmanaged account
+        count and provisioning result counts.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: The app instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppInstanceDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      operationId: updateAppInstance
+      summary: Change an app instance
+      description: |
+        Changes the display name, the access policy, whether existing
+        provider members are managed (removable) and provider settings.
+        Omitted fields stay unchanged; a `null` setting removes it.
+        Immutable settings cannot change (400). Removed instances cannot
+        change (409). Changes that affect access queue provisioning.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAppInstanceRequest"
+      responses:
+        "200":
+          description: The changed app instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppInstance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/setup:
+    post:
+      operationId: retryAppInstanceSetup
+      summary: Retry the setup of a managed instance
+      description: |
+        Retries `Lifecycle.Setup` of a managed instance that is `failed`
+        with `setup_failed`: it goes back to `installing` and the setup job
+        runs again. Other states are refused (409, `invalid_state`).
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "202":
+          description: Setup was queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppInstance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate:
+    post:
+      operationId: rotateAppCredential
+      summary: Rotate a credential
+      description: |
+        Starts a staged rotation of a rotatable credential: the new version
+        is stored as `pending` and handed to the provider by a job. The
+        active version stays in use until the provider acknowledges the new
+        one; a definite rejection discards it, an unknown answer keeps it
+        `uncertain` and retries. At most one rotation per credential runs
+        (409, `rotation_in_progress`). Credentials the agent consumes rotate
+        with the managed service and are refused (409, `not_supported`).
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - $ref: "#/components/parameters/CredentialName"
+      responses:
+        "202":
+          description: The rotation started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppCredentialRotation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon:
+    post:
+      operationId: abandonAppCredentialRotation
+      summary: Abandon a rotation
+      description: |
+        Gives up the pending or uncertain version of a credential. A job
+        first re-applies the active value to the provider until it is
+        acknowledged, and only then discards the candidate. Without a
+        rotation in progress: 409, `no_rotation`.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - $ref: "#/components/parameters/CredentialName"
+      responses:
+        "202":
+          description: Abandoning was queued.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/bindings:
+    get:
+      operationId: listAppBindings
+      summary: Capability bindings
+      description: Capability → app instance bindings, at most one default per capability.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The bindings, by capability.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppBindingList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/bindings/{capability}:
+    put:
+      operationId: setDefaultAppBinding
+      summary: Set the default instance of a capability
+      description: The instance must already be bound to the capability (it is once it is active); otherwise 404.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: capability
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-z][a-z0-9_.]{0,40}$"
+            example: code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetDefaultAppBindingRequest"
+      responses:
+        "200":
+          description: The bindings of the capability.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppBindingList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/team-mappings:
+    get:
+      operationId: listAppTeamMappings
+      summary: Team mappings
+      description: The Orglane teams mapped to provider teams of the instance, with the provider team names.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: The mappings, by team name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppTeamMappingList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/team-mappings/{teamId}:
+    put:
+      operationId: setAppTeamMapping
+      summary: Create or change a team mapping
+      description: |
+        `create`: Orglane creates a provider team named after the team's
+        slug. `existing`: maps to the provider team `externalRef`. Archived
+        teams cannot be mapped (400). Queues provisioning for the instance.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetAppTeamMappingRequest"
+      responses:
+        "200":
+          description: The mapping.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppTeamMapping"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      operationId: removeAppTeamMapping
+      summary: Remove a team mapping
+      description: Members lose what the mapping granted, through the removal guard.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - $ref: "#/components/parameters/TeamId"
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/provisioning:
+    get:
+      operationId: getAppProvisioning
+      summary: Provisioning status
+      description: |
+        A page of provisioning results (by display name), the unmanaged
+        accounts report and the held removal batch, if any.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: The provisioning status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppProvisioning"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/provisioning/plan:
+    post:
+      operationId: planAppProvisioning
+      summary: Dry run
+      description: |
+        Plans every person the instance concerns (at most 1000) without
+        changing anything: no provider state, results or jobs. Removals of
+        accounts Orglane does not manage are never planned.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: The planned actions per person.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppProvisioningPlan"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/provisioning/retry:
+    post:
+      operationId: retryAppProvisioning
+      summary: Retry failed results
+      description: Queues provisioning again for every failed result of the instance, or for one person's.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryAppProvisioningRequest"
+      responses:
+        "202":
+          description: The retries were queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppProvisioningRetry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/provisioning/removal-batches/{batchId}/confirm:
+    post:
+      operationId: confirmAppRemovalBatch
+      summary: Release a held removal batch
+      description: |
+        Confirms the held batch with the `itemsHash` the admin saw. A batch
+        that is no longer held or whose items changed is refused (409,
+        `batch_changed`). Each item is re-checked before it is applied: an
+        item whose person's desired access changed since the preview is
+        dropped, never applied.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - name: batchId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmAppRemovalBatchRequest"
+      responses:
+        "202":
+          description: The removals were released and queued.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/people/{personId}/apps:
+    get:
+      operationId: getPersonApps
+      summary: A person's app access and links
+      description: |
+        The person's provisioning results in every app instance, their
+        verified account links and their unverified import evidence
+        (`pending`, which never grants access).
+      tags: [apps]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PersonId"
+      responses:
+        "200":
+          description: The person's app access.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonApps"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/me/apps:
+    get:
+      operationId: listMyApps
+      summary: My apps
+      description: The active app instances the caller has access to, with their home URLs and the state of the caller's access.
+      tags: [apps]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The caller's apps.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyAppList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/webhooks/{instanceId}:
+    post:
+      operationId: receiveWebhook
+      summary: Provider webhooks
+      description: |
+        Webhook deliveries from providers. The provider's signature over
+        the exact raw body is the authentication; the body is opaque here
+        (usually JSON) and is never decoded before verification. Unknown,
+        removed or connecting instances answer 404 without saying which. A
+        body over 5 MiB answers 413 and nothing is stored. A bad signature
+        answers 401 and nothing is stored. A new delivery is stored and
+        queued (202); one whose signed body or delivery ID was seen before
+        is a duplicate (200, nothing queued).
+      tags: [apps]
+      x-orglane-permission: public
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      requestBody:
+        required: true
+        content:
+          "*/*":
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: A duplicate delivery; nothing was queued.
+        "202":
+          description: The delivery was stored and queued.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          description: The body is larger than 5 MiB.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalError"
 components:
   securitySchemes:
     bearerAuth:
@@ -1950,6 +2578,23 @@ components:
       schema:
         type: string
         format: uuid
+    InstanceId:
+      name: instanceId
+      in: path
+      required: true
+      description: An app instance ID.
+      schema:
+        type: string
+        format: uuid
+    CredentialName:
+      name: credentialName
+      in: path
+      required: true
+      description: A credential name declared by the instance's provider.
+      schema:
+        type: string
+        pattern: "^[a-z][a-z0-9_]{0,40}$"
+        example: webhook_secret
   responses:
     BadRequest:
       description: The request is invalid.
@@ -2124,6 +2769,9 @@ components:
         instance:
           type: string
           description: A URI reference identifying this occurrence (the request path).
+        code:
+          type: string
+          description: A stable, machine-readable error code where the operation documents one, e.g. key_reserved or batch_changed.
     Health:
       type: object
       required: [status]
@@ -3214,3 +3862,708 @@ components:
         to:
           type: string
           example: alex@example.com
+    AppManagement:
+      type: string
+      description: "`managed`: Orglane runs the service through the agent; `connected`: an external service Orglane talks to."
+      enum: [managed, connected]
+    AppAccessPolicy:
+      type: string
+      description: "`all_people`: every active person; `mapped_teams`: members of mapped teams only."
+      enum: [all_people, mapped_teams]
+    AppInstanceState:
+      type: string
+      enum: [connecting, installing, active, degraded, upgrading, failed, disconnected, removing, removed]
+    AppHealth:
+      type: string
+      enum: [unknown, healthy, unhealthy]
+    AppFeatureSupport:
+      type: object
+      description: One cell of the capability matrix.
+      required: [feature, support]
+      properties:
+        feature:
+          type: string
+          example: accounts.create
+        support:
+          type: string
+          enum: [supported, partial, planned, unsupported]
+        note:
+          type: string
+          description: An i18n key explaining the cell.
+          example: providers.github.features.accounts_invite_only
+        milestone:
+          type: string
+          description: For `planned`, the milestone, e.g. M5.
+    AppCredentialSpec:
+      type: object
+      required: [name, source, rotatable, agent]
+      properties:
+        name:
+          type: string
+          example: webhook_secret
+        source:
+          type: string
+          enum: [generated, provider, upload]
+        rotatable:
+          type: boolean
+        agent:
+          type: boolean
+          description: Passed to the agent as a secret input (managed packages); rotates with the managed service.
+    AppSettingSpec:
+      type: object
+      required: [name, type, mutable]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [string, int, bool]
+        pattern:
+          type: string
+          description: Strings only; an RE2 pattern the whole value must match.
+        enum:
+          type: array
+          items:
+            type: string
+        min:
+          type: integer
+          format: int64
+        max:
+          type: integer
+          format: int64
+        default:
+          description: The default value (a JSON scalar).
+        mutable:
+          type: boolean
+          description: False if fixed once the instance is created.
+    AppEmployeeStep:
+      type: object
+      required: [id, title, description, actionPath, required]
+      properties:
+        id:
+          type: string
+          example: github.link-account
+        title:
+          type: string
+          description: English fallback; the UI translates `onboarding.steps.<id>.title`.
+        description:
+          type: string
+        actionPath:
+          type: string
+        required:
+          type: boolean
+    AppProvider:
+      type: object
+      required: [id, name, capabilities, management, features, credentials, settings, employeeSteps, defaultKey, defaultPolicy, provisioning, webhooks, lifecycle]
+      properties:
+        id:
+          type: string
+          example: forgejo
+        name:
+          type: string
+          description: English display name; the UI translates `providers.<id>.name`.
+        capabilities:
+          type: array
+          items:
+            type: string
+            example: code
+        management:
+          $ref: "#/components/schemas/AppManagement"
+        package:
+          type: string
+          description: The managed package ID (managed providers only).
+        features:
+          type: array
+          description: The capability matrix, every feature in matrix order.
+          items:
+            $ref: "#/components/schemas/AppFeatureSupport"
+        credentials:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppCredentialSpec"
+        settings:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppSettingSpec"
+        employeeSteps:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppEmployeeStep"
+        defaultKey:
+          type: string
+        defaultPolicy:
+          $ref: "#/components/schemas/AppAccessPolicy"
+        provisioning:
+          type: boolean
+          description: The adapter provisions people.
+        webhooks:
+          type: boolean
+          description: The adapter receives webhooks.
+        lifecycle:
+          type: boolean
+          description: The adapter has a managed lifecycle (setup, health).
+    AppProviderList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppProvider"
+    AppInstance:
+      type: object
+      required: [id, key, provider, providerAvailable, management, displayName, state, health, accessPolicy, manageExistingMembers, settings, dataRetained, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        key:
+          type: string
+          description: Short, stable, immutable ID (directory, Compose project and database names).
+          example: git
+        provider:
+          type: string
+          example: forgejo
+        providerAvailable:
+          type: boolean
+          description: False if the provider is not compiled into this server.
+        management:
+          $ref: "#/components/schemas/AppManagement"
+        displayName:
+          type: string
+        state:
+          $ref: "#/components/schemas/AppInstanceState"
+        health:
+          $ref: "#/components/schemas/AppHealth"
+        healthCode:
+          type: string
+          description: Stable reason code of the health or state, e.g. setup_failed.
+        healthCheckedAt:
+          type: string
+          format: date-time
+        baseUrl:
+          type: string
+          description: The public base URL, once known.
+        accessPolicy:
+          $ref: "#/components/schemas/AppAccessPolicy"
+        manageExistingMembers:
+          type: boolean
+          description: Pre-existing provider members are managed (and may be removed). Off by default.
+        packageId:
+          type: string
+        packageVersion:
+          type: string
+        settings:
+          type: object
+          description: Non-secret provider settings.
+          additionalProperties: true
+        webhookUrl:
+          type: string
+          description: Where the provider delivers webhooks (providers that take webhooks).
+        dataRetained:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        removedAt:
+          type: string
+          format: date-time
+    AppInstanceList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppInstance"
+    AppOperation:
+      type: object
+      required: [id, kind, state, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        generation:
+          type: integer
+          format: int64
+        kind:
+          type: string
+          enum: [apply, upgrade, snapshot, restore, remove]
+        state:
+          type: string
+          enum: [queued, running, awaiting_confirmation, succeeded, failed, rolled_back]
+        phase:
+          type: string
+        errorCode:
+          type: string
+        fromVersion:
+          type: string
+        toVersion:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+    AppCredentialVersion:
+      type: object
+      description: A credential version, never its value.
+      required: [name, version, state, createdAt]
+      properties:
+        name:
+          type: string
+        version:
+          type: integer
+        state:
+          type: string
+          enum: [pending, uncertain, active, retiring]
+        createdAt:
+          type: string
+          format: date-time
+        activatedAt:
+          type: string
+          format: date-time
+        retireAt:
+          type: string
+          format: date-time
+    AppProvisioningCounts:
+      type: object
+      required: [queued, done, pendingEmployeeAction, failed]
+      properties:
+        queued:
+          type: integer
+        done:
+          type: integer
+        pendingEmployeeAction:
+          type: integer
+        failed:
+          type: integer
+    AppInstanceDetail:
+      type: object
+      required: [instance, bindings, operations, credentials, rotationStuck, unmanagedAccountCount, provisioning]
+      properties:
+        instance:
+          $ref: "#/components/schemas/AppInstance"
+        bindings:
+          type: array
+          items:
+            type: object
+            required: [capability, isDefault]
+            properties:
+              capability:
+                type: string
+              isDefault:
+                type: boolean
+        operations:
+          type: array
+          description: The last 10 agent operations (managed instances).
+          items:
+            $ref: "#/components/schemas/AppOperation"
+        credentials:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppCredentialVersion"
+        rotationStuck:
+          type: boolean
+          description: A credential rotation has been uncertain for more than 24 hours.
+        unmanagedAccountCount:
+          type: integer
+        provisioning:
+          $ref: "#/components/schemas/AppProvisioningCounts"
+    UpdateAppInstanceRequest:
+      type: object
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 100
+        accessPolicy:
+          $ref: "#/components/schemas/AppAccessPolicy"
+        manageExistingMembers:
+          type: boolean
+        settings:
+          type: object
+          additionalProperties: true
+    AppCredentialRotation:
+      type: object
+      required: [name, version]
+      properties:
+        name:
+          type: string
+        version:
+          type: integer
+    AppBinding:
+      type: object
+      required: [capability, instanceId, instanceKey, instanceDisplayName, provider, instanceState, isDefault]
+      properties:
+        capability:
+          type: string
+          example: code
+        instanceId:
+          type: string
+          format: uuid
+        instanceKey:
+          type: string
+        instanceDisplayName:
+          type: string
+        provider:
+          type: string
+        instanceState:
+          $ref: "#/components/schemas/AppInstanceState"
+        isDefault:
+          type: boolean
+    AppBindingList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppBinding"
+    SetDefaultAppBindingRequest:
+      type: object
+      required: [instanceId]
+      properties:
+        instanceId:
+          type: string
+          format: uuid
+    AppTeamMappingMode:
+      type: string
+      description: "`create`: Orglane creates a provider team named after the team slug; `existing`: an existing provider team."
+      enum: [create, existing]
+    AppTeamMapping:
+      type: object
+      required: [teamId, teamSlug, teamName, teamArchived, mode, createdAt, updatedAt]
+      properties:
+        teamId:
+          type: string
+          format: uuid
+        teamSlug:
+          type: string
+        teamName:
+          type: string
+        teamArchived:
+          type: boolean
+          description: Archived teams keep their mapping but grant nothing.
+        mode:
+          $ref: "#/components/schemas/AppTeamMappingMode"
+        externalRef:
+          type: string
+          description: The provider team ID, once created or chosen.
+        externalName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AppTeamMappingList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppTeamMapping"
+    SetAppTeamMappingRequest:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          $ref: "#/components/schemas/AppTeamMappingMode"
+        externalRef:
+          type: string
+          maxLength: 100
+          description: The provider team (mode existing only).
+        externalName:
+          type: string
+          maxLength: 100
+    ProvisioningStatus:
+      type: string
+      description: |
+        `queued`: a change was detected, the job has not finished;
+        `done`: the provider matches the desired access;
+        `pending_employee_action`: nothing can happen until the person acts
+        (`employeeStep` names the step); `failed`: an action failed
+        permanently or its retries are exhausted (`errorCode`).
+      enum: [queued, done, pending_employee_action, failed]
+    ProvisioningActionResult:
+      type: object
+      required: [kind, key, outcome, removal]
+      properties:
+        kind:
+          type: string
+          example: add_to_team
+        key:
+          type: string
+        outcome:
+          type: string
+          enum: [changed, unchanged, failed, not_attempted, held]
+        removal:
+          type: boolean
+        errorCode:
+          type: string
+    ProvisioningResult:
+      type: object
+      required: [person, status, access, grantedByOrglane, actions, attempts, updatedAt]
+      properties:
+        person:
+          $ref: "#/components/schemas/PersonCard"
+        status:
+          $ref: "#/components/schemas/ProvisioningStatus"
+        access:
+          type: boolean
+          description: The desired access at the last plan.
+        employeeStep:
+          type: string
+        grantedByOrglane:
+          type: boolean
+        actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProvisioningActionResult"
+        errorCode:
+          type: string
+        attempts:
+          type: integer
+        lastAttemptAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    UnmanagedAccount:
+      type: object
+      required: [externalId, login, seenAt]
+      properties:
+        externalId:
+          type: string
+        login:
+          type: string
+        seenAt:
+          type: string
+          format: date-time
+    HeldRemoval:
+      type: object
+      required: [id, person, kind, key]
+      properties:
+        id:
+          type: string
+          format: uuid
+        person:
+          $ref: "#/components/schemas/PersonCard"
+        kind:
+          type: string
+          example: remove_from_team
+        key:
+          type: string
+    HeldRemovalBatch:
+      type: object
+      required: [id, itemCount, itemsHash, createdAt, items]
+      properties:
+        id:
+          type: string
+          format: uuid
+        itemCount:
+          type: integer
+        itemsHash:
+          type: string
+          description: Hex SHA-256 over the batch items; send it back to confirm exactly what was shown.
+        createdAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/HeldRemoval"
+    AppProvisioning:
+      type: object
+      required: [items, counts, unmanagedAccounts]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProvisioningResult"
+        counts:
+          $ref: "#/components/schemas/AppProvisioningCounts"
+        unmanagedAccounts:
+          type: array
+          description: Provider accounts Orglane does not manage. Reported, never removed.
+          items:
+            $ref: "#/components/schemas/UnmanagedAccount"
+        heldRemovals:
+          $ref: "#/components/schemas/HeldRemovalBatch"
+    PlannedAction:
+      type: object
+      required: [kind, key, removal]
+      properties:
+        kind:
+          type: string
+        key:
+          type: string
+        removal:
+          type: boolean
+    PlannedPerson:
+      type: object
+      required: [person, access, actions]
+      properties:
+        person:
+          $ref: "#/components/schemas/PersonCard"
+        access:
+          type: boolean
+        actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlannedAction"
+        employeeStep:
+          type: string
+        errorCode:
+          type: string
+    AppProvisioningPlan:
+      type: object
+      required: [items, truncated]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlannedPerson"
+        truncated:
+          type: boolean
+          description: More than 1000 people; only the first were planned.
+    RetryAppProvisioningRequest:
+      type: object
+      properties:
+        personId:
+          type: string
+          format: uuid
+          description: Only this person's failed result.
+    AppProvisioningRetry:
+      type: object
+      required: [queued]
+      properties:
+        queued:
+          type: integer
+    ConfirmAppRemovalBatchRequest:
+      type: object
+      required: [itemsHash]
+      properties:
+        itemsHash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+    PersonAppResult:
+      type: object
+      required: [instanceId, instanceKey, instanceDisplayName, provider, instanceState, status, access, updatedAt]
+      properties:
+        instanceId:
+          type: string
+          format: uuid
+        instanceKey:
+          type: string
+        instanceDisplayName:
+          type: string
+        provider:
+          type: string
+        instanceState:
+          $ref: "#/components/schemas/AppInstanceState"
+        status:
+          $ref: "#/components/schemas/ProvisioningStatus"
+        access:
+          type: boolean
+        employeeStep:
+          type: string
+        errorCode:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+    AccountLinkView:
+      type: object
+      description: |
+        A link between a person and a provider account. `verified` links are
+        proven (OAuth from the person's own session, or an account Orglane
+        created); `pending` is import evidence that proves nothing.
+      required: [provider, login, externalId, state]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Verified links only.
+        provider:
+          type: string
+        realm:
+          type: string
+        login:
+          type: string
+        externalId:
+          type: string
+        state:
+          type: string
+          enum: [verified, pending]
+        method:
+          type: string
+          enum: [oauth, provisioned]
+        evidence:
+          type: string
+          enum: [matched, mismatched, none]
+        organizationId:
+          type: integer
+          format: int64
+          description: Pending GitHub evidence only.
+        instanceId:
+          type: string
+          format: uuid
+        verifiedAt:
+          type: string
+          format: date-time
+    PersonApps:
+      type: object
+      required: [results, links]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/PersonAppResult"
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountLinkView"
+    MyApp:
+      type: object
+      required: [instanceId, key, displayName, provider, capabilities, status]
+      properties:
+        instanceId:
+          type: string
+          format: uuid
+        key:
+          type: string
+        displayName:
+          type: string
+        provider:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        homeUrl:
+          type: string
+          description: The instance's base URL, once known.
+        status:
+          $ref: "#/components/schemas/ProvisioningStatus"
+        employeeStep:
+          type: string
+        actionPath:
+          type: string
+          description: Where the caller completes `employeeStep` (a local path).
+    MyAppList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MyApp"

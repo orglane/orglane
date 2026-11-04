@@ -136,7 +136,10 @@ func (s *Service) CreatePersonTx(ctx context.Context, q *store.Queries, actor au
 			Target:   personTarget(person.ID),
 			Metadata: map[string]any{"status": person.Status},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return s.directoryChanged(ctx, q, []uuid.UUID{person.ID})
 	}()
 	if err != nil {
 		return store.Person{}, err
@@ -273,6 +276,9 @@ func (s *Service) UpdatePersonTx(ctx context.Context, q *store.Queries, actor au
 	if err != nil {
 		return store.Person{}, err
 	}
+	if err := s.directoryChanged(ctx, q, []uuid.UUID{id}); err != nil {
+		return store.Person{}, err
+	}
 	return person, nil
 }
 
@@ -311,6 +317,9 @@ func (s *Service) SetPersonStatus(ctx context.Context, actor audit.Actor, id uui
 			Target:   personTarget(id),
 			Metadata: map[string]any{"from": from, "to": to},
 		}); err != nil {
+			return err
+		}
+		if err := s.directoryChanged(ctx, q, []uuid.UUID{id}); err != nil {
 			return err
 		}
 		if to == StatusSuspended || to == StatusOffboarded {
