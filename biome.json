@@ -10,6 +10,7 @@
     "includes": [
       "**",
       "!**/*.md",
+      "!.release-please-manifest.json",
       "!packages/api-client/src/generated",
       "!packages/ui-tokens/tokens.css",
       "!web/dist",
