@@ -62,13 +62,19 @@ func TestCredentialSealing(t *testing.T) {
 	if _, err := h.svc.EnvForTest(inst).Credential(h.ctx, "api_token"); !errors.Is(err, crypto.ErrDecrypt) {
 		t.Fatalf("a swapped ciphertext opened: %v", err)
 	}
-	// Another purpose's key cannot open it.
+	// Purpose isolation: with the row's own additional data, the
+	// credentials purpose opens the ciphertext and another purpose does not.
 	var ct []byte
-	if err := h.pool.QueryRow(h.ctx, `SELECT ciphertext FROM app_credentials WHERE instance_id = $1 AND name = 'webhook_secret'`, inst.ID).Scan(&ct); err != nil {
+	var version int32
+	if err := h.pool.QueryRow(h.ctx, `SELECT ciphertext, version FROM app_credentials WHERE instance_id = $1 AND name = 'webhook_secret' AND state = 'active'`, inst.ID).Scan(&ct, &version); err != nil {
 		t.Fatal(err)
 	}
 	k, _ := crypto.NewKeyring(masterSecret)
-	if _, err := k.Sealer(crypto.PurposeEmailSettings).Open(ct, nil); err == nil {
+	ad := apps.CredentialADForTest(inst.ID, "webhook_secret", version)
+	if _, err := k.Sealer(crypto.PurposeAppCredentials).Open(ct, ad); err != nil {
+		t.Fatalf("the credentials purpose does not open its own row: %v", err)
+	}
+	if _, err := k.Sealer(crypto.PurposeEmailSettings).Open(ct, ad); err == nil {
 		t.Fatal("another purpose opened a credential")
 	}
 	// Audit metadata names credentials, never values.

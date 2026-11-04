@@ -212,11 +212,15 @@ func (s *Service) RunProcessDelivery(ctx context.Context, args ProcessDeliveryAr
 		}
 		body, err := s.deliveries.Open(row.Body, deliveryAD(row.InstanceID, row.ID))
 		if err != nil {
-			return river.JobCancel(fmt.Errorf("apps: open delivery: %w", err))
+			// Permanent (a wrong key or a damaged row): a terminal status
+			// operators see, not a delivery that looks unprocessed.
+			s.cfg.Logger.ErrorContext(ctx, "webhook delivery body cannot be opened", "delivery", row.ID, "error", err)
+			return finish(deliveryFailed, "body_unreadable", 0)
 		}
 		var stored map[string]string
 		if err := json.Unmarshal(row.Headers, &stored); err != nil {
-			return river.JobCancel(fmt.Errorf("apps: decode headers: %w", err))
+			s.cfg.Logger.ErrorContext(ctx, "webhook delivery headers cannot be decoded", "delivery", row.ID, "error", err)
+			return finish(deliveryFailed, "headers_unreadable", 0)
 		}
 		h := http.Header{}
 		for k, v := range stored {

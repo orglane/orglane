@@ -375,16 +375,21 @@ func (s *Service) abandon(ctx context.Context, inst Instance, rotator provider.C
 	// The candidate stays abandoning (and verifies deliveries) until the
 	// provider acknowledged the active value again.
 	active, err := q.GetActiveAppCredential(ctx, store.GetActiveAppCredentialParams{InstanceID: cand.InstanceID, Name: cand.Name})
-	if err != nil {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// No active version to go back to (the first value of a credential
+		// was being rotated in): nothing to re-apply, discard the candidate.
+	case err != nil:
 		return fmt.Errorf("apps: load active credential: %w", err)
-	}
-	value, err := s.openCredential(active)
-	if err != nil {
-		return river.JobCancel(err)
-	}
-	res, err := rotator.ApplyCredential(ctx, env, inst.View(), cand.Name, int(active.Version), value)
-	if err != nil || res.Outcome != provider.RotationAcknowledged {
-		return errRotationUnknown // keep re-applying the active value
+	default:
+		value, err := s.openCredential(active)
+		if err != nil {
+			return river.JobCancel(err)
+		}
+		res, err := rotator.ApplyCredential(ctx, env, inst.View(), cand.Name, int(active.Version), value)
+		if err != nil || res.Outcome != provider.RotationAcknowledged {
+			return errRotationUnknown // keep re-applying the active value
+		}
 	}
 	return s.inTx(ctx, func(_ pgx.Tx, q *store.Queries) error {
 		n, err := q.SetAppCredentialStateFrom(ctx, store.SetAppCredentialStateFromParams{
@@ -413,9 +418,14 @@ func (s *Service) reportStuck(ctx context.Context, inst Instance, cand store.App
 	if s.cfg.Now().Sub(cand.CreatedAt) <= stuckAfter {
 		return nil
 	}
-	return s.inTx(ctx, func(_ pgx.Tx, q *store.Queries) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
+		// One report per candidate: the check and the insert are serialized
+		// by a transaction lock and run in the same transaction.
+		if err := q.AcquireXactLock(ctx, lockID("credential-stuck", inst.ID.String(), cand.Name, strconv.Itoa(int(cand.Version)))); err != nil {
+			return fmt.Errorf("apps: lock stuck report: %w", err)
+		}
 		var exists bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM audit_entries WHERE action = $1 AND target_kind = $2 AND target_id = $3
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM audit_entries WHERE action = $1 AND target_kind = $2 AND target_id = $3
 			AND metadata->>'name' = $4 AND metadata->>'version' = $5)`,
 			string(audit.AppCredentialRotationStuck), string(audit.TargetAppInstance), inst.ID.String(), cand.Name, strconv.Itoa(int(cand.Version))).Scan(&exists); err != nil {
 			return fmt.Errorf("apps: check stuck report: %w", err)

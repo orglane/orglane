@@ -69,7 +69,8 @@ func settingValue(s provider.SettingSpec, v any) (any, error) {
 		case int64:
 			n = x
 		case float64:
-			if x != math.Trunc(x) || x < math.MinInt64 || x > math.MaxInt64 {
+			// float64(math.MaxInt64) rounds up to 2^63, which int64 cannot hold.
+			if x != math.Trunc(x) || x < math.MinInt64 || x >= 9223372036854775808.0 {
 				return nil, errors.New("must be an integer")
 			}
 			n = int64(x)

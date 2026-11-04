@@ -66,8 +66,11 @@ type ActionResult struct {
 	Error   string              `json:"error_code,omitempty"`
 }
 
-// grants are the action kinds by which Orglane grants access.
-var grants = []provider.ActionKind{provider.ActionCreateAccount, provider.ActionInvite, provider.ActionAddToTeam}
+// grants are the action kinds by which Orglane creates the account (and so
+// owns it, given proof). Adding an existing account to a team proves only
+// the team membership, not that the account is Orglane's, so it never makes
+// the person's access managed (which would allow removing the account).
+var grants = []provider.ActionKind{provider.ActionCreateAccount, provider.ActionInvite}
 
 // sessionLock takes a session-level advisory lock on a dedicated
 // connection and returns it with a release function. A dying process

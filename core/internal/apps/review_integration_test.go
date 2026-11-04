@@ -5,6 +5,7 @@ package apps_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -675,4 +676,119 @@ func TestReplayFailurePolicy(t *testing.T) {
 			t.Fatal("the run created the account after the replay was rejected")
 		}
 	})
+}
+
+// Review threads (CodeRabbit) on 8c62436.
+
+// TestTeamGrantDoesNotManageExistingAccount: adding an existing,
+// unmanaged account to a mapped team (with proof of the team addition) does
+// not make the account Orglane's, so suspending the person never removes
+// it from the organization.
+func TestTeamGrantDoesNotManageExistingAccount(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	acct := h.tp.AddMember(inst.ID, "alice")
+	alice := h.person("alice")
+	h.exec(`INSERT INTO account_links (person_id, provider, realm, external_id, login, method) VALUES ($1, 'testprovider', $2, $3, 'alice', 'oauth')`, alice.ID, inst.ID.String(), acct.ID)
+	team := h.team("platform", alice)
+	h.mapTeam(inst, team)
+	h.drain()
+	if got, _ := h.tp.Account(inst.ID, "alice"); !got.Teams["team-platform"] {
+		t.Fatal("the team addition did not happen")
+	}
+	if r := h.result(inst, alice); r.GrantedByOrglane {
+		t.Fatal("a team addition made an existing account Orglane's")
+	}
+	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, alice.ID, identity.StatusSuspended); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	if got, _ := h.tp.Account(inst.ID, "alice"); !got.Member {
+		t.Fatal("an existing account was removed from the organization")
+	}
+}
+
+// TestAbandonWithoutActiveVersion: abandoning the first value of a
+// credential (no active version to go back to) discards the candidate
+// instead of failing forever.
+func TestAbandonWithoutActiveVersion(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	h.tp.LoseResponses("api_token", 1)
+	version, err := h.svc.RotateCredential(h.ctx, audit.System, inst.ID, "api_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "api_token", Version: version}); err == nil {
+		t.Fatal("expected an unknown outcome")
+	}
+	if err := h.svc.AbandonRotation(h.ctx, audit.System, inst.ID, "api_token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "api_token", Version: version, Abandon: true}); err != nil {
+		t.Fatalf("abandon without an active version = %v", err)
+	}
+	var state string
+	if err := h.pool.QueryRow(h.ctx, `SELECT state FROM app_credentials WHERE instance_id = $1 AND name = 'api_token' AND version = $2`, inst.ID, version).Scan(&state); err != nil || state != "discarded" {
+		t.Fatalf("candidate = %s, %v", state, err)
+	}
+	if _, err := h.svc.RotateCredential(h.ctx, audit.System, inst.ID, "api_token"); err != nil {
+		t.Fatalf("a new rotation is blocked: %v", err)
+	}
+}
+
+// TestStuckReportedOnceUnderConcurrency: concurrent reporters record one
+// rotation_stuck entry per candidate.
+func TestStuckReportedOnceUnderConcurrency(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	h.tp.LoseResponses("webhook_secret", 100)
+	v, err := h.svc.RotateCredential(h.ctx, audit.System, inst.ID, "webhook_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h.svc.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "webhook_secret", Version: v})
+	h.exec(`UPDATE app_credentials SET created_at = now() - interval '25 hours' WHERE state = 'uncertain'`)
+	errs := make(chan error, 8)
+	for range 8 {
+		go func() { _, err := h.svc.Cleanup(h.ctx); errs <- err }()
+	}
+	for range 8 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := h.auditCount(audit.AppCredentialRotationStuck); n != 1 {
+		t.Fatalf("rotation_stuck recorded %d times, want 1", n)
+	}
+}
+
+// TestUndecodableDeliveryFails: a stored delivery whose body or headers
+// cannot be decoded ends failed with a code, not stuck as received.
+func TestUndecodableDeliveryFails(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	if err := h.svc.StoreCredential(h.ctx, audit.System, inst.ID, "webhook_secret", fixtureSecret); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	for i, c := range []struct{ damage, code string }{
+		{`UPDATE webhook_deliveries SET body = '\x0102' WHERE delivery_id = $1`, "body_unreadable"},
+		{`UPDATE webhook_deliveries SET headers = '{"X-Forgejo-Event": 1}' WHERE delivery_id = $1`, "headers_unreadable"},
+	} {
+		id := fmt.Sprintf("bad-%d", i)
+		body := prBody("acme", 700+i)
+		if _, err := h.svc.ReceiveWebhook(h.ctx, inst.ID, delivery(fixtureSecret, body, id, "pull_request"), body); err != nil {
+			t.Fatal(err)
+		}
+		h.exec(c.damage, id)
+		h.drain()
+		var status, code string
+		if err := h.pool.QueryRow(h.ctx, `SELECT status, coalesce(error_code, '') FROM webhook_deliveries WHERE delivery_id = $1`, id).Scan(&status, &code); err != nil {
+			t.Fatal(err)
+		}
+		if status != "failed" || code != c.code {
+			t.Errorf("%s: %s/%s, want failed/%s", id, status, code, c.code)
+		}
+	}
 }

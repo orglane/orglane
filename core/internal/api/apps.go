@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -425,10 +426,10 @@ func (s *server) GetAppProvisioning(ctx context.Context, req apigen.GetAppProvis
 	if req.Params.Offset != nil {
 		offset = *req.Params.Offset
 	}
-	if limit < 1 || limit > 200 || offset < 0 {
-		return nil, problemErr(http.StatusBadRequest, "limit must be 1-200 and offset at least 0.")
+	if limit < 1 || limit > 200 || offset < 0 || offset > math.MaxInt32 {
+		return nil, problemErr(http.StatusBadRequest, "limit must be 1-200 and offset 0-2147483647.")
 	}
-	rows, err := svc.Results(ctx, req.InstanceId, int32(limit), int32(offset)) //nolint:gosec // bounded above
+	rows, err := svc.Results(ctx, req.InstanceId, int32(limit), int32(offset)) //nolint:gosec // both bounded above
 	if err != nil {
 		return nil, appsError(err)
 	}

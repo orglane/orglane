@@ -126,6 +126,9 @@ func TestAppsAPIPermissions(t *testing.T) {
 	if len(mine.Items) != 1 || mine.Items[0].InstanceID != inst.ID || mine.Items[0].HomeURL != "https://code.acme.test" {
 		t.Fatalf("member apps = %s", r.body)
 	}
+	// Paging bounds are checked before narrowing (no wrap to a negative
+	// OFFSET and a 500).
+	expectStatusT(t, owner.req("GET", base+"/provisioning?offset=3000000000", nil), http.StatusBadRequest)
 	// Problem details carry a stable code.
 	var problem struct {
 		Code string `json:"code"`

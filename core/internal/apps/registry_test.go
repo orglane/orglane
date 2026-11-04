@@ -124,3 +124,15 @@ func TestSettingsDecodeCanonically(t *testing.T) {
 		t.Fatalf("org = %#v", got["org"])
 	}
 }
+
+func TestIntSettingsRejectOutOfRangeFloats(t *testing.T) {
+	spec := provider.SettingSpec{Name: "n", Type: provider.SettingInt}
+	for _, v := range []float64{9223372036854775808.0, -9223372036854775809.0 * 2, 1.5} {
+		if _, err := settingValue(spec, v); err == nil {
+			t.Errorf("settingValue(%v) accepted", v)
+		}
+	}
+	if n, err := settingValue(spec, float64(1<<53)); err != nil || n != int64(1<<53) {
+		t.Fatalf("settingValue(2^53) = %v, %v", n, err)
+	}
+}

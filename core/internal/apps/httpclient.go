@@ -41,16 +41,38 @@ func (t limitedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	res.Body = limitedBody{ReadCloser: res.Body, r: io.LimitReader(res.Body, MaxResponseBytes)}
+	res.Body = &limitedBody{ReadCloser: res.Body, left: MaxResponseBytes}
 	return res, nil
 }
 
+// ErrResponseTooLarge is returned when a provider response body exceeds
+// MaxResponseBytes, so an adapter never decodes a silently cut body.
+var ErrResponseTooLarge = errors.New("apps: provider response too large")
+
+// limitedBody reads at most MaxResponseBytes and fails, rather than ending
+// early, when the body is longer.
 type limitedBody struct {
 	io.ReadCloser
-	r io.Reader
+	left int64
 }
 
-func (b limitedBody) Read(p []byte) (int, error) { return b.r.Read(p) }
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		// At the limit: one more byte means the body is too large.
+		var one [1]byte
+		n, err := b.ReadCloser.Read(one[:])
+		if n > 0 {
+			return 0, ErrResponseTooLarge
+		}
+		return 0, err
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.ReadCloser.Read(p)
+	b.left -= int64(n)
+	return n, err
+}
 
 // rateLimitedLog lets one message through per interval.
 type rateLimitedLog struct {
