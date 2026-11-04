@@ -90,8 +90,6 @@ func New(pool *pgxpool.Pool, opts Options) (*Provider, error) {
 		// Without a valid post_logout_redirect_uri, logout ends on the
 		// workspace.
 		DefaultLogoutRedirectURI: opts.Issuer + "/",
-		CryptoKey:                opts.Keyring.Key(crypto.PurposeOIDCTokens),
-		CryptoKeyId:              "1",
 		CodeMethodS256:           true,
 		AuthMethodPost:           true,
 		GrantTypeRefreshToken:    true,
@@ -110,6 +108,13 @@ func New(pool *pgxpool.Pool, opts Options) (*Provider, error) {
 		op.WithCustomIntrospectionEndpoint(op.NewEndpoint(PathIntrospect)),
 		op.WithCustomDeviceAuthorizationEndpoint(op.NewEndpoint(PathDeviceAuthz)),
 		op.WithLogger(opts.Logger.With("component", "oidc")),
+		// Access tokens are encrypted with AES-256-GCM, and only GCM
+		// decrypts them. zitadel's default also falls back to AES-CFB for
+		// tokens of older zitadel versions; CFB is not authenticated, so it
+		// "decrypts" any long enough base64url string, a refresh token
+		// included, into garbage that may parse as a token ID and subject.
+		// This provider never issued CFB tokens.
+		op.WithCrypto(op.NewAES256GCMCrypto(opts.Keyring.Key(crypto.PurposeOIDCTokens), "1")),
 	}
 	if u.Scheme == "http" {
 		options = append(options, op.WithAllowInsecure())

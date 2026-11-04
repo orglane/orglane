@@ -466,6 +466,39 @@ func TestRevokeRefreshToken(t *testing.T) {
 	}
 }
 
+// TestRevokeRefreshTokenWithAccessTokenHint is a regression test: a refresh
+// token revoked with the wrong token_type_hint "access_token" must be
+// revoked. With that hint zitadel first decrypts the token as an access
+// token; the unauthenticated AES-CFB fallback decrypter turned some refresh
+// tokens (about one in fifteen) into garbage that parsed as a token ID and
+// subject, and the endpoint answered 200 without revoking anything. Many
+// tokens make the check deterministic.
+func TestRevokeRefreshTokenWithAccessTokenHint(t *testing.T) {
+	e := newEnv(t)
+	b := e.browser()
+	e.setupOwner(b)
+	e.registerClient(identity.NewOIDCClient{ID: "mobile", Public: true, Native: true, RefreshTokens: true})
+	p := newPKCE()
+
+	const tokens = 100
+	survived := 0
+	for range tokens {
+		q := clientRedirect(t, b.authorize(authParams("mobile", p)))
+		status, tr := b.token(url.Values{"grant_type": {"authorization_code"}, "code": {q.Get("code")}, "redirect_uri": {redirectURI}, "client_id": {"mobile"}, "code_verifier": {p.verifier}})
+		if status != http.StatusOK || tr.RefreshToken == "" {
+			t.Fatalf("token exchange = %d %+v", status, tr)
+		}
+		form := url.Values{"token": {tr.RefreshToken}, "token_type_hint": {"access_token"}, "client_id": {"mobile"}}
+		expectStatus(t, b.req("POST", "/oidc/revoke", form, "Origin", ""), http.StatusOK)
+		if status, _ := b.token(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tr.RefreshToken}, "client_id": {"mobile"}}); status != http.StatusBadRequest {
+			survived++
+		}
+	}
+	if survived > 0 {
+		t.Fatalf("%d of %d refresh tokens revoked with the access_token hint still refresh", survived, tokens)
+	}
+}
+
 func TestOIDCEndSession(t *testing.T) {
 	e := newEnv(t)
 	b := e.browser()
