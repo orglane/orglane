@@ -113,6 +113,36 @@ test("a failed copy says so and selects the command for copying by hand", async 
   );
 });
 
+test("a failed copy right after a successful one resets the button label", async ({ page }) => {
+  // The first write succeeds, the next one is refused, both within the
+  // two seconds the "Copied" label is shown.
+  await page.addInitScript(() => {
+    let calls = 0;
+    Object.defineProperty(navigator.clipboard, "writeText", {
+      value: () =>
+        calls++ === 0
+          ? Promise.resolve()
+          : Promise.reject(new DOMException("denied", "NotAllowedError")),
+    });
+  });
+  await page.goto("/");
+  const copy = page.getByRole("button", { name: "Copy the command: Install Orglane" });
+  const error = page.locator(".command__error").first();
+  await copy.click();
+  await expect(copy).toHaveText("Copied");
+  await expect(error).toBeHidden();
+
+  await copy.click();
+  await expect(error).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(
+    "Couldn’t copy. The command is selected: copy it by hand.",
+  );
+  await expect(copy).toHaveText("Copy");
+  expect(await page.evaluate(() => getSelection()?.toString())).toBe(
+    "curl -fsSL https://orglane.app/install.sh | sh",
+  );
+});
+
 for (const colorScheme of ["light", "dark"] as const) {
   test(`fits a 360px wide screen without horizontal scrolling (${colorScheme})`, async ({
     page,

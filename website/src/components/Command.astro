@@ -47,7 +47,9 @@ const m = messages().install;
         await navigator.clipboard.writeText(button.dataset.copy ?? "");
       } catch {
         // Never let a failed copy look like a successful one: say so, and
-        // select the command so it can be copied by hand.
+        // select the command so it can be copied by hand. A "Copied" label
+        // left by an earlier copy goes too: its reset timer was cancelled.
+        if (text) text.textContent = idle;
         if (error) error.hidden = false;
         if (code) getSelection()?.selectAllChildren(code);
         announce(button.dataset.failed ?? "");
