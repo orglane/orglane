@@ -49,6 +49,48 @@ func (q *Queries) CreatePeopleImportRun(ctx context.Context, arg CreatePeopleImp
 	return i, err
 }
 
+const findPendingGitHubAccount = `-- name: FindPendingGitHubAccount :many
+SELECT p.id, p.username, p.work_email, p.display_name, p.status, p.created_at, p.updated_at, p.title, p.contact_email, p.manager_id, p.directory_updated_at FROM people p JOIN pending_account_links a ON a.person_id = p.id
+WHERE a.provider = 'github' AND a.organization_id = $1 AND a.external_id = $2
+`
+
+type FindPendingGitHubAccountParams struct {
+	OrganizationID int64
+	ExternalID     int64
+}
+
+func (q *Queries) FindPendingGitHubAccount(ctx context.Context, arg FindPendingGitHubAccountParams) ([]Person, error) {
+	rows, err := q.db.Query(ctx, findPendingGitHubAccount, arg.OrganizationID, arg.ExternalID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Person{}
+	for rows.Next() {
+		var i Person
+		if err := rows.Scan(
+			&i.ID,
+			&i.Username,
+			&i.WorkEmail,
+			&i.DisplayName,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Title,
+			&i.ContactEmail,
+			&i.ManagerID,
+			&i.DirectoryUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const findPeopleImportContactEmail = `-- name: FindPeopleImportContactEmail :many
 SELECT id, username, work_email, display_name, status, created_at, updated_at, title, contact_email, manager_id, directory_updated_at FROM people WHERE lower(contact_email) = lower($1)
 `
@@ -352,6 +394,7 @@ SELECT jsonb_build_object(
     'roles', (SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY r.id), '[]') FROM roles r),
     'permissions', (SELECT coalesce(jsonb_agg(to_jsonb(rp) ORDER BY rp.role_id,rp.permission), '[]') FROM role_permissions rp),
     'grants', (SELECT coalesce(jsonb_agg(to_jsonb(pr) ORDER BY pr.role_id), '[]') FROM person_roles pr WHERE pr.person_id = $1),
+    'pending_accounts', (SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.organization_id,a.external_id), '[]') FROM pending_account_links a WHERE a.person_id = $1),
     'external', (SELECT coalesce(jsonb_agg(to_jsonb(i) ORDER BY i.source,i.external_hash), '[]') FROM people_import_identities i WHERE i.person_id = $1),
     'fields', (SELECT coalesce(jsonb_agg(to_jsonb(f) ORDER BY f.id), '[]') FROM profile_fields f),
     'values', (SELECT coalesce(jsonb_agg(to_jsonb(v) ORDER BY v.field_id), '[]') FROM profile_field_values v WHERE v.person_id = $1),
@@ -390,6 +433,36 @@ func (q *Queries) PreviewPeopleImportRow(ctx context.Context, arg PreviewPeopleI
 		arg.RowNumber,
 	)
 	return err
+}
+
+const putPendingGitHubAccount = `-- name: PutPendingGitHubAccount :execrows
+INSERT INTO pending_account_links (provider, organization_id, external_id, person_id, login, avatar_url)
+VALUES ('github', $1, $2, $3, $4, $5)
+ON CONFLICT (provider, organization_id, external_id) DO UPDATE
+SET login = EXCLUDED.login, avatar_url = EXCLUDED.avatar_url
+WHERE pending_account_links.person_id = EXCLUDED.person_id
+`
+
+type PutPendingGitHubAccountParams struct {
+	OrganizationID int64
+	ExternalID     int64
+	PersonID       uuid.UUID
+	Login          string
+	AvatarUrl      string
+}
+
+func (q *Queries) PutPendingGitHubAccount(ctx context.Context, arg PutPendingGitHubAccountParams) (int64, error) {
+	result, err := q.db.Exec(ctx, putPendingGitHubAccount,
+		arg.OrganizationID,
+		arg.ExternalID,
+		arg.PersonID,
+		arg.Login,
+		arg.AvatarUrl,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const putPeopleImportExternalID = `-- name: PutPeopleImportExternalID :exec

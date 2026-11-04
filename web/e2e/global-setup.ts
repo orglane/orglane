@@ -14,7 +14,7 @@ export default async function globalSetup(): Promise<void> {
       run("pnpm", ["--silent", "--filter", "@orglane/web", "build"]);
     }
     binary = `${work}orglane`;
-    run("go", ["build", "-o", binary, "./core/cmd/orglane"]);
+    run("go", ["build", "-tags", "githubimporttest", "-o", binary, "./core/cmd/orglane"]);
   }
 
   const container = run("docker", [

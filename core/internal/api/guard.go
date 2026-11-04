@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/orglane/orglane/core/internal/authz"
 )
@@ -97,6 +98,15 @@ func (g *routeGuard) enforce(op Operation, next http.Handler) http.Handler {
 		}
 		if op.OperationID == "updatePerson" && !validatePersonUpdate(w, r) {
 			return
+		}
+		if op.OperationID == "fetchGitHubPeopleImport" {
+			// The synchronous bounded source fetch may exceed the listener's
+			// normal one-minute response deadline. Other routes keep it.
+			if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(330 * time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+				writeProblem(w, r, http.StatusInternalServerError, "")
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, 2048)
 		}
 		if op.OperationID == "previewPeopleImport" && !validateImportMapping(w, r) {
 			return

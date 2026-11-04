@@ -45,6 +45,7 @@ type Dataset struct {
 
 // Record holds one source row; Number is its original CSV start line or XLSX row.
 type Record struct {
+	GitHub *GitHubAccount `json:",omitempty"`
 	Number int
 	Cells  []string
 	Error  string

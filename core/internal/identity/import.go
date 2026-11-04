@@ -21,7 +21,9 @@ import (
 
 // ImportedPerson is one mapped row. Empty mapped cells leave existing values.
 // Role is an additive bundle; imports never silently revoke existing roles.
+// Existing GitHub matches preserve all local person fields and grants.
 type ImportedPerson struct {
+	GitHub                                                *PendingGitHubAccount
 	ID                                                    uuid.UUID
 	Username, WorkEmail, ContactEmail, DisplayName, Title string
 	Role                                                  authz.RoleKey
@@ -52,6 +54,11 @@ func LockImportTx(ctx context.Context, q *store.Queries) error {
 // use the identity domain. Caller takes LockImportTx first and rolls back the
 // entire row on any error; no generated invitation token is returned.
 func (s *Service) ImportPersonTx(ctx context.Context, tx pgx.Tx, q *store.Queries, actor audit.Actor, in ImportedPerson) (store.Person, error) {
+	// Existing GitHub matches only add/update pending evidence. Keep this
+	// invariant in the identity domain as well as the shared import mapper.
+	if in.GitHub != nil && in.ID != uuid.Nil {
+		in = ImportedPerson{ID: in.ID, GitHub: in.GitHub}
+	}
 	roleKey := in.Role
 	if in.ID == uuid.Nil && roleKey == "" {
 		roleKey = authz.RoleMember
@@ -197,6 +204,20 @@ func (s *Service) ImportPersonTx(ctx context.Context, tx pgx.Tx, q *store.Querie
 			return store.Person{}, err
 		}
 	}
+
+	if in.GitHub != nil {
+		g := in.GitHub
+		n, e := q.PutPendingGitHubAccount(ctx, store.PutPendingGitHubAccountParams{OrganizationID: g.OrganizationID, ExternalID: g.UserID, PersonID: person.ID, Login: g.Login, AvatarUrl: g.AvatarURL})
+		if e != nil {
+			return store.Person{}, e
+		}
+		if n != 1 {
+			return store.Person{}, ErrInvalid
+		}
+		if _, e = audit.Record(ctx, q, audit.Entry{Actor: actor, Action: audit.PersonUpdated, Target: personTarget(person.ID), Metadata: map[string]any{"fields": []string{"pending_github_account"}}}); e != nil {
+			return store.Person{}, e
+		}
+	}
 	return person, nil
 }
 
@@ -233,4 +254,10 @@ func (s *Service) issueImportedInvitation(ctx context.Context, tx pgx.Tx, q *sto
 	}
 	_, err = audit.Record(ctx, q, audit.Entry{Actor: actor, Action: audit.InvitationCreated, Target: invitationTarget(inv.ID), Metadata: map[string]any{"person_id": person.ID, "delivery": delivery, "source": "import"}})
 	return err
+}
+
+// PendingGitHubAccount records imported evidence, never verified ownership.
+type PendingGitHubAccount struct {
+	OrganizationID, UserID int64
+	Login, AvatarURL       string
 }

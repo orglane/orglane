@@ -130,9 +130,16 @@ func (s *Service) Upload(ctx context.Context, actor audit.Actor, source Source, 
 	}
 	data, err := source.Read(input)
 	if err != nil {
+		if errors.Is(err, ErrGitHub) {
+			return Run{}, ErrGitHub
+		}
 		return Run{}, ErrFile
 	}
-	if source.Key() == "" || len(source.Key()) > 50 || len(data.Rows) == 0 || len(data.Rows) > MaxRows || len(data.Headers) == 0 || !validCells(data.Headers) {
+	limit := MaxRows
+	if _, ok := source.(*githubSource); ok {
+		limit = GitHubMaxRows
+	}
+	if source.Key() == "" || len(source.Key()) > 50 || len(data.Rows) == 0 || len(data.Rows) > limit || len(data.Headers) == 0 || !validCells(data.Headers) {
 		return Run{}, ErrFile
 	}
 	id := uuid.Must(uuid.NewV7())
@@ -259,7 +266,7 @@ func (s *Service) validateMapping(ctx context.Context, q *store.Queries, run sto
 	if err := s.open(run.ID, 0, "headers", run.HeadersSealed, &headers); err != nil {
 		return err
 	}
-	if len(m.Columns) == 0 || len(m.Columns) > MaxColumns || len(m.SkipRows) > MaxRows {
+	if len(m.Columns) == 0 || len(m.Columns) > MaxColumns || len(m.SkipRows) > runRowLimit(run.Source) {
 		return ErrInvalid
 	}
 	seenC := map[int]bool{}
@@ -287,6 +294,12 @@ func (s *Service) validateMapping(ctx context.Context, q *store.Queries, run sto
 	}
 	if !seenT["work_email"] && !seenT["contact_email"] && !seenT["external_id"] {
 		return ErrInvalid
+	}
+
+	if runRowLimit(run.Source) == GitHubMaxRows {
+		if !slices.Contains(m.Columns, Column{Column: 3, Target: "external_id"}) {
+			return ErrInvalid
+		}
 	}
 	seenSkip := map[int]bool{}
 	for _, n := range m.SkipRows {
@@ -427,9 +440,30 @@ func snapshot(ctx context.Context, q *store.Queries, id uuid.UUID) ([]byte, erro
 }
 func (s *Service) mutate(ctx context.Context, tx pgx.Tx, q *store.Queries, actor audit.Actor, run store.PeopleImportRun, rec Record, m Mapping, teams []teamResolution, expected *previewState) (string, previewState, error) {
 	v := values(rec, m)
+	// Stable source identity is immutable even if the admin remaps visible columns.
+	if rec.GitHub != nil {
+		v["external_id"] = strconv.FormatInt(rec.GitHub.UserID, 10)
+	}
 	id, err := s.match(ctx, q, run.Source, v)
 	if err != nil {
 		return "conflict", previewState{}, err
+	}
+
+	if rec.GitHub != nil {
+		g := rec.GitHub
+		people, e := q.FindPendingGitHubAccount(ctx, store.FindPendingGitHubAccountParams{OrganizationID: g.OrganizationID, ExternalID: g.UserID})
+		if e != nil {
+			return "conflict", previewState{}, e
+		}
+		if len(people) > 1 {
+			return "conflict", previewState{}, errConflict
+		}
+		if len(people) == 1 {
+			if id != uuid.Nil && id != people[0].ID {
+				return "conflict", previewState{}, errConflict
+			}
+			id = people[0].ID
+		}
 	}
 	if id != uuid.Nil {
 		if _, err = q.GetPersonForUpdate(ctx, id); err != nil {
@@ -443,6 +477,13 @@ func (s *Service) mutate(ctx context.Context, tx pgx.Tx, q *store.Queries, actor
 		if matched != id {
 			return "conflict", previewState{}, errConflict
 		}
+	}
+	// GitHub association evidence must never replace an existing local profile,
+	// including on later stable-ID reimports. Keep supplied identities above
+	// for conflict checks, then discard all other mapped mutation values.
+	if rec.GitHub != nil && id != uuid.Nil {
+		v = map[string]string{"external_id": v["external_id"]}
+		teams = nil
 	}
 	// Lock field definitions before taking the version, including their edit,
 	// sensitivity and archive settings. The profile service uses these locks too.
@@ -468,6 +509,11 @@ func (s *Service) mutate(ctx context.Context, tx pgx.Tx, q *store.Queries, actor
 		return "conflict", state, errStale
 	}
 	in := identity.ImportedPerson{ID: id, Username: v["username"], WorkEmail: v["work_email"], ContactEmail: v["contact_email"], DisplayName: v["display_name"], Title: v["title"], Role: authz.RoleKey(v["role"]), CreateTeams: m.CreateTeams, SendInvitation: m.SendInvitations}
+
+	if rec.GitHub != nil {
+		g := rec.GitHub
+		in.GitHub = &identity.PendingGitHubAccount{OrganizationID: g.OrganizationID, UserID: g.UserID, Login: g.Login, AvatarURL: g.AvatarURL}
+	}
 	if state.ManagerID != uuid.Nil {
 		in.ManagerID = &state.ManagerID
 	}
@@ -603,6 +649,9 @@ func (s *Service) process(ctx context.Context, actor audit.Actor, id uuid.UUID, 
 		rows, err := q.ListPeopleImportRows(ctx, id)
 		if err != nil {
 			return err
+		}
+		if len(rows) > runRowLimit(run.Source) {
+			return ErrInvalid
 		}
 		for _, n := range m.SkipRows {
 			if !slices.ContainsFunc(rows, func(r store.PeopleImportRow) bool { return int(r.RowNumber) == n }) {
@@ -780,4 +829,23 @@ func Template() string { return strings.Join(baseTargets, ",") + "\n" }
 func canReadSensitive(ctx context.Context, q *store.Queries, id uuid.UUID) (bool, error) {
 	permissions, err := q.ListPersonPermissions(ctx, id)
 	return authz.PrincipalFrom(ctx).Has(authz.PeopleSensitiveRead) && slices.Contains(permissions, string(authz.PeopleSensitiveRead)), err
+}
+
+func runRowLimit(source string) int {
+	if strings.HasPrefix(source, "github:") {
+		if id, err := strconv.ParseInt(strings.TrimPrefix(source, "github:"), 10, 64); err == nil && id > 0 {
+			return GitHubMaxRows
+		}
+	}
+	return MaxRows
+}
+func (s *Service) checkGitHubAuthority(ctx context.Context, actor audit.Actor) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := store.New(tx)
+		if err := identity.LockGrantsTx(ctx, q); err != nil {
+			return err
+		}
+		_, err := authorized(ctx, q, actor)
+		return err
+	})
 }

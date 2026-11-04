@@ -931,9 +931,11 @@ type PeopleImportMapping struct {
 		Column int    `json:"column"`
 		Target string `json:"target"`
 	} `json:"columns"`
-	CreateTeams     bool  `json:"createTeams"`
-	SendInvitations bool  `json:"sendInvitations"`
-	SkipRows        []int `json:"skipRows"`
+	CreateTeams     bool `json:"createTeams"`
+	SendInvitations bool `json:"sendInvitations"`
+
+	// SkipRows GitHub runs allow 2000 skips; file runs remain limited to 1000.
+	SkipRows []int `json:"skipRows"`
 }
 
 // PeopleImportRow defines model for PeopleImportRow.
@@ -1485,6 +1487,12 @@ type ListPeopleParams struct {
 	IfNoneMatch  *string    `json:"If-None-Match,omitempty"`
 }
 
+// FetchGitHubPeopleImportJSONBody defines parameters for FetchGitHubPeopleImport.
+type FetchGitHubPeopleImportJSONBody struct {
+	Organization string  `json:"organization"`
+	Token        *string `json:"token,omitempty"`
+}
+
 // ListProfileFieldsParams defines parameters for ListProfileFields.
 type ListProfileFieldsParams struct {
 	IncludeArchived *bool `form:"includeArchived,omitempty" json:"includeArchived,omitempty"`
@@ -1519,6 +1527,9 @@ type CreateInvitationJSONRequestBody = CreateInvitationRequest
 
 // AddMyPasskeyJSONRequestBody defines body for AddMyPasskey for application/json ContentType.
 type AddMyPasskeyJSONRequestBody = AddPasskeyRequest
+
+// FetchGitHubPeopleImportJSONRequestBody defines body for FetchGitHubPeopleImport for application/json ContentType.
+type FetchGitHubPeopleImportJSONRequestBody FetchGitHubPeopleImportJSONBody
 
 // PreviewPeopleImportJSONRequestBody defines body for PreviewPeopleImport for application/json ContentType.
 type PreviewPeopleImportJSONRequestBody = PeopleImportMapping
@@ -1639,6 +1650,9 @@ type ServerInterface interface {
 	// UploadPeopleImport Upload CSV or XLSX into encrypted staging
 	// (POST /api/v1/people-imports)
 	UploadPeopleImport(w http.ResponseWriter, r *http.Request)
+	// FetchGitHubPeopleImport Fetch GitHub organization members into encrypted import staging
+	// (POST /api/v1/people-imports/github)
+	FetchGitHubPeopleImport(w http.ResponseWriter, r *http.Request)
 	// GetPeopleImportTemplate Download a CSV import template
 	// (GET /api/v1/people-imports/template)
 	GetPeopleImportTemplate(w http.ResponseWriter, r *http.Request)
@@ -2299,6 +2313,20 @@ func (siw *ServerInterfaceWrapper) UploadPeopleImport(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UploadPeopleImport(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// FetchGitHubPeopleImport operation middleware
+func (siw *ServerInterfaceWrapper) FetchGitHubPeopleImport(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.FetchGitHubPeopleImport(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3244,6 +3272,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/settings/email/test", wrapper.SendTestEmail)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people-imports/template", wrapper.GetPeopleImportTemplate)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports", wrapper.UploadPeopleImport)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports/github", wrapper.FetchGitHubPeopleImport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people-imports/{runId}", wrapper.GetPeopleImport)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports/{runId}/preview", wrapper.PreviewPeopleImport)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/people-imports/{runId}/apply", wrapper.ApplyPeopleImport)
@@ -5484,6 +5513,92 @@ type UploadPeopleImport500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response UploadPeopleImport500ApplicationProblemPlusJSONResponse) VisitUploadPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type FetchGitHubPeopleImportRequestObject struct {
+	Body *FetchGitHubPeopleImportJSONRequestBody
+}
+
+type FetchGitHubPeopleImportResponseObject interface {
+	VisitFetchGitHubPeopleImportResponse(w http.ResponseWriter) error
+}
+
+type FetchGitHubPeopleImport201JSONResponse PeopleImport
+
+func (response FetchGitHubPeopleImport201JSONResponse) VisitFetchGitHubPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type FetchGitHubPeopleImport400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response FetchGitHubPeopleImport400ApplicationProblemPlusJSONResponse) VisitFetchGitHubPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type FetchGitHubPeopleImport401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response FetchGitHubPeopleImport401ApplicationProblemPlusJSONResponse) VisitFetchGitHubPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type FetchGitHubPeopleImport403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response FetchGitHubPeopleImport403ApplicationProblemPlusJSONResponse) VisitFetchGitHubPeopleImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type FetchGitHubPeopleImport500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response FetchGitHubPeopleImport500ApplicationProblemPlusJSONResponse) VisitFetchGitHubPeopleImportResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -8531,6 +8646,9 @@ type StrictServerInterface interface {
 	// UploadPeopleImport Upload CSV or XLSX into encrypted staging
 	// (POST /api/v1/people-imports)
 	UploadPeopleImport(ctx context.Context, request UploadPeopleImportRequestObject) (UploadPeopleImportResponseObject, error)
+	// FetchGitHubPeopleImport Fetch GitHub organization members into encrypted import staging
+	// (POST /api/v1/people-imports/github)
+	FetchGitHubPeopleImport(ctx context.Context, request FetchGitHubPeopleImportRequestObject) (FetchGitHubPeopleImportResponseObject, error)
 	// GetPeopleImportTemplate Download a CSV import template
 	// (GET /api/v1/people-imports/template)
 	GetPeopleImportTemplate(ctx context.Context, request GetPeopleImportTemplateRequestObject) (GetPeopleImportTemplateResponseObject, error)
@@ -9431,6 +9549,37 @@ func (sh *strictHandler) UploadPeopleImport(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UploadPeopleImportResponseObject); ok {
 		if err := validResponse.VisitUploadPeopleImportResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// FetchGitHubPeopleImport operation middleware
+func (sh *strictHandler) FetchGitHubPeopleImport(w http.ResponseWriter, r *http.Request) {
+	var request FetchGitHubPeopleImportRequestObject
+
+	var body FetchGitHubPeopleImportJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.FetchGitHubPeopleImport(ctx, request.(FetchGitHubPeopleImportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "FetchGitHubPeopleImport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(FetchGitHubPeopleImportResponseObject); ok {
+		if err := validResponse.VisitFetchGitHubPeopleImportResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
