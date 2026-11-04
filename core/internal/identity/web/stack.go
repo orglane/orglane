@@ -118,7 +118,7 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 		return nil, err
 	}
 	profiles := profile.NewService(pool, keyring, profile.WithTeams(svc))
-	return &Stack{Identity: svc, Profile: profiles, Imports: peopleimport.NewService(pool, svc, profiles, keyring), Keys: keys, Provider: provider, Auth: auth, Mail: mailer}, nil
+	return &Stack{Identity: svc, Profile: profiles, Imports: peopleimport.NewService(pool, svc, profiles, keyring, peopleimport.WithLogger(logger)), Keys: keys, Provider: provider, Auth: auth, Mail: mailer}, nil
 }
 
 // Maintain rotates the signing key when due, deletes expired sign-in and

@@ -96,7 +96,12 @@ job (`orglane.people_import_cleanup`, River, also on start) deletes expired runs
 with their rows and records `import.expired` with the system actor and the state
 of the run. It also erases the source material of runs applied by 0.0.1, which
 did not erase on apply (`import.source_erased`); migration 00013 dates their
-apply from the `import.applied` audit entry. Cleanup is idempotent.
+apply from the `import.applied` audit entry. Expiry runs in batches of its own
+and each such run is erased in its own transaction, so one run can never hold
+back the others. If a run's sealed headers cannot be opened, its source
+material is erased anyway with numbered captions (`headers_unreadable` in the
+audit entry; the log names only the run id and error class). Cleanup is
+idempotent.
 
 `DELETE /api/v1/people-imports/{runId}` deletes a run at any time: any current
 holder of `people.manage` may delete any run, the uploader included (reads stay

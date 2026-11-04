@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -78,11 +79,22 @@ type Service struct {
 	profile     *profile.Service
 	sealer      *crypto.Sealer
 	identityKey [32]byte
+	logger      *slog.Logger
 }
 
+// Option configures a Service.
+type Option func(*Service)
+
+// WithLogger sets the logger for maintenance warnings (default slog.Default).
+func WithLogger(l *slog.Logger) Option { return func(s *Service) { s.logger = l } }
+
 // NewService uses purpose-separated authenticated encryption for staging.
-func NewService(pool *pgxpool.Pool, ids *identity.Service, profiles *profile.Service, keys *crypto.Keyring) *Service {
-	return &Service{pool: pool, identity: ids, profile: profiles, sealer: keys.Sealer(crypto.PurposeImportStaging), identityKey: keys.Key(crypto.PurposeImportIdentifiers)}
+func NewService(pool *pgxpool.Pool, ids *identity.Service, profiles *profile.Service, keys *crypto.Keyring, opts ...Option) *Service {
+	s := &Service{pool: pool, identity: ids, profile: profiles, sealer: keys.Sealer(crypto.PurposeImportStaging), identityKey: keys.Key(crypto.PurposeImportIdentifiers), logger: slog.Default()}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 func emptyMapping() Mapping { return Mapping{Columns: []Column{}, SkipRows: []int{}} }

@@ -2,6 +2,7 @@ package peopleimport
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -105,12 +106,17 @@ type CleanupResult struct {
 	// Erased is the number of runs applied by an earlier version whose
 	// source material was erased.
 	Erased int
+	// Unreadable is the number of erased runs whose sealed headers could not
+	// be opened; they got numbered captions instead.
+	Unreadable int
 }
 
 // Cleanup deletes expired runs and erases source material left by runs
 // applied before apply erased it. The import cleanup job runs it hourly. It is
-// idempotent, and every batch runs in its own transaction under the grant
-// lock that upload, read, preview, apply and delete take as well.
+// idempotent. Every transaction takes the grant lock that upload, read,
+// preview, apply and delete take as well. Expiry runs in batches of its own,
+// and each earlier run is erased in its own transaction, so a run that cannot
+// be erased never holds back the deletion of expired runs.
 func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
 	var res CleanupResult
 	for {
@@ -129,28 +135,85 @@ func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
 					return err
 				}
 			}
-			legacy, err := q.ListUnerasedAppliedPeopleImportRuns(ctx, cleanupBatch)
-			if err != nil {
-				return err
-			}
-			for _, r := range legacy {
-				if _, err = s.eraseSourceTx(ctx, q, r); err != nil {
-					return err
-				}
-				if err = record(ctx, q, audit.System, r.ID, actionSourceErase, map[string]any{}); err != nil {
-					return err
-				}
-			}
-			res.Expired += len(expired)
-			res.Erased += len(legacy)
-			n = len(expired) + len(legacy)
+			n = len(expired)
 			return nil
 		})
 		if err != nil {
 			return res, err
 		}
+		res.Expired += n
 		if n == 0 {
+			break
+		}
+	}
+	for {
+		erased, unreadable := false, false
+		err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+			q := store.New(tx)
+			if err := identity.LockGrantsTx(ctx, q); err != nil {
+				return err
+			}
+			legacy, err := q.ListUnerasedAppliedPeopleImportRuns(ctx, 1)
+			if err != nil || len(legacy) == 0 {
+				return err
+			}
+			r := legacy[0]
+			captions, err := s.captions(r)
+			if err != nil {
+				// Unreadable ciphertext is erased all the same; only the error
+				// class is logged, never contents.
+				s.logger.WarnContext(ctx, "import cleanup: sealed headers of an applied run cannot be opened; erasing with numbered captions",
+					"run_id", r.ID, "error_class", errorClass(err))
+				captions, unreadable = numberedCaptions(r), true
+			}
+			if err = q.ErasePeopleImportRows(ctx, r.ID); err != nil {
+				return err
+			}
+			if _, err = q.ErasePeopleImportRun(ctx, store.ErasePeopleImportRunParams{ID: r.ID, Captions: captions}); err != nil {
+				return err
+			}
+			metadata := map[string]any{}
+			if unreadable {
+				metadata["headers_unreadable"] = true
+			}
+			erased = true
+			return record(ctx, q, audit.System, r.ID, actionSourceErase, metadata)
+		})
+		if err != nil {
+			return res, err
+		}
+		if !erased {
 			return res, nil
 		}
+		res.Erased++
+		if unreadable {
+			res.Unreadable++
+		}
+	}
+}
+
+// numberedCaptions covers every mapped column with an unknown (numbered)
+// caption when the original headers cannot be read.
+func numberedCaptions(r store.PeopleImportRun) []string {
+	var m Mapping
+	n := 0
+	if json.Unmarshal(r.Mapping, &m) == nil {
+		for _, c := range m.Columns {
+			if c.Column >= n && c.Column < MaxColumns {
+				n = c.Column + 1
+			}
+		}
+	}
+	return make([]string, n)
+}
+
+func errorClass(err error) string {
+	var syntax *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syntax), errors.As(err, &typeErr):
+		return "invalid_json"
+	default:
+		return "decrypt_failed"
 	}
 }

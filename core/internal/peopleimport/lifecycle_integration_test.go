@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -535,5 +537,69 @@ func TestRequestsQueuedBeforeExpiryFindNothing(t *testing.T) {
 				t.Fatalf("a request queued before expiry changed the run:\nbefore %s\nafter  %s", before, after)
 			}
 		})
+	}
+}
+
+// A legacy run whose sealed headers cannot be opened must neither block the
+// deletion of expired runs nor make every later cleanup fail; its source
+// material is erased anyway, with numbered captions.
+func TestCleanupErasesUnreadableLegacyRunsWithoutBlockingExpiry(t *testing.T) {
+	f := newFixture(t)
+	var logs bytes.Buffer
+	imports := peopleimport.NewService(f.pool, f.ids, f.profiles, f.keys, peopleimport.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	m := mapping("username", "work_email", "display_name")
+	legacy := func(text string) peopleimport.Run {
+		t.Helper()
+		run := f.preview(f.uploadText(text), m)
+		if _, err := f.pool.Exec(f.ctx, "UPDATE people_import_runs SET state='applied', applied_at=now(), expires_at=now() + interval '90 days' WHERE id=$1", run.ID); err != nil {
+			t.Fatal(err)
+		}
+		return run
+	}
+	// Created first, so the cleanup reaches the corrupted run first.
+	corrupted := legacy("username,work_email,display_name,Private Heading\ncorrupt,corrupt@acme.test,Corrupt,private\n")
+	if _, err := f.pool.Exec(f.ctx, `UPDATE people_import_runs SET headers_sealed = '\x00010203' WHERE id=$1`, corrupted.ID); err != nil {
+		t.Fatal(err)
+	}
+	readable := legacy("username,work_email,display_name\nreadable,readable@acme.test,Readable\n")
+	expired := f.uploadText("username,work_email,display_name\nexpired,expired@acme.test,Expired\n")
+	if _, err := f.pool.Exec(f.ctx, "UPDATE people_import_runs SET expires_at = now() - interval '1 second' WHERE id=$1", expired.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := imports.Cleanup(f.ctx)
+	if err != nil || res != (peopleimport.CleanupResult{Expired: 1, Erased: 2, Unreadable: 1}) {
+		t.Fatalf("cleanup = %+v, %v", res, err)
+	}
+	if f.runExists(expired.ID) || f.auditCount("import.expired", expired.ID) != 1 {
+		t.Fatal("an unreadable legacy run held back expiry")
+	}
+	for _, id := range []uuid.UUID{corrupted.ID, readable.ID} {
+		if f.sealedLeft(id) != 0 || f.auditCount("import.source_erased", id) != 1 {
+			t.Fatalf("legacy run %s not erased and audited", id)
+		}
+	}
+	got, err := f.imports.Get(f.ctx, f.actor, corrupted.ID)
+	if err != nil || !slices.Equal(got.Headers, []string{"", "", ""}) {
+		t.Fatalf("fallback captions = %q, %v; want three numbered columns", got.Headers, err)
+	}
+	if got, err = f.imports.Get(f.ctx, f.actor, readable.ID); err != nil || !slices.Equal(got.Headers, readable.Headers) {
+		t.Fatalf("readable captions = %q, %v", got.Headers, err)
+	}
+	var metadata string
+	if err = f.pool.QueryRow(f.ctx, "SELECT metadata::text FROM audit_entries WHERE action='import.source_erased' AND target_id=$1", corrupted.ID.String()).Scan(&metadata); err != nil || metadata != `{"headers_unreadable": true}` {
+		t.Fatalf("erase audit metadata = %s, %v", metadata, err)
+	}
+	if !strings.Contains(logs.String(), corrupted.ID.String()) || !strings.Contains(logs.String(), "error_class=decrypt_failed") {
+		t.Fatalf("missing warning: %s", logs.String())
+	}
+	for _, value := range []string{"Private", "corrupt@", "private"} {
+		if strings.Contains(logs.String(), value) {
+			t.Fatalf("log holds source value %q", value)
+		}
+	}
+	// The job does not fail forever: the next run has nothing left to do.
+	if res, err = imports.Cleanup(f.ctx); err != nil || res != (peopleimport.CleanupResult{}) {
+		t.Fatalf("second cleanup = %+v, %v", res, err)
 	}
 }
