@@ -259,10 +259,23 @@ WHERE instance_id = @instance_id AND person_id = @person_id;
 
 -- name: MarkProvisioningGranted :exec
 -- Orglane granted access (created the account, the invitation or the
--- membership): recorded with the action's audit entry, never undone.
+-- membership): recorded with the action's audit entry, never undone. It
+-- resolves the pending grant.
 INSERT INTO provisioning_results (instance_id, person_id, status, access, granted_by_orglane)
 VALUES (@instance_id, @person_id, 'queued', true, true)
-ON CONFLICT (instance_id, person_id) DO UPDATE SET granted_by_orglane = true, updated_at = now();
+ON CONFLICT (instance_id, person_id) DO UPDATE SET granted_by_orglane = true, pending_grant = NULL, updated_at = now();
+
+-- name: SetPendingGrant :exec
+-- Durable intent, committed before a granting action reaches the provider.
+INSERT INTO provisioning_results (instance_id, person_id, status, access, pending_grant)
+VALUES (@instance_id, @person_id, 'queued', true, @pending_grant)
+ON CONFLICT (instance_id, person_id) DO UPDATE SET pending_grant = EXCLUDED.pending_grant, updated_at = now();
+
+-- name: ClearPendingGrant :exec
+-- The provider definitely rejected the grant or the access already existed:
+-- the intent is resolved without ownership.
+UPDATE provisioning_results SET pending_grant = NULL, updated_at = now()
+WHERE instance_id = @instance_id AND person_id = @person_id;
 
 -- name: FailProvisioningResult :exec
 -- A removal failed permanently (or exhausted its retries): the person's

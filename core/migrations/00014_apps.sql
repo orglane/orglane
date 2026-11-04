@@ -181,6 +181,10 @@ CREATE TABLE provisioning_results (
     access             boolean NOT NULL,
     employee_step      text,
     granted_by_orglane boolean NOT NULL DEFAULT false,
+    -- A granting action sent to the provider whose outcome is not yet
+    -- recorded ({kind, key, params}): durable intent, resolved by the next
+    -- run (replayed as an ensure). Not ownership.
+    pending_grant      jsonb CHECK (pending_grant IS NULL OR jsonb_typeof(pending_grant) = 'object'),
     desired_hash       bytea CHECK (octet_length(desired_hash) = 32),
     applied_hash       bytea CHECK (octet_length(applied_hash) = 32),
     -- Last plan: [{kind, key, outcome}], no secrets.

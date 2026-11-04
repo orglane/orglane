@@ -4,6 +4,7 @@ package apps_test
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	"time"
 
@@ -357,8 +358,19 @@ func TestGrantSurvivesFailedActionRecord(t *testing.T) {
 	if err := h.svc.RunProvisionPerson(h.ctx, a, 2, 8); err != nil {
 		t.Fatal(err)
 	}
-	if r := h.result(inst, alice); !r.GrantedByOrglane {
-		t.Fatal("ownership of the created account was lost")
+	if r := h.result(inst, alice); !r.GrantedByOrglane || r.Status != apps.StatusDone || r.PendingGrant != nil {
+		t.Fatalf("ownership of the created account was lost: %+v", r)
+	}
+	// The retry restores the bookkeeping of the first successful path: the
+	// verified link and its audit entry, and the action's audit entry.
+	if n := h.count(`SELECT count(*) FROM account_links WHERE person_id = $1 AND method = 'provisioned' AND state = 'verified'`, alice.ID); n != 1 {
+		t.Fatalf("%d verified provisioned links after the retry, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM audit_entries WHERE action = 'account_link.verified' AND metadata->>'person_id' = $1`, alice.ID.String()); n != 1 {
+		t.Fatalf("%d account_link.verified entries, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM audit_entries WHERE action = 'provisioning.action_applied' AND target_id = $1 AND metadata->>'kind' = 'create_account'`, alice.ID.String()); n != 1 {
+		t.Fatalf("%d action entries for the account creation, want 1", n)
 	}
 	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, alice.ID, identity.StatusOffboarded); err != nil {
 		t.Fatal(err)
@@ -463,5 +475,90 @@ func TestPersonDriftNotSwallowed(t *testing.T) {
 	h.drain()
 	if acct, _ := h.tp.Account(inst.ID, "alice"); !acct.Member {
 		t.Fatal("the drift check was swallowed: alice has no account")
+	}
+}
+
+// Round 3 of the review of PR #74.
+
+// TestRejectedGrantDoesNotAdoptExistingMember: a team grant the provider
+// definitely rejects does not make an existing, unmanaged member Orglane's,
+// so suspending them leaves their membership alone.
+func TestRejectedGrantDoesNotAdoptExistingMember(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	acct := h.tp.AddMember(inst.ID, "alice")
+	alice := h.person("alice")
+	h.exec(`INSERT INTO account_links (person_id, provider, realm, external_id, login, method) VALUES ($1, 'testprovider', $2, $3, 'alice', 'oauth')`, alice.ID, inst.ID.String(), acct.ID)
+	h.drain()
+	if r := h.result(inst, alice); r.GrantedByOrglane {
+		t.Fatal("the existing member is managed before any grant")
+	}
+	team := h.team("platform", alice)
+	h.mapTeam(inst, team)
+	if err := h.svc.RunProvisionInstance(h.ctx, apps.ProvisionInstanceArgs{InstanceID: inst.ID}); err != nil {
+		t.Fatal(err)
+	}
+	h.exec(`DELETE FROM river_job`)
+	h.tp.Fail("apply:add_to_team:team-platform", permanent("seat_limit"))
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: alice.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if r := h.result(inst, alice); r.GrantedByOrglane || r.PendingGrant != nil {
+		t.Fatalf("a rejected grant adopted the member: granted=%v pending=%s", r.GrantedByOrglane, r.PendingGrant)
+	}
+	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, alice.ID, identity.StatusSuspended); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	if acct, _ := h.tp.Account(inst.ID, "alice"); !acct.Member {
+		t.Fatal("an existing member Orglane never granted access was removed")
+	}
+}
+
+// TestUncertainGrantResolvedByReplay: a grant whose answer was lost keeps
+// its intent; the next run replays it as an ensure and records ownership,
+// so an account Orglane created this way is removed on offboarding.
+func TestUncertainGrantResolvedByReplay(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	h.drain()
+	alice := h.person("alice")
+	h.exec(`DELETE FROM river_job`)
+	// The provider creates the account; the job dies before recording it
+	// (simulated: the answer is an unknown error after the change).
+	reached, release := h.tp.Block("apply:create_account")
+	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(h.ctx)
+	go func() {
+		done <- h.svc.RunProvisionPerson(ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: alice.ID}, 1, 8)
+	}()
+	<-reached
+	cancel() // the worker goes away while the provider works
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("the interrupted run reported success")
+	}
+	if acct, ok := h.tp.Account(inst.ID, "alice"); !ok || !acct.Member {
+		t.Fatal("the provider did not create the account")
+	}
+	if r := h.result(inst, alice); r.PendingGrant == nil || r.GrantedByOrglane {
+		t.Fatalf("intent = %s, granted = %v; want pending intent, no ownership yet", r.PendingGrant, r.GrantedByOrglane)
+	}
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: alice.ID}, 2, 8); err != nil {
+		t.Fatal(err)
+	}
+	r := h.result(inst, alice)
+	if !r.GrantedByOrglane || r.PendingGrant != nil || r.Status != apps.StatusDone {
+		t.Fatalf("after replay: %+v", r)
+	}
+	if n := h.count(`SELECT count(*) FROM account_links WHERE person_id = $1 AND method = 'provisioned' AND state = 'verified'`, alice.ID); n != 1 {
+		t.Fatalf("%d provisioned links, want 1", n)
+	}
+	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, alice.ID, identity.StatusOffboarded); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	if acct, _ := h.tp.Account(inst.ID, "alice"); acct.Member {
+		t.Fatal("an account Orglane created was kept after offboarding")
 	}
 }

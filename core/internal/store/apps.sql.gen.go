@@ -37,6 +37,23 @@ func (q *Queries) ClearDefaultAppBinding(ctx context.Context, capability string)
 	return err
 }
 
+const clearPendingGrant = `-- name: ClearPendingGrant :exec
+UPDATE provisioning_results SET pending_grant = NULL, updated_at = now()
+WHERE instance_id = $1 AND person_id = $2
+`
+
+type ClearPendingGrantParams struct {
+	InstanceID uuid.UUID
+	PersonID   uuid.UUID
+}
+
+// The provider definitely rejected the grant or the access already existed:
+// the intent is resolved without ownership.
+func (q *Queries) ClearPendingGrant(ctx context.Context, arg ClearPendingGrantParams) error {
+	_, err := q.db.Exec(ctx, clearPendingGrant, arg.InstanceID, arg.PersonID)
+	return err
+}
+
 const clearWebhookDeliveryBodies = `-- name: ClearWebhookDeliveryBodies :execrows
 UPDATE webhook_deliveries SET body = NULL
 WHERE body IS NOT NULL AND (
@@ -597,7 +614,7 @@ func (q *Queries) GetHeldRemovalBatch(ctx context.Context, instanceID uuid.UUID)
 
 const getProvisioningResult = `-- name: GetProvisioningResult :one
 
-SELECT instance_id, person_id, status, access, employee_step, granted_by_orglane, desired_hash, applied_hash, actions, error_code, attempts, last_attempt_at, next_attempt_at, updated_at FROM provisioning_results WHERE instance_id = $1 AND person_id = $2
+SELECT instance_id, person_id, status, access, employee_step, granted_by_orglane, pending_grant, desired_hash, applied_hash, actions, error_code, attempts, last_attempt_at, next_attempt_at, updated_at FROM provisioning_results WHERE instance_id = $1 AND person_id = $2
 `
 
 type GetProvisioningResultParams struct {
@@ -616,6 +633,7 @@ func (q *Queries) GetProvisioningResult(ctx context.Context, arg GetProvisioning
 		&i.Access,
 		&i.EmployeeStep,
 		&i.GrantedByOrglane,
+		&i.PendingGrant,
 		&i.DesiredHash,
 		&i.AppliedHash,
 		&i.Actions,
@@ -1945,7 +1963,7 @@ func (q *Queries) ListPersonPendingAccountLinks(ctx context.Context, personID uu
 }
 
 const listPersonProvisioningResults = `-- name: ListPersonProvisioningResults :many
-SELECT r.instance_id, r.person_id, r.status, r.access, r.employee_step, r.granted_by_orglane, r.desired_hash, r.applied_hash, r.actions, r.error_code, r.attempts, r.last_attempt_at, r.next_attempt_at, r.updated_at, i.key AS instance_key, i.display_name AS instance_display_name, i.provider AS instance_provider, i.state AS instance_state
+SELECT r.instance_id, r.person_id, r.status, r.access, r.employee_step, r.granted_by_orglane, r.pending_grant, r.desired_hash, r.applied_hash, r.actions, r.error_code, r.attempts, r.last_attempt_at, r.next_attempt_at, r.updated_at, i.key AS instance_key, i.display_name AS instance_display_name, i.provider AS instance_provider, i.state AS instance_state
 FROM provisioning_results r JOIN app_instances i ON i.id = r.instance_id
 WHERE r.person_id = $1
 ORDER BY i.display_name, i.id
@@ -1958,6 +1976,7 @@ type ListPersonProvisioningResultsRow struct {
 	Access              bool
 	EmployeeStep        *string
 	GrantedByOrglane    bool
+	PendingGrant        []byte
 	DesiredHash         []byte
 	AppliedHash         []byte
 	Actions             []byte
@@ -1988,6 +2007,7 @@ func (q *Queries) ListPersonProvisioningResults(ctx context.Context, personID uu
 			&i.Access,
 			&i.EmployeeStep,
 			&i.GrantedByOrglane,
+			&i.PendingGrant,
 			&i.DesiredHash,
 			&i.AppliedHash,
 			&i.Actions,
@@ -2050,7 +2070,7 @@ func (q *Queries) ListProvisioningCandidates(ctx context.Context, arg ListProvis
 }
 
 const listProvisioningResults = `-- name: ListProvisioningResults :many
-SELECT r.instance_id, r.person_id, r.status, r.access, r.employee_step, r.granted_by_orglane, r.desired_hash, r.applied_hash, r.actions, r.error_code, r.attempts, r.last_attempt_at, r.next_attempt_at, r.updated_at, p.username, p.display_name, p.status AS person_status
+SELECT r.instance_id, r.person_id, r.status, r.access, r.employee_step, r.granted_by_orglane, r.pending_grant, r.desired_hash, r.applied_hash, r.actions, r.error_code, r.attempts, r.last_attempt_at, r.next_attempt_at, r.updated_at, p.username, p.display_name, p.status AS person_status
 FROM provisioning_results r JOIN people p ON p.id = r.person_id
 WHERE r.instance_id = $1
 ORDER BY p.display_name, p.id
@@ -2070,6 +2090,7 @@ type ListProvisioningResultsRow struct {
 	Access           bool
 	EmployeeStep     *string
 	GrantedByOrglane bool
+	PendingGrant     []byte
 	DesiredHash      []byte
 	AppliedHash      []byte
 	Actions          []byte
@@ -2099,6 +2120,7 @@ func (q *Queries) ListProvisioningResults(ctx context.Context, arg ListProvision
 			&i.Access,
 			&i.EmployeeStep,
 			&i.GrantedByOrglane,
+			&i.PendingGrant,
 			&i.DesiredHash,
 			&i.AppliedHash,
 			&i.Actions,
@@ -2301,7 +2323,7 @@ func (q *Queries) ListUsableAppCredentials(ctx context.Context, arg ListUsableAp
 const markProvisioningGranted = `-- name: MarkProvisioningGranted :exec
 INSERT INTO provisioning_results (instance_id, person_id, status, access, granted_by_orglane)
 VALUES ($1, $2, 'queued', true, true)
-ON CONFLICT (instance_id, person_id) DO UPDATE SET granted_by_orglane = true, updated_at = now()
+ON CONFLICT (instance_id, person_id) DO UPDATE SET granted_by_orglane = true, pending_grant = NULL, updated_at = now()
 `
 
 type MarkProvisioningGrantedParams struct {
@@ -2310,7 +2332,8 @@ type MarkProvisioningGrantedParams struct {
 }
 
 // Orglane granted access (created the account, the invitation or the
-// membership): recorded with the action's audit entry, never undone.
+// membership): recorded with the action's audit entry, never undone. It
+// resolves the pending grant.
 func (q *Queries) MarkProvisioningGranted(ctx context.Context, arg MarkProvisioningGrantedParams) error {
 	_, err := q.db.Exec(ctx, markProvisioningGranted, arg.InstanceID, arg.PersonID)
 	return err
@@ -2551,6 +2574,24 @@ func (q *Queries) SetDefaultAppBinding(ctx context.Context, arg SetDefaultAppBin
 	return result.RowsAffected(), nil
 }
 
+const setPendingGrant = `-- name: SetPendingGrant :exec
+INSERT INTO provisioning_results (instance_id, person_id, status, access, pending_grant)
+VALUES ($1, $2, 'queued', true, $3)
+ON CONFLICT (instance_id, person_id) DO UPDATE SET pending_grant = EXCLUDED.pending_grant, updated_at = now()
+`
+
+type SetPendingGrantParams struct {
+	InstanceID   uuid.UUID
+	PersonID     uuid.UUID
+	PendingGrant []byte
+}
+
+// Durable intent, committed before a granting action reaches the provider.
+func (q *Queries) SetPendingGrant(ctx context.Context, arg SetPendingGrantParams) error {
+	_, err := q.db.Exec(ctx, setPendingGrant, arg.InstanceID, arg.PersonID, arg.PendingGrant)
+	return err
+}
+
 const setRemovalBatchState = `-- name: SetRemovalBatchState :exec
 UPDATE provisioning_removal_batches SET state = $1 WHERE id = $2
 `
@@ -2740,7 +2781,7 @@ SET status = EXCLUDED.status, access = EXCLUDED.access, employee_step = EXCLUDED
     next_attempt_at = CASE WHEN provisioning_results.next_attempt_at > $13 THEN provisioning_results.next_attempt_at
                            ELSE EXCLUDED.next_attempt_at END,
     updated_at = now()
-RETURNING instance_id, person_id, status, access, employee_step, granted_by_orglane, desired_hash, applied_hash, actions, error_code, attempts, last_attempt_at, next_attempt_at, updated_at
+RETURNING instance_id, person_id, status, access, employee_step, granted_by_orglane, pending_grant, desired_hash, applied_hash, actions, error_code, attempts, last_attempt_at, next_attempt_at, updated_at
 `
 
 type UpsertProvisioningResultParams struct {
@@ -2783,6 +2824,7 @@ func (q *Queries) UpsertProvisioningResult(ctx context.Context, arg UpsertProvis
 		&i.Access,
 		&i.EmployeeStep,
 		&i.GrantedByOrglane,
+		&i.PendingGrant,
 		&i.DesiredHash,
 		&i.AppliedHash,
 		&i.Actions,

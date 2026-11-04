@@ -431,6 +431,7 @@ type ProvisioningResult struct {
 	Access           bool
 	EmployeeStep     *string
 	GrantedByOrglane bool
+	PendingGrant     []byte
 	DesiredHash      []byte
 	AppliedHash      []byte
 	Actions          []byte

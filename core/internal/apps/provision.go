@@ -128,12 +128,26 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 	if d.result == nil && !d.access.Access && d.access.Link == nil {
 		return nil // never had access: nothing to record or remove
 	}
+	var recovered []ActionResult
+	if d.result != nil && d.result.PendingGrant != nil {
+		// An earlier run sent a grant whose outcome was never recorded.
+		ar, err := s.resolvePendingGrant(ctx, conn, inst, prov, d)
+		if err != nil {
+			return err
+		}
+		if ar != nil {
+			recovered = append(recovered, *ar)
+		}
+		if d, err = s.computeDesired(ctx, store.New(conn), inst, args.PersonID); err != nil {
+			return err
+		}
+	}
 	if r := d.result; r != nil && r.Status == StatusFailed && !args.Retry && bytes.Equal(r.DesiredHash, d.hash) {
 		// A permanent failure is retried when desired access changes or an
 		// admin retries, never by drift checks or unrelated changes.
 		return s.followUp(nil, conn, inst.ID, args.PersonID, startedAt)
 	}
-	if r := d.result; r != nil && !args.Drift && bytes.Equal(r.AppliedHash, d.hash) && r.ErrorCode == nil && r.EmployeeStep == nil && r.Status != StatusFailed {
+	if r := d.result; r != nil && !args.Drift && len(recovered) == 0 && bytes.Equal(r.AppliedHash, d.hash) && r.ErrorCode == nil && r.EmployeeStep == nil && r.Status != StatusFailed {
 		err := s.writeResult(ctx, conn, inst, d, StatusDone, nil, r.Actions, nil, r.GrantedByOrglane, r.AppliedHash, 0, startedAt)
 		return s.followUp(err, conn, inst.ID, args.PersonID, startedAt)
 	}
@@ -159,7 +173,8 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 	// Ownership is recovered on reruns: a link this instance provisioned
 	// makes the access Orglane's (computeDesired's Managed).
 	granted := (d.result != nil && d.result.GrantedByOrglane) || (d.access.Managed && !inst.ManageExistingMembers)
-	results := make([]ActionResult, 0, len(plan.Actions))
+	results := make([]ActionResult, 0, len(recovered)+len(plan.Actions))
+	results = append(results, recovered...)
 	var removals []provider.Action
 	var applyErr error
 	for _, a := range plan.Actions {
@@ -181,36 +196,41 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 				ar.Outcome = OutcomeHeld
 			}
 		default:
-			if slices.Contains(grants, a.Kind) {
-				// Durable intent before the provider is touched: an action
-				// that grants access is only planned when the access does not
-				// exist, so whatever it creates is Orglane's, even if the
-				// process dies between the provider call and its bookkeeping.
-				// A failed write stops here, before any provider change.
-				if err := store.New(conn).MarkProvisioningGranted(ctx, store.MarkProvisioningGrantedParams{InstanceID: inst.ID, PersonID: d.person.ID}); err != nil {
-					return fmt.Errorf("apps: record grant intent: %w", err)
+			grant := slices.Contains(grants, a.Kind)
+			if grant {
+				// Durable intent before the provider is touched, kept apart
+				// from ownership: if the process dies between the provider
+				// call and its bookkeeping, the next run replays the action
+				// and records the outcome. A failed write stops here, before
+				// any provider change.
+				if err := s.setPendingGrant(ctx, conn, inst.ID, d.person.ID, a); err != nil {
+					return err
 				}
-				granted = true
 			}
 			out, err := prov.Apply(ctx, env, view, a)
 			if err != nil {
 				applyErr = err
 				ar.Outcome = OutcomeFailed
 				ar.Error, _, _ = provider.Classify(err)
+				if _, retryable, _ := provider.Classify(err); grant && !retryable {
+					// A definite rejection changed nothing: no ownership.
+					if err := store.New(conn).ClearPendingGrant(ctx, store.ClearPendingGrantParams{InstanceID: inst.ID, PersonID: d.person.ID}); err != nil {
+						return fmt.Errorf("apps: clear grant intent: %w", err)
+					}
+				}
+				// A retryable (uncertain) failure keeps the intent: the next
+				// run replays the action and resolves it.
 				break
 			}
 			ar.Outcome = OutcomeUnchanged
 			if out.Changed {
 				ar.Outcome = OutcomeChanged
-				if slices.Contains(grants, a.Kind) {
+				if grant {
 					granted = true
 				}
 			}
-			if err := s.recordApplied(ctx, conn, inst, d.person.ID, a, out); err != nil {
+			if err := s.recordApplied(ctx, conn, inst, d.person.ID, a, out, false); err != nil {
 				return err
-			}
-			if out.Link != nil {
-				granted = true
 			}
 		}
 		results = append(results, ar)
@@ -235,28 +255,42 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 	return s.followUp(err, conn, inst.ID, args.PersonID, startedAt)
 }
 
-// recordApplied writes the audit entry of a changed action, the link of a
-// created account and, for grants, that Orglane owns the access: all in one
-// transaction, so a later failure cannot lose the ownership.
-func (s *Service) recordApplied(ctx context.Context, conn *pgxpool.Conn, inst Instance, personID uuid.UUID, a provider.Action, out provider.ActionOutcome) error {
-	if !out.Changed && out.Link == nil {
+// recordApplied writes the bookkeeping of an applied action in one
+// transaction: the audit entry of a change, ownership of access Orglane
+// granted (which resolves the pending grant) and the verified link of an
+// account it created. A grant that changed nothing found the access already
+// there: its intent is cleared without ownership. recovered marks the replay
+// of an earlier run's grant whose bookkeeping was lost: its change was
+// Orglane's even though the replay finds it already in place.
+func (s *Service) recordApplied(ctx context.Context, conn *pgxpool.Conn, inst Instance, personID uuid.UUID, a provider.Action, out provider.ActionOutcome, recovered bool) error {
+	grant := slices.Contains(grants, a.Kind)
+	changed := out.Changed || recovered
+	if !changed && !grant {
 		return nil
 	}
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
-		if (out.Changed && slices.Contains(grants, a.Kind)) || out.Link != nil {
+		if !changed {
+			if err := q.ClearPendingGrant(ctx, store.ClearPendingGrantParams{InstanceID: inst.ID, PersonID: personID}); err != nil {
+				return fmt.Errorf("apps: clear grant intent: %w", err)
+			}
+			return nil
+		}
+		meta := map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key}
+		if recovered {
+			meta["recovered"] = true
+		}
+		if _, err := audit.Record(ctx, q, audit.Entry{
+			Actor:    audit.System,
+			Action:   audit.ProvisioningActionApplied,
+			Target:   audit.Target{Kind: audit.TargetPerson, ID: personID.String()},
+			Metadata: meta,
+		}); err != nil {
+			return err
+		}
+		if grant {
 			if err := q.MarkProvisioningGranted(ctx, store.MarkProvisioningGrantedParams{InstanceID: inst.ID, PersonID: personID}); err != nil {
 				return fmt.Errorf("apps: record grant: %w", err)
-			}
-		}
-		if out.Changed {
-			if _, err := audit.Record(ctx, q, audit.Entry{
-				Actor:    audit.System,
-				Action:   audit.ProvisioningActionApplied,
-				Target:   audit.Target{Kind: audit.TargetPerson, ID: personID.String()},
-				Metadata: map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key},
-			}); err != nil {
-				return err
 			}
 		}
 		if out.Link != nil {
@@ -264,6 +298,63 @@ func (s *Service) recordApplied(ctx context.Context, conn *pgxpool.Conn, inst In
 		}
 		return nil
 	})
+}
+
+// setPendingGrant commits the intent of a granting action.
+func (s *Service) setPendingGrant(ctx context.Context, conn *pgxpool.Conn, instanceID, personID uuid.UUID, a provider.Action) error {
+	raw, err := json.Marshal(a)
+	if err != nil {
+		return fmt.Errorf("apps: encode grant intent: %w", err)
+	}
+	if err := store.New(conn).SetPendingGrant(ctx, store.SetPendingGrantParams{InstanceID: instanceID, PersonID: personID, PendingGrant: raw}); err != nil {
+		return fmt.Errorf("apps: record grant intent: %w", err)
+	}
+	return nil
+}
+
+// resolvePendingGrant settles a grant an earlier run sent without recording
+// its outcome (the process died, or its bookkeeping failed). The action is
+// replayed as an ensure: if it succeeds, the access is Orglane's (it did not
+// exist when the grant was planned) and its audit entry, ownership and link
+// are recorded as on the first successful path; a definite rejection clears
+// the intent without ownership; an uncertain answer keeps it for the next
+// attempt. For a person who must no longer have access the grant is not
+// replayed: an interrupted account creation or invitation is adopted (it was
+// planned because no account existed, so an account there now is the one
+// Orglane created, and the plan removes it); an interrupted team grant is
+// cleared, never adopting an existing member.
+func (s *Service) resolvePendingGrant(ctx context.Context, conn *pgxpool.Conn, inst Instance, prov provider.UserProvisioner, d desired) (*ActionResult, error) {
+	var a provider.Action
+	if err := json.Unmarshal(d.result.PendingGrant, &a); err != nil {
+		return nil, fmt.Errorf("apps: decode grant intent: %w", err)
+	}
+	clearIntent := func() error {
+		if err := store.New(conn).ClearPendingGrant(ctx, store.ClearPendingGrantParams{InstanceID: inst.ID, PersonID: d.person.ID}); err != nil {
+			return fmt.Errorf("apps: clear grant intent: %w", err)
+		}
+		return nil
+	}
+	if !d.access.Access {
+		if a.Kind == provider.ActionCreateAccount || a.Kind == provider.ActionInvite {
+			if err := store.New(conn).MarkProvisioningGranted(ctx, store.MarkProvisioningGrantedParams{InstanceID: inst.ID, PersonID: d.person.ID}); err != nil {
+				return nil, fmt.Errorf("apps: record grant: %w", err)
+			}
+			return nil, nil
+		}
+		return nil, clearIntent()
+	}
+	out, err := prov.Apply(ctx, s.env(inst), inst.View(), a)
+	if err != nil {
+		code, retryable, _ := provider.Classify(err)
+		if retryable {
+			return nil, fmt.Errorf("apps: replay interrupted grant (%s): %w", code, err)
+		}
+		return &ActionResult{Kind: a.Kind, Key: a.Key, Outcome: OutcomeFailed, Error: code}, clearIntent()
+	}
+	if err := s.recordApplied(ctx, conn, inst, d.person.ID, a, out, true); err != nil {
+		return nil, err
+	}
+	return &ActionResult{Kind: a.Kind, Key: a.Key, Outcome: OutcomeChanged}, nil
 }
 
 // provisionedLink stores the verified link of an account Orglane created:

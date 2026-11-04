@@ -290,7 +290,9 @@ type Action struct {
 type ActionOutcome struct {
 	Changed bool // false: already satisfied
 	// Link is set when the action created an account (Forgejo); it becomes
-	// a verified "provisioned" link.
+	// a verified "provisioned" link. An ensure that finds the account it
+	// would create already there reports it too (Changed false), so a run
+	// that replays an interrupted creation can record the link.
 	Link *ExternalAccount
 }
 

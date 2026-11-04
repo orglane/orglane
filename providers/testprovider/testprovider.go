@@ -358,7 +358,9 @@ func (p *Provider) Apply(_ context.Context, _ provider.Env, inst provider.Instan
 	case provider.ActionCreateAccount:
 		acct := byLogin(a.Params["username"])
 		if acct != nil && acct.Member {
-			return provider.ActionOutcome{}, nil
+			// Already there: unchanged, but the ensure still reports the
+			// account, so an interrupted run can record its link.
+			return provider.ActionOutcome{Link: &provider.ExternalAccount{Realm: inst.ID.String(), ExternalID: acct.ID, Login: acct.Login}}, nil
 		}
 		if acct == nil {
 			p.nextID++
