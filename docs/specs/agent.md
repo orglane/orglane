@@ -221,7 +221,7 @@ Operations are persisted under `instances/.agent/operations/<id>.json` and kept 
 
 **Push:** the core's `orglane.apps.agent_apply` job pushes a spec and polls its operation (snoozing between polls). An unreachable agent is a retryable error (`agent_unavailable`); the job keeps retrying with backoff and the UI shows "waiting for the agent".
 
-**Sync:** `orglane.apps.agent_sync` runs every `agent.sync_interval`, at core start, and when `GET /v1/health` shows a new boot ID. It reads all instance statuses, updates `app_instances` (phase, health, observed generation, running version), calls `Lifecycle.Verify` for active instances, and re-pushes the current spec of every instance whose accepted generation is behind the database (or unknown to the agent, e.g. after its data was lost).
+**Sync:** `orglane.apps.agent_sync` runs every `agent.sync_interval`, at core start, and when `GET /v1/health` shows a new boot ID. It reads all instance statuses, updates `app_instances` (phase, health, observed generation, running version), calls `Lifecycle.CheckHealth` for active instances, and re-pushes the current spec of every instance whose accepted generation is behind the database (or unknown to the agent, e.g. after its data was lost).
 
 **Reconcile loop (agent):**
 
@@ -493,7 +493,7 @@ rolling_back ─► rollback_failed (instance failed)
 | `switching` | Write the new rendered files, fenced; `up -d --remove-orphans` |
 | `migrating` | Run the `migrate` hook if declared |
 | `verifying` | Wait for all healthchecks within `health.start_timeout` |
-| `awaiting_confirmation` | The core runs `Lifecycle.Verify` through the fenced alias and calls `confirm` or `abort`. No answer within `confirm_timeout` rolls back |
+| `awaiting_confirmation` | The core runs `Lifecycle.CheckHealth` through the fenced alias and calls `confirm` or `abort`. No answer within `confirm_timeout` rolls back |
 | `committing` | Render unfenced, `up -d --remove-orphans --wait` (containers are recreated with the real aliases and ports); `current.json` := new spec; delete the journal; prune old snapshots beyond retention |
 
 **Journal:** `upgrade.json` holds the operation ID, from/to version and generation, snapshot ID and phase. It is written and fsynced before each phase starts.
@@ -523,7 +523,7 @@ Docker may restart containers on a reboot before the agent runs. In every phase 
 ## Status, health and logs
 
 - Instance status: phase, `observed_generation`, `accepted_generation`, running package version, services (`docker compose ps --format json`: state, health), current operation, snapshot count, `data_retained` for removed instances without purge.
-- Health has two levels: container healthchecks (agent) and `Lifecycle.Verify` through the provider's API (core). The core shows the worse of the two.
+- Health has two levels: container healthchecks (agent) and `Lifecycle.CheckHealth` through the provider's API (core). The core shows the worse of the two.
 - `GET /v1/health` includes `mem_total`, `mem_available` and `disk_free` (of `instances/`); the core uses them with the manifests' resource hints: install is refused when total memory is below the sum of `min` of all instances plus 1 GiB for the bundle, or free disk is below `disk.min`; below `recommended` it warns.
 - Logs: `docker compose logs --no-color --timestamps --tail <n> <service>`, `tail` at most 1000 lines and the response at most 1 MiB; every secret value of the instance is replaced by `[redacted]`. The core exposes them only to `apps.manage` and audits each read (`app_instance.logs_read`).
 - The agent logs JSON to stdout (container logs) and never logs specs, secrets or `.env` contents.
