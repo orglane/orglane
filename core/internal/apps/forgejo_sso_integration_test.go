@@ -17,19 +17,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+
 	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/apps"
 	"github.com/orglane/orglane/core/internal/audit"
+	"github.com/orglane/orglane/core/internal/authz"
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/database"
+	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/identity/web"
 	"github.com/orglane/orglane/core/internal/managedtest"
 	"github.com/orglane/orglane/core/internal/packages"
 	"github.com/orglane/orglane/core/internal/server"
+	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/providers/forgejo"
 	forgejopkg "github.com/orglane/orglane/providers/forgejo/managed"
 	"github.com/orglane/orglane/providers/provider"
-	"github.com/orglane/orglane/tests/demotest"
 	"github.com/orglane/orglane/tests/pgtest"
 )
 
@@ -82,8 +89,10 @@ func (br browser) do(t *testing.T, method, rawURL string, body any) (page, []byt
 
 // startCore runs `orglane server` in-process on the database in local mode
 // (http://orglane.localhost, demo mode for one-click sign-in), behind the
-// bundle's Traefik, which polls the core's routes. It returns the config.
-func startCore(t *testing.T, dbURL string, public, internal int) *config.Config {
+// bundle's Traefik, which polls the core's routes. Its job workers run the
+// provisioning jobs; adapters reach managed services through Traefik (in
+// the bundle the core is on the edge network). It returns the config.
+func startCore(t *testing.T, b *managedtest.Bundle, dbURL string, public, internal int) *config.Config {
 	t.Helper()
 	host := managedtest.CoreListenHost()
 	vars := map[string]string{
@@ -105,7 +114,9 @@ func startCore(t *testing.T, dbURL string, public, internal int) *config.Config 
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- server.Run(ctx, cfg, "dev", slog.New(slog.DiscardHandler)) }()
+	go func() {
+		done <- server.RunWithStack(ctx, cfg, "dev", slog.New(slog.DiscardHandler), web.StackOptions{AppsHTTPClient: b.Client()})
+	}()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -115,56 +126,64 @@ func startCore(t *testing.T, dbURL string, public, internal int) *config.Config 
 	return cfg
 }
 
-// TestForgejoSingleSignOn signs a person in to a real Forgejo through the
-// real Orglane OpenID Provider in local mode (docs/specs/providers.md
-// "Forgejo OIDC configured automatically", test 6): creating the instance
-// registers its OIDC client with the redirect URI from the base URL
-// (http://git.orglane.localhost/user/oauth2/orglane/callback), the agent
-// installs Forgejo, whose configure hook saves the sign-in source from
-// Orglane's discovery document at http://orglane.localhost (through
-// Traefik's alias), and the deep link from the API lands on the target
-// signed in, without a second sign-in. Every hop goes through the real
-// Traefik with the routes the core serves.
-func TestForgejoSingleSignOn(t *testing.T) {
-	if managedtest.RunAsRoot(t) {
-		return
-	}
+// forgejoEnv is Forgejo installed by the real agent next to a real core,
+// both behind the real Traefik.
+type forgejoEnv struct {
+	t          *testing.T
+	b          *managedtest.Bundle
+	ctx        context.Context
+	pool       *pgxpool.Pool
+	stack      *web.Stack // the test's view of the core: changes go through it, the server's jobs act on them
+	inst       apps.Instance
+	admin      managedtest.Auth
+	workspace  string
+	forgejoURL string
+}
+
+// startForgejo starts the core, creates the Forgejo instance as the install
+// flow does (#61 phase 2 adds the API; mutate adjusts it first), installs it
+// with the agent, runs Setup and activates it, which starts provisioning.
+func startForgejo(t *testing.T, mutate func(*forgejoEnv)) *forgejoEnv {
+	t.Helper()
 	public, internal := managedtest.FreePort(t), managedtest.FreePort(t)
 	b := managedtest.StartBundleWithCore(t, internal)
-	dbURL := pgtest.NewDatabase(t)
-	cfg := startCore(t, dbURL, public, internal)
+	cfg := startCore(t, b, pgtest.NewDatabase(t), public, internal)
+	e := &forgejoEnv{t: t, b: b, ctx: context.Background(), workspace: "http://" + managedtest.WorkspaceHost, forgejoURL: "http://" + managedtest.ForgejoHost}
 	br := newBrowser(t, b)
-	workspace := "http://" + managedtest.WorkspaceHost
 	managedtest.Eventually(t, time.Minute, "the core answers through Traefik", func() bool {
-		resp, _ := br.do(t, http.MethodGet, workspace+"/healthz", nil)
+		resp, _ := br.do(t, http.MethodGet, e.workspace+"/healthz", nil)
 		return resp.StatusCode == http.StatusOK
 	})
+	var err error
+	if e.pool, err = database.Connect(e.ctx, cfg.Database, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.pool.Close)
+	if e.stack, err = web.NewStack(e.pool, cfg, slog.New(slog.DiscardHandler), web.StackOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	rc, err := river.NewClient(riverpgxv5.New(e.pool), &river.Config{Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.stack.Apps.SetQueue(rc) // insert only: the server's workers run the jobs
 
-	// The instance, as the install flow creates it (#61 phase 2 adds the
-	// API): its OIDC client and credentials in one transaction.
-	ctx := context.Background()
-	pool, err := database.Connect(ctx, cfg.Database, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	stack, err := web.NewStack(pool, cfg, slog.New(slog.DiscardHandler), web.StackOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inst, err := stack.Apps.CreateInstance(ctx, audit.System, apps.NewInstance{
-		Provider: forgejo.ID, BaseURL: "http://" + managedtest.ForgejoHost,
-		Settings: map[string]any{forgejo.SettingOrganization: "acme"},
+	// The instance: its OIDC client and credentials in one transaction.
+	e.inst, err = e.stack.Apps.CreateInstance(e.ctx, audit.System, apps.NewInstance{
+		Provider: forgejo.ID, BaseURL: e.forgejoURL, Settings: map[string]any{forgejo.SettingOrganization: "acme"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := stack.Identity.OIDCClient(ctx, provider.OIDCClientID(inst.Key))
+	client, err := e.stack.Identity.OIDCClient(e.ctx, provider.OIDCClientID(e.inst.Key))
 	if err != nil {
 		t.Fatalf("the OIDC client was not registered: %v", err)
 	}
-	if want := "http://" + managedtest.ForgejoHost + "/user/oauth2/orglane/callback"; len(client.RedirectUris) != 1 || client.RedirectUris[0] != want {
+	if want := e.forgejoURL + "/user/oauth2/orglane/callback"; len(client.RedirectUris) != 1 || client.RedirectUris[0] != want {
 		t.Fatalf("redirect URIs = %v, want [%s]", client.RedirectUris, want)
+	}
+	if mutate != nil {
+		mutate(e)
 	}
 
 	// The agent installs it with the core's inputs and credentials.
@@ -173,29 +192,33 @@ func TestForgejoSingleSignOn(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentClient := startAgent(t, b, registry)
-	env := stack.Apps.EnvForTest(inst)
-	lc, _ := inst.Adapter.Lifecycle()
-	in, err := lc.Inputs(ctx, env, inst.View())
+	env := e.stack.Apps.EnvForTest(e.inst)
+	lc, _ := e.inst.Adapter.Lifecycle()
+	in, err := lc.Inputs(e.ctx, env, e.inst.View())
 	if err != nil {
 		t.Fatal(err)
 	}
 	secrets := map[string]string{}
 	for _, name := range in.Secrets {
-		v, err := env.Credential(ctx, name)
+		v, err := env.Credential(e.ctx, name)
 		if err != nil {
 			t.Fatalf("credential %s: %v", name, err)
 		}
 		secrets[name] = string(v)
 	}
-	spec := managedtest.ForgejoSpec(inst.ID, 1, managedtest.FreePort(t), secrets, agentapi.StateRunning)
+	e.admin = managedtest.Auth{User: forgejo.AdminUsername, Password: secrets[forgejo.CredentialAdminPassword]}
+	spec := managedtest.ForgejoSpec(e.inst.ID, 1, managedtest.FreePort(t), secrets, agentapi.StateRunning)
 	for k, v := range in.Settings {
 		spec.Settings[k] = v
 	}
-	project := packages.InstanceProject(b.Project, inst.Key)
+	project := packages.InstanceProject(b.Project, e.inst.Key)
 	t.Cleanup(func() {
 		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", project, "down", "--remove-orphans").Run() //nolint:gosec // test commands
 	})
-	op, _, err := agentClient.Apply(t.Context(), inst.Key, spec)
+	// The core reaches the service by its alias on the edge network; from
+	// the test process that alias goes through Traefik too.
+	b.Routes(t, managedtest.ForgejoRoutes(e.inst.Key)[1])
+	op, _, err := agentClient.Apply(t.Context(), e.inst.Key, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,150 +229,286 @@ func TestForgejoSingleSignOn(t *testing.T) {
 	if op.State != agentapi.OpSucceeded {
 		t.Fatalf("install: %+v (the configure hook needs Orglane's discovery document)", op)
 	}
-	// Running: the core routes it (the install flow sets this).
-	if _, err := pool.Exec(ctx, `UPDATE app_instances SET state = 'active', package_version = $2,
-		desired_generation = 1, observed_generation = 1 WHERE id = $1`, inst.ID, forgejopkg.Current); err != nil {
+	// Applied: the core routes it (the install flow records this).
+	if _, err := e.pool.Exec(e.ctx, `UPDATE app_instances SET package_version = $2, desired_generation = 1, observed_generation = 1 WHERE id = $1`,
+		e.inst.ID, forgejopkg.Current); err != nil {
 		t.Fatal(err)
 	}
-	forgejoURL := "http://" + managedtest.ForgejoHost
 	managedtest.Eventually(t, time.Minute, "Traefik routes Forgejo from the core's configuration", func() bool {
-		resp, _ := br.do(t, http.MethodGet, forgejoURL+"/api/healthz", nil)
+		resp, _ := br.do(t, http.MethodGet, e.forgejoURL+"/api/healthz", nil)
 		return resp.StatusCode == http.StatusOK
 	})
-
-	// Setup through the public route (the core uses the upstream on the
-	// edge network): service admin, sign-in source, organization.
-	view := inst.View()
-	view.Upstream = &url.URL{Scheme: "http", Host: managedtest.ForgejoHost}
-	adminEnv := &managedtest.Env{Client: b.Client(), Creds: map[string][]byte{forgejo.CredentialAdminPassword: []byte(secrets[forgejo.CredentialAdminPassword])}}
-	if err := lc.Setup(ctx, adminEnv, view); err != nil {
+	adminEnv := &managedtest.Env{Client: b.Client(), Creds: map[string][]byte{forgejo.CredentialAdminPassword: []byte(e.admin.Password)}}
+	if err := lc.Setup(e.ctx, adminEnv, e.inst.View()); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
-	// People cannot sign in with a password; only through Orglane.
-	resp, html := br.do(t, http.MethodGet, forgejoURL+"/user/login", nil)
-	if resp.StatusCode != http.StatusOK || strings.Contains(string(html), `name="password"`) || !strings.Contains(string(html), "/user/oauth2/orglane") {
-		t.Fatalf("Forgejo's sign-in page (%d) offers a password form or no Orglane sign-in", resp.StatusCode)
+	if e.inst, err = e.stack.Apps.Transition(e.ctx, audit.System, e.inst.ID, apps.StateActive, ""); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	return e
+}
+
+// forgejoUser is a Forgejo account as the admin API shows it.
+type forgejoUser struct {
+	ID        int64  `json:"id"`
+	Login     string `json:"login"`
+	LoginName string `json:"login_name"`
+	SourceID  int64  `json:"source_id"`
+	FullName  string `json:"full_name"`
+	Email     string `json:"email"`
+}
+
+// account returns the Forgejo account bound to the person's subject.
+func (e *forgejoEnv) account(personID string) *forgejoUser {
+	e.t.Helper()
+	code, body := managedtest.Request(e.t, e.b.Client(), http.MethodGet, managedtest.ForgejoHost, "/api/v1/admin/users?limit=50&login_name="+personID, e.admin, nil)
+	if code != http.StatusOK {
+		e.t.Fatalf("list accounts: %d", code)
+	}
+	var users []forgejoUser
+	if err := json.Unmarshal(body, &users); err != nil {
+		e.t.Fatal(err)
+	}
+	for _, u := range users {
+		if u.LoginName == personID {
+			return &u
+		}
+	}
+	return nil
+}
+
+// teamID returns the ID of an organization team, 0 if there is none.
+func (e *forgejoEnv) teamID(name string) int64 {
+	e.t.Helper()
+	code, body := managedtest.Request(e.t, e.b.Client(), http.MethodGet, managedtest.ForgejoHost, "/api/v1/orgs/acme/teams?limit=50", e.admin, nil)
+	if code != http.StatusOK {
+		e.t.Fatalf("list teams: %d", code)
+	}
+	var teams []struct {
+		ID          int64  `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &teams); err != nil {
+		e.t.Fatal(err)
+	}
+	for _, t := range teams {
+		if t.Name == name {
+			if !strings.HasPrefix(t.Description, "Managed by Orglane") {
+				e.t.Fatalf("team %s is not marked as Orglane's: %q", name, t.Description)
+			}
+			return t.ID
+		}
+	}
+	return 0
+}
+
+// inTeam reports whether the login is in the Forgejo team.
+func (e *forgejoEnv) inTeam(team int64, login string) bool {
+	e.t.Helper()
+	code, _ := managedtest.Request(e.t, e.b.Client(), http.MethodGet, managedtest.ForgejoHost, "/api/v1/teams/"+strconv.FormatInt(team, 10)+"/members/"+login, e.admin, nil)
+	return code == http.StatusOK
+}
+
+func (e *forgejoEnv) person(username string) store.Person {
+	e.t.Helper()
+	p, err := store.New(e.pool).GetPersonByUsername(e.ctx, username)
+	if err != nil {
+		e.t.Fatalf("person %s: %v", username, err)
+	}
+	return p
+}
+
+func (e *forgejoEnv) orglaneTeam(slug string) store.Team {
+	e.t.Helper()
+	tm, err := store.New(e.pool).GetTeamBySlug(e.ctx, slug)
+	if err != nil {
+		e.t.Fatalf("team %s: %v", slug, err)
+	}
+	return tm
+}
+
+func (e *forgejoEnv) result(personID uuid.UUID) store.ProvisioningResult {
+	e.t.Helper()
+	r, err := store.New(e.pool).GetProvisioningResult(e.ctx, store.GetProvisioningResultParams{InstanceID: e.inst.ID, PersonID: personID})
+	if err != nil {
+		e.t.Fatalf("result: %v", err)
+	}
+	return r
+}
+
+// TestForgejoProvisioningAndSignOn is the acceptance of #62 against a real
+// Forgejo installed by the real agent and the real core with its job
+// workers, all behind the real Traefik, in local mode (mapped teams only,
+// so who gets an account is explicit): people of mapped teams get accounts
+// bound to the Orglane sign-in source and their team; an invited person
+// gets theirs once they accept and join; a membership change propagates;
+// a small removal goes through the removal guard on its own, a mass removal
+// waits for an admin's confirmation; the deep link lands signed in, through
+// a real OIDC round trip, and nobody without an Orglane-created account gets
+// in.
+func TestForgejoProvisioningAndSignOn(t *testing.T) {
+	if managedtest.RunAsRoot(t) {
+		return
+	}
+	policy := provider.MappedTeams
+	var platform, product store.Team
+	e := startForgejo(t, func(e *forgejoEnv) {
+		if _, err := e.stack.Apps.UpdateInstance(e.ctx, audit.System, e.inst.ID, apps.InstanceUpdate{AccessPolicy: &policy}); err != nil {
+			t.Fatal(err)
+		}
+		platform, product = e.orglaneTeam("platform"), e.orglaneTeam("product")
+		for _, tm := range []store.Team{platform, product} {
+			if _, err := e.stack.Apps.SetTeamMapping(e.ctx, audit.System, e.inst.ID, tm.ID, apps.TeamMappingInput{Mode: provider.MappingCreate}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	br := newBrowser(t, e.b)
+
+	// People of the mapped teams: an account each, bound to the source with
+	// their subject, in their teams. Nobody else.
+	olivia, elif := e.person("olivia.kowalski"), e.person("elif.yilmaz")
+	managedtest.Eventually(t, 2*time.Minute, "the mapped teams' people have their accounts", func() bool {
+		return e.account(olivia.ID.String()) != nil && e.account(e.person("lucas.ferreira").ID.String()) != nil
+	})
+	platformTeam, productTeam := e.teamID("platform"), e.teamID("product")
+	if platformTeam == 0 || productTeam == 0 {
+		t.Fatal("the mapped teams do not exist in Forgejo")
+	}
+	acct := e.account(olivia.ID.String())
+	if acct.Login != olivia.Username || acct.FullName != olivia.DisplayName || acct.Email != olivia.WorkEmail || acct.SourceID < 1 {
+		t.Fatalf("account = %+v", acct)
+	}
+	managedtest.Eventually(t, time.Minute, "olivia is in the product team", func() bool { return e.inTeam(productTeam, olivia.Username) })
+	if e.inTeam(platformTeam, olivia.Username) || e.account(elif.ID.String()) != nil {
+		t.Fatal("an account or membership nobody is mapped to")
+	}
+	if r := e.result(olivia.ID); r.Status != apps.StatusDone || !r.GrantedByOrglane {
+		t.Fatalf("olivia's result = %s (granted %v)", r.Status, r.GrantedByOrglane)
+	}
+	links, err := store.New(e.pool).ListPersonAccountLinks(e.ctx, olivia.ID)
+	if err != nil || len(links) != 1 || links[0].Method != provider.LinkProvisioned || links[0].ExternalID != strconv.FormatInt(acct.ID, 10) {
+		t.Fatalf("olivia's link = %+v, %v", links, err)
 	}
 
-	// A person signs in to Orglane (demo mode: one click).
-	resp, body := br.do(t, http.MethodPost, workspace+"/api/v1/demo/sign-in", map[string]string{})
-	var signedIn struct {
-		Person struct {
-			ID, Username, WorkEmail string
-		} `json:"person"`
+	// Invite: no account while invited; once the person accepts and is in
+	// the platform team, the account follows.
+	issued, err := e.stack.Identity.Invite(e.ctx, audit.System, identity.NewInvitation{
+		DisplayName: "Nora Berg", ContactEmail: "nora@example.test", Username: "nora.berg", WorkEmail: "nora.berg@acme.test", Role: authz.RoleMember,
+		TeamIDs: []uuid.UUID{platform.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := json.Unmarshal(body, &signedIn); resp.StatusCode != http.StatusOK || err != nil {
+	nora := issued.Person
+	time.Sleep(3 * time.Second)
+	if e.account(nora.ID.String()) != nil {
+		t.Fatal("an invited person has an account before accepting")
+	}
+	_, token, _ := strings.Cut(issued.Link, "#")
+	if _, err := e.stack.Identity.AcceptInvitation(e.ctx, audit.System, token, "correct horse battery staple 42"); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	managedtest.Eventually(t, time.Minute, "nora's account exists and is in platform", func() bool {
+		return e.account(nora.ID.String()) != nil && e.inTeam(platformTeam, "nora.berg")
+	})
+
+	// A membership change propagates: into product at once, out of
+	// platform through the removal guard (one removal: below the limit, it
+	// applies after the guard's delay without a confirmation).
+	if _, err := e.stack.Identity.SetTeamMember(e.ctx, audit.System, product.ID, nora.ID, identity.TeamRoleMember); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.stack.Identity.RemoveTeamMember(e.ctx, audit.System, platform.ID, nora.ID); err != nil {
+		t.Fatal(err)
+	}
+	managedtest.Eventually(t, time.Minute, "nora is in product", func() bool { return e.inTeam(productTeam, "nora.berg") })
+	managedtest.Eventually(t, 3*time.Minute, "nora's platform membership is removed by the guard", func() bool {
+		return !e.inTeam(platformTeam, "nora.berg")
+	})
+	managedtest.Eventually(t, time.Minute, "nora's result is done", func() bool { return e.result(nora.ID).Status == apps.StatusDone })
+	if e.account(nora.ID.String()) == nil {
+		t.Fatal("a team removal deleted the account")
+	}
+
+	// A mass removal: unmapping platform takes five people out of the team,
+	// above the limit: held for an admin, nobody removed until confirmed.
+	if err := e.stack.Apps.RemoveTeamMapping(e.ctx, audit.System, e.inst.ID, platform.ID); err != nil {
+		t.Fatal(err)
+	}
+	var held *apps.HeldBatch
+	managedtest.Eventually(t, 3*time.Minute, "the removals are held", func() bool {
+		held, err = e.stack.Apps.HeldRemovals(e.ctx, e.inst.ID)
+		return err == nil && held != nil && len(held.Items) >= 4
+	})
+	if !e.inTeam(platformTeam, "lucas.ferreira") {
+		t.Fatal("a held removal was applied")
+	}
+	if err := e.stack.Apps.ConfirmRemovals(e.ctx, audit.System, e.inst.ID, held.Batch.ID, held.Batch.ItemsHash); err != nil {
+		t.Fatal(err)
+	}
+	managedtest.Eventually(t, 3*time.Minute, "the confirmed removals are applied", func() bool {
+		return !e.inTeam(platformTeam, "lucas.ferreira") && !e.inTeam(platformTeam, "jonas.lindqvist")
+	})
+	if !e.inTeam(productTeam, "sofia.petrova") {
+		t.Fatal("unmapping platform took sofia out of product")
+	}
+
+	// The deep link lands signed in for a provisioned person: Forgejo's
+	// sign-in with Orglane, Orglane's existing session, back to Forgejo.
+	if resp, body := br.do(t, http.MethodPost, e.workspace+"/api/v1/demo/sign-in", map[string]string{"username": olivia.Username}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("sign in to Orglane: %d %s", resp.StatusCode, body)
 	}
-	person := signedIn.Person
-
-	// Their Forgejo account exists, bound to the Orglane source with their
-	// subject (provisioning creates it the same way, #62).
-	var source struct{ ID int64 }
-	resp, body = br.do(t, http.MethodGet, forgejoURL+"/assets/orglane/auth-source.json", nil)
-	if err := json.Unmarshal(body, &source); resp.StatusCode != http.StatusOK || err != nil || source.ID < 1 {
-		t.Fatalf("published sign-in source: %d %s", resp.StatusCode, body)
-	}
-	admin := managedtest.Auth{User: forgejo.AdminUsername, Password: secrets[forgejo.CredentialAdminPassword]}
-	code, out := managedtest.Request(t, b.Client(), http.MethodPost, managedtest.ForgejoHost, "/api/v1/admin/users", admin, map[string]any{
-		"username": person.Username, "email": person.WorkEmail, "source_id": source.ID, "login_name": person.ID,
-		"must_change_password": false, "password": "",
-	})
-	if code != http.StatusCreated {
-		t.Fatalf("create the account: %d %s", code, out)
-	}
-	// What provisioning records with it (#62's provisioning): the verified
-	// provisioned link and the person's access. Without them Orglane does
-	// not sign the person in to this client.
-	var created struct{ ID int64 }
-	if err := json.Unmarshal(out, &created); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO account_links (person_id, provider, realm, external_id, login, method, instance_id)
-		VALUES ($1, 'forgejo', $2, $3, $4, 'provisioned', $5)`, person.ID, inst.ID.String(), strconv.FormatInt(created.ID, 10), person.Username, inst.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO provisioning_results (instance_id, person_id, status, access, granted_by_orglane)
-		VALUES ($1, $2, 'done', true, true)`, inst.ID, person.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	// The deep link: Forgejo's sign-in with Orglane, Orglane's existing
-	// session, back to Forgejo, signed in, at the target.
-	resp, body = br.do(t, http.MethodGet, workspace+"/api/v1/apps/instances/"+inst.ID.String()+"/open?to="+url.QueryEscape("/acme"), nil)
+	resp, body := br.do(t, http.MethodGet, e.workspace+"/api/v1/apps/instances/"+e.inst.ID.String()+"/open?to="+url.QueryEscape("/acme"), nil)
 	var link struct{ URL string }
 	if err := json.Unmarshal(body, &link); resp.StatusCode != http.StatusOK || err != nil {
 		t.Fatalf("deep link: %d %s", resp.StatusCode, body)
 	}
-	if want := forgejoURL + "/user/oauth2/orglane?redirect_to=%2Facme"; link.URL != want {
+	if want := e.forgejoURL + "/user/oauth2/orglane?redirect_to=%2Facme"; link.URL != want {
 		t.Fatalf("deep link = %s, want %s", link.URL, want)
 	}
-	resp, html = br.do(t, http.MethodGet, link.URL, nil)
-	if resp.StatusCode != http.StatusOK || resp.URL.String() != forgejoURL+"/acme" {
-		t.Fatalf("the deep link ended at %s (%d), want %s/acme", resp.URL, resp.StatusCode, forgejoURL)
+	resp, html := br.do(t, http.MethodGet, link.URL, nil)
+	if resp.StatusCode != http.StatusOK || resp.URL.String() != e.forgejoURL+"/acme" || !strings.Contains(string(html), olivia.Username) {
+		t.Fatalf("the deep link ended at %s (%d), want %s/acme signed in", resp.URL, resp.StatusCode, e.forgejoURL)
 	}
-	if !strings.Contains(string(html), person.Username) {
-		t.Fatal("the target page does not show the signed-in person")
-	}
-	if !signedInToForgejo(t, br, forgejoURL) {
+	if !signedInToForgejo(t, br, e.forgejoURL) {
 		t.Fatal("not signed in to Forgejo after the deep link")
 	}
-
+	// People cannot sign in with a password; only through Orglane.
+	resp, html = newBrowser(t, e.b).do(t, http.MethodGet, e.forgejoURL+"/user/login", nil)
+	if resp.StatusCode != http.StatusOK || strings.Contains(string(html), `name="password"`) || !strings.Contains(string(html), "/user/oauth2/orglane") {
+		t.Fatalf("Forgejo's sign-in page (%d) offers a password form or no Orglane sign-in", resp.StatusCode)
+	}
 	// Without an Orglane session the deep link stops at Orglane's sign-in.
-	anonymous := newBrowser(t, b)
+	anonymous := newBrowser(t, e.b)
 	resp, _ = anonymous.do(t, http.MethodGet, link.URL, nil)
-	if resp.URL.Host != managedtest.WorkspaceHost || signedInToForgejo(t, anonymous, forgejoURL) {
+	if resp.URL.Host != managedtest.WorkspaceHost || signedInToForgejo(t, anonymous, e.forgejoURL) {
 		t.Fatalf("without an Orglane session the deep link ended at %s", resp.URL)
 	}
-
-	// The same browser, still signed in to Forgejo as the provisioned
-	// person, signs in to Orglane as someone Orglane has not provisioned and
-	// follows the deep link. Forgejo would link that subject to the open
-	// Forgejo session's account, whatever ACCOUNT_LINKING says; Orglane
-	// refuses to sign them in to this client (access_denied), so Forgejo
-	// never gets the subject.
-	var unprovisioned string
-	for _, p := range demotest.Dataset(t).People {
-		if p.Username != person.Username {
-			unprovisioned = p.Username
-			break
-		}
-	}
-	if resp, body := br.do(t, http.MethodPost, workspace+"/api/v1/demo/sign-in", map[string]string{"username": unprovisioned}); resp.StatusCode != http.StatusOK {
-		t.Fatalf("sign in as %s: %d %s", unprovisioned, resp.StatusCode, body)
+	// The same browser, still signed in to Forgejo as olivia, signs in to
+	// Orglane as elif, whom Orglane has not provisioned, and follows the
+	// deep link. Forgejo would link that subject to the open Forgejo
+	// session's account, whatever ACCOUNT_LINKING says; Orglane refuses to
+	// sign elif in to this client (access_denied), so Forgejo never gets
+	// the subject (providers.md "Spec gaps decided in #62").
+	if resp, body := br.do(t, http.MethodPost, e.workspace+"/api/v1/demo/sign-in", map[string]string{"username": elif.Username}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("sign in as elif: %d %s", resp.StatusCode, body)
 	}
 	br.do(t, http.MethodGet, link.URL, nil)
-	if n := b.Psql(t, "svc_git", "select count(*) from external_login_user"); n != "0" {
+	if n := e.b.Psql(t, "svc_git", "select count(*) from external_login_user"); n != "0" {
 		t.Fatalf("Forgejo linked a subject to an existing account (%s links)", n)
 	}
-	mixed := newBrowser(t, b)
-	if resp, body := mixed.do(t, http.MethodPost, workspace+"/api/v1/demo/sign-in", map[string]string{"username": unprovisioned}); resp.StatusCode != http.StatusOK {
-		t.Fatalf("sign in as %s: %d %s", unprovisioned, resp.StatusCode, body)
-	}
-	mixed.do(t, http.MethodGet, link.URL, nil)
-	if signedInToForgejo(t, mixed, forgejoURL) {
-		t.Fatalf("%s got into Forgejo through another person's session", unprovisioned)
-	}
-
-	// Signed in to Orglane, but without a Forgejo account Orglane created:
-	// Forgejo neither creates one nor links another account to them.
-	other := newBrowser(t, b)
-	var someone string
-	for _, p := range demotest.Dataset(t).People {
-		if p.Username != person.Username {
-			someone = p.Username
-			break
-		}
-	}
-	if resp, body := other.do(t, http.MethodPost, workspace+"/api/v1/demo/sign-in", map[string]string{"username": someone}); resp.StatusCode != http.StatusOK {
-		t.Fatalf("sign in as %s: %d %s", someone, resp.StatusCode, body)
+	// Signed in to Orglane but without an account Orglane created (in no
+	// mapped team), in a fresh browser: Forgejo neither creates one nor
+	// links another to them, and the mixed session above gave them nothing.
+	other := newBrowser(t, e.b)
+	if resp, body := other.do(t, http.MethodPost, e.workspace+"/api/v1/demo/sign-in", map[string]string{"username": elif.Username}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("sign in as elif: %d %s", resp.StatusCode, body)
 	}
 	other.do(t, http.MethodGet, link.URL, nil)
-	if signedInToForgejo(t, other, forgejoURL) {
+	if signedInToForgejo(t, other, e.forgejoURL) || e.account(elif.ID.String()) != nil {
 		t.Fatal("a person without a provisioned account got into Forgejo")
-	}
-	if code, _ := managedtest.Request(t, b.Client(), http.MethodGet, managedtest.ForgejoHost, "/api/v1/users/"+someone, admin, nil); code != http.StatusNotFound {
-		t.Fatalf("Forgejo registered %s on its own: %d", someone, code)
 	}
 }
 
