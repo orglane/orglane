@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/orglane/orglane/core/internal/agent"
 	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/agentclient"
@@ -26,8 +24,10 @@ import (
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/managedtest"
 	"github.com/orglane/orglane/core/internal/packages"
+	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/providers/forgejo"
 	forgejopkg "github.com/orglane/orglane/providers/forgejo/managed"
+	"github.com/orglane/orglane/providers/provider"
 )
 
 const agentSecret = "integration-agent-secret-0123456789abcdef" //nolint:gosec // a test secret
@@ -306,7 +306,7 @@ func TestForgejoOIDCClientRegistration(t *testing.T) {
 	// instance, no credentials.
 	for key, base := range map[string]string{"git3": "http://git3.acme.test", "git4": "https://git4.acme.test"} {
 		if key == "git4" {
-			if _, _, err := h.ids.CreateOIDCClient(h.ctx, audit.System, identity.NewOIDCClient{ID: "app-git4", Name: "Taken", RedirectURIs: []string{"https://x.acme.test/cb"}}); err != nil {
+			if _, _, err := h.ids.CreateOIDCClient(h.ctx, audit.System, identity.NewOIDCClient{ID: "app-git4", AppInstance: true, Name: "Taken", RedirectURIs: []string{"https://x.acme.test/cb"}}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -339,26 +339,19 @@ func TestForgejoOIDCClientRegistration(t *testing.T) {
 	}
 }
 
-// App clients sign in only people the instance provisioned: a verified
-// provisioned link this instance established and access at the last run,
-// while the instance is active or degraded. Other clients are not app
-// clients.
+// OIDCAccess denies every app client ("app-" prefix) it cannot decide for,
+// and allows only people the instance provisioned while it is active.
+// Operator clients (no prefix) are not its business.
 func TestOIDCAccess(t *testing.T) {
 	h := newHarnessWith(t, apps.Config{}, forgejo.New())
-	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
-		Provider: forgejo.ID, Key: "git", BaseURL: "https://git.acme.test", Settings: map[string]any{forgejo.SettingOrganization: "acme"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	maya, chen := h.person("maya"), h.person("chen")
-	allowed := func(client string, person uuid.UUID) bool {
+	settings := map[string]any{forgejo.SettingOrganization: "acme"}
+	newInstance := func(key string) apps.Instance {
 		t.Helper()
-		ok, err := h.svc.OIDCAccess(h.ctx, client, person)
+		inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{Provider: forgejo.ID, Key: key, BaseURL: "https://" + key + ".acme.test", Settings: settings})
 		if err != nil {
 			t.Fatal(err)
 		}
-		return ok
+		return inst
 	}
 	exec := func(sql string, args ...any) {
 		t.Helper()
@@ -366,38 +359,146 @@ func TestOIDCAccess(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Not app clients.
-	if !allowed("mobile", maya.ID) || !allowed("app-unknown", maya.ID) {
-		t.Fatal("a client that is not an app instance's was refused")
+	provision := func(inst apps.Instance, p store.Person, method string, access bool) {
+		t.Helper()
+		var on any = inst.ID
+		if method != provider.LinkProvisioned {
+			on = nil
+		}
+		exec(`INSERT INTO account_links (person_id, provider, realm, external_id, login, method, instance_id) VALUES ($1, 'forgejo', $2, $3, $4, $5, $6)`,
+			p.ID, inst.ID.String(), p.Username, p.Username, method, on)
+		exec(`INSERT INTO provisioning_results (instance_id, person_id, status, access) VALUES ($1, $2, 'done', $3)`, inst.ID, p.ID, access)
 	}
-	// Installing: nobody.
-	exec(`INSERT INTO account_links (person_id, provider, realm, external_id, login, method, instance_id) VALUES ($1, 'forgejo', $2, '7', 'maya', 'provisioned', $3)`, maya.ID, inst.ID.String(), inst.ID)
-	exec(`INSERT INTO provisioning_results (instance_id, person_id, status, access) VALUES ($1, $2, 'done', true)`, inst.ID, maya.ID)
-	if allowed("app-git", maya.ID) {
-		t.Fatal("an installing instance signs people in")
+	git := newInstance("git")
+	exec(`UPDATE app_instances SET state = 'active' WHERE id = $1`, git.ID)
+	maya, chen, aiko, lucas, nora := h.person("maya"), h.person("chen"), h.person("aiko"), h.person("lucas"), h.person("nora")
+	provision(git, maya, provider.LinkProvisioned, true)
+	provision(git, chen, provider.LinkOAuth, true)
+	provision(git, aiko, provider.LinkProvisioned, false)
+	exec(`INSERT INTO account_links (person_id, provider, realm, external_id, login, method, instance_id) VALUES ($1, 'forgejo', $2, 'lucas', 'lucas', 'provisioned', $3)`, lucas.ID, git.ID.String(), git.ID)
+
+	// Other instances in the states that cannot be decided.
+	installing := newInstance("installing")
+	retained, purged := newInstance("retained"), newInstance("purged")
+	for _, inst := range []apps.Instance{installing, retained, purged} {
+		provision(inst, maya, provider.LinkProvisioned, true)
 	}
-	exec(`UPDATE app_instances SET state = 'active' WHERE id = $1`, inst.ID)
-	if !allowed("app-git", maya.ID) {
-		t.Fatal("a provisioned person was refused")
+	exec(`UPDATE app_instances SET state = 'removed', data_retained = true, removed_at = now() WHERE id = $1`, retained.ID)
+	exec(`UPDATE app_instances SET state = 'removed', data_retained = false, removed_at = now() WHERE id = $1`, purged.ID)
+	// An instance of a provider that is no relying party, under a key whose
+	// client ID is reserved.
+	other, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{Provider: "testmanaged", Key: "other", BaseURL: "https://other.acme.test"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// No link, or a link that is not the instance's provisioned one.
-	if allowed("app-git", chen.ID) {
-		t.Fatal("a person without an account was allowed")
+	exec(`UPDATE app_instances SET state = 'active' WHERE id = $1`, other.ID)
+
+	for _, c := range []struct {
+		name   string
+		svc    *apps.Service
+		client string
+		person store.Person
+		want   bool
+	}{
+		{"operator client", h.svc, "mobile", nora, true},
+		{"provisioned, active", h.svc, "app-git", maya, true},
+		{"no link, no result", h.svc, "app-git", nora, false},
+		{"oauth link", h.svc, "app-git", chen, false},
+		{"access withdrawn", h.svc, "app-git", aiko, false},
+		{"link without a result", h.svc, "app-git", lucas, false},
+		{"another instance's link", h.svc, "app-installing", nora, false},
+		{"installing", h.svc, "app-installing", maya, false},
+		{"removed, data retained", h.svc, "app-retained", maya, false},
+		{"removed and purged", h.svc, "app-purged", maya, false},
+		{"no instance for the key", h.svc, "app-unknown", maya, false},
+		{"no relying party", h.svc, "app-other", maya, false},
+		{"adapter not in this build", bareService(t, h), "app-git", maya, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := c.svc.OIDCAccess(h.ctx, c.client, c.person.ID)
+			if err != nil || got != c.want {
+				t.Fatalf("OIDCAccess(%s, %s) = %v, %v; want %v", c.client, c.person.Username, got, err, c.want)
+			}
+		})
 	}
-	exec(`INSERT INTO account_links (person_id, provider, realm, external_id, login, method) VALUES ($1, 'forgejo', $2, '8', 'chen', 'oauth')`, chen.ID, inst.ID.String())
-	exec(`INSERT INTO provisioning_results (instance_id, person_id, status, access) VALUES ($1, $2, 'done', true)`, inst.ID, chen.ID)
-	if allowed("app-git", chen.ID) {
-		t.Fatal("a link Orglane did not provision was accepted")
+	// A store error is no decision: it is returned (the callers deny).
+	ctx, cancel := context.WithCancel(h.ctx)
+	cancel()
+	if ok, err := h.svc.OIDCAccess(ctx, "app-git", maya.ID); ok || err == nil {
+		t.Fatalf("with a failing store: %v, %v", ok, err)
 	}
-	// Access gone at the last run.
-	exec(`UPDATE provisioning_results SET access = false WHERE person_id = $1`, maya.ID)
-	if allowed("app-git", maya.ID) {
-		t.Fatal("a person without access was allowed")
+}
+
+// bareService is the framework on the harness's database without the
+// Forgejo adapter (a build that does not have it).
+func bareService(t *testing.T, h *harness) *apps.Service {
+	t.Helper()
+	reg, err := apps.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
 	}
-	exec(`UPDATE provisioning_results SET access = true WHERE person_id = $1`, maya.ID)
-	// Removed: nobody.
-	exec(`UPDATE app_instances SET state = 'removed', data_retained = true, removed_at = now() WHERE id = $1`, inst.ID)
-	if allowed("app-git", maya.ID) {
-		t.Fatal("a removed instance signs people in")
+	keyring, err := crypto.NewKeyring(masterSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return apps.NewService(h.pool, reg, keyring, apps.Config{})
+}
+
+// The decision in an issuing transaction holds share locks on the rows it
+// read: a withdrawal waits until the issuance commits, so it is ordered
+// before or after it, never in between.
+func TestOIDCAccessTxSerializesWithdrawal(t *testing.T) {
+	h := newHarnessWith(t, apps.Config{}, forgejo.New())
+	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+		Provider: forgejo.ID, Key: "git", BaseURL: "https://git.acme.test", Settings: map[string]any{forgejo.SettingOrganization: "acme"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	maya := h.person("maya")
+	for _, st := range []struct {
+		sql  string
+		args []any
+	}{
+		{`UPDATE app_instances SET state = 'active' WHERE id = $1`, []any{inst.ID}},
+		{`INSERT INTO account_links (person_id, provider, realm, external_id, login, method, instance_id) VALUES ($1, 'forgejo', $2, '7', 'maya', 'provisioned', $3)`, []any{maya.ID, inst.ID.String(), inst.ID}},
+		{`INSERT INTO provisioning_results (instance_id, person_id, status, access) VALUES ($1, $2, 'done', true)`, []any{inst.ID, maya.ID}},
+	} {
+		if _, err := h.pool.Exec(h.ctx, st.sql, st.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, err := h.pool.Begin(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(h.ctx) }()
+	if ok, err := h.svc.OIDCAccessTx(h.ctx, store.New(tx), "app-git", maya.ID); !ok || err != nil {
+		t.Fatalf("access = %v, %v", ok, err)
+	}
+	for name, sql := range map[string]string{
+		"access withdrawn": `UPDATE provisioning_results SET access = false WHERE instance_id = $1 AND person_id = $2`,
+		"link revoked":     `UPDATE account_links SET state = 'revoked', revoked_at = now() WHERE instance_id = $1 AND person_id = $2`,
+		"instance changed": `UPDATE app_instances SET state = 'degraded' WHERE id = $1 AND $2::uuid IS NOT NULL`,
+	} {
+		conn, err := h.pool.Acquire(h.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = conn.Exec(h.ctx, "SET lock_timeout = '300ms'")
+		if err == nil {
+			_, err = conn.Exec(h.ctx, sql, inst.ID, maya.ID)
+		}
+		_, _ = conn.Exec(h.ctx, "RESET lock_timeout")
+		conn.Release()
+		if err == nil || !strings.Contains(err.Error(), "lock timeout") {
+			t.Fatalf("%s while an issuance decided: %v, want it to wait for the lock", name, err)
+		}
+	}
+	if err := tx.Commit(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.pool.Exec(h.ctx, `UPDATE provisioning_results SET access = false WHERE instance_id = $1 AND person_id = $2`, inst.ID, maya.ID); err != nil {
+		t.Fatalf("withdrawal after the issuance: %v", err)
 	}
 }

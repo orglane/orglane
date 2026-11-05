@@ -53,7 +53,14 @@ type NewOIDCClient struct {
 	PostLogoutRedirectURIs []string
 	// RefreshTokens allows the refresh_token grant (offline_access).
 	RefreshTokens bool
+	// AppInstance marks the client of an app instance: only those may use
+	// IDs with AppClientPrefix, so a client with the prefix is always an
+	// app client (whose sign-ins the app framework decides).
+	AppInstance bool
 }
+
+// AppClientPrefix starts the IDs of app instances' clients ("app-<key>").
+const AppClientPrefix = "app-"
 
 // CreateOIDCClient registers a client and returns it with its secret (empty
 // for public clients). The secret is returned only here; the database keeps
@@ -78,6 +85,9 @@ func (s *Service) CreateOIDCClient(ctx context.Context, actor audit.Actor, in Ne
 func (s *Service) CreateOIDCClientTx(ctx context.Context, q *store.Queries, actor audit.Actor, in NewOIDCClient) (store.OidcClient, string, error) {
 	if !clientIDPattern.MatchString(in.ID) {
 		return store.OidcClient{}, "", invalid("id", "must be 1-100 characters of A-Z, a-z, 0-9, '.', '_', '~' and '-'")
+	}
+	if strings.HasPrefix(strings.ToLower(in.ID), AppClientPrefix) != in.AppInstance {
+		return store.OidcClient{}, "", invalid("id", "IDs starting with %q are reserved for app instances", AppClientPrefix)
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" || utf8.RuneCountInString(name) > 100 || !utf8.ValidString(name) {

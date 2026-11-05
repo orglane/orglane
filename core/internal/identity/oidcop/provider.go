@@ -146,6 +146,11 @@ func (p *Provider) AuthRequest(ctx context.Context, id string) (*AuthRequest, er
 // already or does not exist.
 var ErrAuthRequestGone = errors.New("oidcop: the authorization request is no longer pending")
 
+// SetClientAccess installs the client access check that runs where codes
+// and tokens are issued (SaveAuthCode, the code exchange and every token
+// issuance, refresh included). Without one every person may get them.
+func (p *Provider) SetClientAccess(f ClientAccess) { p.storage.access.Store(&f) }
+
 // CompleteAuthRequest records the signed-in person for a pending request.
 // session is the browser session the person signed in with; its creation
 // time is the authentication time.

@@ -41,6 +41,7 @@ func (s *Service) registerOIDCClient(ctx context.Context, q *store.Queries, acto
 	}
 	_, secret, err := s.cfg.OIDC.CreateOIDCClientTx(ctx, q, actor, identity.NewOIDCClient{
 		ID:                     provider.OIDCClientID(inst.Key),
+		AppInstance:            true,
 		Name:                   inst.DisplayName,
 		AuthMethod:             identity.ClientAuthBasic,
 		RedirectURIs:           spec.RedirectURIs,
@@ -58,52 +59,55 @@ func (s *Service) registerOIDCClient(ctx context.Context, q *store.Queries, acto
 }
 
 // OIDCAccess decides whether a person may sign in to an OIDC client
-// (identity/web ClientAccess). Clients of app instances
-// (provider.OIDCClientID) sign in only people Orglane provisioned in that
-// instance: a verified "provisioned" link the instance established, and
+// (identity/web ClientAccess, oidcop ClientAccess). Client IDs that start
+// with provider.OIDCClientID("") ("app-") are reserved for app instances
+// (identity refuses them for other clients), so such a client is always an
+// app client, and it signs in only people Orglane provisioned in its
+// instance: a verified "provisioned" link the instance established and
 // access at the last provisioning run, while the instance is active or
-// degraded. Everyone else is refused (access_denied), so the service never
-// learns of a subject it has no account for.
+// degraded. Every case that cannot be decided denies: no instance for the
+// key (purged), a removed instance, an adapter this build does not have, an
+// adapter that is no relying party, and errors (returned, so the caller
+// fails closed). Clients without the prefix are an operator's: allowed.
 //
-// This is what keeps Forgejo from linking accounts: when its callback gets
-// a subject no account is bound to while a Forgejo session is open, it
-// links that subject to the session's account, whatever ACCOUNT_LINKING
-// says (Forgejo 15, routers/web/auth/oauth.go). With this check Forgejo
-// only ever gets subjects whose own account Orglane created, and those
-// sign in to that account.
+// This keeps Forgejo from linking accounts: when its callback gets a
+// subject no account is bound to while a Forgejo session is open, it links
+// that subject to the session's account, whatever ACCOUNT_LINKING says
+// (Forgejo 15, routers/web/auth/oauth.go). With this check Forgejo only
+// ever gets subjects whose own account Orglane created.
 //
-// Other clients (registered by an operator) are not app clients: allowed.
+// OIDCAccess reads without a transaction (the early check when a sign-in
+// completes); OIDCAccessTx runs in the transaction that issues a code or
+// tokens and holds share locks on the rows it decided by, so a withdrawal
+// commits before the issuance (and is seen) or after it, never in between.
 func (s *Service) OIDCAccess(ctx context.Context, clientID string, personID uuid.UUID) (bool, error) {
+	return s.OIDCAccessTx(ctx, store.New(s.pool), clientID, personID)
+}
+
+// OIDCAccessTx is OIDCAccess in the caller's transaction (q), locking what
+// it reads.
+func (s *Service) OIDCAccessTx(ctx context.Context, q *store.Queries, clientID string, personID uuid.UUID) (bool, error) {
 	key, ok := strings.CutPrefix(clientID, provider.OIDCClientID(""))
 	if !ok {
-		return true, nil
+		return true, nil // an operator's client
 	}
-	q := store.New(s.pool)
-	rows, err := q.ListAppInstances(ctx)
+	row, err := q.GetAppInstanceByKeyForShare(ctx, key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // purged, or never an instance
+	} else if err != nil {
+		return false, fmt.Errorf("apps: load instance: %w", err)
+	}
+	inst, err := s.instance(row)
 	if err != nil {
-		return false, fmt.Errorf("apps: list instances: %w", err)
+		return false, err
 	}
-	var inst *Instance
-	for _, row := range rows {
-		if row.Key != key || (row.State == StateRemoved && !row.DataRetained) {
-			continue
-		}
-		i, err := s.instance(row)
-		if err != nil {
-			return false, err
-		}
-		inst = &i
-	}
-	if inst == nil || inst.Adapter == nil {
-		return true, nil // no app instance owns this client
-	}
-	if _, rp := inst.Adapter.RelyingParty(); !rp {
-		return true, nil
-	}
-	if !inst.Provisionable() {
+	if inst.Adapter == nil || !inst.Provisionable() {
 		return false, nil
 	}
-	link, err := q.GetVerifiedAccountLink(ctx, store.GetVerifiedAccountLinkParams{PersonID: personID, Provider: inst.Provider, Realm: inst.Adapter.Realm(inst.View())})
+	if _, rp := inst.Adapter.RelyingParty(); !rp {
+		return false, nil
+	}
+	link, err := q.GetVerifiedAccountLinkForShare(ctx, store.GetVerifiedAccountLinkForShareParams{PersonID: personID, Provider: inst.Provider, Realm: inst.Adapter.Realm(inst.View())})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	} else if err != nil {
@@ -112,7 +116,7 @@ func (s *Service) OIDCAccess(ctx context.Context, clientID string, personID uuid
 	if link.Method != provider.LinkProvisioned || link.InstanceID == nil || *link.InstanceID != inst.ID {
 		return false, nil
 	}
-	result, err := q.GetProvisioningResult(ctx, store.GetProvisioningResultParams{InstanceID: inst.ID, PersonID: personID})
+	result, err := q.GetProvisioningResultForShare(ctx, store.GetProvisioningResultForShareParams{InstanceID: inst.ID, PersonID: personID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	} else if err != nil {

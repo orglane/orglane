@@ -164,6 +164,9 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	svc.SetDirectoryObserver(appsSvc)
 	// App clients sign in only people provisioned in their instance.
 	auth.SetClientAccess(appsSvc.OIDCAccess)
+	// And again, under locks, where codes and tokens are issued: access
+	// withdrawn after the sign-in completed stops the code and the tokens.
+	provider.SetClientAccess(appsSvc.OIDCAccessTx)
 	return &Stack{Identity: svc, Profile: profiles, Imports: peopleimport.NewService(pool, svc, profiles, keyring, peopleimport.WithLogger(logger)), Keys: keys, Provider: provider, Auth: auth, Mail: mailer, Apps: appsSvc}, nil
 }
 
