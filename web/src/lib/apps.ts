@@ -432,6 +432,48 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
     id: "apps.code.invalidLogin",
     defaultMessage: "The app refused this person's username. Change the username, then retry.",
   },
+  username_taken: {
+    id: "apps.code.usernameTaken",
+    defaultMessage:
+      "Another account in the app already has this person's username, and Orglane never takes over an account it did not create. Rename or remove that account in the app, then retry.",
+  },
+  account_refused: {
+    id: "apps.code.accountRefused",
+    defaultMessage:
+      "The app refused this person's account details, for example an email address another account uses. Fix them, then retry.",
+  },
+  no_account: {
+    id: "apps.code.noAccount",
+    defaultMessage: "The account is not there yet. Orglane retries automatically.",
+  },
+  sso_not_configured: {
+    id: "apps.code.ssoNotConfigured",
+    defaultMessage:
+      "Sign-in with Orglane is not set up in the app yet. Orglane retries; if this stays, reinstall the app.",
+  },
+  service_admin_invalid: {
+    id: "apps.code.serviceAdminInvalid",
+    defaultMessage:
+      "Orglane cannot sign in to the app as its administrator. Orglane retries; if this stays, check the app's service account.",
+  },
+  forgejo_unavailable: {
+    id: "apps.code.forgejoUnavailable",
+    defaultMessage: "Forgejo did not answer. Orglane retries automatically.",
+  },
+  team_not_synced: {
+    id: "apps.code.teamNotSynced",
+    defaultMessage:
+      "A team this person is mapped to does not exist in the app yet. Orglane creates it and retries automatically.",
+  },
+  team_not_managed: {
+    id: "apps.code.teamNotManaged",
+    defaultMessage:
+      "A team this person is mapped to is not managed by Orglane, so Orglane does not change it. Map the Orglane team again so Orglane creates its own.",
+  },
+  forgejo_rejected: {
+    id: "apps.code.forgejoRejected",
+    defaultMessage: "Forgejo refused the change. Check the details, then retry.",
+  },
 });
 
 export const guidanceMessages = defineMessages({

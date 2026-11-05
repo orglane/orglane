@@ -829,6 +829,11 @@ func (s *Service) SetTeamMapping(ctx context.Context, actor audit.Actor, instanc
 		default:
 			return invalid("mode", "must be %s or %s", provider.MappingCreate, provider.MappingExisting)
 		}
+		if inst.Adapter != nil {
+			if err := inst.Adapter.validateTeamMapping(inst.View(), in.Mode, strings.TrimSpace(in.ExternalRef)); err != nil {
+				return err
+			}
+		}
 		if out, err = q.UpsertAppTeamMapping(ctx, params); err != nil {
 			return fmt.Errorf("apps: set team mapping: %w", err)
 		}

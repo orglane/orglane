@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"runtime"
 	"time"
@@ -55,6 +56,9 @@ type StackOptions struct {
 	// Version is the core's version; the agent client sends mutating
 	// requests only to an agent of the same version.
 	Version string
+	// AppsHTTPClient replaces the HTTP client provider adapters get (tests
+	// reach managed services from outside Docker).
+	AppsHTTPClient *http.Client
 }
 
 // NewStack builds the identity subsystem: the identity service with
@@ -152,6 +156,7 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	appsCfg := apps.Config{
 		WorkspaceURL: u, IssuerURL: issuer, Logger: logger,
 		Packages: pkgs, OIDC: svc, IngressMode: cfg.Ingress.Mode, ServiceHost: cfg.ServiceHost, SyncInterval: cfg.Agent.SyncInterval,
+		HTTPClient: opts.AppsHTTPClient,
 	}
 	agent, err := agentclient.FromConfig(cfg.Agent, opts.Version)
 	if err != nil {

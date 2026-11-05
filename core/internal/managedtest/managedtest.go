@@ -97,6 +97,8 @@ type Bundle struct {
 	// TraefikPort is Traefik's HTTP entry point on 127.0.0.1.
 	TraefikPort int
 	dynamicDir  string
+	// withCore: Traefik also polls a core, which serves the workspace.
+	withCore bool
 }
 
 // BusyboxImage serves the stand-in workspace (StartBundle without a core).
@@ -155,7 +157,9 @@ func startBundle(t *testing.T, providerURL string) *Bundle {
 	traefikNet := "    networks: [edge]\n"
 	workspace := ""
 	if providerURL != "" {
-		provider = "      - --providers.http.endpoint=" + providerURL + "\n      - --providers.http.pollInterval=1s\n"
+		// The core's routes, plus the file for routes a test adds (the
+		// upstream aliases the core reaches on the edge network).
+		provider += "      - --providers.http.endpoint=" + providerURL + "\n      - --providers.http.pollInterval=1s\n"
 		traefikNet = "    extra_hosts: [\"host.docker.internal:host-gateway\"]\n    networks:\n      edge:\n        aliases: [" + WorkspaceHost + "]\n"
 	} else {
 		www := filepath.Join(dir, "www")
@@ -219,7 +223,7 @@ services:
 		t.Fatalf("traefik port %q: %v", addr, err)
 	}
 	port, _ := strconv.Atoi(p)
-	return &Bundle{Project: project, TraefikPort: port, dynamicDir: dynamicDir}
+	return &Bundle{Project: project, TraefikPort: port, dynamicDir: dynamicDir, withCore: providerURL != ""}
 }
 
 // stubDiscovery is the stand-in workspace's discovery document: enough for
@@ -250,10 +254,20 @@ func LocalConfig(t *testing.T) *config.Config {
 }
 
 // Routes writes the core's Traefik configuration (ingress.Build) for the
-// routes into Traefik's file provider. JSON is valid YAML.
+// routes into Traefik's file provider. JSON is valid YAML. With a core
+// (StartBundleWithCore) only the app routes are written: the core serves
+// its own.
 func (b *Bundle) Routes(t *testing.T, routes ...ingress.AppRoute) {
 	t.Helper()
-	raw, err := json.Marshal(ingress.Build(LocalConfig(t), routes))
+	d := ingress.Build(LocalConfig(t), routes)
+	if b.withCore {
+		// The core serves the workspace router itself: a second one here
+		// would compete with it for the same host.
+		delete(d.HTTP.Routers, ingress.RouterWorkspace)
+		delete(d.HTTP.Routers, ingress.RouterWorkspaceRedirect)
+		delete(d.HTTP.Services, ingress.ServiceCore)
+	}
+	raw, err := json.Marshal(d)
 	if err != nil {
 		t.Fatal(err)
 	}

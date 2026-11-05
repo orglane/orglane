@@ -109,16 +109,16 @@ func (*Adapter) Manifest() provider.Manifest {
 		Capabilities: []provider.Capability{"code"},
 		Management:   provider.Managed,
 		Package:      "forgejo",
-		// The matrix says what this adapter does today: accounts and teams
-		// come with the rest of #62, webhooks with #63.
+		// The matrix says what this adapter does today: webhooks come with
+		// #63.
 		Features: []provider.FeatureSupport{
 			{Feature: provider.FeatureSSO, Support: provider.Supported},
 			{Feature: provider.FeatureDeepLinks, Support: provider.Supported},
-			{Feature: provider.FeatureAccountsCreate, Support: provider.Planned, Milestone: planned},
+			{Feature: provider.FeatureAccountsCreate, Support: provider.Supported},
 			{Feature: provider.FeatureAccountsInvite, Support: provider.Unsupported},
-			{Feature: provider.FeatureAccountsLink, Support: provider.Planned, Milestone: planned},
-			{Feature: provider.FeatureTeamsSync, Support: provider.Planned, Milestone: planned},
-			{Feature: provider.FeatureDeprovisionTeamRemoval, Support: provider.Planned, Milestone: planned},
+			{Feature: provider.FeatureAccountsLink, Support: provider.Supported},
+			{Feature: provider.FeatureTeamsSync, Support: provider.Supported},
+			{Feature: provider.FeatureDeprovisionTeamRemoval, Support: provider.Supported},
 			{Feature: provider.FeatureDeprovisionOrgRemoval, Support: provider.Unsupported},
 			{Feature: provider.FeatureDeprovisionSuspend, Support: provider.Planned, Milestone: "M5"},
 			{Feature: provider.FeatureDeprovisionRevokeTokens, Support: provider.Planned, Milestone: "M5"},
@@ -213,9 +213,11 @@ func sourceURL(inst provider.Instance, elem ...string) (*url.URL, error) {
 }
 
 var (
-	_ provider.OIDCRelyingParty  = (*Adapter)(nil)
-	_ provider.DeepLinker        = (*Adapter)(nil)
-	_ provider.SettingsValidator = (*Adapter)(nil)
-	_ provider.Lifecycle         = (*Adapter)(nil)
-	_ provider.CredentialRotator = (*Adapter)(nil)
+	_ provider.TeamMappingValidator = (*Adapter)(nil)
+	_ provider.UserProvisioner      = (*Adapter)(nil)
+	_ provider.OIDCRelyingParty     = (*Adapter)(nil)
+	_ provider.DeepLinker           = (*Adapter)(nil)
+	_ provider.SettingsValidator    = (*Adapter)(nil)
+	_ provider.Lifecycle            = (*Adapter)(nil)
+	_ provider.CredentialRotator    = (*Adapter)(nil)
 )
