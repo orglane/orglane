@@ -603,12 +603,23 @@ func TestCheckpoint(t *testing.T) {
 	}
 }
 
+// requireRoot skips a test that needs root, unless ORGLANE_TEST_REQUIRE_ROOT
+// is set (CI runs the *AsRoot tests as root and must not skip them).
+func requireRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		return
+	}
+	if os.Getenv("ORGLANE_TEST_REQUIRE_ROOT") != "" {
+		t.Fatal("ORGLANE_TEST_REQUIRE_ROOT is set, but the test does not run as root")
+	}
+	t.Skip("needs root")
+}
+
 // TestExtractKeepsSetuidAsRoot: the owner is applied before the mode, so
 // setuid and setgid bits survive a restore by root.
 func TestExtractKeepsSetuidAsRoot(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("needs root")
-	}
+	requireRoot(t)
 	src := t.TempDir()
 	p := filepath.Join(src, "tool")
 	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o600); err != nil {

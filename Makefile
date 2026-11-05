@@ -65,7 +65,7 @@ IMAGE ?= orglane:dev
 AGENT_IMAGE ?= orglane-agent:dev
 
 .PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image image-agent website website-dev generate check-generate check-generate-go check-generate-ts \
-	test test-go test-unit test-integration test-compose test-install measure-memory conformance test-ts test-e2e test-e2e-if-available test-website test-website-if-available \
+	test test-go test-unit test-root test-integration test-compose test-install measure-memory conformance test-ts test-e2e test-e2e-if-available test-website test-website-if-available \
 	lint lint-go lint-ts lint-sh fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
 help: ## Show available targets
@@ -205,6 +205,19 @@ test-go:
 		echo "warning: Docker is not available, skipping integration tests"; \
 		$(MAKE) --no-print-directory test-unit; \
 	fi
+	@if [ -n "$$CI" ] && [ "$$(uname -s)" = Linux ] && sudo -n true 2>/dev/null; then \
+		$(MAKE) --no-print-directory test-root; \
+	else \
+		echo "note: not CI on Linux with passwordless sudo, skipping the root-only tests (make test-root)"; \
+	fi
+
+# Agent tests named *AsRoot (restore ownership, setuid/setgid) skip without
+# root. The test binary is built as the current user and run with sudo;
+# ORGLANE_TEST_REQUIRE_ROOT turns a skip into a failure. make test runs this
+# in CI (Linux, passwordless sudo).
+test-root: ## Run the root-only agent tests as root (needs sudo)
+	go test -c -o .bin/agent-root.test ./core/internal/agent/
+	sudo env ORGLANE_TEST_REQUIRE_ROOT=1 .bin/agent-root.test -test.run 'AsRoot$$' -test.count=1 -test.v
 
 test-unit: ## Run Go unit tests only
 	go test -race -count=1 ./...
