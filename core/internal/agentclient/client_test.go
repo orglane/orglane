@@ -104,7 +104,7 @@ func TestClientWithAgent(t *testing.T) {
 	ctx := t.Context()
 
 	h, err := c.Health(ctx)
-	if err != nil || h.Version != "1.2.3" || h.Protocol != agentapi.ProtocolVersion || len(h.Packages) != 1 {
+	if err != nil || h.Version != "1.2.3" || h.Protocol != agentapi.ProtocolVersion || len(h.Packages) != 3 {
 		t.Fatalf("health = %+v, %v", h, err)
 	}
 	op, accepted, err := c.Apply(ctx, "git", testSpec())
@@ -141,6 +141,31 @@ func TestClientWithAgent(t *testing.T) {
 	if _, err := c.Instance(ctx, "nope"); !errors.As(err, &pe) || pe.Code != agentapi.CodeNotFound {
 		t.Fatalf("unknown instance error = %v", err)
 	}
+
+	// Snapshots, restores and upgrade decisions (the agent's unit tests
+	// cover their semantics; here the client's paths and errors).
+	snaps, err := c.Snapshots(ctx, "git")
+	if err != nil || len(snaps) != 0 {
+		t.Fatalf("snapshots = %+v, %v", snaps, err)
+	}
+	if _, err := c.Snapshots(ctx, "nope"); !errors.As(err, &pe) || pe.Code != agentapi.CodeNotFound {
+		t.Fatalf("snapshots of an unknown instance: %v", err)
+	}
+	if _, err := c.Snapshot(ctx, "git"); !errors.As(err, &pe) || pe.Code != agentapi.CodeNotFound {
+		t.Fatalf("snapshot of an instance that is not installed: %v", err)
+	}
+	if _, err := c.Restore(ctx, "git", uuid.Must(uuid.NewV7()), 2); !errors.As(err, &pe) || pe.Code != agentapi.CodeNotFound {
+		t.Fatalf("restore of an unknown snapshot: %v", err)
+	}
+	if _, err := c.Confirm(ctx, uuid.Must(uuid.NewV7())); !errors.As(err, &pe) || pe.Code != agentapi.CodeNotFound {
+		t.Fatalf("confirm of an unknown operation: %v", err)
+	}
+	if _, err := c.Abort(ctx, op.ID); !errors.As(err, &pe) || pe.Code != agentapi.CodeNotAwaitingConfirmation || pe.Status != http.StatusConflict {
+		t.Fatalf("abort of an apply: %v", err)
+	}
+	if _, err := c.Snapshot(ctx, "../x"); err == nil {
+		t.Fatal("an invalid key was sent")
+	}
 }
 
 func TestClientWrongSecret(t *testing.T) {
@@ -165,6 +190,16 @@ func TestClientVersionMismatch(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "instances", "git")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("a spec was sent to an agent of another version")
+	}
+	for name, call := range map[string]func() error{
+		"confirm":  func() error { _, err := c.Confirm(t.Context(), uuid.Must(uuid.NewV7())); return err },
+		"abort":    func() error { _, err := c.Abort(t.Context(), uuid.Must(uuid.NewV7())); return err },
+		"snapshot": func() error { _, err := c.Snapshot(t.Context(), "git"); return err },
+		"restore":  func() error { _, err := c.Restore(t.Context(), "git", uuid.Must(uuid.NewV7()), 2); return err },
+	} {
+		if err := call(); !errors.Is(err, ErrVersionMismatch) {
+			t.Errorf("%s to another version: %v", name, err)
+		}
 	}
 	// Reading status is allowed.
 	if _, err := c.Instances(t.Context()); err != nil {

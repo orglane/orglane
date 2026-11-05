@@ -114,6 +114,17 @@ networks:
 	return &agentHost{t: t, project: project, socket: filepath.Join(sockDir, "agent.sock"), dataDir: t.TempDir(), registry: registry}
 }
 
+// newestAgenttest is the agenttest version a new install gets: the newest
+// one embedded (agenttest also has the versions of the upgrade tests).
+func newestAgenttest(t *testing.T, registry *packages.Registry) string {
+	t.Helper()
+	pkg, ok := registry.Latest("agenttest")
+	if !ok {
+		t.Fatal("agenttest is not embedded")
+	}
+	return pkg.Manifest.Version
+}
+
 // start runs the agent on the host's data directory until stop.
 func (a *agentHost) start() {
 	a.t.Helper()
@@ -310,7 +321,7 @@ func TestAgentWiring(t *testing.T) {
 	got := h.reload(inst.ID)
 	op := h.operation(inst.ID, 1)
 	if op.State != agentapi.OpSucceeded || op.AgentOperationID == nil || op.ErrorCode != nil || op.FinishedAt == nil ||
-		got.ObservedGeneration != 1 || derefS(got.PackageVersion) != agenttest.Version || got.WaitingForAgent != "" || h.agentProv.Setups(inst.ID) != 1 {
+		got.ObservedGeneration != 1 || derefS(got.PackageVersion) != newestAgenttest(t, host.registry) || got.WaitingForAgent != "" || h.agentProv.Setups(inst.ID) != 1 {
 		t.Fatalf("after install: %+v, operation %+v, setups %d", got.AppInstance, op, h.agentProv.Setups(inst.ID))
 	}
 	waitUntil(t, "the service answers", time.Minute, func() bool { return strings.Contains(httpGet(port), "from-core") })
@@ -500,7 +511,7 @@ func TestAgentApplyWithoutAgent(t *testing.T) {
 	if h.jobs(apps.AgentApplyArgs{}.Kind()) != 1 {
 		t.Fatal("the install queued no push")
 	}
-	if len(plans) != 2 || plans[1].Key != "managed-test" || plans[1].BaseURL != "https://agenttest.work.acme.test" || plans[1].Package.Manifest.Version != agenttest.Version {
+	if len(plans) != 2 || plans[1].Key != "managed-test" || plans[1].BaseURL != "https://agenttest.work.acme.test" || plans[1].Package.Manifest.Version != newestAgenttest(t, registry) {
 		t.Fatalf("preflight plans = %+v", plans)
 	}
 	if up := inst.View().Upstream; up == nil || up.String() != "http://managed-test-web:8080" {

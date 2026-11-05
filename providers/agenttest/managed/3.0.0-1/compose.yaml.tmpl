@@ -1,0 +1,75 @@
+# Rendered by the Orglane agent from the agenttest package {{.Package.Version}}.
+# Local edits are overwritten on the next reconcile.
+name: {{quote .Instance.Project}}
+services:
+  web:
+    image: {{image "web" | quote}}
+    restart: unless-stopped
+    command: ["sh", "/orglane/files/web.sh"]
+    environment:
+      MESSAGE: {{index .Settings "message" | quote}}
+      INSTANCE_HOST: {{index .Hosts "web" | quote}}
+      PACKAGE_VERSION: {{quote .Package.Version}}
+      FAULT: {{index .Settings "fault" | quote}}
+    volumes:
+      - type: bind
+        source: {{dir "www" | quote}}
+        target: /data
+      - type: bind
+        source: {{file "." | quote}}
+        target: /orglane/files
+        read_only: true
+    # policy-test: web-volumes
+{{- with port "http"}}
+    ports: [{{quote .}}]
+{{- end}}
+    networks:
+      default: {}
+      edge:
+        aliases: [{{alias "web" | quote}}]
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$$FAULT\" != health && wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 1s
+      timeout: 2s
+      retries: 5
+    logging:
+      driver: json-file
+      options: {max-size: "1m", max-file: "2"}
+    security_opt: ["no-new-privileges:true"]
+    # policy-test: web
+  worker:
+    image: {{image "psql" | quote}}
+    restart: unless-stopped
+    init: true
+    command: ["sleep", "2147483647"]
+    environment:
+      PGURL: {{printf "postgresql://%s@%s/%s" .Database.User .Database.Address .Database.Name | quote}}
+      PGPASSWORD: {{secret "db_password"}}
+      MESSAGE: {{index .Settings "message" | quote}}
+      PACKAGE_VERSION: {{quote .Package.Version}}
+      FAULT: {{index .Settings "fault" | quote}}
+    volumes:
+      - type: bind
+        source: {{file "." | quote}}
+        target: /orglane/files
+        read_only: true
+    networks: {default: {}, services: {}}
+    healthcheck:
+      test: ["CMD-SHELL", "psql \"$$PGURL\" -Atc 'select 1' >/dev/null"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    logging:
+      driver: json-file
+      options: {max-size: "1m", max-file: "2"}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # policy-test: worker
+  # policy-test: services
+networks:
+  edge:
+    external: true
+    name: {{quote .Networks.Edge}}
+  services:
+    external: true
+    name: {{quote .Networks.Services}}

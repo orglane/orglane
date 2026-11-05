@@ -42,8 +42,20 @@ func InstancePath(key string) string { return PathInstances + "/" + url.PathEsca
 // InstanceLogsPath returns the path of an instance's logs.
 func InstanceLogsPath(key string) string { return InstancePath(key) + "/logs" }
 
+// InstanceSnapshotsPath returns the path of an instance's snapshots.
+func InstanceSnapshotsPath(key string) string { return InstancePath(key) + "/snapshots" }
+
+// InstanceRestorePath returns the path that restores an instance's snapshot.
+func InstanceRestorePath(key string) string { return InstancePath(key) + "/restore" }
+
 // OperationPath returns the path of an operation.
 func OperationPath(id uuid.UUID) string { return "/v1/operations/" + id.String() }
+
+// OperationConfirmPath returns the path that confirms an upgrade.
+func OperationConfirmPath(id uuid.UUID) string { return OperationPath(id) + "/confirm" }
+
+// OperationAbortPath returns the path that rolls an upgrade back.
+func OperationAbortPath(id uuid.UUID) string { return OperationPath(id) + "/abort" }
 
 // KeyPattern is the pattern of instance keys (providers.md "app_instances").
 // Keys name the instance directory, the Compose project and the database.
@@ -158,6 +170,23 @@ const (
 	// Remove operations use PhaseRemoving (the instance phase) too.
 )
 
+// Phases of upgrade operations and of the upgrade journal
+// (docs/specs/agent.md "Upgrade"). Upgrades also use PhaseStopping, and
+// PhaseRollingBack (the instance phase) for the fenced restore. Restore
+// operations use PhaseRollingBack and PhaseRestored; snapshot operations
+// PhaseStopping, PhaseSnapshotting and PhaseStarting.
+const (
+	PhasePreflight            = "preflight"
+	PhasePulling              = "pulling"
+	PhaseSnapshotting         = "snapshotting"
+	PhaseSwitching            = "switching"
+	PhaseMigrating            = "migrating"
+	PhaseVerifying            = "verifying"
+	PhaseAwaitingConfirmation = "awaiting_confirmation"
+	PhaseCommitting           = "committing"
+	PhaseRestored             = "restored"
+)
+
 // Error codes of problem details and operations (docs/specs/agent.md
 // "Operations"). NotFound and Superseded are additions of the agent: the
 // first answers unknown instances and operations, the second marks a queued
@@ -186,7 +215,71 @@ const (
 	CodeNotFound              = "not_found"
 	CodeSuperseded            = "superseded"
 	CodeInternal              = "internal"
+	// CodeNotAwaitingConfirmation answers confirm or abort for an operation
+	// that is not an upgrade waiting for its confirmation (409).
+	CodeNotAwaitingConfirmation = "not_awaiting_confirmation"
 )
+
+// Snapshot reasons.
+const (
+	SnapshotReasonUpgrade = "upgrade"
+	SnapshotReasonManual  = "manual"
+)
+
+// SnapshotFormat is the format of snapshot.json.
+const SnapshotFormat = 1
+
+// SnapshotRequest is the body of POST /v1/instances/{key}/snapshots.
+type SnapshotRequest struct {
+	// Reason is SnapshotReasonManual; upgrade snapshots are the agent's own.
+	Reason string `json:"reason"`
+}
+
+// RestoreRequest is the body of POST /v1/instances/{key}/restore.
+type RestoreRequest struct {
+	SnapshotID uuid.UUID `json:"snapshot_id"`
+	// Generation is the new generation of the restored state: the spec of
+	// the snapshot becomes the accepted and, when the restore succeeded, the
+	// running spec with this generation. It must be newer than the accepted
+	// generation.
+	Generation int64 `json:"generation"`
+}
+
+// SnapshotFile is a file of a snapshot with its size and SHA-256.
+type SnapshotFile struct {
+	File   string `json:"file"`
+	Bytes  int64  `json:"bytes"`
+	SHA256 string `json:"sha256"`
+}
+
+// SnapshotDataDir is the archive of one data directory.
+type SnapshotDataDir struct {
+	Name string `json:"name"`
+	SnapshotFile
+}
+
+// Snapshot describes a complete snapshot: snapshot.json, and the answer of
+// GET /v1/instances/{key}/snapshots (docs/specs/agent.md "Snapshots"). It
+// carries no secrets; the spec at snapshot time stays in the agent.
+type Snapshot struct {
+	Format     int               `json:"format"`
+	ID         uuid.UUID         `json:"id"`
+	CreatedAt  time.Time         `json:"created_at"`
+	Reason     string            `json:"reason"`
+	Package    PackageRef        `json:"package"`
+	Generation int64             `json:"generation"`
+	Images     map[string]string `json:"images"`
+	Database   *SnapshotFile     `json:"database,omitempty"`
+	DataDirs   []SnapshotDataDir `json:"data_dirs"`
+	// RenderedSHA256 is a hash over the rendered files of the snapshot.
+	RenderedSHA256 string `json:"rendered_sha256"`
+}
+
+// SnapshotList is the answer of GET /v1/instances/{key}/snapshots, newest
+// first.
+type SnapshotList struct {
+	Snapshots []Snapshot `json:"snapshots"`
+}
 
 // Operation is one declarative operation of the agent.
 type Operation struct {

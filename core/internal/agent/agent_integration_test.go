@@ -50,6 +50,27 @@ func docker(t *testing.T, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// dockerSlots bounds the instance projects this package's tests run at
+// once: each creates a network, and Docker's default address pools (about
+// 30 networks) are shared with everything else on the host, other test
+// packages included. ORGLANE_TEST_DOCKER_SLOTS overrides it on crowded
+// hosts.
+var dockerSlots = make(chan struct{}, dockerSlotCount())
+
+func dockerSlotCount() int {
+	if n, err := strconv.Atoi(os.Getenv("ORGLANE_TEST_DOCKER_SLOTS")); err == nil && n > 0 {
+		return n
+	}
+	return 6
+}
+
+// holdDockerSlot takes a slot until the test's cleanups ran.
+func holdDockerSlot(t *testing.T) {
+	t.Helper()
+	dockerSlots <- struct{}{}
+	t.Cleanup(func() { <-dockerSlots })
+}
+
 // startBundle starts a minimal stand-in for the Compose bundle: PostgreSQL
 // on the services network and a container on the edge network, labeled by
 // Compose like the bundle's.
@@ -65,9 +86,12 @@ services:
   postgres:
     image: %s
     environment: {POSTGRES_USER: orglane, POSTGRES_DB: orglane, POSTGRES_PASSWORD: bundle-test}
-    networks: [database, services]
+    networks: [services]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U orglane -d orglane"]
+      # Over TCP: the image's temporary server during initialization only
+      # listens on the socket, and a socket check would pass before the
+      # restart that follows it.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U orglane -d orglane"]
       interval: 1s
       retries: 60
   traefik:
@@ -77,7 +101,6 @@ services:
     networks: [edge]
 networks:
   edge: {}
-  database: {internal: true}
   services: {internal: true}
 `, project, postgresImage, busyboxImage)
 	if err := os.WriteFile(file, []byte(bundle), 0o600); err != nil {
@@ -116,6 +139,11 @@ func (r *auditRunner) tail(ctx context.Context, limit int, args ...string) ([]by
 	return r.inner.tail(ctx, limit, args...)
 }
 
+func (r *auditRunner) pipe(ctx context.Context, stdin io.Reader, stdout io.Writer, args ...string) ([]byte, error) {
+	r.record(args)
+	return r.inner.pipe(ctx, stdin, stdout, args...)
+}
+
 func (r *auditRunner) stream(ctx context.Context, args ...string) (io.ReadCloser, func() error, error) {
 	r.record(args)
 	return r.inner.stream(ctx, args...)
@@ -128,20 +156,33 @@ type testEnv struct {
 	client   *agentclient.Client
 	audit    *auditRunner
 	socket   string
+	dataDir  string
 	registry *packages.Registry
+	stop     func() error
 }
 
-func startAgent(t *testing.T, project string, registry *packages.Registry) *testEnv {
+// agentOptions configure launchAgent.
+type agentOptions struct {
+	dataDir string // empty: a new temporary directory
+	crashAt string // the test crash hook
+}
+
+// launchAgent runs an agent in-process with peer_uid -1. stop ends it and
+// returns Run's error (errCrashed after the crash hook fired).
+func launchAgent(t *testing.T, project string, registry *packages.Registry, o agentOptions) *testEnv {
 	t.Helper()
 	sockDir, err := os.MkdirTemp("", "agent-int-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	if o.dataDir == "" {
+		o.dataDir = t.TempDir()
+	}
 	cfg := config.Default().Agent
 	cfg.Secret = testSecret
 	cfg.Listen = filepath.Join(sockDir, "agent.sock")
-	cfg.DataDir = t.TempDir()
+	cfg.DataDir = o.dataDir
 	cfg.PeerUID = -1
 	cfg.ComposeProject = project
 	cfg.EdgeNetwork, cfg.ServicesNetwork = project+"_edge", project+"_services"
@@ -149,7 +190,7 @@ func startAgent(t *testing.T, project string, registry *packages.Registry) *test
 	audit := &auditRunner{inner: newDockerCLI("docker")}
 	a, err := New(Options{
 		Config: cfg, Version: "dev", Registry: registry, Logger: testLogger(t),
-		EventDebounce: time.Second, EventMinInterval: 2 * time.Second, runner: audit,
+		EventDebounce: time.Second, EventMinInterval: 2 * time.Second, runner: audit, crashAt: o.crashAt,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -157,12 +198,16 @@ func startAgent(t *testing.T, project string, registry *packages.Registry) *test
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("agent: %v", err)
-		}
-	})
+	var once sync.Once
+	var runErr error
+	stop := func() error {
+		once.Do(func() {
+			cancel()
+			runErr = <-done
+		})
+		return runErr
+	}
+	t.Cleanup(func() { _ = stop() })
 	for range 100 {
 		if c, err := (&net.Dialer{}).DialContext(t.Context(), "unix", cfg.Listen); err == nil {
 			_ = c.Close()
@@ -175,7 +220,18 @@ func startAgent(t *testing.T, project string, registry *packages.Registry) *test
 		t.Fatal(err)
 	}
 	t.Cleanup(client.Close)
-	return &testEnv{t: t, project: project, agent: a, client: client, audit: audit, socket: cfg.Listen, registry: registry}
+	return &testEnv{t: t, project: project, agent: a, client: client, audit: audit, socket: cfg.Listen, dataDir: o.dataDir, registry: registry, stop: stop}
+}
+
+func startAgent(t *testing.T, project string, registry *packages.Registry) *testEnv {
+	t.Helper()
+	e := launchAgent(t, project, registry, agentOptions{})
+	t.Cleanup(func() {
+		if err := e.stop(); err != nil {
+			t.Errorf("agent: %v", err)
+		}
+	})
+	return e
 }
 
 func freePort(t *testing.T) int {
@@ -283,20 +339,19 @@ func fileMode(t *testing.T, path string) os.FileMode {
 // repairs drift, changes settings, stops, removes and purges it, and reuses
 // its key (docs/specs/agent.md "Testing").
 func TestAgentWithDocker(t *testing.T) {
+	t.Parallel() // its own bundle; overlaps the other long Docker tests
+	holdDockerSlot(t)
 	project := startBundle(t)
 	registry, err := packages.NewRegistry(agenttest.FS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := startAgent(t, project, registry)
 	const key = "at1"
+	cleanupProject(t, project, key) // leave nothing behind if a step failed
+	e := startAgent(t, project, registry)
 	id := uuid.Must(uuid.NewV7())
 	port := freePort(t)
 	dir := e.agent.instanceDir(key)
-	t.Cleanup(func() {
-		// Leave nothing behind if a step failed.
-		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", packages.InstanceProject(project, key), "down", "--remove-orphans").Run() //nolint:gosec // test commands
-	})
 
 	// Install.
 	e.mustApply(integrationSpec(id, 1, port, hostile, agentapi.StateRunning))
@@ -436,12 +491,23 @@ func TestAgentWithDocker(t *testing.T) {
 func (e *testEnv) checkAudit(keys map[string]bool) {
 	t := e.t
 	t.Helper()
-	pkg, _ := e.registry.Get(agentapi.PackageRef{ID: "agenttest", Version: agenttest.Version})
-	hooks := map[string][]string{}
-	for _, h := range pkg.Manifest.Hooks.Configure {
-		hooks[h.Service] = h.Command
+	// The hooks of every embedded version (configure and migrate).
+	var hooks [][]string
+	for _, ref := range e.registry.List() {
+		pkg, _ := e.registry.Get(ref)
+		for _, h := range pkg.Manifest.Hooks.Configure {
+			hooks = append(hooks, append([]string{h.Service}, h.Command...))
+		}
+		if h := pkg.Manifest.Upgrade.Migrate; h != nil {
+			hooks = append(hooks, append([]string{h.Service}, h.Command...))
+		}
 	}
 	psql := []string{"psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", "orglane", "-d", "postgres", "-f", "-"}
+	psqlQuery := []string{"psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-U", "orglane", "-d", "postgres", "-f", "-"}
+	dbKeys := map[string]bool{}
+	for k := range keys {
+		dbKeys[packages.DatabaseName(k)] = true
+	}
 	e.audit.mu.Lock()
 	defer e.audit.mu.Unlock()
 	if len(e.audit.calls) == 0 {
@@ -463,7 +529,13 @@ func (e *testEnv) checkAudit(keys map[string]bool) {
 			}
 			continue
 		case "exec":
-			if len(call) != 3+len(psql) || call[1] != "-i" || !slices.Equal(call[3:], psql) {
+			switch {
+			case len(call) == 3+len(psql) && call[1] == "-i" && slices.Equal(call[3:], psql):
+			case len(call) == 3+len(psqlQuery) && call[1] == "-i" && slices.Equal(call[3:], psqlQuery):
+			case len(call) == 8 && slices.Equal(call[2:7], []string{"pg_dump", "-U", "orglane", "-Fc", "-d"}) && dbKeys[call[7]]:
+			case len(call) == 12 && call[1] == "-i" && slices.Equal(call[3:7], []string{"pg_restore", "-U", "orglane", "-d"}) && dbKeys[call[7]] &&
+				slices.Equal(call[8:], []string{"--no-owner", "--role=" + call[7], "--exit-on-error", "--single-transaction"}):
+			default:
 				t.Fatalf("unexpected exec %v", call)
 			}
 			continue
@@ -481,9 +553,9 @@ func (e *testEnv) checkAudit(keys map[string]bool) {
 			t.Fatalf("compose call for another project or directory: %v", call)
 		}
 		switch sub := call[9:]; sub[0] {
-		case "config", "up", "stop", "down", "ps", "logs":
+		case "config", "up", "stop", "down", "ps", "logs", "pull":
 		case "exec":
-			if len(sub) < 4 || sub[1] != "-T" || !slices.Equal(sub[3:], hooks[sub[2]]) {
+			if len(sub) < 4 || sub[1] != "-T" || !slices.ContainsFunc(hooks, func(h []string) bool { return slices.Equal(sub[2:], h) }) {
 				t.Fatalf("compose exec of something that is not a hook: %v", call)
 			}
 		default:
@@ -556,18 +628,18 @@ func TestUnauthenticatedSocketClient(t *testing.T) {
 // an instance installed stopped, and on the start after its settings
 // changed while it was stopped.
 func TestConfigureHooksAfterStopped(t *testing.T) {
+	t.Parallel() // its own bundle; overlaps the other long Docker tests
+	holdDockerSlot(t)
 	project := startBundle(t)
 	registry, err := packages.NewRegistry(agenttest.FS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := startAgent(t, project, registry)
 	const key = "at2"
+	cleanupProject(t, project, key)
+	e := startAgent(t, project, registry)
 	id := uuid.Must(uuid.NewV7())
 	port := freePort(t)
-	t.Cleanup(func() {
-		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", packages.InstanceProject(project, key), "down", "--remove-orphans").Run() //nolint:gosec // test commands
-	})
 	row := func() string {
 		return e.psql("svc_at2", "select coalesce((select message from agenttest_config where id = 1), 'none')")
 	}

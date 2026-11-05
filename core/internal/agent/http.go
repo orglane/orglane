@@ -18,17 +18,21 @@ import (
 )
 
 // Routes returns the agent's route table. It is exactly the declarative API
-// of docs/specs/agent.md for this milestone; there is no route that takes a
-// command, an image, a Compose file or a path. Snapshots, restores and
-// upgrade confirmation follow with the upgrade flow (#60).
+// of docs/specs/agent.md; there is no route that takes a command, an image,
+// a Compose file or a path.
 func Routes() []string {
 	return []string{
 		"GET " + agentapi.PathHealth,
 		"GET " + agentapi.PathInstances,
 		"GET " + agentapi.PathInstances + "/{key}",
 		"PUT " + agentapi.PathInstances + "/{key}",
-		"GET " + agentapi.PathInstances + "/{key}/logs",
+		"POST " + agentapi.PathInstances + "/{key}/snapshots",
+		"GET " + agentapi.PathInstances + "/{key}/snapshots",
+		"POST " + agentapi.PathInstances + "/{key}/restore",
 		"GET /v1/operations/{id}",
+		"POST /v1/operations/{id}/confirm",
+		"POST /v1/operations/{id}/abort",
+		"GET " + agentapi.PathInstances + "/{key}/logs",
 	}
 }
 
@@ -36,12 +40,17 @@ func Routes() []string {
 // by its signature, every answer to an authenticated request is signed.
 func (a *Agent) Handler() http.Handler {
 	handlers := map[string]http.HandlerFunc{
-		"GET " + agentapi.PathHealth:                    a.handleHealth,
-		"GET " + agentapi.PathInstances:                 a.handleList,
-		"GET " + agentapi.PathInstances + "/{key}":      a.handleGet,
-		"PUT " + agentapi.PathInstances + "/{key}":      a.handlePut,
-		"GET " + agentapi.PathInstances + "/{key}/logs": a.handleLogs,
-		"GET /v1/operations/{id}":                       a.handleOperation,
+		"GET " + agentapi.PathHealth:                          a.handleHealth,
+		"GET " + agentapi.PathInstances:                       a.handleList,
+		"GET " + agentapi.PathInstances + "/{key}":            a.handleGet,
+		"PUT " + agentapi.PathInstances + "/{key}":            a.handlePut,
+		"GET " + agentapi.PathInstances + "/{key}/logs":       a.handleLogs,
+		"GET /v1/operations/{id}":                             a.handleOperation,
+		"POST " + agentapi.PathInstances + "/{key}/snapshots": a.handleSnapshot,
+		"GET " + agentapi.PathInstances + "/{key}/snapshots":  a.handleSnapshots,
+		"POST " + agentapi.PathInstances + "/{key}/restore":   a.handleRestore,
+		"POST /v1/operations/{id}/confirm":                    func(w http.ResponseWriter, r *http.Request) { a.handleDecision(w, r, true) },
+		"POST /v1/operations/{id}/abort":                      func(w http.ResponseWriter, r *http.Request) { a.handleDecision(w, r, false) },
 	}
 	mux := http.NewServeMux()
 	for _, pattern := range Routes() {
@@ -279,7 +288,7 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 			op, ok := a.ops.forGeneration(key, spec.Generation)
 			if !ok {
 				// The operation was pruned; record the outcome again.
-				if op, err = a.ops.create(key, opKind(spec), spec.Generation); err != nil {
+				if op, err = a.ops.create(key, opKind(spec, st.current), spec.Generation); err != nil {
 					return internal(err)
 				}
 				if st.current != nil && st.current.Generation >= spec.Generation {
@@ -299,11 +308,26 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 				func(p *agentapi.Problem) { p.Fields = []string{"package.id"} })
 		}
 		if c.Package.Version != spec.Package.Version {
-			// Package upgrades (snapshot, fenced switch, rollback) come with
-			// #60; until then a version change is refused.
-			return fail(http.StatusUnprocessableEntity, agentapi.CodeUpgradePathBlocked,
-				"this agent does not upgrade packages yet; send the running version",
-				func(p *agentapi.Problem) { p.RequiredVersion = c.Package.Version })
+			// An upgrade: the version must be newer and reachable directly
+			// (upgrade.min_from); the candidate has to run to be verified.
+			pkg, _ := a.registry.Get(spec.Package) // checked by handlePut
+			if err := pkg.CheckUpgrade(c.Package.Version); err != nil {
+				var ue *packages.UpgradeError
+				required := ""
+				if errors.As(err, &ue) && !ue.Downgrade {
+					required = a.registry.RequiredStop(spec.Package.ID, c.Package.Version, spec.Package.Version)
+					if required == "" {
+						required = ue.MinFrom
+					}
+				}
+				return fail(http.StatusUnprocessableEntity, agentapi.CodeUpgradePathBlocked, err.Error(),
+					func(p *agentapi.Problem) { p.RequiredVersion = required })
+			}
+			if spec.State != agentapi.StateRunning {
+				return fail(http.StatusUnprocessableEntity, agentapi.CodeInvalidInput,
+					"a package upgrade needs the state running (the candidate runs to be verified)",
+					func(p *agentapi.Problem) { p.Fields = []string{"state"} })
+			}
 		}
 	}
 
@@ -324,27 +348,40 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 	if err := writeSpec(filepath.Join(dir, desiredFile), spec); err != nil {
 		return internal(err)
 	}
-	// Queued operations of older generations never run: only the newest
-	// accepted spec is applied.
-	for _, old := range a.ops.unfinished() {
-		if old.Instance == key && old.State == agentapi.OpQueued && old.Generation < spec.Generation {
-			if _, err := a.ops.update(old.ID, func(o *agentapi.Operation) {
-				o.State, o.ErrorCode = agentapi.OpFailed, agentapi.CodeSuperseded
-			}); err != nil {
-				return internal(err)
-			}
-		}
+	if err := a.supersede(key, spec.Generation); err != nil {
+		return internal(err)
 	}
-	op, err := a.ops.create(key, opKind(spec), spec.Generation)
+	op, err := a.ops.create(key, opKind(spec, st.current), spec.Generation)
 	if err != nil {
 		return internal(err)
 	}
 	return op, http.StatusAccepted, nil
 }
 
-func opKind(spec *agentapi.Spec) string {
-	if spec.State == agentapi.StateAbsent {
+// supersede fails the queued operations of older generations: only the
+// newest accepted spec is applied.
+func (a *Agent) supersede(key string, gen int64) error {
+	for _, old := range a.ops.unfinished() {
+		if old.Instance == key && old.State == agentapi.OpQueued && old.Generation < gen &&
+			(old.Kind == agentapi.KindApply || old.Kind == agentapi.KindRemove || old.Kind == agentapi.KindUpgrade) {
+			if _, err := a.ops.update(old.ID, func(o *agentapi.Operation) {
+				o.State, o.ErrorCode = agentapi.OpFailed, agentapi.CodeSuperseded
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// opKind returns the kind of the operation that applies spec over the
+// running spec current.
+func opKind(spec, current *agentapi.Spec) string {
+	switch {
+	case spec.State == agentapi.StateAbsent:
 		return agentapi.KindRemove
+	case current != nil && current.Package.Version != spec.Package.Version:
+		return agentapi.KindUpgrade
 	}
 	return agentapi.KindApply
 }
