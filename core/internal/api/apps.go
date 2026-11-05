@@ -629,12 +629,17 @@ func (s *server) GetPersonApps(ctx context.Context, req apigen.GetPersonAppsRequ
 		out.Links = append(out.Links, verifiedLink(l))
 	}
 	for _, p := range pa.Pending {
-		org := p.OrganizationID
-		out.Links = append(out.Links, apigen.AccountLinkView{
-			Provider: p.Provider, Login: p.Login, ExternalId: itoa64(p.ExternalID), State: apigen.AccountLinkViewStatePending, OrganizationId: &org,
-		})
+		out.Links = append(out.Links, pendingLink(p))
 	}
 	return out, nil
+}
+
+func pendingLink(p store.ListPersonPendingAccountLinksWithConflictRow) apigen.AccountLinkView {
+	org, conflict := p.OrganizationID, p.Conflict
+	return apigen.AccountLinkView{
+		Provider: p.Provider, Login: p.Login, ExternalId: itoa64(p.ExternalID), State: apigen.AccountLinkViewStatePending,
+		OrganizationId: &org, Conflict: &conflict,
+	}
 }
 
 func verifiedLink(l store.AccountLink) apigen.AccountLinkView {

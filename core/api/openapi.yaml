@@ -2707,6 +2707,152 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/me/account-links:
+    get:
+      operationId: listMyAccountLinks
+      summary: My account links
+      description: |
+        The caller's verified provider account links, their import evidence
+        (`pending`, which proves nothing) for organizations with an active
+        instance, and the providers where they can link an account.
+      tags: [apps]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The caller's links.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MyAccountLinks" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/me/account-links/{provider}/start:
+    post:
+      operationId: startAccountLink
+      summary: Begin verifying my account at a provider
+      description: |
+        Returns the provider URL to send the browser to. The state and PKCE
+        verifier are bound to the caller and this browser session, are
+        single-use and expire after ten minutes. Only from a browser
+        session. 409 `not_supported` when no active instance of the provider
+        verifies accounts.
+      tags: [apps]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProviderId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                instanceId:
+                  type: string
+                  format: uuid
+                  description: The instance whose provider App to authorize through; defaults to the oldest active one.
+      responses:
+        "200":
+          description: Where to send the browser.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url: { type: string, format: uri }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/me/account-links/{provider}/complete:
+    post:
+      operationId: completeAccountLink
+      summary: Finish verifying my account at a provider
+      description: |
+        Called by the SPA callback route with the provider's `state` and
+        `code`. The state is consumed first and only by the caller's own
+        session, also when the exchange fails. The link is keyed by the
+        provider's immutable account ID; the provider token is used once
+        and revoked. 409 `invalid_state` for an unknown, used, expired or
+        foreign state; 409 `account_already_linked` when the account is
+        linked to another person (an admin must revoke that link first);
+        400 with the provider's safe code when the provider refuses; 429
+        with `Retry-After` on a provider rate limit.
+      tags: [apps]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProviderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [state, code]
+              properties:
+                state: { type: string, minLength: 1, maxLength: 100 }
+                code: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        "200":
+          description: The verified link.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountLinkView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/me/account-links/{linkId}:
+    delete:
+      operationId: unlinkMyAccount
+      summary: Unlink one of my accounts
+      description: |
+        Revokes the caller's own verified link. The provider account is no
+        longer managed for them (reported, not removed).
+      tags: [apps]
+      x-orglane-permission: authenticated
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/LinkId"
+      responses:
+        "204": { description: The link was revoked. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/people/{personId}/account-links/{linkId}:
+    delete:
+      operationId: revokePersonAccountLink
+      summary: Revoke a person's account link
+      description: |
+        Revokes a wrong verified link of a person. Admins can revoke links,
+        never create them; only the person's own verification does.
+      tags: [apps]
+      x-orglane-permission: people.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PersonId"
+        - $ref: "#/components/parameters/LinkId"
+      responses:
+        "204": { description: The link was revoked. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/webhooks/{instanceId}:
     post:
       operationId: receiveWebhook
@@ -2779,6 +2925,22 @@ components:
       name: invitationId
       in: path
       required: true
+      schema:
+        type: string
+        format: uuid
+    ProviderId:
+      name: provider
+      in: path
+      required: true
+      description: A provider ID, e.g. github.
+      schema:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{0,30}$"
+    LinkId:
+      name: linkId
+      in: path
+      required: true
+      description: A verified account link ID.
       schema:
         type: string
         format: uuid
@@ -4880,6 +5042,29 @@ components:
         verifiedAt:
           type: string
           format: date-time
+        conflict:
+          type: boolean
+          description: Pending evidence only. The account it names is verified for another person.
+    MyAccountLinks:
+      type: object
+      required: [links, linkable]
+      properties:
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccountLinkView"
+        linkable:
+          type: array
+          description: Providers where the caller can verify an account, with the instance used.
+          items:
+            $ref: "#/components/schemas/LinkableProvider"
+    LinkableProvider:
+      type: object
+      required: [provider, instanceId, displayName]
+      properties:
+        provider: { type: string }
+        instanceId: { type: string, format: uuid }
+        displayName: { type: string }
     PersonApps:
       type: object
       required: [results, links]

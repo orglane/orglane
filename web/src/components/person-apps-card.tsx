@@ -1,11 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { defineMessages, FormattedMessage, useIntl } from "react-intl";
+import { useState } from "react";
+import { defineMessage, defineMessages, FormattedMessage, useIntl } from "react-intl";
 
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { call } from "@/lib/api";
 import { useApi } from "@/lib/api-context";
 import {
   explainCode,
@@ -31,6 +33,26 @@ const messages = defineMessages({
     defaultMessage: "From an import. It proves nothing until the person links the account.",
   },
   links: { id: "personApps.links", defaultMessage: "Linked accounts" },
+  conflict: {
+    id: "personApps.conflict",
+    defaultMessage: "This account is verified for another person.",
+  },
+  mismatched: {
+    id: "personApps.mismatched",
+    defaultMessage: "Differs from the imported account.",
+  },
+  revoke: defineMessage<{ login: string }>({
+    id: "personApps.revoke",
+    defaultMessage: "Revoke the link to @{login}",
+  }),
+  revokeShort: { id: "personApps.revokeShort", defaultMessage: "Revoke" },
+  revokeConfirm: defineMessage<{ login: string }>({
+    id: "personApps.revokeConfirm",
+    defaultMessage:
+      "Revoke the link to @{login}? Use this when it is the wrong account. The person has to link their account again.",
+  }),
+  revokeYes: { id: "personApps.revokeYes", defaultMessage: "Revoke link" },
+  cancel: { id: "common.cancel", defaultMessage: "Cancel" },
   access: { id: "personApps.access", defaultMessage: "Access" },
   retry: { id: "common.retry", defaultMessage: "Try again" },
 });
@@ -130,11 +152,24 @@ export function PersonAppsCard({
                       <span className="min-w-0 break-all">
                         <span className="font-medium">@{l.login}</span>
                         <span className="ml-2 text-muted-foreground">{l.provider}</span>
+                        {l.state === "verified" && l.evidence === "mismatched" && (
+                          <span className="ml-2 text-muted-foreground">
+                            <FormattedMessage {...messages.mismatched} />
+                          </span>
+                        )}
+                        {l.state === "pending" && l.conflict && (
+                          <span className="ml-2 text-muted-foreground">
+                            <FormattedMessage {...messages.conflict} />
+                          </span>
+                        )}
                       </span>
                       {l.state === "verified" ? (
-                        <Badge variant="success">
-                          <FormattedMessage {...messages.verified} />
-                        </Badge>
+                        <span className="flex items-center gap-2">
+                          <Badge variant="success">
+                            <FormattedMessage {...messages.verified} />
+                          </Badge>
+                          {l.id && <RevokeLink personId={personId} linkId={l.id} login={l.login} />}
+                        </span>
                       ) : (
                         <Badge variant="warning" title={intl.formatMessage(messages.pendingHint)}>
                           <FormattedMessage {...messages.pending} />
@@ -149,5 +184,73 @@ export function PersonAppsCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/** Revokes a wrong verified link, after a confirmation. */
+function RevokeLink({
+  personId,
+  linkId,
+  login,
+}: {
+  personId: string;
+  linkId: string;
+  login: string;
+}) {
+  const api = useApi();
+  const intl = useIntl();
+  const queryClient = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const revoke = useMutation({
+    mutationFn: () =>
+      call(
+        api.client.DELETE("/api/v1/people/{personId}/account-links/{linkId}", {
+          params: { path: { personId, linkId } },
+        }),
+      ),
+    onSuccess: () => {
+      setConfirming(false);
+      return queryClient.invalidateQueries({ queryKey: personAppsQuery(api, personId).queryKey });
+    },
+  });
+  if (!confirming) {
+    return (
+      <Button
+        size="sm"
+        variant="destructive-ghost"
+        aria-label={intl.formatMessage(messages.revoke, { login })}
+        onClick={() => setConfirming(true)}
+      >
+        <FormattedMessage {...messages.revokeShort} />
+      </Button>
+    );
+  }
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: an inline confirmation, not a fieldset
+    <span
+      role="group"
+      aria-label={intl.formatMessage(messages.revoke, { login })}
+      className="flex flex-wrap items-center gap-2"
+    >
+      <span>{intl.formatMessage(messages.revokeConfirm, { login })}</span>
+      {revoke.isError && <span role="alert">{errorMessage(intl, revoke.error)}</span>}
+      <Button
+        size="sm"
+        variant="ghost"
+        autoFocus
+        disabled={revoke.isPending}
+        onClick={() => setConfirming(false)}
+      >
+        <FormattedMessage {...messages.cancel} />
+      </Button>
+      <Button
+        size="sm"
+        variant="destructive"
+        loading={revoke.isPending}
+        onClick={() => revoke.mutate()}
+      >
+        <FormattedMessage {...messages.revokeYes} />
+      </Button>
+    </span>
   );
 }
