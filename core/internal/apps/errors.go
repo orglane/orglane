@@ -39,6 +39,14 @@ var (
 
 // Code returns the stable problem code of a Service error, or "".
 func Code(err error) string {
+	var coded *CodedError
+	if errors.As(err, &coded) {
+		return coded.Code
+	}
+	var dns *DNSError
+	if errors.As(err, &dns) {
+		return dns.Code
+	}
 	for _, c := range []struct {
 		err  error
 		code string

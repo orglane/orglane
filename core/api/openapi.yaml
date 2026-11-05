@@ -1968,6 +1968,85 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
+    post:
+      operationId: installAppInstance
+      summary: Install a managed provider
+      description: |
+        Installs a managed provider (Forgejo) through the agent: creates the
+        instance (`installing`) with its credentials and desired state, and
+        queues the push. The agent's operation shows in the instance's
+        operations; when it succeeds, Setup runs and activates the instance.
+
+        Before anything is stored the install is checked: the key (pattern;
+        `key_reserved` while another instance or retained data holds it), the
+        host (a host name other than the workspace host, not used by another
+        instance: `host_taken`; in local mode under `.localhost`:
+        `host_not_local`, with a workspace under `.localhost`:
+        `localhost_workspace`), the agent (connected, same version:
+        `agent_unavailable`, `agent_version_mismatch`, `agent_untrusted`),
+        the host's resources against the package's minimums
+        (`insufficient_memory`, `insufficient_disk`) and, in domain mode, the
+        host's DNS records (`dns_unresolved`, `dns_mismatch`,
+        `dns_lookup_failed`). Refusals are 409 with that code; invalid input is
+        400 with the field. Settings the request leaves out get the
+        provider's defaults (`AppProvider.install.settings`).
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstallAppInstanceRequest"
+      responses:
+        "202":
+          description: The instance, installing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppInstance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/agent:
+    get:
+      operationId: getAppAgent
+      summary: The agent of managed services
+      description: |
+        Whether managed services are configured and the agent is connected
+        with this server's version, and the host's resources it reports, so
+        Settings → Apps can offer installs or show how to enable managed
+        services.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The agent's status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppAgentStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /api/v1/apps/instances/{instanceId}:
     get:
       operationId: getAppInstance
@@ -2029,6 +2108,90 @@ paths:
                 $ref: "#/components/schemas/AppInstance"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      operationId: removeAppInstance
+      summary: Remove a managed instance
+      description: |
+        Stops and removes the services of an active, degraded or failed
+        managed instance (`removing`, then `removed`). Without `purge` its
+        data, database and credentials are retained and the key stays
+        reserved, so it can be reinstalled. With `purge=true` they are deleted
+        and the key is freed; this needs `confirm` set to the instance key
+        (400 otherwise) and is also allowed on a removed instance whose data
+        is retained. Other states are refused (409, `invalid_state`); a
+        failed removal leaves the instance `failed` with `remove_failed`.
+        Connected instances are not removed here (409, `not_supported`).
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - name: purge
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: confirm
+          in: query
+          required: false
+          description: The instance key, required with `purge=true`.
+          schema:
+            type: string
+            maxLength: 64
+      responses:
+        "202":
+          description: The instance, removing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppInstance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/reinstall:
+    post:
+      operationId: reinstallAppInstance
+      summary: Reinstall a removed managed instance
+      description: |
+        Brings back a removed managed instance whose data is retained: the
+        same ID, key, credentials and data, installed again with the version
+        it ran. Other states are refused (409, `invalid_state`).
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "202":
+          description: The instance, installing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppInstance"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -4250,6 +4413,89 @@ components:
         lifecycle:
           type: boolean
           description: The adapter has a managed lifecycle (setup, health).
+        install:
+          $ref: "#/components/schemas/AppInstallDefaults"
+    AppInstallDefaults:
+      type: object
+      description: |
+        What an install of a managed provider uses when the request leaves
+        it out, and the package's resource hints. Present only for managed
+        providers whose package is embedded in this server.
+      required: [key, host, settings, packageVersion, memoryMin, memoryRecommended, diskMin]
+      properties:
+        key:
+          type: string
+        host:
+          type: string
+          example: git.acme.com
+        settings:
+          type: object
+          additionalProperties: true
+          description: Defaults that depend on this installation (e.g. Forgejo's organization).
+        packageVersion:
+          type: string
+          example: 15.0.11-1
+        memoryMin:
+          type: integer
+          format: int64
+          description: Bytes the package needs at least (hint, not a limit).
+        memoryRecommended:
+          type: integer
+          format: int64
+        diskMin:
+          type: integer
+          format: int64
+    InstallAppInstanceRequest:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          type: string
+          example: forgejo
+        key:
+          type: string
+          description: Defaults to the provider's default key.
+          maxLength: 24
+        displayName:
+          type: string
+          maxLength: 100
+        host:
+          type: string
+          maxLength: 253
+          description: The public host; defaults to `AppProvider.install.host`.
+        settings:
+          type: object
+          additionalProperties: true
+    AppAgentStatus:
+      type: object
+      required: [enabled, connected, memTotal, memAvailable, diskFree, memoryReserved]
+      properties:
+        enabled:
+          type: boolean
+          description: Managed services are configured (agent socket and secret).
+        connected:
+          type: boolean
+          description: The agent answers with this server's version.
+        code:
+          type: string
+          enum: [agent_unavailable, agent_version_mismatch, agent_untrusted]
+          description: Why it is not connected.
+        version:
+          type: string
+        memTotal:
+          type: integer
+          format: int64
+        memAvailable:
+          type: integer
+          format: int64
+        diskFree:
+          type: integer
+          format: int64
+          description: Free bytes where the instances' data lives.
+        memoryReserved:
+          type: integer
+          format: int64
+          description: The bundle's share plus the minimum memory of every installed managed app.
     AppProviderList:
       type: object
       required: [items]

@@ -96,8 +96,10 @@ func newHarnessWith(t *testing.T, cfg apps.Config, adapters ...provider.Capabili
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws, _ := url.Parse("https://work.acme.test")
-	cfg.WorkspaceURL, cfg.Logger = ws, logger
+	if cfg.WorkspaceURL == nil {
+		cfg.WorkspaceURL, _ = url.Parse("https://work.acme.test")
+	}
+	cfg.Logger = logger
 	svc := apps.NewService(pool, reg, keyring, cfg)
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Logger: logger})
 	if err != nil {
