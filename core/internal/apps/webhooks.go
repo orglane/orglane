@@ -371,7 +371,8 @@ func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
 
 // RunSetup works one attempt of the setup job: Lifecycle.Setup of a managed
 // instance. Success activates it; exhausted retries fail it with
-// setup_failed.
+// setup_failed. A provider's RetryAfter snoozes the job without spending an
+// attempt, also on the last attempt.
 func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAttempts int) error {
 	inst, err := s.Instance(ctx, args.InstanceID)
 	if errors.Is(err, ErrNotFound) {
@@ -393,10 +394,10 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 	}
 	code, retryable, retryAfter := provider.Classify(setupErr)
 	s.env(inst).Logger().WarnContext(ctx, "setup failed", "code", code, "attempt", attempt)
-	if retryable && attempt < maxAttempts {
-		if retryAfter > 0 {
-			return river.JobSnooze(retryAfter)
-		}
+	switch {
+	case retryable && retryAfter > 0:
+		return river.JobSnooze(retryAfter)
+	case retryable && attempt < maxAttempts:
 		return fmt.Errorf("apps: setup failed (%s)", code)
 	}
 	_, err = s.Transition(ctx, audit.System, inst.ID, StateFailed, CodeSetupFailed)

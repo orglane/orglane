@@ -337,12 +337,22 @@ func (s *Service) RunRotateCredential(ctx context.Context, args RotateCredential
 		if err := s.reportStuck(ctx, inst, cand); err != nil {
 			return err
 		}
-		if err != nil {
-			code, _, _ := provider.Classify(err)
-			return fmt.Errorf("%w (%s)", errRotationUnknown, code)
-		}
+		return rotationRetry(err)
+	}
+}
+
+// rotationRetry is how an attempt whose outcome is unknown retries: a
+// provider's RetryAfter snoozes the job until the reset without spending an
+// attempt; anything else retries with backoff.
+func rotationRetry(err error) error {
+	if err == nil {
 		return errRotationUnknown
 	}
+	code, retryable, retryAfter := provider.Classify(err)
+	if retryable && retryAfter > 0 {
+		return river.JobSnooze(retryAfter)
+	}
+	return fmt.Errorf("%w (%s)", errRotationUnknown, code)
 }
 
 // acknowledge makes the candidate the active version; the old active
@@ -388,7 +398,7 @@ func (s *Service) abandon(ctx context.Context, inst Instance, rotator provider.C
 		}
 		res, err := rotator.ApplyCredential(ctx, env, inst.View(), cand.Name, int(active.Version), value)
 		if err != nil || res.Outcome != provider.RotationAcknowledged {
-			return errRotationUnknown // keep re-applying the active value
+			return rotationRetry(err) // keep re-applying the active value
 		}
 	}
 	return s.inTx(ctx, func(_ pgx.Tx, q *store.Queries) error {

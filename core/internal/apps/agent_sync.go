@@ -210,7 +210,7 @@ func (s *Service) recoverInstall(ctx context.Context, id uuid.UUID, desired int6
 		if _, err := s.transition(ctx, tx, q, audit.System, id, StateInstalling, ""); err != nil {
 			return err
 		}
-		return s.enqueue(ctx, tx, SetupArgs{InstanceID: id})
+		return s.enqueueSetup(ctx, tx, id)
 	})
 }
 
