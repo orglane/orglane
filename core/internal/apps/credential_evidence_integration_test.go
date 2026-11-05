@@ -613,3 +613,66 @@ func TestResolveMintedWithoutValue(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestDefiniteRejectionEndsOwnExecution: a definite rejection that leaves
+// the candidate in place (a retry after an unknown outcome, an abandon
+// re-apply) ends its own execution, so the next attempt and an admin's
+// resolution are not deferred by a finished call. Unknown outcomes keep
+// their lease.
+func TestDefiniteRejectionEndsOwnExecution(t *testing.T) {
+	live := func(h *harness) int {
+		return h.count(`SELECT count(*) FROM app_credential_calls WHERE deadline > now()`)
+	}
+	t.Run("retry after unknown", func(t *testing.T) {
+		h := newHarness(t)
+		inst := h.instance(nil)
+		h.tp.LoseResponses("webhook_secret", 1)
+		version, err := h.svc.RotateCredential(h.ctx, audit.System, inst.ID, "webhook_secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = h.rotate(inst, version); err == nil {
+			t.Fatal("expected an unknown outcome")
+		}
+		if n := live(h); n != 1 {
+			t.Fatalf("live executions after an unknown outcome = %d, want 1", n)
+		}
+		h.tp.RotationOutcomes("webhook_secret", provider.RotationRejected)
+		if err = h.retry(inst, version); err == nil {
+			t.Fatal("a rejected retry after an unknown outcome must stay retryable")
+		}
+		if n := live(h); n != 0 {
+			t.Fatalf("live executions after a definite rejection = %d, want 0", n)
+		}
+		if s := h.credState(inst, version); s != "uncertain" {
+			t.Fatalf("candidate = %s, want uncertain", s)
+		}
+		if err = h.svc.ResolveRotation(h.ctx, audit.System, inst.ID, "webhook_secret", apps.ResolveDiscarded); err != nil {
+			t.Fatalf("resolution after a finished call: %v", err)
+		}
+	})
+	t.Run("abandon re-apply", func(t *testing.T) {
+		h := newHarness(t)
+		inst := h.instance(nil)
+		version, err := h.svc.RotateCredential(h.ctx, audit.System, inst.ID, "webhook_secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = h.svc.AbandonRotation(h.ctx, audit.System, inst.ID, "webhook_secret"); err != nil {
+			t.Fatal(err)
+		}
+		h.tp.RotationOutcomes("webhook_secret", provider.RotationRejected)
+		if err = h.svc.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "webhook_secret", Version: version, Abandon: true}); err == nil {
+			t.Fatal("a rejected re-apply must retry")
+		}
+		if n := live(h); n != 0 {
+			t.Fatalf("live executions after a definite rejection = %d, want 0", n)
+		}
+		if s := h.credState(inst, version); s != "abandoning" {
+			t.Fatalf("candidate = %s, want abandoning", s)
+		}
+		if err = h.svc.ResolveRotation(h.ctx, audit.System, inst.ID, "webhook_secret", apps.ResolveDiscarded); err != nil {
+			t.Fatalf("resolution after a finished call: %v", err)
+		}
+	})
+}

@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -357,5 +358,68 @@ func TestRequestCannotChangeAPIOrigin(t *testing.T) {
 		if err := request(t.Context(), env, http.MethodGet, path, "", nil, nil); err == nil {
 			t.Errorf("accepted unsafe API path %q", path)
 		}
+	}
+}
+
+// GitHub's primary and secondary rate limits (403 or 429) are unknown
+// outcomes carrying when to retry, on every request path; a genuine
+// permission denial stays a definite rejection.
+func TestRateLimitsCarryRetryAfter(t *testing.T) {
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name    string
+		status  int
+		headers map[string]string
+		message string
+		after   time.Duration // 0: not a rate limit
+	}{
+		{"primary 403", 403, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": strconv.FormatInt(now.Add(10*time.Minute).Unix(), 10)}, "API rate limit exceeded", 10*time.Minute + time.Second},
+		{"primary 429", 429, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": strconv.FormatInt(now.Add(5*time.Minute).Unix(), 10)}, "", 5*time.Minute + time.Second},
+		{"secondary retry-after 429", 429, map[string]string{"Retry-After": "600"}, "", 10 * time.Minute},
+		{"secondary retry-after 403", 403, map[string]string{"Retry-After": "120"}, "", 2 * time.Minute},
+		{"secondary message only", 403, nil, "You have exceeded a secondary rate limit.", time.Minute},
+		{"bare 429", 429, nil, "", time.Minute},
+		{"permission denied", 403, nil, "Resource not accessible by integration", 0},
+	}
+	for _, name := range []string{"webhook_secret", "app_private_key"} {
+		for _, tc := range cases {
+			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				env, inst := fixture(t)
+				env.now = now
+				env.client.Transport = transport(func(*http.Request) (*http.Response, error) {
+					res := response(tc.status, map[string]string{"message": tc.message})
+					for k, v := range tc.headers {
+						res.Header.Set(k, v)
+					}
+					return res, nil
+				})
+				value := []byte(strings.Repeat("w", 32))
+				if name == "app_private_key" {
+					value = privateKey(t)
+				}
+				out, err := New().ApplyCredential(t.Context(), env, inst, name, 2, value)
+				if tc.after == 0 {
+					if out.Outcome != provider.RotationRejected {
+						t.Fatalf("permission denial = %s (%v), want rejected", out.Outcome, err)
+					}
+					return
+				}
+				code, retryable, after := provider.Classify(err)
+				if out.Outcome != provider.RotationUnknown || code != CodeRateLimited || !retryable || after != tc.after {
+					t.Fatalf("rate limit = %s, %s retryable=%v after=%s; want unknown, rate_limited, retryable, %s", out.Outcome, code, retryable, after, tc.after)
+				}
+			})
+		}
+	}
+	// Connect calls go through the same request path.
+	env, inst := fixture(t)
+	env.client.Transport = transport(func(*http.Request) (*http.Response, error) {
+		res := response(429, map[string]string{})
+		res.Header.Set("Retry-After", "30")
+		return res, nil
+	})
+	_, err := New().CompleteConnect(t.Context(), env, inst, "create_app", url.Values{"code": {"one-time"}, "state": {"ols_state"}})
+	if code, _, after := provider.Classify(err); code != CodeRateLimited || after != 30*time.Second {
+		t.Fatalf("connect rate limit = %s after %s (%v)", code, after, err)
 	}
 }

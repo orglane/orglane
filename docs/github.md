@@ -133,7 +133,11 @@ Webhook-secret replacement uses the existing **Rotate** control and
 `PATCH /app/hook/config`. The initial value comes from GitHub; replacements
 are generated and sealed once by the core (`CredentialSpec.GenerateRotation`).
 Timeouts, network failures and 5xx responses stay `uncertain`, and retries apply
-the same value. A definite rejection of the first attempt discards the
+the same value. GitHub's primary and secondary rate limits (403 or 429 with
+`Retry-After`, `X-RateLimit-Remaining: 0` and `X-RateLimit-Reset`, or a
+rate-limit message) are never taken as a rejection: the job waits until the
+indicated time (one minute without one, at most an hour), on every GitHub call,
+and the connect flow answers 429 with `Retry-After`. A definite rejection of the first attempt discards the
 candidate; after an attempt whose outcome is unknown, a rejection proves nothing
 about that attempt, so the candidate stays `uncertain` (and keeps verifying
 deliveries) until GitHub acknowledges it or an admin abandons it. **Abandon**

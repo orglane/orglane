@@ -43,6 +43,9 @@ func connectResponse(r apps.ConnectReply) apigen.GitHubConnectStep {
 }
 func connectError(err error) error {
 	var pe *provider.Error
+	if errors.As(err, &pe) && pe.Code == githubprovider.CodeRateLimited {
+		return &apiError{status: http.StatusTooManyRequests, code: pe.Code, detail: "GitHub's rate limit was reached. Try again later.", retryAfter: seconds(pe.RetryAfter.Seconds())}
+	}
 	if errors.As(err, &pe) {
 		return codedProblem(http.StatusBadRequest, pe.Code, "GitHub could not verify this connection. Review the organization and App settings, then try again.")
 	}

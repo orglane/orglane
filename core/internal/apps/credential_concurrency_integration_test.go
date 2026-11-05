@@ -143,12 +143,31 @@ func TestRotationRejectedAfterUnknown(t *testing.T) {
 		t.Fatal("the provider did not commit the candidate")
 	}
 	h.tp.RotationOutcomes("webhook_secret", provider.RotationRejected, provider.RotationRejected)
-	if err = h.rotate(inst, version); err == nil {
+	rejectedCalls := func() int {
+		n := 0
+		for _, c := range h.tp.Calls() {
+			if c == fmt.Sprintf("rotate:webhook_secret:%d", version) {
+				n++
+			}
+		}
+		return n
+	}
+	// The retry runs once the lost execution's lease has ended, and its call
+	// reaches the provider, which rejects it.
+	if err = h.retry(inst, version); err == nil {
 		t.Fatal("a rejected retry after an unknown outcome must stay retryable")
 	}
+	if n := rejectedCalls(); n != 2 {
+		t.Fatalf("provider calls for v%d = %d, want 2 (the lost one and the rejected retry)", version, n)
+	}
+	// A definite rejection ended its own execution: a restarted worker's
+	// retry needs no lease to pass and is rejected by the provider again.
 	restarted := serviceOn(t, h, h.pool, nil)
 	if err = restarted.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "webhook_secret", Version: version}); err == nil {
 		t.Fatal("a restarted worker's rejected retry must stay retryable")
+	}
+	if n := rejectedCalls(); n != 3 {
+		t.Fatalf("provider calls for v%d = %d, want 3 (the restarted worker's retry reached the provider)", version, n)
 	}
 	if s := h.credState(inst, version); s != "uncertain" {
 		t.Fatalf("candidate = %s, want uncertain", s)

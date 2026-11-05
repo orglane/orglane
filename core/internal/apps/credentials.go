@@ -342,6 +342,10 @@ func mapCandidateConflict(err error) error {
 // committed the change.
 var errRotationUnknown = errors.New("apps: the provider's answer to a credential change is unknown")
 
+// errRejectedReapply makes the abandon job retry: the provider rejected the
+// re-applied active value.
+var errRejectedReapply = errors.New("apps: the provider rejected the re-applied active value")
+
 // errRejectedAfterUnknown makes the job retry: the provider rejected this
 // attempt, but an earlier attempt's outcome is unknown, so the candidate
 // may be in use and stays uncertain.
@@ -468,18 +472,40 @@ func (s *Service) RunRotateCredential(ctx context.Context, args RotateCredential
 			})
 			return err
 		})
-	default:
-		// Unknown, or a rejection that proves nothing about the earlier
-		// attempt: the candidate stays uncertain and is retried. The
-		// execution keeps its lease; only evidence resolves the candidate.
+	case res.Outcome == provider.RotationRejected:
+		// A rejection that proves nothing about the earlier attempt: the
+		// candidate stays uncertain and is retried, but this execution has
+		// its definite answer and ends.
+		if err := s.endRejected(ctx, held, inst, call); err != nil {
+			return err
+		}
 		if err := s.reportStuck(ctx, held.conn, inst, cand); err != nil {
 			return err
 		}
-		if res.Outcome == provider.RotationRejected {
-			return errRejectedAfterUnknown
+		return errRejectedAfterUnknown
+	default:
+		// Unknown: the candidate stays uncertain and is retried. The
+		// execution keeps its lease (the provider may still apply it); only
+		// evidence resolves the candidate.
+		if err := s.reportStuck(ctx, held.conn, inst, cand); err != nil {
+			return err
 		}
 		return rotationRetry(err)
 	}
+}
+
+// endRejected ends an execution after a definite rejection that changes no
+// credential row (a retry after an unknown outcome, an abandon re-apply): the
+// call is over, so its lease must not defer the next attempt or an admin's
+// resolution. If its lease already ended, nothing is changed either way.
+func (s *Service) endRejected(ctx context.Context, held *heldConn, inst Instance, call *providerCall) error {
+	err := held.inTx(ctx, func(_ pgx.Tx, q *store.Queries) error {
+		return call.end(ctx, q, inst.ID)
+	})
+	if errors.Is(err, errLeaseLost) {
+		return nil
+	}
+	return err
 }
 
 // rotationRetry is how an attempt whose outcome is unknown retries: a
@@ -682,8 +708,18 @@ func (s *Service) abandon(ctx context.Context, held *heldConn, inst Instance, ro
 	cancel()
 	clear(res.Value)
 	if err != nil || res.Outcome != provider.RotationAcknowledged {
+		if err == nil && res.Outcome == provider.RotationRejected {
+			// A definite answer: this re-apply is over. The candidate stays
+			// abandoning, and the job re-applies again.
+			if err := s.endRejected(ctx, held, inst, call); err != nil {
+				return err
+			}
+		}
 		if err := s.reportStuck(ctx, held.conn, inst, cand); err != nil {
 			return err
+		}
+		if err == nil && res.Outcome == provider.RotationRejected {
+			return errRejectedReapply
 		}
 		return rotationRetry(err) // keep re-applying the active value
 	}

@@ -460,7 +460,7 @@ export function AppsPage() {
               <Card className="flex h-full flex-col gap-4 p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h2 className="break-words font-semibold">{app.displayName}</h2>
+                    <h2 className="font-semibold [overflow-wrap:anywhere]">{app.displayName}</h2>
                     <p className="break-all text-muted-foreground text-sm">
                       {app.homeUrl ? new URL(app.homeUrl).host : app.key}
                     </p>
@@ -649,7 +649,7 @@ export function AppsSettingsPage() {
                         <Link
                           to="/settings/apps/$instanceId"
                           params={{ instanceId: inst.id }}
-                          className="font-medium text-primary hover:underline"
+                          className="inline-block max-w-64 font-medium text-primary [overflow-wrap:anywhere] hover:underline"
                         >
                           {inst.displayName}
                         </Link>
@@ -1004,6 +1004,19 @@ function ForceResolution({
   const intl = useIntl();
   const [choice, setChoice] = useState<"active" | "discarded" | null>(null);
   const questionId = useId();
+  // Dismissing the confirmation returns focus to the choice that opened it.
+  const activeChoice = useRef<HTMLButtonElement>(null);
+  const discardedChoice = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef<"active" | "discarded" | null>(null);
+  useEffect(() => {
+    if (choice !== null || returnFocus.current === null) return;
+    (returnFocus.current === "active" ? activeChoice : discardedChoice).current?.focus();
+    returnFocus.current = null;
+  }, [choice]);
+  const dismiss = () => {
+    returnFocus.current = choice;
+    setChoice(null);
+  };
   const resolve = useMutation({
     mutationFn: (resolution: "active" | "discarded") =>
       call(
@@ -1047,7 +1060,7 @@ function ForceResolution({
             aria-labelledby={questionId}
             className="space-y-2 rounded-md border border-destructive/40 p-3"
             onKeyDown={(e) => {
-              if (e.key === "Escape" && !resolve.isPending) setChoice(null);
+              if (e.key === "Escape" && !resolve.isPending) dismiss();
             }}
           >
             <p id={questionId} className="font-medium">
@@ -1064,7 +1077,7 @@ function ForceResolution({
                 variant="ghost"
                 autoFocus
                 disabled={resolve.isPending}
-                onClick={() => setChoice(null)}
+                onClick={dismiss}
               >
                 <FormattedMessage {...messages.resolveCancel} />
               </Button>
@@ -1081,6 +1094,7 @@ function ForceResolution({
         ) : (
           <div className="flex flex-wrap gap-2">
             <Button
+              ref={activeChoice}
               size="sm"
               variant="outline"
               aria-label={intl.formatMessage(messages.resolveActive, { name })}
@@ -1092,6 +1106,7 @@ function ForceResolution({
               <FormattedMessage {...messages.resolveActiveShort} />
             </Button>
             <Button
+              ref={discardedChoice}
               size="sm"
               variant="outline"
               aria-label={intl.formatMessage(messages.resolveDiscarded, { name })}

@@ -332,10 +332,16 @@ describe("Instance page guidance", () => {
     expect(
       screen.getByText(/Make version 2 of webhook_secret the active value without verification/),
     ).toBeInTheDocument();
-    // Cancel is focused first and sends nothing; Escape cancels too.
+    // Cancel is focused first and sends nothing; Escape cancels too, and
+    // focus returns to the choice that opened the confirmation.
     expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
     await app.user.keyboard("{Escape}");
     expect(screen.queryByText(/Make version 2 of webhook_secret/)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "Record that the provider uses the new value of webhook_secret",
+      }),
+    ).toHaveFocus();
     await app.user.click(
       screen.getByRole("button", {
         name: "Record that the provider uses the current value of webhook_secret",
@@ -346,6 +352,11 @@ describe("Instance page guidance", () => {
     ).toBeInTheDocument();
     await app.user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(app.called("POST", resolvePath)).toHaveLength(0);
+    expect(
+      screen.getByRole("button", {
+        name: "Record that the provider uses the current value of webhook_secret",
+      }),
+    ).toHaveFocus();
     await app.user.click(
       screen.getByRole("button", {
         name: "Record that the provider uses the current value of webhook_secret",
@@ -734,5 +745,34 @@ describe("Apps guidance", () => {
     expect(screen.getByText("1 more operation loaded.")).toBeInTheDocument();
     expect(screen.queryByText(/Older operations could not be loaded/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /show more/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("Long instance names", () => {
+  it("wraps an unbroken name in the page heading instead of overflowing", async () => {
+    const long = "LongOrganization".repeat(6);
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: {
+        status: 200,
+        body: detailWith([], { displayName: long }),
+      },
+      [`GET /api/v1/apps/instances/${instanceId}/team-mappings`]: {
+        status: 200,
+        body: { items: [] },
+      },
+      "GET /api/v1/teams": { status: 200, body: { items: [] } },
+      [`GET /api/v1/apps/instances/${instanceId}/provisioning`]: {
+        status: 200,
+        body: {
+          items: [],
+          counts: { queued: 0, done: 0, pendingEmployeeAction: 0, failed: 0 },
+          unmanagedAccounts: [],
+        },
+      },
+    });
+    const heading = await screen.findByRole("heading", { level: 1, name: long });
+    expect(heading.className).toContain("[overflow-wrap:anywhere]");
   });
 });

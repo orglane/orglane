@@ -400,6 +400,9 @@ func request(ctx context.Context, env provider.Env, method, path, token string, 
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		if err := rateLimited(env.Now(), res); err != nil {
+			return err
+		}
 		return &APIError{Status: res.StatusCode}
 	}
 	if out == nil {
@@ -417,8 +420,69 @@ func request(ctx context.Context, env provider.Env, method, path, token string, 
 	return nil
 }
 
+// CodeRateLimited is the provider.Error code of a GitHub rate limit.
+const CodeRateLimited = "rate_limited"
+
+// rateLimited recognizes GitHub's primary and secondary rate limits: a 429,
+// or a 403 with Retry-After, X-RateLimit-Remaining: 0 or a rate-limit
+// message (https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#rate-limit-errors).
+// It returns a retryable *provider.Error whose RetryAfter is Retry-After,
+// else the time until X-RateLimit-Reset, else one minute (GitHub's advice),
+// at most an hour; nil for any other failure (a genuine permission denial
+// stays a definite answer). It never keeps the response body.
+func rateLimited(now time.Time, res *http.Response) error {
+	if res.StatusCode != http.StatusForbidden && res.StatusCode != http.StatusTooManyRequests {
+		return nil
+	}
+	limited := res.StatusCode == http.StatusTooManyRequests
+	var after time.Duration
+	if v := strings.TrimSpace(res.Header.Get("Retry-After")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			limited, after = true, time.Duration(n)*time.Second
+		}
+	}
+	if strings.TrimSpace(res.Header.Get("X-RateLimit-Remaining")) == "0" {
+		limited = true
+		if reset, err := strconv.ParseInt(strings.TrimSpace(res.Header.Get("X-RateLimit-Reset")), 10, 64); err == nil && after == 0 {
+			after = time.Unix(reset, 0).Sub(now) + time.Second
+		}
+	}
+	if !limited {
+		limited = rateLimitMessage(res.Body)
+	}
+	if !limited {
+		return nil
+	}
+	if after <= 0 {
+		after = time.Minute
+	}
+	if after > time.Hour {
+		after = time.Hour
+	}
+	return &provider.Error{Code: CodeRateLimited, Retryable: true, RetryAfter: after}
+}
+
+// rateLimitMessage reports whether a 403 body's message names a rate limit
+// (GitHub's secondary limits may come without headers).
+func rateLimitMessage(body io.Reader) bool {
+	raw, err := io.ReadAll(io.LimitReader(body, 64<<10))
+	defer clear(raw)
+	if err != nil {
+		return false
+	}
+	var msg struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &msg) != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(msg.Message), "rate limit")
+}
+
 // ApplyCredential verifies an uploaded key without replacing the working one,
-// or idempotently updates the App webhook secret. Ambiguous results stay unknown.
+// or idempotently updates the App webhook secret. Ambiguous results stay
+// unknown; a rate limit is unknown too, and its error carries RetryAfter, so
+// the core snoozes the job until GitHub's reset.
 func (a *Adapter) ApplyCredential(ctx context.Context, env provider.Env, inst provider.Instance, name string, _ int, value []byte) (provider.Rotation, error) {
 	var err error
 	switch name {

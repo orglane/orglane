@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
@@ -54,10 +55,16 @@ func TestConnectErrorPreservesInternalFailures(t *testing.T) {
 		{&githubprovider.APIError{Status: 503}, 400, "github_unavailable"},
 		{&provider.Error{Code: "invalid_private_key"}, 400, "invalid_private_key"},
 		{apps.ErrKeyReserved, 409, "key_reserved"},
+		{&provider.Error{Code: githubprovider.CodeRateLimited, Retryable: true, RetryAfter: 90 * time.Second}, 429, githubprovider.CodeRateLimited},
 	} {
 		var got *apiError
 		if !errors.As(connectError(tc.err), &got) || got.status != tc.status || got.code != tc.code {
 			t.Errorf("incorrect safe mapping for %T: %+v", tc.err, got)
 		}
+	}
+	// A GitHub rate limit tells the browser when to try again.
+	var limited *apiError
+	if errors.As(connectError(&provider.Error{Code: githubprovider.CodeRateLimited, Retryable: true, RetryAfter: 90 * time.Second}), &limited) && limited.retryAfter != "90" {
+		t.Errorf("rate limit Retry-After = %q, want 90", limited.retryAfter)
 	}
 }
