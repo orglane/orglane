@@ -1,6 +1,10 @@
 package agent
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -476,5 +480,176 @@ func TestRecoverDecidedFailureBeforeSwitch(t *testing.T) {
 				t.Fatalf("journal stayed: %+v %v", kept, err)
 			}
 		})
+	}
+}
+
+// restoreRunner answers every Docker call: `compose config` with the
+// normalized projects in order (the last one repeated), everything else
+// successfully.
+type restoreRunner struct {
+	recordingRunner
+	configs []string
+}
+
+func (r *restoreRunner) run(_ context.Context, _ []byte, args ...string) ([]byte, []byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, args)
+	if slices.Contains(args, "config") {
+		out := r.configs[0]
+		if len(r.configs) > 1 {
+			r.configs = r.configs[1:]
+		}
+		return []byte(out), nil, nil
+	}
+	return nil, nil, nil
+}
+
+// destructive returns the Docker calls other than `compose config`.
+func (r *restoreRunner) destructive() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out [][]string
+	for _, c := range r.calls {
+		if !slices.Contains(c, "config") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// Everything a restore uses is checked before its first destructive step:
+// a snapshot that fails a check leaves the running deployment and its data
+// as they were (no compose down, nothing moved aside, no database step).
+func TestRestoreChecksEverythingBeforeChanges(t *testing.T) {
+	// `compose config` of the snapshot's project, then of its fenced form.
+	original := `{"services":{"web":{"networks":{"edge":{"aliases":["git-web"]}}}}}`
+	fenced := `{"services":{"web":{"networks":{"edge":{"aliases":["git-web-fenced"]}}}}}`
+	for _, c := range []struct {
+		name string
+		// config is what `compose config` answers (the fenced project).
+		config string
+		spoil  func(t *testing.T, a *Agent, id uuid.UUID)
+	}{
+		{"rendered compose", fenced, corruptSnapshotFile(snapshotRendered + "/" + composeFile)},
+		{"rendered env", fenced, corruptSnapshotFile(snapshotRendered + "/" + envFile)},
+		{"rendered files", fenced, corruptSnapshotFile(snapshotRendered + "/" + packages.FilesDir + "/web.sh")},
+		{"missing rendered digest", fenced, editSnapshot(func(s *agentapi.Snapshot) { s.RenderedSHA256 = "" })},
+		{"archive", fenced, corruptSnapshotFile(snapshotData + "/www.tar.gz")},
+		{"data directory name", fenced, editSnapshot(func(s *agentapi.Snapshot) { s.DataDirs[0].Name = "../www" })},
+		{"database without password", fenced, func(t *testing.T, a *Agent, id uuid.UUID) {
+			dump := []byte("dump")
+			if err := os.WriteFile(filepath.Join(a.snapshotPath("git", id), snapshotDB), dump, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256(dump)
+			editSnapshot(func(s *agentapi.Snapshot) {
+				s.Database = &agentapi.SnapshotFile{File: snapshotDB, Bytes: int64(len(dump)), SHA256: hex.EncodeToString(sum[:])}
+			})(t, a, id)
+			spec := testSpec(1)
+			delete(spec.Secrets, packages.SecretDatabasePassword)
+			if err := writeSpec(filepath.Join(a.snapshotPath("git", id), snapshotSpec), spec); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		// Control: a valid snapshot is restored (the checks above are what
+		// stopped those restores).
+		{"valid", fenced, nil},
+		// The fenced project would publish a port: the fence check fails.
+		{"fence check", `{"services":{"web":{"ports":[{"target":8080,"published":"18080"}]}}}`, func(*testing.T, *Agent, uuid.UUID) {}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a, _ := newTestAgent(t, time.Now)
+			if rec := put(t, a, time.Now(), "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusAccepted {
+				t.Fatal(rec.Body)
+			}
+			dir := a.instanceDir("git")
+			if err := os.MkdirAll(filepath.Join(dir, dataDir, "www"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(dir, packages.FilesDir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			value := filepath.Join(dir, dataDir, "www", "value")
+			for path, data := range map[string]string{
+				value: "snapshot-data", filepath.Join(dir, composeFile): "services: {web: {}}\n",
+				filepath.Join(dir, envFile): "", filepath.Join(dir, packages.FilesDir, "web.sh"): "#!/bin/sh\n",
+			} {
+				if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			id := uuid.Must(uuid.NewV7())
+			if err := a.takeSnapshot(t.Context(), "git", testSpec(1), backupPlan{dataDirs: []string{"www"}}, agentapi.SnapshotReasonManual, id); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(value, []byte("live-data-after-snapshot"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if c.spoil != nil {
+				c.spoil(t, a, id)
+			}
+			deployed, err := os.ReadFile(filepath.Join(dir, composeFile)) //nolint:gosec // test path
+			if err != nil {
+				t.Fatal(err)
+			}
+			rr := &restoreRunner{configs: []string{original, c.config}}
+			a.docker = rr
+			j := &journal{Operation: uuid.Must(uuid.NewV7()), Kind: agentapi.KindRestore, To: testSpec(1).Package, ToGeneration: 2,
+				Spec: testSpec(2), SnapshotID: id, Phase: agentapi.PhaseRollingBack, RoutedKnown: true}
+			err = a.restoreFenced(t.Context(), a.instance("git"), j)
+			if c.spoil == nil {
+				data, rerr := os.ReadFile(value) //nolint:gosec // test path
+				if err != nil || len(rr.destructive()) == 0 || rerr != nil || string(data) != "snapshot-data" {
+					t.Fatalf("valid snapshot: %v, calls %v, data %q", err, rr.destructive(), data)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("the restore accepted a snapshot that fails a check")
+			}
+			t.Logf("refused: %v", err)
+			if calls := rr.destructive(); len(calls) != 0 {
+				t.Fatalf("Docker ran before the checks completed: %v", calls)
+			}
+			if data, err := os.ReadFile(value); err != nil || string(data) != "live-data-after-snapshot" { //nolint:gosec // test path
+				t.Fatalf("live data changed: %q %v", data, err)
+			}
+			entries, err := os.ReadDir(filepath.Join(dir, dataDir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				if e.Name() != "www" {
+					t.Fatalf("data moved or staged: %s", e.Name())
+				}
+			}
+			if now, err := os.ReadFile(filepath.Join(dir, composeFile)); err != nil || !bytes.Equal(now, deployed) { //nolint:gosec // test path
+				t.Fatalf("deployment changed: %v", err)
+			}
+		})
+	}
+}
+
+func corruptSnapshotFile(rel string) func(*testing.T, *Agent, uuid.UUID) {
+	return func(t *testing.T, a *Agent, id uuid.UUID) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(a.snapshotPath("git", id), filepath.FromSlash(rel)), []byte("corrupt"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func editSnapshot(edit func(*agentapi.Snapshot)) func(*testing.T, *Agent, uuid.UUID) {
+	return func(t *testing.T, a *Agent, id uuid.UUID) {
+		t.Helper()
+		snap, _, err := a.loadSnapshot("git", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		edit(snap)
+		if err := writeJSON(filepath.Join(a.snapshotPath("git", id), snapshotMeta), snap); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

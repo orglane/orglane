@@ -476,14 +476,22 @@ func (a *Agent) pruneSnapshots(key string) error {
 }
 
 // verifySnapshot checks the sizes and checksums of a snapshot's dump and
-// archives before anything is restored from it.
+// archives, and its data directory names, before anything is restored
+// from it.
 func (a *Agent) verifySnapshot(key string, snap *agentapi.Snapshot) error {
 	dir := a.snapshotPath(key, snap.ID)
 	files := []agentapi.SnapshotFile{}
 	if snap.Database != nil {
 		files = append(files, *snap.Database)
 	}
+	seen := map[string]bool{}
 	for _, d := range snap.DataDirs {
+		// The name becomes a path under data/: one element, no hidden
+		// name (those are moved-aside and staging directories).
+		if d.Name == "" || seen[d.Name] || strings.HasPrefix(d.Name, ".") || !fs.ValidPath(d.Name) || strings.Contains(d.Name, "/") {
+			return fmt.Errorf("snapshot %s: invalid data directory %q", snap.ID, d.Name)
+		}
+		seen[d.Name] = true
 		files = append(files, d.SnapshotFile)
 	}
 	for _, f := range files {
@@ -637,38 +645,56 @@ func readRenderedProject(dir string) (*packages.Rendered, []byte, error) {
 // names a route of the snapshot's own version targets; it is normalized and
 // checked (checkFenced) before it is written.
 func (a *Agent) writeSnapshotRendered(ctx context.Context, key string, id uuid.UUID, fenced bool, c compose, routed []string) error {
-	r, configured, err := a.snapshotRenderedProject(key, id)
+	r, configured, err := a.prepareSnapshotRendered(ctx, key, id, fenced, c, routed)
 	if err != nil {
 		return err
 	}
-	if fenced {
-		var originalJSON []byte
-		if err := a.stage(c, r, func(file, env string) error {
-			originalJSON, err = c.config(ctx, file, env)
-			return err
-		}); err != nil {
-			return err
-		}
-		own, err := routedNames(key, originalJSON)
+	return a.installRendered(key, r, configured)
+}
+
+// prepareSnapshotRendered reads a snapshot's rendered project and checks
+// it without changing anything the instance runs on: the checksum, and for
+// a fenced project the transformation, its normalization and checkFenced.
+// A restore calls it before its first destructive step.
+func (a *Agent) prepareSnapshotRendered(ctx context.Context, key string, id uuid.UUID, fenced bool, c compose, routed []string) (*packages.Rendered, []byte, error) {
+	r, configured, err := a.snapshotRenderedProject(key, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !fenced {
+		return r, configured, nil
+	}
+	var originalJSON []byte
+	if err := a.stage(c, r, func(file, env string) error {
+		originalJSON, err = c.config(ctx, file, env)
+		return err
+	}); err != nil {
+		return nil, nil, err
+	}
+	own, err := routedNames(key, originalJSON)
+	if err != nil {
+		return nil, nil, err
+	}
+	routed = mergeNames(routed, own)
+	fencedR := *r
+	if fencedR.Compose, err = fenceCompose(r.Compose, routed); err != nil {
+		return nil, nil, err
+	}
+	if err := a.stage(c, &fencedR, func(file, env string) error {
+		normalized, err := c.config(ctx, file, env)
 		if err != nil {
 			return err
 		}
-		routed = mergeNames(routed, own)
-		fencedR := *r
-		if fencedR.Compose, err = fenceCompose(r.Compose, routed); err != nil {
-			return err
-		}
-		if err := a.stage(c, &fencedR, func(file, env string) error {
-			normalized, err := c.config(ctx, file, env)
-			if err != nil {
-				return err
-			}
-			return checkFenced(normalized, c.project, routed)
-		}); err != nil {
-			return err
-		}
-		r = &fencedR
+		return checkFenced(normalized, c.project, routed)
+	}); err != nil {
+		return nil, nil, err
 	}
+	return &fencedR, configured, nil
+}
+
+// installRendered writes a prepared project into the instance directory
+// with its configure record.
+func (a *Agent) installRendered(key string, r *packages.Rendered, configured []byte) error {
 	rc := a.renderContext(key)
 	if err := writeRendered(rc, r); err != nil {
 		return err

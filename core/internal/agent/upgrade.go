@@ -703,6 +703,12 @@ func (a *Agent) recordRollbackFailed(j *journal) {
 // directories and the database are restored from the snapshot, and the
 // snapshot's rendered files start fenced. Every step is safe to repeat,
 // and nothing is reachable through a client entry point.
+//
+// Everything the restore uses is checked before its first destructive
+// step (stopping the project, moving data aside, recreating the
+// database): the dump's and the archives' checksums, the rendered
+// project's checksum, and the fenced project it will start. A snapshot
+// that fails a check leaves the instance as it was.
 func (a *Agent) restoreFenced(ctx context.Context, in *instance, j *journal) error {
 	if j.SnapshotID == uuid.Nil {
 		return errors.New("the journal names no snapshot")
@@ -713,6 +719,9 @@ func (a *Agent) restoreFenced(ctx context.Context, in *instance, j *journal) err
 	}
 	if err := a.verifySnapshot(in.key, snap); err != nil {
 		return err
+	}
+	if snap.Database != nil && !packages.ValidSecret(spec.Secrets[packages.SecretDatabasePassword]) {
+		return fmt.Errorf("snapshot %s: the spec has no valid database password", snap.ID)
 	}
 	c := a.compose(in.key, secretsOf(spec, j.Spec))
 	deployed := false
@@ -744,6 +753,11 @@ func (a *Agent) restoreFenced(ctx context.Context, in *instance, j *journal) err
 			return err
 		}
 	}
+	rendered, configured, err := a.prepareSnapshotRendered(ctx, in.key, snap.ID, true, c, j.Routed)
+	if err != nil {
+		return err
+	}
+	// Destructive steps from here on.
 	if deployed {
 		if err := c.down(ctx); err != nil {
 			return err
@@ -757,7 +771,7 @@ func (a *Agent) restoreFenced(ctx context.Context, in *instance, j *journal) err
 			return err
 		}
 	}
-	if err := a.writeSnapshotRendered(ctx, in.key, snap.ID, true, c, j.Routed); err != nil {
+	if err := a.installRendered(in.key, rendered, configured); err != nil {
 		return err
 	}
 	if spec.State == agentapi.StateRunning {
