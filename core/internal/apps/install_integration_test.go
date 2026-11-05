@@ -204,9 +204,15 @@ func TestInstallChecks(t *testing.T) {
 		t.Fatalf("base URL %s", *inst.BaseUrl)
 	}
 	for host, want := range map[string]error{
-		"http://orglane.localhost:8080":           apps.ErrInvalid,
-		"http://bad_host.localhost":               apps.ErrInvalid,
-		"http://agenttest.orglane.localhost:9999": nil, // taken, whatever the port
+		"http://orglane.localhost:8080":             apps.ErrInvalid,
+		"http://bad_host.localhost":                 apps.ErrInvalid,
+		"http://agenttest.orglane.localhost:9999":   apps.ErrInvalid, // not the workspace's port
+		"http://agenttest.orglane.localhost":        apps.ErrInvalid, // nor without it
+		"https://agenttest.orglane.localhost:8080":  apps.ErrInvalid, // nor its scheme
+		"http://u:p@second.orglane.localhost:8080":  apps.ErrInvalid,
+		"http://second.orglane.localhost:8080/path": apps.ErrInvalid,
+		"http://second.orglane.localhost:8080/?q=1": apps.ErrInvalid,
+		"http://agenttest.orglane.localhost:8080":   nil, // taken: checked below
 	} {
 		_, err := h.svc.Install(ctx, audit.System, apps.NewInstance{Provider: "agenttest", Key: "second", BaseURL: host})
 		if want != nil && !errors.Is(err, want) {
@@ -220,7 +226,7 @@ func TestInstallChecks(t *testing.T) {
 	refusing := h.restartCore(func(c *apps.Config) {
 		c.InstallPreflight = func(context.Context, apps.InstallPlan) error { return errors.New("the preflight ran") }
 	})
-	for _, host := range []string{"http://bad_host.example", "http://orglane.localhost:8080"} {
+	for _, host := range []string{"http://bad_host.example", "http://orglane.localhost:8080", "http://third.orglane.localhost:65536"} {
 		if _, err := refusing.Install(ctx, audit.System, apps.NewInstance{Provider: "agenttest", Key: "third", BaseURL: host}); !errors.Is(err, apps.ErrInvalid) {
 			t.Errorf("host %s with a preflight = %v, want invalid input", host, err)
 		}

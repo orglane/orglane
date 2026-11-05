@@ -207,14 +207,21 @@ func checkResources(st AgentStatus, pkg *packages.Package) error {
 	return nil
 }
 
-// validHost returns the host of a base URL, refusing one that is not a
-// host name or is the workspace host. It needs nothing but the input, so
-// Install runs it before the preflight: an invalid host is invalid input,
-// never a DNS or agent refusal.
+// validHost returns the host of a managed instance's base URL, refusing
+// one that is not a host name or is the workspace host, and a URL that is
+// more than a host: the service is reached through the workspace's Traefik,
+// so the URL has the workspace's scheme and port, and no credentials, path,
+// query or fragment. It needs nothing but the input, so Install runs it
+// before the preflight: an invalid host is invalid input, never a DNS or
+// agent refusal.
 func (s *Service) validHost(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || !packages.ValidHostname(u.Hostname()) {
 		return "", invalid("host", "must be a valid host name")
+	}
+	ws := s.cfg.WorkspaceURL
+	if u.Scheme != ws.Scheme || u.Port() != ws.Port() || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", invalid("host", "must be a host name only, served like the workspace (%s, port %q)", ws.Scheme, ws.Port())
 	}
 	host := u.Hostname()
 	if strings.EqualFold(host, s.cfg.WorkspaceURL.Hostname()) {
