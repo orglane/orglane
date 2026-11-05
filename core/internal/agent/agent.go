@@ -446,7 +446,12 @@ func (a *Agent) recoverOperations() error {
 				errs = append(errs, err)
 				continue
 			}
-			if j != nil && j.Operation == op.ID && !j.RollbackFailed {
+			if j != nil && j.Operation == op.ID {
+				// The journal owns the operation's result. A durable failed
+				// rollback has one already: record it, not "interrupted".
+				if j.RollbackFailed {
+					a.recordRollbackFailed(j)
+				}
 				continue
 			}
 			st, err := loadState(dir)

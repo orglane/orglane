@@ -176,6 +176,19 @@ func (a *Agent) endFailed(ctx context.Context, in *instance, j *journal, code, r
 	if ctx.Err() != nil {
 		return ""
 	}
+	// The result goes into the journal first: finalize blocks the
+	// generation with it before it records the operation, and a crash in
+	// between must recover the same result, not "interrupted".
+	if j.ErrorCode != code || j.Rule != rule {
+		j.ErrorCode, j.Rule = code, rule
+		in.files.Lock()
+		err := writeJournal(a.instanceDir(in.key), j)
+		in.files.Unlock()
+		if err != nil {
+			a.log.Error("record the failed upgrade", "instance", in.key, "error", err)
+			return agentapi.CodeInternal
+		}
+	}
 	if err := a.finalize(in, j, nil, true, agentapi.OpFailed, code, rule); err != nil {
 		a.log.Error("record the failed upgrade", "instance", in.key, "error", err)
 		return agentapi.CodeInternal
@@ -643,24 +656,19 @@ func (a *Agent) rollback(ctx context.Context, in *instance, j *journal) string {
 			return ""
 		}
 		a.log.Error("rollback failed", "instance", in.key, "snapshot", j.SnapshotID, "error", err)
+		// The journal records the failed rollback before the operation
+		// does: until it is durable, the phase stays rolling_back and the
+		// next trigger repeats the fenced restore.
 		j.RollbackFailed = true
 		in.files.Lock()
 		werr := writeJournal(a.instanceDir(in.key), j)
 		in.files.Unlock()
 		if werr != nil {
+			j.RollbackFailed = false
 			a.log.Error("record the failed rollback", "instance", in.key, "error", werr)
+			return agentapi.CodeInternal
 		}
-		if _, uerr := a.ops.update(j.Operation, func(o *agentapi.Operation) {
-			if o.Terminal() {
-				return
-			}
-			o.State, o.Phase, o.ErrorCode = agentapi.OpFailed, "", agentapi.CodeRollbackFailed
-			if j.SnapshotID != uuid.Nil {
-				o.SnapshotID = j.SnapshotID.String()
-			}
-		}); uerr != nil {
-			a.log.Error("update operation", "operation", j.Operation, "error", uerr)
-		}
+		a.recordRollbackFailed(j)
 		return agentapi.CodeRollbackFailed
 	}
 	if err := a.enter(in, j, agentapi.PhaseRestored); err != nil {
@@ -670,6 +678,25 @@ func (a *Agent) rollback(ctx context.Context, in *instance, j *journal) string {
 		return agentapi.CodeInternal
 	}
 	return a.expose(ctx, in, j)
+}
+
+// recordRollbackFailed records a durable failed rollback (the journal has
+// rollback_failed) on its operation: failed with rollback_failed and the
+// snapshot to restore. It is repeated on start and by every reconcile of
+// the instance, so a crash or a failed write between the journal and the
+// operation still ends with this result.
+func (a *Agent) recordRollbackFailed(j *journal) {
+	if _, err := a.ops.update(j.Operation, func(o *agentapi.Operation) {
+		if o.Terminal() {
+			return
+		}
+		o.State, o.Phase, o.ErrorCode, o.Rule = agentapi.OpFailed, "", agentapi.CodeRollbackFailed, ""
+		if j.SnapshotID != uuid.Nil {
+			o.SnapshotID = j.SnapshotID.String()
+		}
+	}); err != nil {
+		a.log.Error("record the failed rollback", "operation", j.Operation, "error", err)
+	}
 }
 
 // restoreFenced is rollback phase 1: the candidate goes down, the data
@@ -809,12 +836,18 @@ func (a *Agent) recoverJournal(ctx context.Context, in *instance, st *instanceSt
 		}
 	}
 	a.log.Warn("recovering an interrupted operation", "instance", in.key, "kind", j.Kind, "phase", j.Phase, "operation", j.Operation)
+	// A failure before the switch that was already decided keeps its code;
+	// otherwise the upgrade was interrupted.
+	code, rule := j.ErrorCode, j.Rule
+	if code == "" {
+		code, rule = agentapi.CodeInterrupted, ""
+	}
 	switch j.Phase {
 	case agentapi.PhasePreflight, agentapi.PhasePulling:
-		return a.endFailed(ctx, in, j, agentapi.CodeInterrupted, "")
+		return a.endFailed(ctx, in, j, code, rule)
 	case agentapi.PhaseStopping, agentapi.PhaseSnapshotting:
 		a.discardSnapshotAndRestart(ctx, in, st.current)
-		return a.endFailed(ctx, in, j, agentapi.CodeInterrupted, "")
+		return a.endFailed(ctx, in, j, code, rule)
 	case agentapi.PhaseSwitching, agentapi.PhaseMigrating, agentapi.PhaseVerifying, agentapi.PhaseAwaitingConfirmation:
 		if j.ErrorCode == "" {
 			j.ErrorCode = agentapi.CodeInterrupted

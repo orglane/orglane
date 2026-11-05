@@ -376,3 +376,105 @@ func TestRecoverJournalRecreatesLostOperation(t *testing.T) {
 	}
 }
 
+// A durable failed rollback (rollback_failed in the journal) is the
+// operation's result even when the process died, or the operation write
+// failed, before the operation recorded it: on start and on the next
+// reconcile it becomes failed/rollback_failed with the snapshot, never
+// failed/interrupted. Upgrades and manual restores share the path.
+func TestRecoverDurableRollbackFailure(t *testing.T) {
+	for _, kind := range []string{agentapi.KindUpgrade, agentapi.KindRestore} {
+		for _, via := range []string{"start", "reconcile"} {
+			t.Run(kind+"/"+via, func(t *testing.T) {
+				now := time.Now()
+				a, _ := newTestAgent(t, func() time.Time { return now })
+				if rec := put(t, a, now, "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusAccepted {
+					t.Fatal(rec.Body)
+				}
+				op, err := a.ops.create("git", kind, 2)
+				if err != nil {
+					t.Fatal(err)
+				}
+				a.opPhase(op.ID, agentapi.PhaseRollingBack)
+				j := &journal{
+					Operation: op.ID, Kind: kind, To: testSpec(2).Package, ToGeneration: 2, Spec: testSpec(2),
+					SnapshotID: uuid.Must(uuid.NewV7()), Phase: agentapi.PhaseRollingBack, RollbackFailed: true,
+				}
+				// The journal is durable, the operation not updated yet.
+				if err := writeJournal(a.instanceDir("git"), j); err != nil {
+					t.Fatal(err)
+				}
+				b := a
+				if via == "start" {
+					if b, err = New(Options{Config: a.cfg, Version: "dev", Registry: testRegistry(t), Now: func() time.Time { return now }, runner: &recordingRunner{}}); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					a.reconcile(t.Context(), a.instance("git"))
+				}
+				got, ok := b.ops.get(op.ID)
+				if !ok || got.State != agentapi.OpFailed || got.ErrorCode != agentapi.CodeRollbackFailed ||
+					got.Phase != "" || got.SnapshotID != j.SnapshotID.String() {
+					t.Fatalf("durable rollback failure recovered as %+v, want failed/rollback_failed with the snapshot", got)
+				}
+				if kept, err := readJournal(b.instanceDir("git")); err != nil || kept == nil || !kept.RollbackFailed {
+					t.Fatalf("failed-rollback journal: %+v %v", kept, err)
+				}
+			})
+		}
+	}
+}
+
+// A failure before the switch blocks the generation with its code before
+// the operation records it. A crash in between recovers the same code and
+// rule from the journal, not "interrupted".
+func TestRecoverDecidedFailureBeforeSwitch(t *testing.T) {
+	for _, phase := range []string{agentapi.PhasePreflight, agentapi.PhasePulling, agentapi.PhaseStopping, agentapi.PhaseSnapshotting} {
+		t.Run(phase, func(t *testing.T) {
+			now := time.Now()
+			a, _ := newTestAgent(t, func() time.Time { return now })
+			if rec := put(t, a, now, "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusAccepted {
+				t.Fatal(rec.Body)
+			}
+			op, err := a.ops.create("git", agentapi.KindUpgrade, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a.opPhase(op.ID, phase)
+			from := testSpec(1).Package
+			j := &journal{
+				Operation: op.ID, Kind: agentapi.KindUpgrade, From: &from, To: testSpec(2).Package,
+				FromGeneration: 1, ToGeneration: 2, Spec: testSpec(2), Phase: phase,
+				ErrorCode: agentapi.CodePolicyViolation, Rule: packages.RuleAlias,
+			}
+			if err := writeJournal(a.instanceDir("git"), j); err != nil {
+				t.Fatal(err)
+			}
+			// What finalize wrote before the crash: the blocked generation.
+			blocked := blockedState{Generations: []blockedGeneration{{Generation: 2, ErrorCode: agentapi.CodePolicyViolation, At: now}}}
+			if err := writeJSON(filepath.Join(a.instanceDir("git"), blockedFile), blocked); err != nil {
+				t.Fatal(err)
+			}
+			b, err := New(Options{Config: a.cfg, Version: "dev", Registry: testRegistry(t), Now: func() time.Time { return now }, runner: &recordingRunner{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := b.ops.get(op.ID); got.Terminal() {
+				t.Fatalf("start decided the journal's operation: %+v", got)
+			}
+			st, err := loadState(b.instanceDir("git"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code := b.recoverJournal(t.Context(), b.instance("git"), st, j); code != agentapi.CodePolicyViolation {
+				t.Fatalf("recovery = %q", code)
+			}
+			got, _ := b.ops.get(op.ID)
+			if got.State != agentapi.OpFailed || got.ErrorCode != agentapi.CodePolicyViolation || got.Rule != packages.RuleAlias {
+				t.Fatalf("recovered result = %+v, want failed/policy_violation/alias_not_allowed", got)
+			}
+			if kept, err := readJournal(b.instanceDir("git")); err != nil || kept != nil {
+				t.Fatalf("journal stayed: %+v %v", kept, err)
+			}
+		})
+	}
+}

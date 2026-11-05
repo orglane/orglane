@@ -91,6 +91,7 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 	// (docs/specs/agent.md "Reconcile loop").
 	if j != nil {
 		if j.RollbackFailed {
+			a.recordRollbackFailed(j)
 			a.setLastError(in, agentapi.CodeRollbackFailed)
 			return
 		}

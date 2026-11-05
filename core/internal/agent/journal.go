@@ -37,13 +37,18 @@ type journal struct {
 	ToGeneration   int64                `json:"to_generation"`
 	SnapshotID     uuid.UUID            `json:"snapshot_id"`
 	Phase          string               `json:"phase"`
-	// ErrorCode is why an upgrade rolls back.
+	// ErrorCode is why an upgrade rolls back, or why it failed before the
+	// switch.
 	ErrorCode string `json:"error_code,omitempty"`
 	// ConfirmBy is the confirmation deadline in awaiting_confirmation.
 	ConfirmBy *time.Time `json:"confirm_by,omitempty"`
 	// Decision is decisionAbort once an abort or the confirmation timeout
 	// decided to roll back; a confirmation moves the phase to committing.
 	Decision string `json:"decision,omitempty"`
+	// Rule is the policy rule of a failed upgrade's error_code, if any.
+	// ErrorCode and Rule are recorded before an upgrade that failed before
+	// the switch is finalized, so recovery reports the same result.
+	Rule string `json:"rule,omitempty"`
 	// Routed are the names a route of the instance may target during the
 	// operation (fence.go): those of the version that ran when it started
 	// and of the upgrade's target. RoutedKnown is set once the running
