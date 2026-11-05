@@ -88,7 +88,13 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 		hasher = crypto.NewPasswordHasher(crypto.DefaultPasswordParams, runtime.GOMAXPROCS(0))
 	}
 	mailer := mail.NewService(pool, cfg.Email, cfg.WorkspaceHostname(), keyring, logger)
+	var localDomain string
+	if cfg.Ingress.Mode == config.IngressLocal {
+		// Managed services in local mode sign in at http://<service>.<base>.
+		localDomain = cfg.Domain.Base
+	}
 	svc := identity.NewService(pool,
+		identity.WithLocalServiceDomain(localDomain),
 		identity.WithPasswordHasher(hasher),
 		identity.WithSignInLimits(identity.SignInLimits{Failures: cfg.Identity.SignInAccountLimit, Lockout: cfg.Identity.SignInLockout}),
 		identity.WithWebAuthn(wa),
@@ -149,7 +155,7 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	}
 	appsCfg := apps.Config{
 		WorkspaceURL: u, IssuerURL: issuer, Logger: logger,
-		Packages: pkgs, IngressMode: cfg.Ingress.Mode, ServiceHost: cfg.ServiceHost, SyncInterval: cfg.Agent.SyncInterval,
+		Packages: pkgs, OIDC: svc, IngressMode: cfg.Ingress.Mode, ServiceHost: cfg.ServiceHost, SyncInterval: cfg.Agent.SyncInterval,
 	}
 	agent, err := agentclient.FromConfig(cfg.Agent, opts.Version)
 	if err != nil {

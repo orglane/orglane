@@ -36,6 +36,7 @@ import (
 	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/crypto"
+	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/packages"
 	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/providers/provider"
@@ -102,6 +103,10 @@ type Config struct {
 	// Agent is the core's client of the agent; nil when managed services
 	// are disabled. Pushes then wait for the agent.
 	Agent AgentClient
+	// OIDC registers the OIDC clients of relying-party instances
+	// (provider.OIDCRelyingParty); *identity.Service is one. Nil: such
+	// providers cannot be installed.
+	OIDC OIDCClients
 	// Packages are the embedded managed packages: the routes, hosts and
 	// upstreams of managed instances come from them, and without one a
 	// managed provider cannot be installed.
@@ -128,6 +133,11 @@ type Config struct {
 	// recorded (#61: host, DNS, agent health, resource hints); its error is
 	// returned by Install.
 	InstallPreflight func(ctx context.Context, plan InstallPlan) error
+}
+
+// OIDCClients registers OIDC clients in the caller's transaction.
+type OIDCClients interface {
+	CreateOIDCClientTx(ctx context.Context, q *store.Queries, actor audit.Actor, in identity.NewOIDCClient) (store.OidcClient, string, error)
 }
 
 // Service changes and reads everything the provider framework owns.
@@ -449,6 +459,11 @@ func (s *Service) createInstance(ctx context.Context, actor audit.Actor, in NewI
 			if _, err := s.storeCredential(ctx, q, actor, created, c.Name, []byte(crypto.RandomToken("")), credentialActive); err != nil {
 				return err
 			}
+		}
+		// Before the desired spec (then): its credential versions include
+		// the client secret.
+		if err := s.registerOIDCClient(ctx, q, actor, created); err != nil {
+			return err
 		}
 		if then != nil {
 			if err := then(tx, q, created); err != nil {

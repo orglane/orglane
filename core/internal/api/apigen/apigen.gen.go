@@ -972,6 +972,12 @@ type AppCredentialVersion struct {
 // AppCredentialVersionState defines model for AppCredentialVersion.State.
 type AppCredentialVersionState string
 
+// AppDeepLink defines model for AppDeepLink.
+type AppDeepLink struct {
+	// Url Absolute URL on the instance's base URL origin.
+	Url string `json:"url"`
+}
+
 // AppEmployeeStep defines model for AppEmployeeStep.
 type AppEmployeeStep struct {
 	ActionPath  string `json:"actionPath"`
@@ -2454,6 +2460,11 @@ type TooManyRequests = Problem
 // Unauthorized RFC 9457 problem details.
 type Unauthorized = Problem
 
+// OpenAppInstanceParams defines parameters for OpenAppInstance.
+type OpenAppInstanceParams struct {
+	To string `form:"to" json:"to"`
+}
+
 // ListAppInstanceOperationsParams defines parameters for ListAppInstanceOperations.
 type ListAppInstanceOperationsParams struct {
 	Limit  *int `form:"limit,omitempty" json:"limit,omitempty"`
@@ -2601,6 +2612,9 @@ type ServerInterface interface {
 	// RotateAppCredential Rotate a credential
 	// (POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate)
 	RotateAppCredential(w http.ResponseWriter, r *http.Request, instanceId InstanceId, credentialName CredentialName)
+	// OpenAppInstance Deep link into an app
+	// (GET /api/v1/apps/instances/{instanceId}/open)
+	OpenAppInstance(w http.ResponseWriter, r *http.Request, instanceId InstanceId, params OpenAppInstanceParams)
 	// ListAppInstanceOperations Operation history of a managed instance
 	// (GET /api/v1/apps/instances/{instanceId}/operations)
 	ListAppInstanceOperations(w http.ResponseWriter, r *http.Request, instanceId InstanceId, params ListAppInstanceOperationsParams)
@@ -3021,6 +3035,48 @@ func (siw *ServerInterfaceWrapper) RotateAppCredential(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RotateAppCredential(w, r, instanceId, credentialName)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// OpenAppInstance operation middleware
+func (siw *ServerInterfaceWrapper) OpenAppInstance(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "instanceId" -------------
+	var instanceId InstanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "instanceId", r.PathValue("instanceId"), &instanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "instanceId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params OpenAppInstanceParams
+
+	// ------------- Required query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "to", r.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "to"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "to", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OpenAppInstance(w, r, instanceId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4962,6 +5018,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}", wrapper.UpdateAppInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/operations", wrapper.ListAppInstanceOperations)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/setup", wrapper.RetryAppInstanceSetup)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/open", wrapper.OpenAppInstance)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate", wrapper.RotateAppCredential)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon", wrapper.AbandonAppCredentialRotation)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/bindings", wrapper.ListAppBindings)
@@ -5661,6 +5718,125 @@ type RotateAppCredential500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response RotateAppCredential500ApplicationProblemPlusJSONResponse) VisitRotateAppCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OpenAppInstanceRequestObject struct {
+	InstanceId InstanceId `json:"instanceId"`
+	Params     OpenAppInstanceParams
+}
+
+type OpenAppInstanceResponseObject interface {
+	VisitOpenAppInstanceResponse(w http.ResponseWriter) error
+}
+
+type OpenAppInstance200JSONResponse AppDeepLink
+
+func (response OpenAppInstance200JSONResponse) VisitOpenAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OpenAppInstance400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response OpenAppInstance400ApplicationProblemPlusJSONResponse) VisitOpenAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OpenAppInstance401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response OpenAppInstance401ApplicationProblemPlusJSONResponse) VisitOpenAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OpenAppInstance403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response OpenAppInstance403ApplicationProblemPlusJSONResponse) VisitOpenAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OpenAppInstance404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response OpenAppInstance404ApplicationProblemPlusJSONResponse) VisitOpenAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OpenAppInstance409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response OpenAppInstance409ApplicationProblemPlusJSONResponse) VisitOpenAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type OpenAppInstance500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response OpenAppInstance500ApplicationProblemPlusJSONResponse) VisitOpenAppInstanceResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -12234,6 +12410,9 @@ type StrictServerInterface interface {
 	// RotateAppCredential Rotate a credential
 	// (POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate)
 	RotateAppCredential(ctx context.Context, request RotateAppCredentialRequestObject) (RotateAppCredentialResponseObject, error)
+	// OpenAppInstance Deep link into an app
+	// (GET /api/v1/apps/instances/{instanceId}/open)
+	OpenAppInstance(ctx context.Context, request OpenAppInstanceRequestObject) (OpenAppInstanceResponseObject, error)
 	// ListAppInstanceOperations Operation history of a managed instance
 	// (GET /api/v1/apps/instances/{instanceId}/operations)
 	ListAppInstanceOperations(ctx context.Context, request ListAppInstanceOperationsRequestObject) (ListAppInstanceOperationsResponseObject, error)
@@ -12714,6 +12893,33 @@ func (sh *strictHandler) RotateAppCredential(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RotateAppCredentialResponseObject); ok {
 		if err := validResponse.VisitRotateAppCredentialResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// OpenAppInstance operation middleware
+func (sh *strictHandler) OpenAppInstance(w http.ResponseWriter, r *http.Request, instanceId InstanceId, params OpenAppInstanceParams) {
+	var request OpenAppInstanceRequestObject
+
+	request.InstanceId = instanceId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.OpenAppInstance(ctx, request.(OpenAppInstanceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "OpenAppInstance")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(OpenAppInstanceResponseObject); ok {
+		if err := validResponse.VisitOpenAppInstanceResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -52,6 +52,9 @@ func ForgejoSecrets() map[string]string {
 		forgejo.CredentialDBPassword:    crypto.RandomToken(""),
 		forgejo.CredentialSecretKey:     crypto.RandomToken(""),
 		forgejo.CredentialAdminPassword: crypto.RandomToken(""),
+		// A placeholder: tests that sign in through Orglane pass the
+		// secret of the instance's real OIDC client.
+		forgejo.CredentialOIDCClientSecret: crypto.RandomToken(""),
 	}
 }
 
@@ -69,7 +72,7 @@ func ForgejoSpec(id uuid.UUID, gen int64, sshPort int, secrets map[string]string
 			Instance: "http://" + ForgejoHost, Webhook: "http://orglane.localhost/api/v1/webhooks/" + id.String(),
 		},
 		Ingress:  agentapi.IngressLocal,
-		Settings: map[string]any{forgejo.SettingSSHPort: sshPort},
+		Settings: map[string]any{forgejo.SettingSSHPort: sshPort, "oidc_client_id": "app-git"},
 		Secrets:  secrets,
 	}
 }

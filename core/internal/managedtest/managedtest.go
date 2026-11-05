@@ -99,10 +99,49 @@ type Bundle struct {
 	dynamicDir  string
 }
 
+// BusyboxImage serves the stand-in workspace (StartBundle without a core).
+const BusyboxImage = "busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec"
+
+// WorkspaceHost is the workspace host of the bundle in local mode.
+const WorkspaceHost = "orglane.localhost"
+
 // StartBundle starts PostgreSQL and the real Traefik. Traefik reads its
 // dynamic configuration from a file (in the bundle it polls the core):
-// see Routes.
+// see Routes. There is no core: a stand-in serves a static OpenID
+// discovery document as the workspace, so a package that configures
+// sign-in with Orglane at install (Forgejo) can be installed. Tests that
+// sign in use StartBundleWithCore.
 func StartBundle(t *testing.T) *Bundle {
+	t.Helper()
+	return startBundle(t, "")
+}
+
+// StartBundleWithCore starts the bundle for a core that runs in the test
+// process and listens on the host: Traefik polls the core's internal
+// listener (internalPort) for its configuration, exactly as in the bundle,
+// and carries the workspace host as its alias on the edge network, so
+// managed services reach Orglane by its public name. The core's
+// ingress.upstream_url must be CoreURL(publicPort).
+func StartBundleWithCore(t *testing.T, internalPort int) *Bundle {
+	t.Helper()
+	return startBundle(t, "http://host.docker.internal:"+strconv.Itoa(internalPort)+"/traefik/config")
+}
+
+// CoreURL is the URL of a core listening on the host, as containers reach
+// it.
+func CoreURL(port int) string { return "http://host.docker.internal:" + strconv.Itoa(port) }
+
+// CoreListenHost is the address a core in the test process listens on so
+// containers reach it: all interfaces on Linux (the Docker bridge), loopback
+// elsewhere (Docker Desktop forwards host.docker.internal to it).
+func CoreListenHost() string {
+	if runtime.GOOS == "linux" {
+		return "0.0.0.0"
+	}
+	return "127.0.0.1"
+}
+
+func startBundle(t *testing.T, providerURL string) *Bundle {
 	t.Helper()
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
@@ -111,6 +150,29 @@ func StartBundle(t *testing.T) *Bundle {
 	dynamicDir := filepath.Join(dir, "dynamic")
 	if err := os.Mkdir(dynamicDir, 0o755); err != nil { //nolint:gosec // read by Traefik
 		t.Fatal(err)
+	}
+	provider := "      - --providers.file.directory=/etc/traefik/dynamic\n      - --providers.file.watch=true\n"
+	traefikNet := "    networks: [edge]\n"
+	workspace := ""
+	if providerURL != "" {
+		provider = "      - --providers.http.endpoint=" + providerURL + "\n      - --providers.http.pollInterval=1s\n"
+		traefikNet = "    extra_hosts: [\"host.docker.internal:host-gateway\"]\n    networks:\n      edge:\n        aliases: [" + WorkspaceHost + "]\n"
+	} else {
+		www := filepath.Join(dir, "www")
+		if err := os.MkdirAll(filepath.Join(www, ".well-known"), 0o755); err != nil { //nolint:gosec // read by the stand-in
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(www, ".well-known", "openid-configuration"), []byte(stubDiscovery), 0o644); err != nil { //nolint:gosec // public
+			t.Fatal(err)
+		}
+		workspace = fmt.Sprintf(`  workspace:
+    image: %s
+    command: ["httpd", "-f", "-p", "80", "-h", "/www"]
+    volumes: ["%s:/www:ro"]
+    networks:
+      edge:
+        aliases: [%s]
+`, BusyboxImage, www, WorkspaceHost)
 	}
 	file := filepath.Join(dir, "compose.yaml")
 	bundle := fmt.Sprintf(`name: %s
@@ -127,23 +189,20 @@ services:
     image: %s
     command:
       - --entrypoints.web.address=:80
-      - --providers.file.directory=/etc/traefik/dynamic
-      - --providers.file.watch=true
-      - --ping=true
+%s      - --ping=true
       - --log.level=ERROR
     volumes:
       - %s:/etc/traefik/dynamic:ro
     ports: ["127.0.0.1::80"]
-    networks: [edge]
-    healthcheck:
+%s    healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 1s
       retries: 60
-networks:
+%snetworks:
   edge: {}
   database: {internal: true}
   services: {internal: true}
-`, project, PostgresImage, TraefikImage, dynamicDir)
+`, project, PostgresImage, TraefikImage, provider, dynamicDir, traefikNet, workspace)
 	if err := os.WriteFile(file, []byte(bundle), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +221,13 @@ networks:
 	port, _ := strconv.Atoi(p)
 	return &Bundle{Project: project, TraefikPort: port, dynamicDir: dynamicDir}
 }
+
+// stubDiscovery is the stand-in workspace's discovery document: enough for
+// a service to save a sign-in source, not to sign anyone in.
+const stubDiscovery = `{"issuer":"http://orglane.localhost","authorization_endpoint":"http://orglane.localhost/oidc/authorize",` +
+	`"token_endpoint":"http://orglane.localhost/oidc/token","userinfo_endpoint":"http://orglane.localhost/oidc/userinfo",` +
+	`"jwks_uri":"http://orglane.localhost/oidc/keys","response_types_supported":["code"],"subject_types_supported":["public"],` +
+	`"id_token_signing_alg_values_supported":["RS256"]}`
 
 // LocalConfig is a core configuration in local ingress mode with the base
 // domain orglane.localhost, as with managed services in local mode.

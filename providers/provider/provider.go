@@ -120,6 +120,10 @@ const (
 	SourceProvider = "provider"
 	// SourceUpload: uploaded by an admin.
 	SourceUpload = "upload"
+	// SourceIdentity: the secret of the instance's OIDC client, issued by
+	// Orglane's OpenID Provider when the instance is created (see
+	// OIDCRelyingParty). Not rotatable in M2.
+	SourceIdentity = "identity"
 )
 
 // CredentialSpec declares a credential of an instance.
@@ -452,6 +456,31 @@ type Rotation struct {
 	// otherwise.
 	Value []byte
 }
+
+// OIDCRelyingParty is implemented by adapters whose service signs people in
+// with Orglane (docs/specs/providers.md "Forgejo OIDC configured
+// automatically"). When such an instance is created, the core registers a
+// confidential OIDC client (client_secret_basic) with the ID
+// OIDCClientID(key) in the same transaction and stores its secret as the
+// named credential.
+type OIDCRelyingParty interface {
+	// OIDCClient returns the client to register for an instance. Redirect
+	// URIs are built from inst.BaseURL, scheme and port included; adapters
+	// never build hosts.
+	OIDCClient(inst Instance) (OIDCClient, error)
+}
+
+// OIDCClient describes an instance's OIDC client.
+type OIDCClient struct {
+	RedirectURIs           []string
+	PostLogoutRedirectURIs []string
+	// Secret names the CredentialSpec (Source SourceIdentity) that holds
+	// the client secret.
+	Secret string
+}
+
+// OIDCClientID returns the ID of an instance's OIDC client: "app-<key>".
+func OIDCClientID(key string) string { return "app-" + key }
 
 // SettingsValidator checks instance settings beyond what SettingSpec can
 // express (e.g. a product's reserved names). The core calls it with the

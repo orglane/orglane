@@ -20,6 +20,8 @@ import (
 	"github.com/orglane/orglane/core/internal/apps"
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/config"
+	"github.com/orglane/orglane/core/internal/crypto"
+	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/managedtest"
 	"github.com/orglane/orglane/core/internal/packages"
 	"github.com/orglane/orglane/providers/forgejo"
@@ -105,7 +107,12 @@ func TestForgejoAdminTokenRotation(t *testing.T) {
 	// The agent installs it with the credentials the core generated.
 	env := h.svc.EnvForTest(inst)
 	secrets := map[string]string{}
-	for _, name := range []string{forgejo.CredentialDBPassword, forgejo.CredentialSecretKey, forgejo.CredentialAdminPassword} {
+	lifecycle, _ := inst.Adapter.Lifecycle()
+	inputs, err := lifecycle.Inputs(h.ctx, env, inst.View())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range inputs.Secrets {
 		v, err := env.Credential(h.ctx, name)
 		if err != nil {
 			t.Fatal(err)
@@ -118,6 +125,9 @@ func TestForgejoAdminTokenRotation(t *testing.T) {
 	})
 	b.Routes(t, managedtest.ForgejoRoutes(inst.Key)...)
 	spec := managedtest.ForgejoSpec(inst.ID, 1, managedtest.FreePort(t), secrets, agentapi.StateRunning)
+	for k, v := range inputs.Settings {
+		spec.Settings[k] = v
+	}
 	op, _, err := agentClient.Apply(t.Context(), inst.Key, spec)
 	if err != nil {
 		t.Fatal(err)
@@ -248,5 +258,80 @@ func TestForgejoOrganizationSetting(t *testing.T) {
 	// Mutable settings still validate the whole set on update.
 	if _, err := h.svc.UpdateInstance(h.ctx, audit.System, inst.ID, apps.InstanceUpdate{Settings: map[string]any{forgejo.SettingSSHPort: 2422}}); err != nil {
 		t.Fatalf("update ssh_port: %v", err)
+	}
+}
+
+// Creating a relying-party instance registers its OIDC client and stores
+// the secret in the same transaction: both exist, or neither.
+func TestForgejoOIDCClientRegistration(t *testing.T) {
+	h := newHarnessWith(t, apps.Config{}, forgejo.New())
+	settings := map[string]any{forgejo.SettingOrganization: "acme"}
+	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+		Provider: forgejo.ID, Key: "git", BaseURL: "https://git.acme.test", Settings: settings,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := h.ids.OIDCClient(h.ctx, "app-git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.Name != "Forgejo" || client.AuthMethod != "client_secret_basic" || len(client.RedirectUris) != 1 ||
+		client.RedirectUris[0] != "https://git.acme.test/user/oauth2/orglane/callback" {
+		t.Fatalf("client = %+v", client)
+	}
+	secret, err := h.svc.EnvForTest(inst).Credential(h.ctx, forgejo.CredentialOIDCClientSecret)
+	if err != nil || !strings.HasPrefix(string(secret), "olcs_") {
+		t.Fatalf("the client secret credential: %v", err)
+	}
+	var audited int
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM audit_entries WHERE action = 'oidc_client.created' AND target_id = 'app-git'`).Scan(&audited); err != nil || audited != 1 {
+		t.Fatalf("audit entries of the client: %d, %v", audited, err)
+	}
+
+	// Local mode: http redirect URIs on the local service domain.
+	if _, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+		Provider: forgejo.ID, Key: "git2", BaseURL: "http://git2.orglane.localhost:8080", Settings: settings,
+	}); err != nil {
+		t.Fatalf("local mode: %v", err)
+	}
+	if c, err := h.ids.OIDCClient(h.ctx, "app-git2"); err != nil || c.RedirectUris[0] != "http://git2.orglane.localhost:8080/user/oauth2/orglane/callback" {
+		t.Fatalf("local client = %+v, %v", c, err)
+	}
+
+	// Refused by identity (plain http elsewhere, or the client exists): no
+	// instance, no credentials.
+	for key, base := range map[string]string{"git3": "http://git3.acme.test", "git4": "https://git4.acme.test"} {
+		if key == "git4" {
+			if _, _, err := h.ids.CreateOIDCClient(h.ctx, audit.System, identity.NewOIDCClient{ID: "app-git4", Name: "Taken", RedirectURIs: []string{"https://x.acme.test/cb"}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{Provider: forgejo.ID, Key: key, BaseURL: base, Settings: settings})
+		if apps.Code(err) != "invalid_input" || !strings.Contains(err.Error(), "oidc_client") {
+			t.Errorf("%s: %v, want invalid oidc_client", base, err)
+		}
+		var n int
+		if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM app_instances WHERE key = $1`, key).Scan(&n); err != nil || n != 0 {
+			t.Errorf("%s: %d instances stored", key, n)
+		}
+	}
+	var stray int
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM oidc_clients WHERE id = 'app-git3'`).Scan(&stray); err != nil || stray != 0 {
+		t.Fatalf("a client without an instance: %d", stray)
+	}
+
+	// Without a registrar a relying party cannot be installed.
+	reg, err := apps.NewRegistry(forgejo.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyring, err := crypto.NewKeyring(masterSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare := apps.NewService(h.pool, reg, keyring, apps.Config{})
+	if _, err := bare.CreateInstance(h.ctx, audit.System, apps.NewInstance{Provider: forgejo.ID, Key: "git5", BaseURL: "https://git5.acme.test", Settings: settings}); apps.Code(err) != "not_supported" {
+		t.Fatalf("without a registrar: %v", err)
 	}
 }

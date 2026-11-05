@@ -80,6 +80,12 @@ func TestForgejoPackage(t *testing.T) {
 	if err := adapter.CheckHealth(t.Context(), env, inst); err != nil {
 		t.Fatalf("CheckHealth: %v", err)
 	}
+	// The configure hook saved the Orglane sign-in source (from the
+	// workspace's discovery document) and published its ID.
+	if code, body := managedtest.Request(t, client, http.MethodGet, managedtest.ForgejoHost, "/assets/orglane/auth-source.json", managedtest.Auth{}, nil); code != http.StatusOK ||
+		!strings.Contains(string(body), `"name":"orglane"`) {
+		t.Fatalf("published sign-in source: %d %s", code, body)
+	}
 	// Nobody browses anonymously.
 	if code := get("/explore/repos", managedtest.Auth{}); code != http.StatusSeeOther {
 		t.Fatalf("anonymous explore = %d, want a redirect to sign in", code)

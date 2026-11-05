@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,6 +89,10 @@ type Service struct {
 	mailer   Mailer
 	invites  InvitationConfig
 	observer DirectoryObserver
+	// localDomain, when set, is the local-mode base domain (localhost or a
+	// *.localhost name): plain-http redirect URIs may use it and its
+	// subdomains (validateRedirectURI).
+	localDomain string
 	// dummyHash is verified for unknown accounts, so a sign-in takes as long
 	// whether or not the account exists.
 	dummyHash func() (string, error)
@@ -133,6 +138,21 @@ func WithMailer(m Mailer) Option {
 // WithInvitations configures invitation links.
 func WithInvitations(c InvitationConfig) Option {
 	return func(s *Service) { s.invites = c }
+}
+
+// WithLocalServiceDomain allows plain-http OIDC redirect URIs on a
+// local-mode base domain and its subdomains, e.g. orglane.localhost and
+// http://git.orglane.localhost/... for managed services in local mode
+// (docs/specs/agent.md "Local mode"). Browsers resolve every *.localhost
+// name to loopback (RFC 6761), so these are loopback redirects like
+// http://localhost. Anything else, or a domain that is neither localhost
+// nor below it, leaves the rule at literal loopback hosts.
+func WithLocalServiceDomain(base string) Option {
+	return func(s *Service) {
+		if base == "localhost" || (strings.HasSuffix(base, ".localhost") && validLocalHost(base)) {
+			s.localDomain = base
+		}
+	}
 }
 
 // NewService returns a Service using pool.

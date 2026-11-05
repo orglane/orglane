@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/hex"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,7 @@ func TestAppsAPIPermissions(t *testing.T) {
 		{"POST", base + "/provisioning/removal-batches/" + uuid.NewString() + "/confirm", map[string]any{"itemsHash": strings.Repeat("0", 64)}, authz.AppsManage, 404},
 		{"GET", "/api/v1/people/" + memberPerson.ID.String() + "/apps", nil, authz.PeopleManage, 200},
 		{"GET", "/api/v1/me/apps", nil, authz.Authenticated, 200},
+		{"GET", base + "/open?to=%2Facme%2Frobot%3Ftab%3D1", nil, authz.Authenticated, 200},
 	}
 	for _, op := range ops {
 		r := anonymous.req(op.method, op.path, op.body)
@@ -128,6 +130,30 @@ func TestAppsAPIPermissions(t *testing.T) {
 	if len(mine.Items) != 1 || mine.Items[0].InstanceID != inst.ID || mine.Items[0].HomeURL != "https://code.acme.test" {
 		t.Fatalf("member apps = %s", r.body)
 	}
+	// Deep links: the target under the instance's origin, for every
+	// signed-in person; anything but a safe relative path is refused, and
+	// an adapter that links elsewhere is an error, never a redirect.
+	var link struct {
+		URL string `json:"url"`
+	}
+	r = member.req("GET", base+"/open?to=%2Facme%2Frobot%3Ftab%3D1", nil)
+	r.json(t, &link)
+	if link.URL != "https://code.acme.test/acme/robot?tab=1" {
+		t.Fatalf("deep link = %s", r.body)
+	}
+	for _, bad := range []string{"https%3A%2F%2Fevil.example%2F", "%2F%2Fevil.example%2F", "%2Fa%5Cb", "%2Fa%20b", "acme", "%2Fa%0Ab"} {
+		expectStatusT(t, member.req("GET", base+"/open?to="+bad, nil), http.StatusBadRequest)
+	}
+	expectStatusT(t, member.req("GET", "/api/v1/apps/instances/"+uuid.NewString()+"/open?to=%2F", nil), http.StatusNotFound)
+	e.tp.LinkToOrigin(&url.URL{Scheme: "https", Host: "evil.example"})
+	expectStatusT(t, member.req("GET", base+"/open?to=%2F", nil), http.StatusInternalServerError)
+	e.tp.LinkToOrigin(nil)
+	// Only active or degraded instances open.
+	connecting, err := e.stack.Apps.CreateInstance(ctx, audit.System, apps.NewInstance{Provider: testprovider.ID, Key: "pending", BaseURL: "https://pending.acme.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectStatusT(t, member.req("GET", "/api/v1/apps/instances/"+connecting.ID.String()+"/open?to=%2F", nil), http.StatusConflict)
 	// Paging bounds are checked before narrowing (no wrap to a negative
 	// OFFSET and a 500).
 	expectStatusT(t, owner.req("GET", base+"/provisioning?offset=3000000000", nil), http.StatusBadRequest)

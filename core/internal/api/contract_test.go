@@ -152,6 +152,7 @@ func TestContractPermissions(t *testing.T) {
 		"POST /api/v1/apps/instances/{instanceId}/provisioning/removal-batches/{batchId}/confirm": authz.AppsManage,
 		"GET /api/v1/people/{personId}/apps":                                                      authz.PeopleManage,
 		"GET /api/v1/me/apps":                                                                     authz.Authenticated,
+		"GET /api/v1/apps/instances/{instanceId}/open":                                            authz.Authenticated,
 		"POST /api/v1/webhooks/{instanceId}":                                                      authz.Public,
 		// Demo mode only: not served at all otherwise.
 		"GET /api/v1/demo":          authz.Demo,

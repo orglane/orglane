@@ -54,6 +54,12 @@ func (a *Adapter) Lifecycle() (provider.Lifecycle, bool) {
 	return p, ok && a.Manifest.Management == provider.Managed
 }
 
+// RelyingParty returns the adapter's OIDCRelyingParty, if it has one.
+func (a *Adapter) RelyingParty() (provider.OIDCRelyingParty, bool) {
+	p, ok := a.impl.(provider.OIDCRelyingParty)
+	return p, ok
+}
+
 // Rotator returns the adapter's CredentialRotator, if it has one.
 func (a *Adapter) Rotator() (provider.CredentialRotator, bool) {
 	p, ok := a.impl.(provider.CredentialRotator)
@@ -116,7 +122,7 @@ func NewRegistry(adapters ...provider.CapabilityManifest) (*Registry, error) {
 	steps := map[string]bool{}
 	for _, impl := range adapters {
 		m := impl.Manifest()
-		if err := validateManifest(m); err != nil {
+		if err := validateManifest(m, impl); err != nil {
 			return nil, err
 		}
 		if r.byID[m.ID] != nil {
@@ -145,7 +151,7 @@ func (r *Registry) Adapter(id provider.ID) (*Adapter, bool) {
 	return a, ok
 }
 
-func validateManifest(m provider.Manifest) error {
+func validateManifest(m provider.Manifest, impl provider.CapabilityManifest) error {
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("apps: manifest of provider %q: %s", m.ID, fmt.Sprintf(format, args...))
 	}
@@ -214,6 +220,13 @@ func validateManifest(m provider.Manifest) error {
 		names[c.Name] = true
 		switch c.Source {
 		case provider.SourceGenerated, provider.SourceProvider, provider.SourceUpload:
+		case provider.SourceIdentity:
+			if _, ok := impl.(provider.OIDCRelyingParty); !ok {
+				return fail("credential %q is issued for an OIDC client, but the adapter is no OIDC relying party", c.Name)
+			}
+			if c.Rotatable {
+				return fail("credential %q: OIDC client secrets are not rotatable in M2", c.Name)
+			}
 		default:
 			return fail("credential %q has unknown source %q", c.Name, c.Source)
 		}

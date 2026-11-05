@@ -34,8 +34,8 @@ func (*Adapter) Inputs(_ context.Context, _ provider.Env, inst provider.Instance
 		port = n
 	}
 	return provider.Inputs{
-		Settings: map[string]any{SettingSSHPort: port},
-		Secrets:  []string{CredentialDBPassword, CredentialSecretKey, CredentialAdminPassword},
+		Settings: map[string]any{SettingSSHPort: port, settingOIDCClientID: provider.OIDCClientID(inst.Key)},
+		Secrets:  []string{CredentialDBPassword, CredentialSecretKey, CredentialAdminPassword, CredentialOIDCClientSecret},
 	}, nil
 }
 
@@ -64,6 +64,9 @@ func (*Adapter) Setup(ctx context.Context, env provider.Env, inst provider.Insta
 	}
 	if me.Login != AdminUsername || !me.IsAdmin {
 		return &provider.Error{Code: CodeAdminAuth, Err: errors.New("forgejo: the service account is not an admin")}
+	}
+	if _, err := authSourceID(ctx, c); err != nil {
+		return err
 	}
 	return ensureOrganization(ctx, c, org)
 }
@@ -286,4 +289,28 @@ func tokenVersion(name string) (int, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// authSourcePath is where the configure hook publishes the sign-in
+// source's ID (Forgejo has no API that lists sources).
+const authSourcePath = "/assets/orglane/auth-source.json"
+
+// authSourceID returns the ID of the Orglane sign-in source. Until the
+// configure hook has published it, the error is retryable
+// (CodeSSONotConfigured).
+func authSourceID(ctx context.Context, c *client) (int64, error) {
+	var src struct {
+		Name string `json:"name"`
+		ID   int64  `json:"id"`
+	}
+	if err := c.do(ctx, http.MethodGet, authSourcePath, nil, &src); err != nil {
+		if status(err) == http.StatusNotFound {
+			return 0, &provider.Error{Code: CodeSSONotConfigured, Retryable: true, Err: err}
+		}
+		return 0, classify(err)
+	}
+	if src.Name != AuthSourceName || src.ID < 1 {
+		return 0, &provider.Error{Code: CodeSSONotConfigured, Retryable: true, Err: errors.New("forgejo: the published sign-in source is not Orglane's")}
+	}
+	return src.ID, nil
 }
