@@ -205,13 +205,13 @@ test: test-go test-ts test-e2e-if-available test-website-if-available ## Run all
 test-go:
 	@if docker info >/dev/null 2>&1; then \
 		$(MAKE) --no-print-directory test-integration; \
-	elif [ -n "$$CI" ]; then \
+	elif [ -n "$${CI:-}" ]; then \
 		echo "error: Docker is not available in CI; the integration tests need it"; exit 1; \
 	else \
 		echo "warning: Docker is not available, skipping integration tests"; \
 		$(MAKE) --no-print-directory test-unit; \
 	fi
-	@if [ -n "$$CI" ] && [ "$$(uname -s)" = Linux ]; then \
+	@if [ -n "$${CI:-}" ] && [ "$$(uname -s)" = Linux ]; then \
 		$(MAKE) --no-print-directory test-root; \
 	else \
 		echo "note: not CI on Linux, skipping the root-only tests (make test-root)"; \
@@ -272,10 +272,10 @@ test-e2e: ## Run the web end-to-end tests (needs Docker and Playwright's Chromiu
 
 test-e2e-if-available:
 	@if ! docker info >/dev/null 2>&1; then \
-		if [ -n "$$CI" ]; then echo "error: Docker is not available in CI; the web end-to-end tests need it"; exit 1; fi; \
+		if [ -n "$${CI:-}" ]; then echo "error: Docker is not available in CI; the web end-to-end tests need it"; exit 1; fi; \
 		echo "warning: Docker is not available, skipping the web end-to-end tests"; \
 	elif ! $(PNPM) --silent --filter $(WEB) exec node e2e/chromium-installed.mjs; then \
-		if [ -n "$$CI" ]; then echo "error: Playwright's Chromium is not installed in CI; the web end-to-end tests need it"; exit 1; fi; \
+		if [ -n "$${CI:-}" ]; then echo "error: Playwright's Chromium is not installed in CI; the web end-to-end tests need it"; exit 1; fi; \
 		echo "warning: Playwright's Chromium is not installed, skipping the web end-to-end tests (pnpm --filter $(WEB) exec playwright install chromium)"; \
 	else \
 		$(MAKE) --no-print-directory test-e2e; \
@@ -288,7 +288,7 @@ test-website: website ## Build the website and run its end-to-end tests (needs P
 
 test-website-if-available:
 	@if ! $(PNPM) --silent --filter $(WEB) exec node e2e/chromium-installed.mjs; then \
-		if [ -n "$$CI" ]; then echo "error: Playwright's Chromium is not installed in CI; the website end-to-end tests need it"; exit 1; fi; \
+		if [ -n "$${CI:-}" ]; then echo "error: Playwright's Chromium is not installed in CI; the website end-to-end tests need it"; exit 1; fi; \
 		echo "warning: Playwright's Chromium is not installed, skipping the website end-to-end tests (pnpm --filter $(WEB) exec playwright install chromium)"; \
 	else \
 		$(MAKE) --no-print-directory test-website; \
