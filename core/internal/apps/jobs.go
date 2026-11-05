@@ -2,6 +2,8 @@ package apps
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -318,12 +320,12 @@ func (s *Service) enqueue(ctx context.Context, tx pgx.Tx, args river.JobArgs) er
 
 // enqueueNew inserts a job that must be new: a state change that needs its
 // own job fails rather than commit when River deduplicates it.
-func (s *Service) enqueueNew(ctx context.Context, tx pgx.Tx, args river.JobArgs) error {
+func (s *Service) enqueueNew(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) error {
 	queue, err := s.getQueue()
 	if err != nil {
 		return err
 	}
-	res, err := queue.InsertTx(ctx, tx, args, nil)
+	res, err := queue.InsertTx(ctx, tx, args, opts)
 	if err != nil {
 		return fmt.Errorf("apps: queue %s: %w", args.Kind(), err)
 	}
@@ -333,24 +335,83 @@ func (s *Service) enqueueNew(ctx context.Context, tx pgx.Tx, args river.JobArgs)
 	return nil
 }
 
-// enqueueOnce inserts a unique job; when its twin is already running (and
-// may have read the state before this change), it inserts the follow-up
-// variant instead, so the change is never lost.
+// enqueueOnce queues a job that will read the state committed with tx.
+//
+// Invariant: once tx commits, a job with args (or with args that contain
+// them, such as a drift or retry variant) exists that had not been fetched
+// when tx locked or inserted it. River's unique insert locks the duplicate
+// it finds (ON CONFLICT DO UPDATE) and fetching skips locked rows, so a
+// waiting duplicate starts only after tx commits and reads the change. A
+// running duplicate guarantees nothing: it may have read the state already,
+// and River persists its completion after the work returned (batched, after
+// the framework's locks are released), so it may even have finished. Hence:
+//  1. args are inserted; a waiting duplicate is enough;
+//  2. else the follow-up variant; a waiting duplicate is enough;
+//  3. else both twins run: a waiting continuation of an earlier change is
+//     locked and enough, or a continuation with its own unique ID is
+//     inserted (checked). At most one continuation waits, so bursts while
+//     both twins run stay bounded.
 func (s *Service) enqueueOnce(ctx context.Context, tx pgx.Tx, args, followUp river.JobArgs, opts *river.InsertOpts) error {
 	queue, err := s.getQueue()
 	if err != nil {
 		return err
 	}
-	res, err := queue.InsertTx(ctx, tx, args, opts)
-	if err != nil {
-		return fmt.Errorf("apps: queue %s: %w", args.Kind(), err)
-	}
-	if res.UniqueSkippedAsDuplicate && res.Job != nil && res.Job.State == rivertype.JobStateRunning {
-		if _, err := queue.InsertTx(ctx, tx, followUp, opts); err != nil {
-			return fmt.Errorf("apps: queue %s follow-up: %w", args.Kind(), err)
+	for _, a := range []river.JobArgs{args, followUp} {
+		res, err := queue.InsertTx(ctx, tx, a, opts)
+		if err != nil {
+			return fmt.Errorf("apps: queue %s: %w", a.Kind(), err)
+		}
+		if !res.UniqueSkippedAsDuplicate || res.Job == nil || res.Job.State != rivertype.JobStateRunning {
+			return nil
 		}
 	}
-	return nil
+	match, err := json.Marshal(args)
+	if err != nil {
+		return fmt.Errorf("apps: encode %s: %w", args.Kind(), err)
+	}
+	var waiting int64
+	err = tx.QueryRow(ctx, `SELECT id FROM river_job WHERE kind = $1 AND args @> $2
+		AND state IN ('available', 'pending', 'retryable', 'scheduled') LIMIT 1 FOR UPDATE`, args.Kind(), match).Scan(&waiting)
+	switch {
+	case err == nil:
+		return nil // locked: it starts after tx commits
+	case !errors.Is(err, pgx.ErrNoRows):
+		return fmt.Errorf("apps: find waiting %s: %w", args.Kind(), err)
+	}
+	return s.enqueueNew(ctx, tx, continuation{args: followUp, ID: uuid.Must(uuid.NewV7())}, opts)
+}
+
+// continuation is a job's follow-up args with an ID that makes the job
+// unique on its own, so running twins cannot deduplicate it. Its kind and
+// insert options are the args'; the worker decodes the args and ignores
+// the ID.
+type continuation struct {
+	args river.JobArgs
+	ID   uuid.UUID `json:"continuation" river:"unique"`
+}
+
+func (c continuation) Kind() string { return c.args.Kind() }
+
+func (c continuation) InsertOpts() river.InsertOpts {
+	if a, ok := c.args.(river.JobArgsWithInsertOpts); ok {
+		return a.InsertOpts()
+	}
+	return river.InsertOpts{}
+}
+
+func (c continuation) MarshalJSON() ([]byte, error) {
+	raw, err := json.Marshal(c.args)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if fields["continuation"], err = json.Marshal(c.ID); err != nil {
+		return nil, err
+	}
+	return json.Marshal(fields)
 }
 
 // enqueueInstance queues provision_instance for an instance.
@@ -360,30 +421,17 @@ func (s *Service) enqueueInstance(ctx context.Context, tx pgx.Tx, instanceID uui
 		ProvisionInstanceArgs{InstanceID: instanceID, Reason: reason, FollowUp: true}, nil)
 }
 
-// enqueuePerson marks a person's result queued and queues provision_person.
-// At most one job per (instance, person) waits; when one is already
-// running, a single follow-up is queued so a change during the run is not
-// lost.
+// enqueuePerson marks a person's result queued and queues provision_person
+// (enqueueOnce: at most one job per (instance, person) waits besides the
+// running ones, and the change is never left to a running job alone).
 func (s *Service) enqueuePerson(ctx context.Context, tx pgx.Tx, q *store.Queries, instanceID, personID uuid.UUID, drift bool, retry ...bool) error {
-	queue, err := s.getQueue()
-	if err != nil {
-		return err
-	}
 	if err := q.MarkProvisioningQueued(ctx, store.MarkProvisioningQueuedParams{InstanceID: instanceID, PersonID: personID}); err != nil {
 		return fmt.Errorf("apps: mark result queued: %w", err)
 	}
 	args := ProvisionPersonArgs{InstanceID: instanceID, PersonID: personID, Drift: drift, Retry: len(retry) > 0 && retry[0]}
-	res, err := queue.InsertTx(ctx, tx, args, nil)
-	if err != nil {
-		return fmt.Errorf("apps: queue provisioning: %w", err)
-	}
-	if res.UniqueSkippedAsDuplicate && res.Job != nil && res.Job.State == rivertype.JobStateRunning {
-		args.FollowUp = true
-		if _, err := queue.InsertTx(ctx, tx, args, nil); err != nil {
-			return fmt.Errorf("apps: queue provisioning follow-up: %w", err)
-		}
-	}
-	return nil
+	followUp := args
+	followUp.FollowUp = true
+	return s.enqueueOnce(ctx, tx, args, followUp, nil)
 }
 
 // enqueueRemovals queues apply_removals for an instance after delay.
