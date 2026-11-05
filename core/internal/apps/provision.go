@@ -1324,12 +1324,15 @@ func (s *Service) DryRun(ctx context.Context, instanceID uuid.UUID) ([]PlannedPe
 }
 
 // RunDriftCheck queues provision_instance for every provisionable
-// instance.
+// instance, and ensure_webhooks for those whose provider takes webhooks.
 func (s *Service) RunDriftCheck(ctx context.Context) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
 		rows, err := q.ListAppInstancesInState(ctx, provisionable)
 		if err != nil {
 			return fmt.Errorf("apps: list instances: %w", err)
+		}
+		if err := s.enqueueEnsureWebhooks(ctx, tx, rows); err != nil {
+			return err
 		}
 		for _, row := range rows {
 			a, ok := s.reg.Adapter(provider.ID(row.Provider))
