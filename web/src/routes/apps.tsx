@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, ExternalLink, LayoutGrid, Plus, RefreshCw } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { defineMessage, defineMessages, FormattedMessage, useIntl } from "react-intl";
 
 import { navMessages } from "@/components/app-shell";
@@ -39,6 +39,7 @@ import {
   operationStateMessages,
   operationStateVariant,
   outcomeMessages,
+  phaseMessages,
   policyMessages,
   stateMessages,
   stateVariant,
@@ -287,6 +288,16 @@ const messages = defineMessages({
     defaultMessage: "{from} → {to}",
   }),
   showMore: { id: "appInstance.showMore", defaultMessage: "Show more" },
+  retryMore: { id: "appInstance.retryMore", defaultMessage: "Try again to show more" },
+  moreFailed: {
+    id: "appInstance.moreFailed",
+    defaultMessage: "Older operations could not be loaded. The ones above are still current.",
+  },
+  moreLoaded: defineMessage<{ count: number }>({
+    id: "appInstance.moreLoaded",
+    defaultMessage: "{count, plural, one {# more operation} other {# more operations}} loaded.",
+  }),
+  phaseOther: { id: "appInstance.phaseOther", defaultMessage: "In progress:" },
 });
 
 /** The one-line command that turns on managed services (docs/specs/agent.md). */
@@ -1338,12 +1349,35 @@ function Operations({ instanceId, working }: { instanceId: string; working: bool
         ? POLL_MS
         : false,
   });
+  // Show more keeps keyboard focus: the button stays enabled (a second
+  // press while loading does nothing), and after an append focus moves to
+  // the first new row, which a live region announces.
+  const firstNew = useRef<HTMLTableCellElement>(null);
+  const [focusRow, setFocusRow] = useState<number | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   // Operations recorded while paging shift the offsets: show each once.
   const items = [
     ...new Map(
       (operations.data?.pages ?? []).flatMap((p) => p.items).map((op) => [op.id, op]),
     ).values(),
   ];
+  useEffect(() => {
+    if (focusRow === null) return;
+    firstNew.current?.focus();
+    setFocusRow(null);
+  }, [focusRow]);
+  const showMore = async () => {
+    if (operations.isFetchingNextPage) return;
+    const before = items.length;
+    const result = await operations.fetchNextPage();
+    if (result.isFetchNextPageError) return;
+    const total = new Set((result.data?.pages ?? []).flatMap((p) => p.items).map((op) => op.id))
+      .size;
+    if (total > before) {
+      setAnnouncement(intl.formatMessage(messages.moreLoaded, { count: total - before }));
+      setFocusRow(before);
+    }
+  };
   const when = (date: string | undefined) =>
     date ? intl.formatDate(date, { dateStyle: "medium", timeStyle: "short" }) : "—";
   return (
@@ -1359,7 +1393,9 @@ function Operations({ instanceId, working }: { instanceId: string; working: bool
       <CardContent>
         {operations.isPending ? (
           <Loading />
-        ) : operations.isError ? (
+        ) : !operations.data ? (
+          // Only an initial load without data replaces the history; a failed
+          // next page or refresh keeps what was loaded (below).
           <LoadError error={operations.error} retry={() => void operations.refetch()} />
         ) : items.length === 0 ? (
           <p className="text-muted-foreground text-sm">
@@ -1393,7 +1429,7 @@ function Operations({ instanceId, working }: { instanceId: string; working: bool
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((op) => {
+                  {items.map((op, index) => {
                     const waiting =
                       !operationFinished(op) && op.errorCode && waitingCodes.has(op.errorCode)
                         ? op.errorCode
@@ -1401,7 +1437,12 @@ function Operations({ instanceId, working }: { instanceId: string; working: bool
                     const failure = operationFinished(op) ? op.errorCode : undefined;
                     return (
                       <tr key={op.id} className="border-b align-top last:border-0">
-                        <th scope="row" className="py-3 pr-4 font-normal">
+                        <th
+                          scope="row"
+                          className="py-3 pr-4 font-normal"
+                          tabIndex={-1}
+                          ref={index === focusRow ? firstNew : undefined}
+                        >
                           <span className="font-medium">
                             {label(intl, operationMessages, op.reason ?? op.kind)}
                           </span>
@@ -1428,7 +1469,16 @@ function Operations({ instanceId, working }: { instanceId: string; working: bool
                               : intl.formatMessage(operationStateMessages[op.state])}
                           </Badge>
                           {op.phase && !operationFinished(op) && (
-                            <span className="block text-muted-foreground text-xs">{op.phase}</span>
+                            <span className="block text-muted-foreground text-xs">
+                              {Object.hasOwn(phaseMessages, op.phase) ? (
+                                label(intl, phaseMessages, op.phase)
+                              ) : (
+                                <>
+                                  <FormattedMessage {...messages.phaseOther} />{" "}
+                                  <code className="font-mono">{op.phase}</code>
+                                </>
+                              )}
+                            </span>
                           )}
                           {failure && (
                             <span className="mt-1 block text-muted-foreground text-xs">
@@ -1445,17 +1495,37 @@ function Operations({ instanceId, working }: { instanceId: string; working: bool
                 </tbody>
               </table>
             </div>
+            {operations.isError && (
+              <Alert className="mt-3">
+                <p>
+                  {operations.isFetchNextPageError
+                    ? intl.formatMessage(messages.moreFailed)
+                    : errorMessage(intl, operations.error)}
+                </p>
+                {!operations.isFetchNextPageError && (
+                  <Button variant="link" onClick={() => void operations.refetch()}>
+                    <FormattedMessage {...messages.retry} />
+                  </Button>
+                )}
+              </Alert>
+            )}
             {operations.hasNextPage && (
               <Button
                 variant="outline"
                 size="sm"
                 className="mt-3"
-                loading={operations.isFetchingNextPage}
-                onClick={() => void operations.fetchNextPage()}
+                aria-busy={operations.isFetchingNextPage || undefined}
+                onClick={() => void showMore()}
               >
-                <FormattedMessage {...messages.showMore} />
+                {operations.isFetchingNextPage && <Spinner />}
+                <FormattedMessage
+                  {...(operations.isFetchNextPageError ? messages.retryMore : messages.showMore)}
+                />
               </Button>
             )}
+            <p role="status" className="sr-only">
+              {announcement}
+            </p>
           </>
         )}
       </CardContent>

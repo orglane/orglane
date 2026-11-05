@@ -130,6 +130,39 @@ export const operationMessages: Record<string, MessageDescriptor> = defineMessag
   restore: { id: "apps.operation.restore", defaultMessage: "Restore" },
 });
 
+/**
+ * Phases the agent reports for unfinished operations (docs/specs/agent.md
+ * "Operations" and "Upgrade"). Unknown phases fall back to a generic label
+ * with the raw phase as detail.
+ */
+export const phaseMessages: Record<string, MessageDescriptor> = defineMessages({
+  rendering: { id: "apps.phase.rendering", defaultMessage: "Preparing the configuration" },
+  policy_check: { id: "apps.phase.policyCheck", defaultMessage: "Checking the configuration" },
+  preparing: { id: "apps.phase.preparing", defaultMessage: "Preparing files and data" },
+  database: { id: "apps.phase.database", defaultMessage: "Preparing the database" },
+  starting: { id: "apps.phase.starting", defaultMessage: "Starting the services" },
+  configuring: { id: "apps.phase.configuring", defaultMessage: "Configuring the app" },
+  stopping: { id: "apps.phase.stopping", defaultMessage: "Stopping the services" },
+  removing: { id: "apps.phase.removing", defaultMessage: "Removing the services" },
+  purging: { id: "apps.phase.purging", defaultMessage: "Deleting the data" },
+  preflight: { id: "apps.phase.preflight", defaultMessage: "Checking the upgrade" },
+  pulling: { id: "apps.phase.pulling", defaultMessage: "Downloading the new version" },
+  snapshotting: { id: "apps.phase.snapshotting", defaultMessage: "Taking a snapshot" },
+  switching: { id: "apps.phase.switching", defaultMessage: "Switching to the new version" },
+  migrating: { id: "apps.phase.migrating", defaultMessage: "Migrating the data" },
+  verifying: { id: "apps.phase.verifying", defaultMessage: "Checking the new version" },
+  awaiting_confirmation: {
+    id: "apps.phase.awaitingConfirmation",
+    defaultMessage: "Waiting for Orglane's check",
+  },
+  committing: { id: "apps.phase.committing", defaultMessage: "Finishing the upgrade" },
+  rolling_back: {
+    id: "apps.phase.rollingBack",
+    defaultMessage: "Returning to the previous version",
+  },
+  restored: { id: "apps.phase.restored", defaultMessage: "Restarting the previous version" },
+});
+
 export const waitingMessages: Record<string, MessageDescriptor> = defineMessages({
   agent_unavailable: {
     id: "apps.waiting.agentUnavailable",
