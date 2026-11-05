@@ -196,28 +196,38 @@ website-dev: ## Run the website with live reload on http://localhost:4321
 
 test: test-go test-ts test-e2e-if-available test-website-if-available ## Run all tests (integration and e2e when Docker and Chromium are available)
 
+# Tests that need something this machine may lack (Docker, root, Chromium)
+# are skipped locally with a warning. In CI (CI is set) they must run: a
+# missing prerequisite fails the build instead of skipping the tests.
+#
 # Integration tests (build tag "integration") need Docker; without it only
 # unit tests run.
 test-go:
 	@if docker info >/dev/null 2>&1; then \
 		$(MAKE) --no-print-directory test-integration; \
+	elif [ -n "$$CI" ]; then \
+		echo "error: Docker is not available in CI; the integration tests need it"; exit 1; \
 	else \
 		echo "warning: Docker is not available, skipping integration tests"; \
 		$(MAKE) --no-print-directory test-unit; \
 	fi
-	@if [ -n "$$CI" ] && [ "$$(uname -s)" = Linux ] && sudo -n true 2>/dev/null; then \
+	@if [ -n "$$CI" ] && [ "$$(uname -s)" = Linux ]; then \
 		$(MAKE) --no-print-directory test-root; \
 	else \
-		echo "note: not CI on Linux with passwordless sudo, skipping the root-only tests (make test-root)"; \
+		echo "note: not CI on Linux, skipping the root-only tests (make test-root)"; \
 	fi
 
 # Agent tests named *AsRoot (restore ownership, setuid/setgid) skip without
-# root. The test binary is built as the current user and run with sudo;
-# ORGLANE_TEST_REQUIRE_ROOT turns a skip into a failure. make test runs this
-# in CI (Linux, passwordless sudo).
+# root. The test binary is built as the current user and run with sudo
+# (non-interactive: no passwordless sudo is a failure, not a prompt);
+# ORGLANE_TEST_REQUIRE_ROOT turns a skip into a failure, and the run fails if
+# no *AsRoot test ran. make test runs this in CI on Linux.
 test-root: ## Run the root-only agent tests as root (needs sudo)
 	go test -c -o .bin/agent-root.test ./core/internal/agent/
-	sudo env ORGLANE_TEST_REQUIRE_ROOT=1 .bin/agent-root.test -test.run 'AsRoot$$' -test.count=1 -test.v
+	sudo -n env ORGLANE_TEST_REQUIRE_ROOT=1 .bin/agent-root.test -test.run 'AsRoot$$' -test.count=1 -test.v > .bin/agent-root.log 2>&1; \
+		status=$$?; cat .bin/agent-root.log; \
+		if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
+		if ! grep -q '^--- PASS: Test.*AsRoot' .bin/agent-root.log; then echo "error: no *AsRoot test ran"; exit 1; fi
 
 test-unit: ## Run Go unit tests only
 	go test -race -count=1 ./...
@@ -262,8 +272,10 @@ test-e2e: ## Run the web end-to-end tests (needs Docker and Playwright's Chromiu
 
 test-e2e-if-available:
 	@if ! docker info >/dev/null 2>&1; then \
+		if [ -n "$$CI" ]; then echo "error: Docker is not available in CI; the web end-to-end tests need it"; exit 1; fi; \
 		echo "warning: Docker is not available, skipping the web end-to-end tests"; \
 	elif ! $(PNPM) --silent --filter $(WEB) exec node e2e/chromium-installed.mjs; then \
+		if [ -n "$$CI" ]; then echo "error: Playwright's Chromium is not installed in CI; the web end-to-end tests need it"; exit 1; fi; \
 		echo "warning: Playwright's Chromium is not installed, skipping the web end-to-end tests (pnpm --filter $(WEB) exec playwright install chromium)"; \
 	else \
 		$(MAKE) --no-print-directory test-e2e; \
@@ -276,6 +288,7 @@ test-website: website ## Build the website and run its end-to-end tests (needs P
 
 test-website-if-available:
 	@if ! $(PNPM) --silent --filter $(WEB) exec node e2e/chromium-installed.mjs; then \
+		if [ -n "$$CI" ]; then echo "error: Playwright's Chromium is not installed in CI; the website end-to-end tests need it"; exit 1; fi; \
 		echo "warning: Playwright's Chromium is not installed, skipping the website end-to-end tests (pnpm --filter $(WEB) exec playwright install chromium)"; \
 	else \
 		$(MAKE) --no-print-directory test-website; \
