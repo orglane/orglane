@@ -64,6 +64,52 @@ export function appProvisioningQuery(api: Api, instanceId: string) {
 }
 
 export type AppOperation = Schema<"AppOperation">;
+export type AppAgentStatus = Schema<"AppAgentStatus">;
+
+/** Whether the agent runs, with the host's resources (managed services). */
+export function appAgentQuery(api: Api) {
+  return queryOptions({
+    queryKey: [...appsKey, "agent"],
+    queryFn: () => call(api.client.GET("/api/v1/apps/agent")),
+  });
+}
+
+/** Labels and hints of provider settings, by setting name; others show the name. */
+export const settingMessages: Record<
+  string,
+  { label: MessageDescriptor; hint?: MessageDescriptor }
+> = {
+  organization: {
+    label: { id: "apps.setting.organization", defaultMessage: "Organization" },
+    hint: {
+      id: "apps.setting.organization.hint",
+      defaultMessage: "The company's organization in the app. It cannot be changed later.",
+    },
+  },
+  ssh_port: {
+    label: { id: "apps.setting.sshPort", defaultMessage: "SSH port" },
+    hint: {
+      id: "apps.setting.sshPort.hint",
+      defaultMessage:
+        "The port on this server for Git over SSH. Open it in the firewall to clone over SSH.",
+    },
+  },
+  require_link: {
+    label: { id: "apps.setting.requireLink", defaultMessage: "Require linked accounts" },
+  },
+};
+
+/** A byte count in MB or GB (binary units, as the agent reports them). */
+export function formatBytes(intl: IntlShape, bytes: number): string {
+  const gib = 1024 ** 3;
+  return bytes >= gib
+    ? intl.formatNumber(bytes / gib, { style: "unit", unit: "gigabyte", maximumFractionDigits: 1 })
+    : intl.formatNumber(bytes / 1024 ** 2, {
+        style: "unit",
+        unit: "megabyte",
+        maximumFractionDigits: 0,
+      });
+}
 
 /** Operations per page of a managed instance's history. */
 export const OPERATIONS_PAGE = 20;
@@ -352,6 +398,55 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
   install_failed: {
     id: "apps.code.installFailed",
     defaultMessage: "Installing this app failed. Check the server's resources, then retry.",
+  },
+  remove_failed: {
+    id: "apps.code.removeFailed",
+    defaultMessage: "Removing this app failed. Check the agent's logs, then remove it again.",
+  },
+  key_reserved: {
+    id: "apps.code.keyReserved",
+    defaultMessage:
+      "Another app uses this key, or a removed app's data still holds it. Choose another key, or delete that app's data.",
+  },
+  host_taken: {
+    id: "apps.code.hostTaken",
+    defaultMessage: "Another app uses this address. Choose another one.",
+  },
+  localhost_workspace: {
+    id: "apps.code.localhostWorkspace",
+    defaultMessage:
+      "Apps run by Orglane need a workspace address under localhost, such as orglane.localhost. Run the installer's enable-managed command on the server.",
+  },
+  host_not_local: {
+    id: "apps.code.hostNotLocal",
+    defaultMessage: "On this local installation, the address must end in .localhost.",
+  },
+  insufficient_memory: {
+    id: "apps.code.insufficientMemory",
+    defaultMessage:
+      "This server does not have enough memory for this app next to the ones already installed.",
+  },
+  insufficient_disk: {
+    id: "apps.code.insufficientDisk",
+    defaultMessage: "This server does not have enough free disk space for this app.",
+  },
+  dns_unresolved: {
+    id: "apps.code.dnsUnresolved",
+    defaultMessage:
+      "This address does not exist in DNS yet. Add a record that points to this server, then try again.",
+  },
+  dns_mismatch: {
+    id: "apps.code.dnsMismatch",
+    defaultMessage:
+      "This address points to another server. Point it to the same address as the workspace, then try again.",
+  },
+  dns_lookup_failed: {
+    id: "apps.code.dnsLookupFailed",
+    defaultMessage: "The DNS lookup failed. Try again in a moment.",
+  },
+  not_supported: {
+    id: "apps.code.notSupported",
+    defaultMessage: "This app cannot do that.",
   },
   superseded: {
     id: "apps.code.superseded",

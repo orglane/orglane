@@ -11,6 +11,7 @@ import { type Api, meQuery, setupStatusQuery } from "./lib/api";
 import { safeRedirect, welcomeDestination } from "./lib/utils";
 import { AcceptInvitationPage } from "./routes/accept-invitation";
 import { AppInstancePage, AppsPage, AppsSettingsPage } from "./routes/apps";
+import { InstallAppPage } from "./routes/apps-install";
 import { EmailSettingsPage } from "./routes/email-settings";
 import { HomePage } from "./routes/home";
 import { InvitationsPage } from "./routes/invitations";
@@ -229,6 +230,14 @@ const appInstanceRoute = createRoute({
     return <AppInstancePage key={instanceId} instanceId={instanceId} />;
   },
 });
+const appInstallRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings/apps/install/$providerId",
+  component: function AppInstall() {
+    const { providerId } = appInstallRoute.useParams();
+    return <InstallAppPage key={providerId} providerId={providerId} />;
+  },
+});
 const emailSettingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings/email",
@@ -277,6 +286,7 @@ export const routeTree = rootRoute.addChildren([
       githubConnectRoute,
       githubCallbackRoute,
       appInstanceRoute,
+      appInstallRoute,
     ]),
   ]),
 ]);
