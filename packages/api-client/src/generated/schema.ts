@@ -1691,6 +1691,122 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/account-links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My account links
+         * @description The caller's verified provider account links, their import evidence
+         *     (`pending`, which proves nothing) for organizations with an active
+         *     instance, and the providers where they can link an account.
+         */
+        get: operations["listMyAccountLinks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/account-links/{provider}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Begin verifying my account at a provider
+         * @description Returns the provider URL to send the browser to. The state and PKCE
+         *     verifier are bound to the caller and this browser session, are
+         *     single-use and expire after ten minutes. Only from a browser
+         *     session. 409 `not_supported` when no active instance of the provider
+         *     verifies accounts.
+         */
+        post: operations["startAccountLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/account-links/{provider}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finish verifying my account at a provider
+         * @description Called by the SPA callback route with the provider's `state` and
+         *     `code`. The state is consumed first and only by the caller's own
+         *     session, also when the exchange fails. The link is keyed by the
+         *     provider's immutable account ID; the provider token is used once
+         *     and revoked. 409 `invalid_state` for an unknown, used, expired or
+         *     foreign state; 409 `account_already_linked` when the account is
+         *     linked to another person (an admin must revoke that link first);
+         *     400 with the provider's safe code when the provider refuses; 429
+         *     with `Retry-After` on a provider rate limit.
+         */
+        post: operations["completeAccountLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/account-links/{linkId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unlink one of my accounts
+         * @description Revokes the caller's own verified link. The provider account is no
+         *     longer managed for them (reported, not removed).
+         */
+        delete: operations["unlinkMyAccount"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/people/{personId}/account-links/{linkId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a person's account link
+         * @description Revokes a wrong verified link of a person. Admins can revoke links,
+         *     never create them; only the person's own verification does.
+         */
+        delete: operations["revokePersonAccountLink"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/webhooks/{instanceId}": {
         parameters: {
             query?: never;
@@ -2981,6 +3097,19 @@ export interface components {
             instanceId?: string;
             /** Format: date-time */
             verifiedAt?: string;
+            /** @description Pending evidence only. The account it names is verified for another person. */
+            conflict?: boolean;
+        };
+        MyAccountLinks: {
+            links: components["schemas"]["AccountLinkView"][];
+            /** @description Providers where the caller can verify an account, with the instance used. */
+            linkable: components["schemas"]["LinkableProvider"][];
+        };
+        LinkableProvider: {
+            provider: string;
+            /** Format: uuid */
+            instanceId: string;
+            displayName: string;
         };
         PersonApps: {
             results: components["schemas"]["PersonAppResult"][];
@@ -3095,6 +3224,10 @@ export interface components {
         TeamId: string;
         PersonId: string;
         InvitationId: string;
+        /** @description A provider ID, e.g. github. */
+        ProviderId: string;
+        /** @description A verified account link ID. */
+        LinkId: string;
         /** @description An app instance ID. */
         InstanceId: string;
         /** @description A credential name declared by the instance's provider. */
@@ -5523,6 +5656,155 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listMyAccountLinks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's links. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyAccountLinks"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    startAccountLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A provider ID, e.g. github. */
+                provider: components["parameters"]["ProviderId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: uuid
+                     * @description The instance whose provider App to authorize through; defaults to the oldest active one.
+                     */
+                    instanceId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Where to send the browser. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uri */
+                        url: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    completeAccountLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A provider ID, e.g. github. */
+                provider: components["parameters"]["ProviderId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    state: string;
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The verified link. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountLinkView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    unlinkMyAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A verified account link ID. */
+                linkId: components["parameters"]["LinkId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The link was revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    revokePersonAccountLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                personId: components["parameters"]["PersonId"];
+                /** @description A verified account link ID. */
+                linkId: components["parameters"]["LinkId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The link was revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };

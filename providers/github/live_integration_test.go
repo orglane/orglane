@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,45 @@ func TestGitHubLiveConnection(t *testing.T) {
 		t.Fatal("installation token cache failed")
 	}
 	t.Log("Verified real App identity, expected organization, installation permissions, token issuance and authenticated repository read; browser manifest/installation and OAuth authorization remain manual acceptance.")
+}
+
+// The link flow's GitHub side against the real API: the authorization URL
+// GitHub accepts for the dedicated App, and the account lookup by user
+// token that binds a link to the immutable user ID (the bot's token stands
+// in for the token the browser authorization would yield; the interactive
+// authorization page itself stays manual acceptance).
+func TestGitHubLiveAccountLink(t *testing.T) {
+	requireGitHubLive(t)
+	env := &liveEnv{client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	inst := provider.Instance{ID: uuid.New(), Provider: "github", Settings: map[string]any{"app_client_id": os.Getenv("ORGLANE_TEST_GITHUB_APP_CLIENT_ID")}}
+	u, err := New().BeginVerify(t.Context(), env, inst, "ols_live", strings.Repeat("c", 43))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, u.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := env.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode >= 400 {
+		t.Fatalf("GitHub refused the authorization URL: %d", res.StatusCode)
+	}
+	var user struct {
+		ID    int64  `json:"id"`
+		Login string `json:"login"`
+		Type  string `json:"type"`
+	}
+	if err := request(t.Context(), env, http.MethodGet, "/user", os.Getenv("ORGLANE_TEST_GITHUB_USER_TOKEN"), nil, &user); err != nil {
+		t.Fatal(err)
+	}
+	if strconv.FormatInt(user.ID, 10) != os.Getenv("ORGLANE_TEST_GITHUB_USER_ID") || !strings.EqualFold(user.Login, os.Getenv("ORGLANE_TEST_GITHUB_USER_LOGIN")) || user.Type != "User" {
+		t.Fatal("the bot user's token does not resolve to the configured user ID")
+	}
+	t.Log("Verified the authorization URL and the user lookup by ID; the interactive authorization and code exchange remain manual acceptance.")
 }
 
 // This Env uses the production protocol with a real HTTP client.

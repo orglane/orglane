@@ -10,6 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// testProviderTransport, set only by test builds (build tag githubtest),
+// routes provider hosts to a fake provider. Nil in production.
+var testProviderTransport func(next http.RoundTripper) http.RoundTripper
+
 // MaxResponseBytes bounds every provider response body read through the
 // adapters' HTTP client.
 const MaxResponseBytes = 10 << 20
@@ -19,9 +23,13 @@ const MaxResponseBytes = 10 << 20
 func NewHTTPClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 20 * time.Second
+	var next http.RoundTripper = transport
+	if testProviderTransport != nil {
+		next = testProviderTransport(next)
+	}
 	return &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: limitedTransport{next: transport},
+		Transport: limitedTransport{next: next},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("apps: too many redirects")

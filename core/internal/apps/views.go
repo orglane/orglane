@@ -97,7 +97,7 @@ func (s *Service) UnmanagedAccounts(ctx context.Context, instanceID uuid.UUID) (
 type PersonApps struct {
 	Results []store.ListPersonProvisioningResultsRow
 	Links   []store.AccountLink
-	Pending []store.PendingAccountLink
+	Pending []store.ListPersonPendingAccountLinksWithConflictRow
 }
 
 // ForPerson returns a person's results in every instance, their verified
@@ -112,7 +112,7 @@ func (s *Service) ForPerson(ctx context.Context, personID uuid.UUID) (PersonApps
 	if out.Links, err = q.ListPersonAccountLinks(ctx, personID); err != nil {
 		return out, fmt.Errorf("apps: list links: %w", err)
 	}
-	if out.Pending, err = q.ListPersonPendingAccountLinks(ctx, personID); err != nil {
+	if out.Pending, err = q.ListPersonPendingAccountLinksWithConflict(ctx, personID); err != nil {
 		return out, fmt.Errorf("apps: list pending links: %w", err)
 	}
 	return out, nil

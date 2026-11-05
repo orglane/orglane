@@ -203,6 +203,7 @@ const invitationsRoute = createRoute({
   component: InvitationsPage,
 });
 
+import { GitHubAccountCallbackPage, GitHubAccountPage } from "./routes/github-account";
 import { GitHubConnectCallbackPage, GitHubConnectPage } from "./routes/github-connect";
 
 const githubConnectRoute = createRoute({
@@ -214,6 +215,16 @@ const githubCallbackRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings/apps/github/callback",
   component: GitHubConnectCallbackPage,
+});
+const githubAccountRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/me/accounts/github",
+  component: GitHubAccountPage,
+});
+const githubAccountCallbackRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/me/accounts/github/callback",
+  component: GitHubAccountCallbackPage,
 });
 
 const appsSettingsRoute = createRoute({
@@ -276,6 +287,8 @@ export const routeTree = rootRoute.addChildren([
       appsSettingsRoute,
       githubConnectRoute,
       githubCallbackRoute,
+      githubAccountRoute,
+      githubAccountCallbackRoute,
       appInstanceRoute,
     ]),
   ]),

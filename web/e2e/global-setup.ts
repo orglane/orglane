@@ -14,9 +14,17 @@ export default async function globalSetup(): Promise<void> {
       run("pnpm", ["--silent", "--filter", "@orglane/web", "build"]);
     }
     binary = `${work}orglane`;
-    // Test-only build tags: the GitHub import fixture server and the
-    // in-repo test provider (Settings → Apps).
-    run("go", ["build", "-tags", "githubimporttest,appstest", "-o", binary, "./core/cmd/orglane"]);
+    // Test-only build tags: the GitHub import fixture server, the in-repo
+    // test provider (Settings → Apps) and the fake GitHub.com validated
+    // against GitHub's OpenAPI description.
+    run("go", [
+      "build",
+      "-tags",
+      "githubimporttest,appstest,githubtest",
+      "-o",
+      binary,
+      "./core/cmd/orglane",
+    ]);
   }
 
   const container = run("docker", [
