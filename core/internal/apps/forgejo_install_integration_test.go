@@ -51,8 +51,10 @@ func TestForgejoInstall(t *testing.T) {
 	h := newHarnessWith(t, apps.Config{
 		HTTPClient: b.Client(), Packages: registry, Agent: agentClient,
 		WorkspaceURL: local, IssuerURL: local, DomainBase: "orglane.localhost", IngressMode: agentapi.IngressLocal,
-		ServiceHost:       func(label string) string { return label + ".orglane.localhost" },
-		InstallPreflight:  func(ctx context.Context, p apps.InstallPlan) error { return svc.CheckInstall(ctx, p) },
+		ServiceHost: func(label string) string { return label + ".orglane.localhost" },
+		InstallPreflight: func(ctx context.Context, p apps.InstallPlan) (apps.InstallBudget, error) {
+			return svc.CheckInstall(ctx, p)
+		},
 		AgentPollInterval: 500 * time.Millisecond,
 	}, forgejo.New())
 	svc = h.svc
@@ -70,7 +72,7 @@ func TestForgejoInstall(t *testing.T) {
 		c.Resolver = fixedResolver{"work.acme.test": {netip.MustParseAddr("192.0.2.1")}, "git.acme.test": {netip.MustParseAddr("192.0.2.2")}}
 	})
 	pkg, _ := svc.InstallDefaults(mustAdapter(t, svc, forgejo.ID))
-	if err := domain.CheckInstall(ctx, apps.InstallPlan{Provider: forgejo.ID, Key: "git", Host: "git.acme.test", Package: pkg.Package}); apps.Code(err) != apps.CodeDNSMismatch {
+	if _, err := domain.CheckInstall(ctx, apps.InstallPlan{Provider: forgejo.ID, Key: "git", Host: "git.acme.test", Package: pkg.Package}); apps.Code(err) != apps.CodeDNSMismatch {
 		t.Fatalf("a host resolving elsewhere = %v", err)
 	}
 	if pkg.Host != managedtest.ForgejoHost || pkg.Key != "git" || pkg.Settings[forgejo.SettingOrganization] != "orglane" {

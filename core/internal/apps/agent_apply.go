@@ -132,6 +132,17 @@ func (s *Service) mirror(ctx context.Context, ds store.AppDesiredSpec, op store.
 	if aop.Terminal() {
 		return s.finishOp(ctx, ds, op, aop, aop.State, aop.ErrorCode)
 	}
+	// An operation the agent never starts is not polled forever: after
+	// Config.AgentQueueTimeout in queued it ends failed with agent_stalled
+	// (a removal then leaves the instance failed with remove_failed, from
+	// where it can be removed again). This bounds, for example, the
+	// replacement operation the agent returns for a purge retry that races
+	// with the purge's completion (#83).
+	if aop.State == agentapi.OpQueued && !aop.StartedAt.IsZero() && s.cfg.Now().Sub(aop.StartedAt) > s.cfg.AgentQueueTimeout {
+		s.cfg.Logger.WarnContext(ctx, "the agent has not started an operation; giving up on it", "app_instance", op.InstanceID, "generation", ds.Generation, "operation", aop.ID)
+		stalled := *aop
+		return s.finishOp(ctx, ds, op, &stalled, agentapi.OpFailed, CodeAgentStalled)
+	}
 	// Part 2 of #75 hooks in here: an upgrade in awaiting_confirmation is
 	// checked with Lifecycle.CheckHealth through the fenced upstream and
 	// confirmed or aborted (agentclient Confirm and Abort); until then it is

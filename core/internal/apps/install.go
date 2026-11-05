@@ -94,7 +94,7 @@ func (s *Service) AgentStatus(ctx context.Context) (AgentStatus, error) {
 		}
 		return st, nil
 	}
-	reserved, err := s.reservedMemory(ctx, uuid.Nil)
+	reserved, err := s.reservedMemory(ctx, store.New(s.pool), uuid.Nil)
 	if err != nil {
 		return st, err
 	}
@@ -108,9 +108,10 @@ func (s *Service) AgentStatus(ctx context.Context) (AgentStatus, error) {
 }
 
 // reservedMemory is BundleMemory plus the minimum memory of the packages
-// of every managed instance that holds its key, except one.
-func (s *Service) reservedMemory(ctx context.Context, except uuid.UUID) (uint64, error) {
-	rows, err := store.New(s.pool).ListAppInstances(ctx)
+// of every managed instance that holds its key (installs in flight
+// included: they are installing), except one.
+func (s *Service) reservedMemory(ctx context.Context, q *store.Queries, except uuid.UUID) (uint64, error) {
+	rows, err := q.ListAppInstances(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("apps: list instances: %w", err)
 	}
@@ -161,35 +162,47 @@ func (s *Service) HostURL(host string) string {
 	return u.String()
 }
 
+// InstallBudget is what the host has for managed apps, as the agent
+// reported it to the preflight. Install checks the memory of every
+// instance that holds its key, the new one included, against it again in
+// its transaction under the install lock, so concurrent installs cannot
+// share the same remaining memory. The zero value skips that check.
+type InstallBudget struct {
+	MemTotal, DiskFree uint64
+}
+
 // CheckInstall is the production InstallPreflight (wired by the server):
 // local mode needs *.localhost names, the agent must be connected with a
 // compatible version, the host's memory and disk must cover the package's
 // minimums, and in domain mode the host must resolve to the workspace's
 // addresses. Checks that need no network come first.
-func (s *Service) CheckInstall(ctx context.Context, plan InstallPlan) error {
+func (s *Service) CheckInstall(ctx context.Context, plan InstallPlan) (InstallBudget, error) {
 	if s.cfg.IngressMode == agentapi.IngressLocal {
 		ws := s.cfg.WorkspaceURL.Hostname()
 		if !strings.HasSuffix(ws, ".localhost") {
-			return refused(CodeLocalhostWorkspace, "in local mode managed services need a workspace host under localhost such as orglane.localhost, not %s (run the installer's enable-managed)", ws)
+			return InstallBudget{}, refused(CodeLocalhostWorkspace, "in local mode managed services need a workspace host under localhost such as orglane.localhost, not %s (run the installer's enable-managed)", ws)
 		}
 		if !strings.HasSuffix(plan.Host, ".localhost") {
-			return refused(CodeHostNotLocal, "in local mode the host must end in .localhost, not %s", plan.Host)
+			return InstallBudget{}, refused(CodeHostNotLocal, "in local mode the host must end in .localhost, not %s", plan.Host)
 		}
 	}
 	st, err := s.AgentStatus(ctx)
 	if err != nil {
-		return err
+		return InstallBudget{}, err
 	}
 	if !st.Connected {
-		return refused(st.Code, "the agent that runs managed services is not usable")
+		return InstallBudget{}, refused(st.Code, "the agent that runs managed services is not usable")
 	}
+	// Fails early; Install checks again under its lock.
 	if err := checkResources(st, plan.Package); err != nil {
-		return err
+		return InstallBudget{}, err
 	}
 	if s.cfg.IngressMode == agentapi.IngressDomain {
-		return CheckServiceHost(ctx, s.cfg.Resolver, s.cfg.WorkspaceURL.Hostname(), plan.Host)
+		if err := CheckServiceHost(ctx, s.cfg.Resolver, s.cfg.WorkspaceURL.Hostname(), plan.Host); err != nil {
+			return InstallBudget{}, err
+		}
 	}
-	return nil
+	return InstallBudget{MemTotal: st.MemTotal, DiskFree: st.DiskFree}, nil
 }
 
 // checkResources refuses an install whose package does not fit: total
@@ -230,13 +243,35 @@ func (s *Service) validHost(rawURL string) (string, error) {
 	return host, nil
 }
 
-// checkHost refuses a host held by an instance other than self. It runs in
-// the install's transaction under a lock, so two concurrent installs cannot
-// take the same host.
-func (s *Service) checkHost(ctx context.Context, q *store.Queries, host string, self uuid.UUID) error {
-	if err := q.AcquireXactLock(ctx, lockID("app-host")); err != nil {
-		return fmt.Errorf("apps: lock hosts: %w", err)
+// reserve takes the install lock in the install's transaction and checks
+// what an install reserves against what other instances hold: its host
+// (not used by an instance other than self, as for keys: while not removed
+// or while data is retained), and, with a budget from the preflight, the
+// memory of every instance holding its key plus self's package. Two
+// installs that passed their preflights against the same remaining memory
+// are serialized here: the second sees the first once it committed (READ
+// COMMITTED: every statement after the lock sees committed rows) and is
+// refused. Network checks stay in the preflight, outside the transaction.
+func (s *Service) reserve(ctx context.Context, q *store.Queries, host string, self uuid.UUID, budget InstallBudget, pkg *packages.Package) error {
+	if err := q.AcquireXactLock(ctx, lockID("app-install")); err != nil {
+		return fmt.Errorf("apps: lock installs: %w", err)
 	}
+	if err := s.checkHost(ctx, q, host, self); err != nil {
+		return err
+	}
+	if budget.MemTotal == 0 {
+		return nil
+	}
+	reserved, err := s.reservedMemory(ctx, q, self)
+	if err != nil {
+		return err
+	}
+	return checkResources(AgentStatus{MemTotal: budget.MemTotal, DiskFree: budget.DiskFree, MemoryReserved: reserved}, pkg)
+}
+
+// checkHost refuses a host held by an instance other than self. It runs
+// under the install lock (reserve).
+func (s *Service) checkHost(ctx context.Context, q *store.Queries, host string, self uuid.UUID) error {
 	rows, err := q.ListReservedAppInstanceHosts(ctx)
 	if err != nil {
 		return fmt.Errorf("apps: list hosts: %w", err)

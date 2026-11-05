@@ -476,12 +476,12 @@ func TestAgentApplyWithoutAgent(t *testing.T) {
 	var plans []apps.InstallPlan
 	h := newHarness(t, func(c *apps.Config) {
 		c.Packages = registry
-		c.InstallPreflight = func(_ context.Context, p apps.InstallPlan) error {
+		c.InstallPreflight = func(_ context.Context, p apps.InstallPlan) (apps.InstallBudget, error) {
 			plans = append(plans, p)
 			if p.Key == "blocked" {
-				return errBlocked
+				return apps.InstallBudget{}, errBlocked
 			}
-			return nil
+			return apps.InstallBudget{}, nil
 		}
 	})
 	if _, err := h.svc.Install(h.ctx, audit.System, apps.NewInstance{Provider: "testmanaged"}); err == nil {
