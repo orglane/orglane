@@ -38,15 +38,18 @@ test("an Admin installs Forgejo from Settings → Apps and sees it installing, t
 
   // The instance page: installing, then the agent's operation fails without
   // the bundle and the instance fails with an explanation.
-  await expect(page.getByRole("heading", { name: "Forgejo", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Forgejo", exact: true, level: 1 })).toBeVisible({
+    timeout: 30_000,
+  });
   const operations = page.getByRole("table", { name: "Operations" });
   await expect(operations.getByRole("row").filter({ hasText: "Install" })).toBeVisible();
-  await expect(page.getByText("Installing this app failed.", { exact: false })).toBeVisible({
+  await expect(page.getByText(/Installing this app failed/)).toBeVisible({
     timeout: 60_000,
   });
-  await expect(
-    operations.getByRole("row").filter({ hasText: "Install" }).getByText("Failed"),
-  ).toBeVisible();
+  const installRow = operations.getByRole("row").filter({ hasText: "Install" });
+  await expect(installRow.getByText("Failed", { exact: true })).toBeVisible();
+  // Without the bundle the agent finds no PostgreSQL for the app's database.
+  await expect(installRow.getByText("database_failed")).toBeVisible();
 
   // A failed app can be removed: the confirmation says what it does.
   await page.getByRole("button", { name: "Remove", exact: true }).click();
@@ -63,7 +66,7 @@ test("an Admin installs Forgejo from Settings → Apps and sees it installing, t
     ] as const) {
       await page.setViewportSize(size);
       for (const theme of ["light", "dark"] as const) {
-        await page.emulateMedia({ colorScheme: theme });
+        await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
         await page.screenshot({
           path: `${repo}.github/pr-assets/apps/app-instance-failed-${name}-${theme}.png`,
           fullPage: true,
@@ -71,8 +74,9 @@ test("an Admin installs Forgejo from Settings → Apps and sees it installing, t
       }
     }
     await page.goto(`${instance.url}/settings/apps/install/forgejo`);
+    await expect(page.getByRole("form", { name: "Install Forgejo" })).toBeVisible();
     for (const theme of ["light", "dark"] as const) {
-      await page.emulateMedia({ colorScheme: theme });
+      await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
       await page.screenshot({
         path: `${repo}.github/pr-assets/apps/install-forgejo-mobile-${theme}.png`,
         fullPage: true,
