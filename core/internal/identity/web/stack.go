@@ -88,7 +88,9 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 		hasher = crypto.NewPasswordHasher(crypto.DefaultPasswordParams, runtime.GOMAXPROCS(0))
 	}
 	mailer := mail.NewService(pool, cfg.Email, cfg.WorkspaceHostname(), keyring, logger)
+	localDomain := localServiceDomain(cfg)
 	svc := identity.NewService(pool,
+		identity.WithLocalServiceDomain(localDomain),
 		identity.WithPasswordHasher(hasher),
 		identity.WithSignInLimits(identity.SignInLimits{Failures: cfg.Identity.SignInAccountLimit, Lockout: cfg.Identity.SignInLockout}),
 		identity.WithWebAuthn(wa),
@@ -149,7 +151,7 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	}
 	appsCfg := apps.Config{
 		WorkspaceURL: u, IssuerURL: issuer, Logger: logger,
-		Packages: pkgs, IngressMode: cfg.Ingress.Mode, ServiceHost: cfg.ServiceHost, SyncInterval: cfg.Agent.SyncInterval,
+		Packages: pkgs, OIDC: svc, IngressMode: cfg.Ingress.Mode, ServiceHost: cfg.ServiceHost, SyncInterval: cfg.Agent.SyncInterval,
 	}
 	agent, err := agentclient.FromConfig(cfg.Agent, opts.Version)
 	if err != nil {
@@ -160,6 +162,11 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	}
 	appsSvc := apps.NewService(pool, registry, keyring, appsCfg)
 	svc.SetDirectoryObserver(appsSvc)
+	// App clients sign in only people provisioned in their instance.
+	auth.SetClientAccess(appsSvc.OIDCAccess)
+	// And again, under locks, where codes and tokens are issued: access
+	// withdrawn after the sign-in completed stops the code and the tokens.
+	provider.SetClientAccess(appsSvc.OIDCAccessTx)
 	return &Stack{Identity: svc, Profile: profiles, Imports: peopleimport.NewService(pool, svc, profiles, keyring, peopleimport.WithLogger(logger)), Keys: keys, Provider: provider, Auth: auth, Mail: mailer, Apps: appsSvc}, nil
 }
 
@@ -182,4 +189,16 @@ func (s *Stack) Maintain(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	_, err := q.DeleteStaleSignInThrottles(ctx)
 	return err
+}
+
+// localServiceDomain is the domain whose plain-http redirect URIs OIDC
+// clients may use: the base domain, only for a workspace that itself runs
+// on plain http in local ingress mode (managed services sign in at
+// http://<service>.<base>). An https workspace never gets it, whatever
+// the ingress mode says.
+func localServiceDomain(cfg *config.Config) string {
+	if cfg.Ingress.Mode != config.IngressLocal || cfg.Domain.Scheme != "http" {
+		return ""
+	}
+	return cfg.Domain.Base
 }

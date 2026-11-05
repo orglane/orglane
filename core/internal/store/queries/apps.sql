@@ -300,6 +300,22 @@ INSERT INTO account_links (person_id, provider, realm, external_id, login, metho
 VALUES (@person_id, @provider, @realm, @external_id, @login, @method, @instance_id, @evidence)
 RETURNING *;
 
+-- OIDC access of app clients (apps.Service.OIDCAccessTx): read under share
+-- locks in the transaction that issues a code or tokens, so a withdrawal
+-- (an UPDATE of any of these rows) is ordered before or after it, never
+-- in between.
+
+-- name: GetAppInstanceByKeyForShare :one
+SELECT * FROM app_instances WHERE key = @key AND (state <> 'removed' OR data_retained) FOR SHARE;
+
+-- name: GetVerifiedAccountLinkForShare :one
+SELECT * FROM account_links
+WHERE person_id = @person_id AND provider = @provider AND realm = @realm AND state = 'verified'
+FOR SHARE;
+
+-- name: GetProvisioningResultForShare :one
+SELECT * FROM provisioning_results WHERE instance_id = @instance_id AND person_id = @person_id FOR SHARE;
+
 -- name: RevokeAccountLink :one
 UPDATE account_links SET state = 'revoked', revoked_at = now(), updated_at = now()
 WHERE id = @id AND state = 'verified'
