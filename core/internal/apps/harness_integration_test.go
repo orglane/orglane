@@ -229,6 +229,10 @@ func (h *harness) work(j queued) error {
 		var a apps.SetupArgs
 		h.decode(j.args, &a)
 		return h.svc.RunSetup(h.ctx, a, attempt, j.maxAttempts)
+	case apps.EnsureWebhooksArgs{}.Kind():
+		var a apps.EnsureWebhooksArgs
+		h.decode(j.args, &a)
+		return h.svc.RunEnsureWebhooks(h.ctx, a)
 	case apps.DriftCheckArgs{}.Kind():
 		return h.svc.RunDriftCheck(h.ctx)
 	case apps.CleanupArgs{}.Kind():

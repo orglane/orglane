@@ -35,6 +35,8 @@ const (
 	CodeNoUpstream = "no_upstream"
 	// CodeInvalidSettings: a required setting is missing or invalid.
 	CodeInvalidSettings = "invalid_settings"
+	// CodeNoWebhookSecret: the instance has no active webhook secret yet.
+	CodeNoWebhookSecret = "webhook_secret_missing"
 )
 
 // statusError is a non-2xx answer. It carries only the status: response

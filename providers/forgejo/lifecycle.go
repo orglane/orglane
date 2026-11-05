@@ -139,8 +139,8 @@ type accessToken struct {
 	SHA1 string `json:"sha1"`
 }
 
-// ApplyCredential implements provider.CredentialRotator for the admin
-// token, which Forgejo mints. Tokens are named after their version
+// ApplyCredential implements provider.CredentialRotator for the webhook
+// secret (applyWebhookSecret) and the admin token, which Forgejo mints. Tokens are named after their version
 // (TokenName), so the admin's token list is the read-back.
 //
 // The core calls it in two ways (docs/specs/providers.md "Credentials"):
@@ -160,12 +160,15 @@ type accessToken struct {
 // unknown with the error (no answer, server errors, a read-back or a
 // cleanup that failed, a refused mint whose name is taken after all).
 func (*Adapter) ApplyCredential(ctx context.Context, env provider.Env, inst provider.Instance, name string, version int, value []byte) (provider.Rotation, error) {
-	if name != CredentialAdminToken {
+	if name != CredentialAdminToken && name != CredentialWebhookSecret {
 		return provider.Rotation{Outcome: provider.RotationRejected}, nil
 	}
 	c, err := newClient(ctx, env, inst, true)
 	if err != nil {
 		return provider.Rotation{Outcome: provider.RotationUnknown}, err
+	}
+	if name == CredentialWebhookSecret {
+		return applyWebhookSecret(ctx, c, inst, env.WebhookURL(inst.ID).String(), value)
 	}
 	if value != nil {
 		return reassertToken(ctx, c, version, string(value))
