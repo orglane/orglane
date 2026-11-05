@@ -39,6 +39,14 @@ func (h *harness) rotate(inst apps.Instance, version int32) error {
 	return h.svc.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "webhook_secret", Version: version})
 }
 
+// retry is the job's next attempt as River runs it after an unknown
+// outcome: once the earlier execution's lease has ended (at most one
+// execution per credential).
+func (h *harness) retry(inst apps.Instance, version int32) error {
+	expireLeases(h, inst)
+	return h.rotate(inst, version)
+}
+
 // TestCredentialSealing: credentials are sealed under their own purpose and
 // bound to their row; they never appear in plaintext.
 func TestCredentialSealing(t *testing.T) {
@@ -100,7 +108,7 @@ func TestRotationResponseLost(t *testing.T) {
 		t.Fatalf("second rotation = %v", err)
 	}
 	for range 2 {
-		if err := h.rotate(inst, version); err == nil {
+		if err := h.retry(inst, version); err == nil {
 			t.Fatal("an unknown answer did not ask for a retry")
 		}
 		if s := h.credState(inst, version); s != "uncertain" {
@@ -130,9 +138,11 @@ func TestRotationResponseLost(t *testing.T) {
 	reg, _ := apps.NewRegistry(h.tp)
 	ws, _ := url.Parse("https://work.acme.test")
 	restarted := apps.NewService(h.pool, reg, keyring, apps.Config{WorkspaceURL: ws, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	expireLeases(h, inst)
 	if err := restarted.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "webhook_secret", Version: version}); err == nil {
 		t.Fatal("the third lost answer was taken as success")
 	}
+	expireLeases(h, inst)
 	if err := restarted.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "webhook_secret", Version: version}); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +163,8 @@ func TestRotationResponseLost(t *testing.T) {
 	if h.auditCount(audit.AppCredentialRotated) != 1 {
 		t.Fatal("activation not audited")
 	}
-	// Cleanup keeps it until retire_at, then deletes it.
+	// Cleanup keeps it until retire_at; then it no longer verifies, but is
+	// kept for a week to detect drift, and deleted after.
 	if _, err := h.svc.Cleanup(h.ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -164,8 +175,19 @@ func TestRotationResponseLost(t *testing.T) {
 	if _, err := h.svc.Cleanup(h.ctx); err != nil {
 		t.Fatal(err)
 	}
+	if h.count(`SELECT count(*) FROM app_credentials WHERE instance_id = $1 AND name = 'webhook_secret' AND version = 1`, inst.ID) != 1 {
+		t.Fatal("a retired version was deleted before drift detection ends")
+	}
+	body = prBody("acme", 201)
+	if _, err := h.svc.ReceiveWebhook(h.ctx, inst.ID, delivery(old, body, "after-overlap", "pull_request"), body); !errors.Is(err, apps.ErrWebhookSignature) {
+		t.Fatalf("a retired secret verified after its overlap: %v", err)
+	}
+	h.exec(`UPDATE app_credentials SET retire_at = now() - interval '8 days' WHERE state = 'retiring'`)
+	if _, err := h.svc.Cleanup(h.ctx); err != nil {
+		t.Fatal(err)
+	}
 	if h.count(`SELECT count(*) FROM app_credentials WHERE instance_id = $1 AND name = 'webhook_secret' AND version = 1`, inst.ID) != 0 {
-		t.Fatal("a retired version was kept")
+		t.Fatal("a retired version was kept past drift detection")
 	}
 }
 
@@ -210,14 +232,22 @@ func TestRotationAbandon(t *testing.T) {
 	if err := h.svc.AbandonRotation(h.ctx, audit.System, inst.ID, "webhook_secret"); err != nil {
 		t.Fatal(err)
 	}
-	h.tp.LoseResponses("webhook_secret", 1) // the first re-apply's answer is lost too
 	abandon := apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "webhook_secret", Version: version, Abandon: true}
+	// The lost forward call may still land at the provider: the re-apply
+	// waits for its lease.
+	calls := len(h.tp.Calls())
+	if err := h.svc.RunRotateCredential(h.ctx, abandon); err == nil || len(h.tp.Calls()) != calls {
+		t.Fatalf("the re-apply did not wait for the forward call's lease: %v", err)
+	}
+	expireLeases(h, inst)
+	h.tp.LoseResponses("webhook_secret", 1) // the first re-apply's answer is lost too
 	if err := h.svc.RunRotateCredential(h.ctx, abandon); err == nil {
 		t.Fatal("abandon discarded before the active value was acknowledged")
 	}
 	if s := h.credState(inst, version); s != "abandoning" {
 		t.Fatalf("candidate = %s, want abandoning (still verifying, not discarded)", s)
 	}
+	expireLeases(h, inst) // the re-apply's answer was lost; its retry follows the lease
 	if err := h.svc.RunRotateCredential(h.ctx, abandon); err != nil {
 		t.Fatal(err)
 	}

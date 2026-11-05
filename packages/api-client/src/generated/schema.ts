@@ -1337,6 +1337,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/github/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Connect a GitHub organization through an App manifest or manual setup */
+        post: operations["beginGitHubConnect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/github/connect/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Consume one session-bound GitHub connection callback */
+        post: operations["completeGitHubConnect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/credentials/{credentialName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+                /** @description A credential name declared by the instance's provider. */
+                credentialName: components["parameters"]["CredentialName"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** Stage and verify a replacement GitHub App private key */
+        put: operations["uploadAppCredential"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon": {
         parameters: {
             query?: never;
@@ -1354,6 +1410,37 @@ export interface paths {
          *     rotation in progress: 409, `no_rotation`.
          */
         post: operations["abandonAppCredentialRotation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Force the outcome of an uncertain rotation
+         * @description Records, without evidence from the provider, which value it uses:
+         *     `active` makes the uncertain or cancelling version the active one,
+         *     `discarded` drops it and keeps the current value. Only for a rotation
+         *     whose outcome cannot be established otherwise (rotate retries, proof
+         *     by use, cancelling): a wrong choice breaks the provider's use of the
+         *     credential until it is rotated again. Audited, and shown as an
+         *     admin's resolution, never as verified. 409 `no_rotation` without a
+         *     rotation; 409 `rotation_in_progress` while a provider call may still
+         *     be running; 409 `invalid_state` for a version never handed to the
+         *     provider (cancel it instead); 409 `candidate_value_unknown` for
+         *     `active` when the provider minted the new value and the answer
+         *     carrying it was lost (only `discarded` is possible).
+         */
+        post: operations["resolveAppCredentialRotation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2415,6 +2502,19 @@ export interface components {
             /** @example alex@example.com */
             to: string;
         };
+        GitHubConnectStep: {
+            /** Format: uuid */
+            instanceId: string;
+            done: boolean;
+            name?: string;
+            /** @enum {string} */
+            method?: "GET" | "POST";
+            /** Format: uri */
+            url?: string;
+            form?: {
+                [key: string]: string;
+            };
+        };
         /**
          * @description `managed`: Orglane runs the service through the agent; `connected`: an external service Orglane talks to.
          * @enum {string}
@@ -2604,6 +2704,17 @@ export interface components {
             /** Format: date-time */
             retireAt?: string;
         };
+        AppCredentialRotationStatus: {
+            name: string;
+            version: number;
+            /**
+             * @description `activated_by_admin` and `discarded_by_admin` are an admin's forced
+             *     resolution, recorded without evidence from the provider; they are
+             *     not verification.
+             * @enum {string}
+             */
+            state: "accepted" | "verifying" | "failed" | "verified" | "cancelling" | "cancelled" | "activated_by_admin" | "discarded_by_admin";
+        };
         AppProvisioningCounts: {
             queued: number;
             done: number;
@@ -2619,6 +2730,15 @@ export interface components {
             /** @description The last 10 agent operations (managed instances). */
             operations: components["schemas"]["AppOperation"][];
             credentials: components["schemas"]["AppCredentialVersion"][];
+            /** @description Latest staged rotation per credential, including safe terminal outcomes retained after candidate cleanup. Never contains key values or provider diagnostics. */
+            credentialRotations: components["schemas"]["AppCredentialRotationStatus"][];
+            /** @description Older credential versions a delivery was signed with after they stopped being in use, since the current version became active. Rotate the credential to recover. Never contains values. */
+            credentialDrift: {
+                name: string;
+                version: number;
+                /** Format: date-time */
+                detectedAt: string;
+            }[];
             /** @description A credential rotation has been uncertain for more than 24 hours. */
             rotationStuck: boolean;
             unmanagedAccountCount: number;
@@ -4844,6 +4964,119 @@ export interface operations {
             500: components["responses"]["InternalError"];
         };
     };
+    beginGitHubConnect: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    organization: string;
+                    key: string;
+                    /**
+                     * Format: uuid
+                     * @description Resume installation of this connecting instance; organization and key must match.
+                     */
+                    instanceId?: string;
+                    manual?: {
+                        appId: string;
+                        clientId: string;
+                        privateKey: string;
+                        clientSecret: string;
+                        webhookSecret: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description The next browser step; credentials are never returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubConnectStep"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    completeGitHubConnect: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    state: string;
+                    code?: string;
+                    installationId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Next installation redirect or completed connection. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubConnectStep"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    uploadAppCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+                /** @description A credential name declared by the instance's provider. */
+                credentialName: components["parameters"]["CredentialName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    value: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Replacement staged; active key remains until verified. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
     abandonAppCredentialRotation: {
         parameters: {
             query?: never;
@@ -4865,6 +5098,42 @@ export interface operations {
                 };
                 content?: never;
             };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    resolveAppCredentialRotation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+                /** @description A credential name declared by the instance's provider. */
+                credentialName: components["parameters"]["CredentialName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    resolution: "active" | "discarded";
+                };
+            };
+        };
+        responses: {
+            /** @description The rotation was resolved. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];

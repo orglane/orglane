@@ -3,18 +3,24 @@
 package web_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/orglane/orglane/core/internal/apps"
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/authz"
+	"github.com/orglane/orglane/core/internal/crypto"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/providers/testprovider"
 )
@@ -75,7 +81,9 @@ func TestAppsAPIPermissions(t *testing.T) {
 		{"GET", base + "/operations", nil, authz.AppsManage, 200},
 		{"GET", "/api/v1/apps/instances/" + uuid.NewString() + "/operations", nil, authz.AppsManage, 404},
 		{"POST", base + "/credentials/webhook_secret/rotate", nil, authz.AppsManage, 202},
-		{"POST", base + "/credentials/api_token/abandon", nil, authz.AppsManage, 409}, // no rotation
+		{"POST", base + "/credentials/api_token/abandon", nil, authz.AppsManage, 409},                                       // no rotation
+		{"POST", base + "/credentials/api_token/resolve", map[string]any{"resolution": "discarded"}, authz.AppsManage, 409}, // no rotation
+		{"POST", base + "/credentials/api_token/resolve", map[string]any{"resolution": "maybe"}, authz.AppsManage, 400},
 		{"GET", "/api/v1/apps/bindings", nil, authz.AppsManage, 200},
 		{"PUT", "/api/v1/apps/bindings/code", map[string]any{"instanceId": inst.ID}, authz.AppsManage, 200},
 		{"GET", base + "/team-mappings", nil, authz.AppsManage, 200},
@@ -188,5 +196,208 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met in time")
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// No GitHub API is mocked here: manifest preparation and invalid callbacks do
+// not contact GitHub. The real protocol is exercised in providers/github live tests.
+func TestGitHubConnectPermissionsAndState(t *testing.T) {
+	e := newEnv(t)
+	owner := e.browser()
+	ownerID := e.setupOwner(owner).Person.ID
+	adminPerson := e.createMember("github-admin")
+	if err := e.stack.Identity.AssignRole(t.Context(), audit.System, adminPerson.ID, authz.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	admin := e.browser()
+	admin.signIn("github-admin@acme.test")
+	e.createMember("github-member")
+	member := e.browser()
+	member.signIn("github-member@acme.test")
+	anonymous := e.browser()
+	start := "/api/v1/apps/github/connect"
+	complete := start + "/complete"
+	for _, op := range []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", start, map[string]any{"organization": "orglane-test", "key": "github-denied"}},
+		{"POST", complete, map[string]any{"state": "ols_unknown", "code": "code"}},
+		{"PUT", "/api/v1/apps/instances/" + uuid.NewString() + "/credentials/app_private_key", map[string]any{"value": "fake"}},
+	} {
+		expectStatusT(t, member.req(op.method, op.path, op.body), http.StatusForbidden)
+		r := anonymous.req(op.method, op.path, op.body)
+		if r.StatusCode != 401 && r.StatusCode != 403 {
+			t.Fatalf("anonymous status %d", r.StatusCode)
+		}
+	}
+	for i, caller := range []*browser{owner, admin} {
+		key := []string{"github-owner", "github-admin"}[i]
+		r := caller.req("POST", start, map[string]any{"organization": "orglane-test", "key": key})
+		expectStatusT(t, r, 200)
+		var reply struct {
+			InstanceID uuid.UUID         `json:"instanceId"`
+			URL        string            `json:"url"`
+			Form       map[string]string `json:"form"`
+		}
+		r.json(t, &reply)
+		u, err := url.Parse(reply.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := u.Query().Get("state")
+		if !strings.HasPrefix(state, "ols_") || reply.Form["manifest"] == "" {
+			t.Fatal("missing manifest/state")
+		}
+		var stored []byte
+		var person uuid.UUID
+		var step string
+		if err = e.pool.QueryRow(t.Context(), "SELECT state_hash,person_id,step FROM app_oauth_states WHERE instance_id=$1 AND consumed_at IS NULL", reply.InstanceID).Scan(&stored, &person, &step); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(stored, crypto.HashToken(state)) || bytes.Equal(stored, []byte(state)) || step != "create_app" || (i == 0 && person != ownerID) {
+			t.Fatal("state not hashed and bound to starter")
+		}
+		callback := map[string]any{"state": state, "installationId": "789"} // wrong step: rejected before any external request
+		other := admin
+		if i == 1 {
+			other = owner
+		}
+		expectStatusT(t, other.req("POST", complete, callback), 409)
+		// Same person, another session must not consume the starter's state.
+		another := e.browser()
+		if i == 0 {
+			another.signIn(ownerEmail)
+		} else {
+			another.signIn("github-admin@acme.test")
+		}
+		expectStatusT(t, another.req("POST", complete, callback), 409)
+		var consumed *time.Time
+		if err = e.pool.QueryRow(t.Context(), "SELECT consumed_at FROM app_oauth_states WHERE state_hash=$1", crypto.HashToken(state)).Scan(&consumed); err != nil || consumed != nil {
+			t.Fatal("foreign browser consumed state", err)
+		}
+		expectStatusT(t, caller.req("POST", complete, callback), 409)
+		expectStatusT(t, caller.req("POST", complete, map[string]any{"state": state, "code": "unused"}), 409)
+		// Resume creates a new state, invalidates older states, and keeps the instance.
+		resumed := caller.req("POST", start, map[string]any{"organization": "orglane-test", "key": key, "instanceId": reply.InstanceID})
+		expectStatusT(t, resumed, 200)
+		var next struct {
+			URL string `json:"url"`
+		}
+		resumed.json(t, &next)
+		nu, _ := url.Parse(next.URL)
+		nextState := nu.Query().Get("state")
+		if _, err = e.pool.Exec(t.Context(), "UPDATE app_oauth_states SET expires_at=now()-interval '1 second',created_at=now()-interval '2 hours' WHERE state_hash=$1", crypto.HashToken(nextState)); err != nil {
+			t.Fatal(err)
+		}
+		expectStatusT(t, caller.req("POST", complete, map[string]any{"state": nextState, "code": "unused"}), 409)
+		expectStatusT(t, caller.req("POST", start, map[string]any{"organization": "another-org", "key": key, "instanceId": reply.InstanceID}), 409)
+		expectStatusT(t, caller.req("PATCH", "/api/v1/apps/instances/"+reply.InstanceID.String(), map[string]any{"settings": map[string]any{"app_id": "unverified"}}), 400)
+		expectStatusT(t, caller.req("PUT", "/api/v1/apps/instances/"+uuid.NewString()+"/credentials/app_private_key", map[string]any{"value": "fake"}), 404)
+	}
+	expectStatusT(t, owner.req("POST", start, map[string]any{"organization": "https://evil.test", "key": "github-bad"}), 400)
+}
+
+// This checks the core's encrypted upload staging and permissions against real
+// PostgreSQL. No background worker starts; an explicit real-adapter call rejects
+// invalid PEM locally, without substituting or contacting a GitHub API. Successful
+// provider-side verification still belongs to real-GitHub acceptance.
+func TestGitHubPrivateKeyUploadStaysStaged(t *testing.T) {
+	e := newEnv(t)
+	owner := e.browser()
+	e.setupOwner(owner)
+	adminPerson := e.createMember("key-admin")
+	if err := e.stack.Identity.AssignRole(t.Context(), audit.System, adminPerson.ID, authz.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	admin := e.browser()
+	admin.signIn("key-admin@acme.test")
+	rc, err := river.NewClient(riverpgxv5.New(e.pool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.stack.Apps.SetQueue(rc) // insert-only; provider calls never run in this staging test
+	oldValue := []byte("old-private-key-staging-fixture")
+	replacement := "replacement-private-key-staging-fixture"
+	for i, caller := range []*browser{owner, admin} {
+		key := []string{"github-owner-key", "github-admin-key"}[i]
+		inst, err := e.stack.Apps.CreateInstance(t.Context(), audit.System, apps.NewInstance{Provider: "github", Key: key, State: apps.StateActive, Settings: map[string]any{"organization": "orglane-test", "organization_id": "123", "app_id": "456"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = e.stack.Apps.StoreCredential(t.Context(), audit.System, inst.ID, "app_private_key", oldValue); err != nil {
+			t.Fatal(err)
+		}
+		endpoint := "/api/v1/apps/instances/" + inst.ID.String() + "/credentials/app_private_key"
+		expectStatusT(t, caller.req("PUT", endpoint, map[string]any{"value": replacement}), 202)
+		expectStatusT(t, caller.req("PUT", endpoint, map[string]any{"value": replacement}), 409)
+		var active, pending int
+		var ciphertext []byte
+		if err = e.pool.QueryRow(t.Context(), "SELECT count(*) FILTER(WHERE state='active'),count(*) FILTER(WHERE state='pending') FROM app_credentials WHERE instance_id=$1 AND name='app_private_key'", inst.ID).Scan(&active, &pending); err != nil {
+			t.Fatal(err)
+		}
+		if active != 1 || pending != 1 {
+			t.Fatalf("upload retired the active key before verification: active=%d pending=%d", active, pending)
+		}
+		if err = e.pool.QueryRow(t.Context(), "SELECT ciphertext FROM app_credentials WHERE instance_id=$1 AND name='app_private_key' AND state='pending'", inst.ID).Scan(&ciphertext); err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(ciphertext, []byte(replacement)) {
+			t.Fatal("replacement key was stored as plaintext")
+		}
+		detail := caller.req("GET", "/api/v1/apps/instances/"+inst.ID.String(), nil)
+		expectStatusT(t, detail, 200)
+		if bytes.Contains(detail.body, oldValue) || bytes.Contains(detail.body, []byte(replacement)) {
+			t.Fatal("credentials leaked through instance detail")
+		}
+		assertRotation := func(want string) {
+			t.Helper()
+			r := caller.req("GET", "/api/v1/apps/instances/"+inst.ID.String(), nil)
+			expectStatusT(t, r, 200)
+			var result struct {
+				Rotations []struct {
+					Name, State string
+					Version     int
+				} `json:"credentialRotations"`
+			}
+			if err := json.Unmarshal(r.body, &result); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Rotations) != 1 || result.Rotations[0].Name != "app_private_key" || result.Rotations[0].Version != 2 || result.Rotations[0].State != want {
+				t.Fatalf("safe rotation outcome after reload = %s, want %s", r.body, want)
+			}
+			if bytes.Contains(r.body, oldValue) || bytes.Contains(r.body, []byte(replacement)) {
+				t.Fatal("rotation result leaked a key")
+			}
+		}
+		assertRotation("accepted")
+		if _, err = e.pool.Exec(t.Context(), "UPDATE app_credentials SET state='uncertain' WHERE instance_id=$1 AND version=2", inst.ID); err != nil {
+			t.Fatal(err)
+		}
+		assertRotation("verifying")
+		// Real adapter rejects invalid PEM locally; no provider transport is mocked.
+		if err = e.stack.Apps.RunRotateCredential(t.Context(), apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "app_private_key", Version: 2}); err != nil {
+			t.Fatal(err)
+		}
+		assertRotation("failed")
+		// The terminal outcome must survive ciphertext retention cleanup and reload.
+		if _, err = e.pool.Exec(t.Context(), "DELETE FROM app_credentials WHERE instance_id=$1 AND state='discarded'", inst.ID); err != nil {
+			t.Fatal(err)
+		}
+		assertRotation("failed")
+		if err = e.pool.QueryRow(t.Context(), "SELECT count(*) FROM app_credentials WHERE instance_id=$1 AND version=1 AND state='active'", inst.ID).Scan(&active); err != nil || active != 1 {
+			t.Fatalf("rejection replaced the working key: %d %v", active, err)
+		}
+		// Cleanup permits version reuse; a new acceptance must supersede the old failure.
+		expectStatusT(t, caller.req("PUT", endpoint, map[string]any{"value": replacement}), 202)
+		assertRotation("accepted")
+
+	}
+	var args string
+	if err = e.pool.QueryRow(t.Context(), "SELECT string_agg(args::text,',') FROM river_job WHERE kind='orglane.apps.rotate_credential'").Scan(&args); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(args, replacement) || strings.Contains(args, string(oldValue)) {
+		t.Fatal("credential value was put in queue arguments")
 	}
 }

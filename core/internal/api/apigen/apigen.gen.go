@@ -94,6 +94,42 @@ func (e AppAccessPolicy) Valid() bool {
 	}
 }
 
+// Defines values for AppCredentialRotationStatusState.
+const (
+	AppCredentialRotationStatusStateAccepted         AppCredentialRotationStatusState = "accepted"
+	AppCredentialRotationStatusStateActivatedByAdmin AppCredentialRotationStatusState = "activated_by_admin"
+	AppCredentialRotationStatusStateCancelled        AppCredentialRotationStatusState = "cancelled"
+	AppCredentialRotationStatusStateCancelling       AppCredentialRotationStatusState = "cancelling"
+	AppCredentialRotationStatusStateDiscardedByAdmin AppCredentialRotationStatusState = "discarded_by_admin"
+	AppCredentialRotationStatusStateFailed           AppCredentialRotationStatusState = "failed"
+	AppCredentialRotationStatusStateVerified         AppCredentialRotationStatusState = "verified"
+	AppCredentialRotationStatusStateVerifying        AppCredentialRotationStatusState = "verifying"
+)
+
+// Valid indicates whether the value is a known member of the AppCredentialRotationStatusState enum.
+func (e AppCredentialRotationStatusState) Valid() bool {
+	switch e {
+	case AppCredentialRotationStatusStateAccepted:
+		return true
+	case AppCredentialRotationStatusStateActivatedByAdmin:
+		return true
+	case AppCredentialRotationStatusStateCancelled:
+		return true
+	case AppCredentialRotationStatusStateCancelling:
+		return true
+	case AppCredentialRotationStatusStateDiscardedByAdmin:
+		return true
+	case AppCredentialRotationStatusStateFailed:
+		return true
+	case AppCredentialRotationStatusStateVerified:
+		return true
+	case AppCredentialRotationStatusStateVerifying:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AppCredentialSpecSource.
 const (
 	Generated AppCredentialSpecSource = "generated"
@@ -487,6 +523,24 @@ func (e EmailTLSMode) Valid() bool {
 	}
 }
 
+// Defines values for GitHubConnectStepMethod.
+const (
+	GET  GitHubConnectStepMethod = "GET"
+	POST GitHubConnectStepMethod = "POST"
+)
+
+// Valid indicates whether the value is a known member of the GitHubConnectStepMethod enum.
+func (e GitHubConnectStepMethod) Valid() bool {
+	switch e {
+	case GET:
+		return true
+	case POST:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for HealthStatus.
 const (
 	HealthStatusOk          HealthStatus = "ok"
@@ -871,6 +925,24 @@ func (e TeamRole) Valid() bool {
 	}
 }
 
+// Defines values for ResolveAppCredentialRotationJSONBodyResolution.
+const (
+	ResolveAppCredentialRotationJSONBodyResolutionActive    ResolveAppCredentialRotationJSONBodyResolution = "active"
+	ResolveAppCredentialRotationJSONBodyResolutionDiscarded ResolveAppCredentialRotationJSONBodyResolution = "discarded"
+)
+
+// Valid indicates whether the value is a known member of the ResolveAppCredentialRotationJSONBodyResolution enum.
+func (e ResolveAppCredentialRotationJSONBodyResolution) Valid() bool {
+	switch e {
+	case ResolveAppCredentialRotationJSONBodyResolutionActive:
+		return true
+	case ResolveAppCredentialRotationJSONBodyResolutionDiscarded:
+		return true
+	default:
+		return false
+	}
+}
+
 // AcceptInvitationRequest defines model for AcceptInvitationRequest.
 type AcceptInvitationRequest struct {
 	// Password At least 12 characters.
@@ -944,6 +1016,22 @@ type AppCredentialRotation struct {
 	Name    string `json:"name"`
 	Version int    `json:"version"`
 }
+
+// AppCredentialRotationStatus defines model for AppCredentialRotationStatus.
+type AppCredentialRotationStatus struct {
+	Name string `json:"name"`
+
+	// State `activated_by_admin` and `discarded_by_admin` are an admin's forced
+	// resolution, recorded without evidence from the provider; they are
+	// not verification.
+	State   AppCredentialRotationStatusState `json:"state"`
+	Version int                              `json:"version"`
+}
+
+// AppCredentialRotationStatusState `activated_by_admin` and `discarded_by_admin` are an admin's forced
+// resolution, recorded without evidence from the provider; they are
+// not verification.
+type AppCredentialRotationStatusState string
 
 // AppCredentialSpec defines model for AppCredentialSpec.
 type AppCredentialSpec struct {
@@ -1068,8 +1156,18 @@ type AppInstanceDetail struct {
 		Capability string `json:"capability"`
 		IsDefault  bool   `json:"isDefault"`
 	} `json:"bindings"`
-	Credentials []AppCredentialVersion `json:"credentials"`
-	Instance    AppInstance            `json:"instance"`
+
+	// CredentialDrift Older credential versions a delivery was signed with after they stopped being in use, since the current version became active. Rotate the credential to recover. Never contains values.
+	CredentialDrift []struct {
+		DetectedAt time.Time `json:"detectedAt"`
+		Name       string    `json:"name"`
+		Version    int       `json:"version"`
+	} `json:"credentialDrift"`
+
+	// CredentialRotations Latest staged rotation per credential, including safe terminal outcomes retained after candidate cleanup. Never contains key values or provider diagnostics.
+	CredentialRotations []AppCredentialRotationStatus `json:"credentialRotations"`
+	Credentials         []AppCredentialVersion        `json:"credentials"`
+	Instance            AppInstance                   `json:"instance"`
 
 	// Operations The last 10 agent operations (managed instances).
 	Operations   []AppOperation        `json:"operations"`
@@ -1434,6 +1532,19 @@ type EmailSettingsInput struct {
 
 // EmailTLSMode `starttls` (port 587) upgrades the connection and refuses to continue without TLS; `tls` (port 465) connects with TLS; `none` sends in the clear (a relay on the same host or trusted network only).
 type EmailTLSMode string
+
+// GitHubConnectStep defines model for GitHubConnectStep.
+type GitHubConnectStep struct {
+	Done       bool                     `json:"done"`
+	Form       *map[string]string       `json:"form,omitempty"`
+	InstanceId openapi_types.UUID       `json:"instanceId"`
+	Method     *GitHubConnectStepMethod `json:"method,omitempty"`
+	Name       *string                  `json:"name,omitempty"`
+	Url        *string                  `json:"url,omitempty"`
+}
+
+// GitHubConnectStepMethod defines model for GitHubConnectStep.Method.
+type GitHubConnectStepMethod string
 
 // Health defines model for Health.
 type Health struct {
@@ -2454,6 +2565,41 @@ type TooManyRequests = Problem
 // Unauthorized RFC 9457 problem details.
 type Unauthorized = Problem
 
+// BeginGitHubConnectJSONBody defines parameters for BeginGitHubConnect.
+type BeginGitHubConnectJSONBody struct {
+	// InstanceId Resume installation of this connecting instance; organization and key must match.
+	InstanceId *openapi_types.UUID `json:"instanceId,omitempty"`
+	Key        string              `json:"key"`
+	Manual     *struct {
+		AppId         string  `json:"appId"`
+		ClientId      string  `json:"clientId"`
+		ClientSecret  *string `json:"clientSecret,omitempty"`
+		PrivateKey    *string `json:"privateKey,omitempty"`
+		WebhookSecret *string `json:"webhookSecret,omitempty"`
+	} `json:"manual,omitempty"`
+	Organization string `json:"organization"`
+}
+
+// CompleteGitHubConnectJSONBody defines parameters for CompleteGitHubConnect.
+type CompleteGitHubConnectJSONBody struct {
+	Code           *string `json:"code,omitempty"`
+	InstallationId *string `json:"installationId,omitempty"`
+	State          string  `json:"state"`
+}
+
+// UploadAppCredentialJSONBody defines parameters for UploadAppCredential.
+type UploadAppCredentialJSONBody struct {
+	Value *string `json:"value,omitempty"`
+}
+
+// ResolveAppCredentialRotationJSONBody defines parameters for ResolveAppCredentialRotation.
+type ResolveAppCredentialRotationJSONBody struct {
+	Resolution ResolveAppCredentialRotationJSONBodyResolution `json:"resolution"`
+}
+
+// ResolveAppCredentialRotationJSONBodyResolution defines parameters for ResolveAppCredentialRotation.
+type ResolveAppCredentialRotationJSONBodyResolution string
+
 // ListAppInstanceOperationsParams defines parameters for ListAppInstanceOperations.
 type ListAppInstanceOperationsParams struct {
 	Limit  *int `form:"limit,omitempty" json:"limit,omitempty"`
@@ -2506,8 +2652,20 @@ type ListTeamsParams struct {
 // SetDefaultAppBindingJSONRequestBody defines body for SetDefaultAppBinding for application/json ContentType.
 type SetDefaultAppBindingJSONRequestBody = SetDefaultAppBindingRequest
 
+// BeginGitHubConnectJSONRequestBody defines body for BeginGitHubConnect for application/json ContentType.
+type BeginGitHubConnectJSONRequestBody BeginGitHubConnectJSONBody
+
+// CompleteGitHubConnectJSONRequestBody defines body for CompleteGitHubConnect for application/json ContentType.
+type CompleteGitHubConnectJSONRequestBody CompleteGitHubConnectJSONBody
+
 // UpdateAppInstanceJSONRequestBody defines body for UpdateAppInstance for application/json ContentType.
 type UpdateAppInstanceJSONRequestBody = UpdateAppInstanceRequest
+
+// UploadAppCredentialJSONRequestBody defines body for UploadAppCredential for application/json ContentType.
+type UploadAppCredentialJSONRequestBody UploadAppCredentialJSONBody
+
+// ResolveAppCredentialRotationJSONRequestBody defines body for ResolveAppCredentialRotation for application/json ContentType.
+type ResolveAppCredentialRotationJSONRequestBody ResolveAppCredentialRotationJSONBody
 
 // ConfirmAppRemovalBatchJSONRequestBody defines body for ConfirmAppRemovalBatch for application/json ContentType.
 type ConfirmAppRemovalBatchJSONRequestBody = ConfirmAppRemovalBatchRequest
@@ -2586,6 +2744,12 @@ type ServerInterface interface {
 	// SetDefaultAppBinding Set the default instance of a capability
 	// (PUT /api/v1/apps/bindings/{capability})
 	SetDefaultAppBinding(w http.ResponseWriter, r *http.Request, capability string)
+	// BeginGitHubConnect Connect a GitHub organization through an App manifest or manual setup
+	// (POST /api/v1/apps/github/connect)
+	BeginGitHubConnect(w http.ResponseWriter, r *http.Request)
+	// CompleteGitHubConnect Consume one session-bound GitHub connection callback
+	// (POST /api/v1/apps/github/connect/complete)
+	CompleteGitHubConnect(w http.ResponseWriter, r *http.Request)
 	// ListAppInstances App instances
 	// (GET /api/v1/apps/instances)
 	ListAppInstances(w http.ResponseWriter, r *http.Request)
@@ -2595,9 +2759,15 @@ type ServerInterface interface {
 	// UpdateAppInstance Change an app instance
 	// (PATCH /api/v1/apps/instances/{instanceId})
 	UpdateAppInstance(w http.ResponseWriter, r *http.Request, instanceId InstanceId)
+	// UploadAppCredential Stage and verify a replacement GitHub App private key
+	// (PUT /api/v1/apps/instances/{instanceId}/credentials/{credentialName})
+	UploadAppCredential(w http.ResponseWriter, r *http.Request, instanceId InstanceId, credentialName CredentialName)
 	// AbandonAppCredentialRotation Abandon a rotation
 	// (POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon)
 	AbandonAppCredentialRotation(w http.ResponseWriter, r *http.Request, instanceId InstanceId, credentialName CredentialName)
+	// ResolveAppCredentialRotation Force the outcome of an uncertain rotation
+	// (POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/resolve)
+	ResolveAppCredentialRotation(w http.ResponseWriter, r *http.Request, instanceId InstanceId, credentialName CredentialName)
 	// RotateAppCredential Rotate a credential
 	// (POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate)
 	RotateAppCredential(w http.ResponseWriter, r *http.Request, instanceId InstanceId, credentialName CredentialName)
@@ -2894,6 +3064,34 @@ func (siw *ServerInterfaceWrapper) SetDefaultAppBinding(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// BeginGitHubConnect operation middleware
+func (siw *ServerInterfaceWrapper) BeginGitHubConnect(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.BeginGitHubConnect(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CompleteGitHubConnect operation middleware
+func (siw *ServerInterfaceWrapper) CompleteGitHubConnect(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CompleteGitHubConnect(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListAppInstances operation middleware
 func (siw *ServerInterfaceWrapper) ListAppInstances(w http.ResponseWriter, r *http.Request) {
 
@@ -2960,6 +3158,41 @@ func (siw *ServerInterfaceWrapper) UpdateAppInstance(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
+// UploadAppCredential operation middleware
+func (siw *ServerInterfaceWrapper) UploadAppCredential(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "instanceId" -------------
+	var instanceId InstanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "instanceId", r.PathValue("instanceId"), &instanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "instanceId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "credentialName" -------------
+	var credentialName CredentialName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "credentialName", r.PathValue("credentialName"), &credentialName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "credentialName", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UploadAppCredential(w, r, instanceId, credentialName)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // AbandonAppCredentialRotation operation middleware
 func (siw *ServerInterfaceWrapper) AbandonAppCredentialRotation(w http.ResponseWriter, r *http.Request) {
 
@@ -2986,6 +3219,41 @@ func (siw *ServerInterfaceWrapper) AbandonAppCredentialRotation(w http.ResponseW
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AbandonAppCredentialRotation(w, r, instanceId, credentialName)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResolveAppCredentialRotation operation middleware
+func (siw *ServerInterfaceWrapper) ResolveAppCredentialRotation(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "instanceId" -------------
+	var instanceId InstanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "instanceId", r.PathValue("instanceId"), &instanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "instanceId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "credentialName" -------------
+	var credentialName CredentialName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "credentialName", r.PathValue("credentialName"), &credentialName, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "credentialName", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveAppCredentialRotation(w, r, instanceId, credentialName)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4963,7 +5231,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/operations", wrapper.ListAppInstanceOperations)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/setup", wrapper.RetryAppInstanceSetup)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate", wrapper.RotateAppCredential)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/github/connect", wrapper.BeginGitHubConnect)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/github/connect/complete", wrapper.CompleteGitHubConnect)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}", wrapper.UploadAppCredential)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon", wrapper.AbandonAppCredentialRotation)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/resolve", wrapper.ResolveAppCredentialRotation)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/bindings", wrapper.ListAppBindings)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/v1/apps/bindings/{capability}", wrapper.SetDefaultAppBinding)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/team-mappings", wrapper.ListAppTeamMappings)
@@ -5187,6 +5459,226 @@ type SetDefaultAppBinding500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response SetDefaultAppBinding500ApplicationProblemPlusJSONResponse) VisitSetDefaultAppBindingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BeginGitHubConnectRequestObject struct {
+	Body *BeginGitHubConnectJSONRequestBody
+}
+
+type BeginGitHubConnectResponseObject interface {
+	VisitBeginGitHubConnectResponse(w http.ResponseWriter) error
+}
+
+type BeginGitHubConnect200JSONResponse GitHubConnectStep
+
+func (response BeginGitHubConnect200JSONResponse) VisitBeginGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BeginGitHubConnect400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response BeginGitHubConnect400ApplicationProblemPlusJSONResponse) VisitBeginGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BeginGitHubConnect401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response BeginGitHubConnect401ApplicationProblemPlusJSONResponse) VisitBeginGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BeginGitHubConnect403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response BeginGitHubConnect403ApplicationProblemPlusJSONResponse) VisitBeginGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BeginGitHubConnect404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response BeginGitHubConnect404ApplicationProblemPlusJSONResponse) VisitBeginGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BeginGitHubConnect409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response BeginGitHubConnect409ApplicationProblemPlusJSONResponse) VisitBeginGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BeginGitHubConnect500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response BeginGitHubConnect500ApplicationProblemPlusJSONResponse) VisitBeginGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteGitHubConnectRequestObject struct {
+	Body *CompleteGitHubConnectJSONRequestBody
+}
+
+type CompleteGitHubConnectResponseObject interface {
+	VisitCompleteGitHubConnectResponse(w http.ResponseWriter) error
+}
+
+type CompleteGitHubConnect200JSONResponse GitHubConnectStep
+
+func (response CompleteGitHubConnect200JSONResponse) VisitCompleteGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteGitHubConnect400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteGitHubConnect400ApplicationProblemPlusJSONResponse) VisitCompleteGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteGitHubConnect401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteGitHubConnect401ApplicationProblemPlusJSONResponse) VisitCompleteGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteGitHubConnect403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteGitHubConnect403ApplicationProblemPlusJSONResponse) VisitCompleteGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteGitHubConnect409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteGitHubConnect409ApplicationProblemPlusJSONResponse) VisitCompleteGitHubConnectResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteGitHubConnect500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteGitHubConnect500ApplicationProblemPlusJSONResponse) VisitCompleteGitHubConnectResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -5472,6 +5964,120 @@ func (response UpdateAppInstance500ApplicationProblemPlusJSONResponse) VisitUpda
 	return err
 }
 
+type UploadAppCredentialRequestObject struct {
+	InstanceId     InstanceId     `json:"instanceId"`
+	CredentialName CredentialName `json:"credentialName"`
+	Body           *UploadAppCredentialJSONRequestBody
+}
+
+type UploadAppCredentialResponseObject interface {
+	VisitUploadAppCredentialResponse(w http.ResponseWriter) error
+}
+
+type UploadAppCredential202Response struct {
+}
+
+func (response UploadAppCredential202Response) VisitUploadAppCredentialResponse(w http.ResponseWriter) error {
+	w.WriteHeader(202)
+	return nil
+}
+
+type UploadAppCredential400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response UploadAppCredential400ApplicationProblemPlusJSONResponse) VisitUploadAppCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadAppCredential401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response UploadAppCredential401ApplicationProblemPlusJSONResponse) VisitUploadAppCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadAppCredential403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response UploadAppCredential403ApplicationProblemPlusJSONResponse) VisitUploadAppCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadAppCredential404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response UploadAppCredential404ApplicationProblemPlusJSONResponse) VisitUploadAppCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadAppCredential409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response UploadAppCredential409ApplicationProblemPlusJSONResponse) VisitUploadAppCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadAppCredential500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response UploadAppCredential500ApplicationProblemPlusJSONResponse) VisitUploadAppCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type AbandonAppCredentialRotationRequestObject struct {
 	InstanceId     InstanceId     `json:"instanceId"`
 	CredentialName CredentialName `json:"credentialName"`
@@ -5558,6 +6164,120 @@ type AbandonAppCredentialRotation500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response AbandonAppCredentialRotation500ApplicationProblemPlusJSONResponse) VisitAbandonAppCredentialRotationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveAppCredentialRotationRequestObject struct {
+	InstanceId     InstanceId     `json:"instanceId"`
+	CredentialName CredentialName `json:"credentialName"`
+	Body           *ResolveAppCredentialRotationJSONRequestBody
+}
+
+type ResolveAppCredentialRotationResponseObject interface {
+	VisitResolveAppCredentialRotationResponse(w http.ResponseWriter) error
+}
+
+type ResolveAppCredentialRotation204Response struct {
+}
+
+func (response ResolveAppCredentialRotation204Response) VisitResolveAppCredentialRotationResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type ResolveAppCredentialRotation400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ResolveAppCredentialRotation400ApplicationProblemPlusJSONResponse) VisitResolveAppCredentialRotationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveAppCredentialRotation401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ResolveAppCredentialRotation401ApplicationProblemPlusJSONResponse) VisitResolveAppCredentialRotationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveAppCredentialRotation403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ResolveAppCredentialRotation403ApplicationProblemPlusJSONResponse) VisitResolveAppCredentialRotationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveAppCredentialRotation404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ResolveAppCredentialRotation404ApplicationProblemPlusJSONResponse) VisitResolveAppCredentialRotationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveAppCredentialRotation409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response ResolveAppCredentialRotation409ApplicationProblemPlusJSONResponse) VisitResolveAppCredentialRotationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveAppCredentialRotation500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ResolveAppCredentialRotation500ApplicationProblemPlusJSONResponse) VisitResolveAppCredentialRotationResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -12219,6 +12939,12 @@ type StrictServerInterface interface {
 	// SetDefaultAppBinding Set the default instance of a capability
 	// (PUT /api/v1/apps/bindings/{capability})
 	SetDefaultAppBinding(ctx context.Context, request SetDefaultAppBindingRequestObject) (SetDefaultAppBindingResponseObject, error)
+	// BeginGitHubConnect Connect a GitHub organization through an App manifest or manual setup
+	// (POST /api/v1/apps/github/connect)
+	BeginGitHubConnect(ctx context.Context, request BeginGitHubConnectRequestObject) (BeginGitHubConnectResponseObject, error)
+	// CompleteGitHubConnect Consume one session-bound GitHub connection callback
+	// (POST /api/v1/apps/github/connect/complete)
+	CompleteGitHubConnect(ctx context.Context, request CompleteGitHubConnectRequestObject) (CompleteGitHubConnectResponseObject, error)
 	// ListAppInstances App instances
 	// (GET /api/v1/apps/instances)
 	ListAppInstances(ctx context.Context, request ListAppInstancesRequestObject) (ListAppInstancesResponseObject, error)
@@ -12228,9 +12954,15 @@ type StrictServerInterface interface {
 	// UpdateAppInstance Change an app instance
 	// (PATCH /api/v1/apps/instances/{instanceId})
 	UpdateAppInstance(ctx context.Context, request UpdateAppInstanceRequestObject) (UpdateAppInstanceResponseObject, error)
+	// UploadAppCredential Stage and verify a replacement GitHub App private key
+	// (PUT /api/v1/apps/instances/{instanceId}/credentials/{credentialName})
+	UploadAppCredential(ctx context.Context, request UploadAppCredentialRequestObject) (UploadAppCredentialResponseObject, error)
 	// AbandonAppCredentialRotation Abandon a rotation
 	// (POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon)
 	AbandonAppCredentialRotation(ctx context.Context, request AbandonAppCredentialRotationRequestObject) (AbandonAppCredentialRotationResponseObject, error)
+	// ResolveAppCredentialRotation Force the outcome of an uncertain rotation
+	// (POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/resolve)
+	ResolveAppCredentialRotation(ctx context.Context, request ResolveAppCredentialRotationRequestObject) (ResolveAppCredentialRotationResponseObject, error)
 	// RotateAppCredential Rotate a credential
 	// (POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate)
 	RotateAppCredential(ctx context.Context, request RotateAppCredentialRequestObject) (RotateAppCredentialResponseObject, error)
@@ -12584,6 +13316,68 @@ func (sh *strictHandler) SetDefaultAppBinding(w http.ResponseWriter, r *http.Req
 	}
 }
 
+// BeginGitHubConnect operation middleware
+func (sh *strictHandler) BeginGitHubConnect(w http.ResponseWriter, r *http.Request) {
+	var request BeginGitHubConnectRequestObject
+
+	var body BeginGitHubConnectJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.BeginGitHubConnect(ctx, request.(BeginGitHubConnectRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "BeginGitHubConnect")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(BeginGitHubConnectResponseObject); ok {
+		if err := validResponse.VisitBeginGitHubConnectResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CompleteGitHubConnect operation middleware
+func (sh *strictHandler) CompleteGitHubConnect(w http.ResponseWriter, r *http.Request) {
+	var request CompleteGitHubConnectRequestObject
+
+	var body CompleteGitHubConnectJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CompleteGitHubConnect(ctx, request.(CompleteGitHubConnectRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CompleteGitHubConnect")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CompleteGitHubConnectResponseObject); ok {
+		if err := validResponse.VisitCompleteGitHubConnectResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListAppInstances operation middleware
 func (sh *strictHandler) ListAppInstances(w http.ResponseWriter, r *http.Request) {
 	var request ListAppInstancesRequestObject
@@ -12667,6 +13461,40 @@ func (sh *strictHandler) UpdateAppInstance(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// UploadAppCredential operation middleware
+func (sh *strictHandler) UploadAppCredential(w http.ResponseWriter, r *http.Request, instanceId InstanceId, credentialName CredentialName) {
+	var request UploadAppCredentialRequestObject
+
+	request.InstanceId = instanceId
+	request.CredentialName = credentialName
+
+	var body UploadAppCredentialJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UploadAppCredential(ctx, request.(UploadAppCredentialRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UploadAppCredential")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UploadAppCredentialResponseObject); ok {
+		if err := validResponse.VisitUploadAppCredentialResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // AbandonAppCredentialRotation operation middleware
 func (sh *strictHandler) AbandonAppCredentialRotation(w http.ResponseWriter, r *http.Request, instanceId InstanceId, credentialName CredentialName) {
 	var request AbandonAppCredentialRotationRequestObject
@@ -12687,6 +13515,40 @@ func (sh *strictHandler) AbandonAppCredentialRotation(w http.ResponseWriter, r *
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(AbandonAppCredentialRotationResponseObject); ok {
 		if err := validResponse.VisitAbandonAppCredentialRotationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResolveAppCredentialRotation operation middleware
+func (sh *strictHandler) ResolveAppCredentialRotation(w http.ResponseWriter, r *http.Request, instanceId InstanceId, credentialName CredentialName) {
+	var request ResolveAppCredentialRotationRequestObject
+
+	request.InstanceId = instanceId
+	request.CredentialName = credentialName
+
+	var body ResolveAppCredentialRotationJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResolveAppCredentialRotation(ctx, request.(ResolveAppCredentialRotationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResolveAppCredentialRotation")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResolveAppCredentialRotationResponseObject); ok {
+		if err := validResponse.VisitResolveAppCredentialRotationResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

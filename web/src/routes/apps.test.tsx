@@ -257,6 +257,7 @@ const detailWith = (credentials: unknown[], extra: Record<string, unknown> = {})
 describe("Instance page guidance", () => {
   it("offers to cancel a stalled rotation and keep the current value", async () => {
     const abandonPath = `/api/v1/apps/instances/${instanceId}/credentials/webhook_secret/abandon`;
+    const resolvePath = `/api/v1/apps/instances/${instanceId}/credentials/webhook_secret/resolve`;
     const app = renderApp(`/settings/apps/${instanceId}`, {
       "GET /api/v1/me": { status: 200, body: admin },
       "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
@@ -305,6 +306,7 @@ describe("Instance page guidance", () => {
         },
       },
       [`POST ${abandonPath}`]: { status: 202 },
+      [`POST ${resolvePath}`]: { status: 204 },
     });
     // Failure states explain themselves; codes stay secondary.
     expect(await screen.findByText(/Waiting for the agent that runs this app/)).toBeInTheDocument();
@@ -318,6 +320,139 @@ describe("Instance page guidance", () => {
       }),
     );
     await waitFor(() => expect(app.called("POST", abandonPath)).toHaveLength(1));
+    // The last resort records an admin's finding, with its risk stated first
+    // and a confirmation naming the credential, version and consequence.
+    await app.user.click(screen.getByText("The provider's answer cannot be established"));
+    expect(screen.getByText(/Orglane does not verify your choice/)).toBeInTheDocument();
+    await app.user.click(
+      screen.getByRole("button", {
+        name: "Record that the provider uses the new value of webhook_secret",
+      }),
+    );
+    expect(
+      screen.getByText(/Make version 2 of webhook_secret the active value without verification/),
+    ).toBeInTheDocument();
+    // Cancel is focused first and sends nothing; Escape cancels too.
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+    await app.user.keyboard("{Escape}");
+    expect(screen.queryByText(/Make version 2 of webhook_secret/)).not.toBeInTheDocument();
+    await app.user.click(
+      screen.getByRole("button", {
+        name: "Record that the provider uses the current value of webhook_secret",
+      }),
+    );
+    expect(
+      screen.getByText(/Discard version 2 of webhook_secret and keep the current value/),
+    ).toBeInTheDocument();
+    await app.user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(app.called("POST", resolvePath)).toHaveLength(0);
+    await app.user.click(
+      screen.getByRole("button", {
+        name: "Record that the provider uses the current value of webhook_secret",
+      }),
+    );
+    await app.user.click(screen.getByRole("button", { name: "Record my choice" }));
+    await waitFor(() => expect(app.called("POST", resolvePath)).toHaveLength(1));
+    expect(app.called("POST", resolvePath)[0]?.body).toEqual({ resolution: "discarded" });
+  });
+
+  it("explains a forced activation refused for a value the provider minted", async () => {
+    const resolvePath = `/api/v1/apps/instances/${instanceId}/credentials/webhook_secret/resolve`;
+    const app = renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: {
+        status: 200,
+        body: detailWith([
+          {
+            name: "webhook_secret",
+            version: 1,
+            state: "active",
+            createdAt: "2026-11-01T10:00:00Z",
+          },
+          {
+            name: "webhook_secret",
+            version: 2,
+            state: "uncertain",
+            createdAt: "2026-11-01T10:00:00Z",
+          },
+        ]),
+      },
+      [`GET /api/v1/apps/instances/${instanceId}/team-mappings`]: {
+        status: 200,
+        body: { items: [] },
+      },
+      "GET /api/v1/teams": { status: 200, body: { items: [] } },
+      [`GET /api/v1/apps/instances/${instanceId}/provisioning`]: {
+        status: 200,
+        body: {
+          items: [],
+          counts: { queued: 0, done: 0, pendingEmployeeAction: 0, failed: 0 },
+          unmanagedAccounts: [],
+        },
+      },
+      [`POST ${resolvePath}`]: {
+        status: 409,
+        body: {
+          type: "about:blank",
+          title: "Conflict",
+          status: 409,
+          code: "candidate_value_unknown",
+        },
+      },
+    });
+    await app.user.click(await screen.findByText("The provider's answer cannot be established"));
+    await app.user.click(
+      screen.getByRole("button", {
+        name: "Record that the provider uses the new value of webhook_secret",
+      }),
+    );
+    await app.user.click(screen.getByRole("button", { name: "Record my choice" }));
+    expect(
+      await screen.findByText(/Orglane does not have it. It cannot become active/),
+    ).toBeVisible();
+  });
+
+  it("shows that a delivery was signed with an older secret", async () => {
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: {
+        status: 200,
+        body: {
+          ...detailWith([
+            {
+              name: "webhook_secret",
+              version: 3,
+              state: "active",
+              createdAt: "2026-11-01T10:00:00Z",
+            },
+          ]),
+          credentialDrift: [
+            { name: "webhook_secret", version: 2, detectedAt: "2026-11-02T10:00:00Z" },
+          ],
+        },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}/team-mappings`]: {
+        status: 200,
+        body: { items: [] },
+      },
+      "GET /api/v1/teams": { status: 200, body: { items: [] } },
+      [`GET /api/v1/apps/instances/${instanceId}/provisioning`]: {
+        status: 200,
+        body: {
+          items: [],
+          counts: { queued: 0, done: 0, pendingEmployeeAction: 0, failed: 0 },
+          unmanagedAccounts: [],
+        },
+      },
+    });
+    expect(
+      await screen.findByText(
+        /A delivery was signed with an older value of webhook_secret \(version 2\)/,
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Rotate webhook_secret" })).toBeVisible();
   });
 
   it("keeps refreshing after a mapping until the background work shows up", async () => {

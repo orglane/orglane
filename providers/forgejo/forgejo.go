@@ -119,7 +119,7 @@ func (*Adapter) Manifest() provider.Manifest {
 			{Name: CredentialDBPassword, Source: provider.SourceGenerated, Agent: true},
 			{Name: CredentialSecretKey, Source: provider.SourceGenerated, Agent: true},
 			{Name: CredentialAdminPassword, Source: provider.SourceGenerated, Agent: true},
-			{Name: CredentialAdminToken, Source: provider.SourceProvider, Rotatable: true, Overlap: time.Hour},
+			{Name: CredentialAdminToken, Source: provider.SourceProvider, Rotatable: true, ReadBack: true, Overlap: time.Hour},
 		},
 		Settings: []provider.SettingSpec{
 			{Name: SettingSSHPort, Type: provider.SettingInt, Min: 1024, Max: 65535, Default: DefaultSSHPort, Mutable: true},

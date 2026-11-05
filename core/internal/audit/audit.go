@@ -191,11 +191,18 @@ const (
 	// AppCredentialRotationAbandoned: an admin abandoned an uncertain
 	// candidate after the active value was re-applied.
 	AppCredentialRotationAbandoned Action = "app_credential.rotation_abandoned" //nolint:gosec // an action name, not a credential
-	AppBindingSet                  Action = "app_binding.set"
-	AppTeamMappingSet              Action = "app_team_mapping.set"
-	AppTeamMappingRemoved          Action = "app_team_mapping.removed"
-	AccountLinkVerified            Action = "account_link.verified"
-	AccountLinkRevoked             Action = "account_link.revoked"
+	// AppCredentialRotationResolved: an admin forced an uncertain candidate
+	// to active or discarded without evidence from the provider.
+	AppCredentialRotationResolved Action = "app_credential.rotation_resolved" //nolint:gosec // an action name, not a credential
+	// AppCredentialDrift: a delivery was signed with an older version of a
+	// credential after it stopped being active or a candidate (once per
+	// version).
+	AppCredentialDrift    Action = "app_credential.drift" //nolint:gosec // an action name, not a credential
+	AppBindingSet         Action = "app_binding.set"
+	AppTeamMappingSet     Action = "app_team_mapping.set"
+	AppTeamMappingRemoved Action = "app_team_mapping.removed"
+	AccountLinkVerified   Action = "account_link.verified"
+	AccountLinkRevoked    Action = "account_link.revoked"
 	// ProvisioningActionApplied: an action changed provider state (target:
 	// the person; metadata: instance, action kind, key).
 	ProvisioningActionApplied Action = "provisioning.action_applied"
