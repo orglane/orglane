@@ -398,7 +398,12 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 	if setupErr == nil {
 		// The provider's webhooks are part of a set-up instance (a Setup
 		// after a restore also brings back the hook and its active secret).
-		setupErr = s.ensureWebhooks(ctx, inst)
+		setupErr = s.ensureWebhooks(ctx, inst, StateInstalling)
+	}
+	if errors.Is(setupErr, errStateChanged) {
+		// No longer installing (an agent operation failed it, it is being
+		// removed): neither activated nor failed with setup_failed here.
+		return nil
 	}
 	if setupErr == nil {
 		_, err := s.Transition(ctx, audit.System, inst.ID, StateActive, "")
