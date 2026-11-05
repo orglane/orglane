@@ -716,6 +716,18 @@ func retryOrCancel(err error) error {
 // guard (docs/specs/providers.md "Removal guard"): stale removals are
 // dropped, small sets apply, large ones are held for confirmation, and
 // confirmed batches apply after a freshness check per item.
+//
+// Durability: every state change of a removal commits together with what
+// follows from it (a dropped or applied removal queues its person's
+// provision_person job in the same transaction), so a failure of another
+// person, a crash or a retry never loses that work. Any error stops only
+// the person it concerns; errors are returned only after everything this
+// run did is committed, and a RetryAfter snooze takes precedence over them.
+//
+// Retries: a retryable failure leaves the removal open and retries the job.
+// A provider's RetryAfter (a rate limit) snoozes the job until the reset
+// without spending an attempt, also on the last attempt, and ends the run's
+// provider calls: the provider asked to wait.
 func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs, attempt, maxAttempts int) error {
 	conn, release, err := sessionLock(ctx, s.pool, lockID("removals", args.InstanceID.String()))
 	if err != nil {
@@ -742,121 +754,60 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs, 
 
 	var toApply []queuedRemoval
 	var batches []uuid.UUID
-	replan := map[uuid.UUID]bool{}
 	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
-		fresh := func(r store.ProvisioningRemoval) (bool, error) {
-			d, err := s.computeDesired(ctx, q, inst, r.PersonID)
-			if errors.Is(err, ErrNotFound) {
-				return false, nil
-			} else if err != nil {
-				return false, err
-			}
-			if bytes.Equal(d.hash, r.DesiredHash) {
-				return true, nil
-			}
-			replan[r.PersonID] = true
-			return false, q.SetRemovalState(ctx, store.SetRemovalStateParams{ID: r.ID, State: removalDropped})
+		// People whose removals are dropped as stale are planned again in
+		// the same transaction as the drop.
+		replan := map[uuid.UUID]bool{}
+		var err error
+		if toApply, batches, err = s.selectRemovals(ctx, q, inst, startedAt, replan); err != nil {
+			return err
 		}
-		// Confirmed batches: apply what is still fresh.
-		confirmed, err := q.ListConfirmedRemovalBatches(ctx, inst.ID)
-		if err != nil {
-			return fmt.Errorf("apps: list confirmed batches: %w", err)
-		}
-		for _, b := range confirmed {
-			items, err := q.ListBatchRemovals(ctx, &b.ID)
-			if err != nil {
-				return fmt.Errorf("apps: list batch: %w", err)
-			}
-			for _, r := range items {
-				if r.State != removalHeld {
-					continue
-				}
-				ok, err := fresh(r)
-				if err != nil {
-					return err
-				}
-				if ok {
-					toApply = append(toApply, queuedRemoval{removal: r, state: removalHeld})
-				}
-			}
-			batches = append(batches, b.ID)
-		}
-		// Pending removals: freshness, then the threshold.
-		pending, err := q.ListPendingRemovals(ctx, inst.ID)
-		if err != nil {
-			return fmt.Errorf("apps: list removals: %w", err)
-		}
-		var freshPending []store.ProvisioningRemoval
-		for _, r := range pending {
-			ok, err := fresh(r)
-			if err != nil {
-				return err
-			}
-			if ok {
-				freshPending = append(freshPending, r)
-			}
-		}
-		if len(freshPending) == 0 {
-			return nil
-		}
-		recent, err := q.CountAppliedRemovalsSince(ctx, store.CountAppliedRemovalsSinceParams{InstanceID: inst.ID, Since: startedAt.Add(-24 * time.Hour)})
-		if err != nil {
-			return fmt.Errorf("apps: count removals: %w", err)
-		}
-		managed, err := q.CountManagedAccounts(ctx, inst.ID)
-		if err != nil {
-			return fmt.Errorf("apps: count managed accounts: %w", err)
-		}
-		// While a batch is held, new removals join it instead of applying.
-		_, err = q.GetHeldRemovalBatch(ctx, inst.ID)
-		heldExists := err == nil
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("apps: load held batch: %w", err)
-		}
-		if !heldExists && int64(len(freshPending))+recent <= removalLimit(managed) {
-			for _, r := range freshPending {
-				toApply = append(toApply, queuedRemoval{removal: r, state: removalPending})
-			}
-			return nil
-		}
-		return s.hold(ctx, q, inst, freshPending)
+		return s.enqueuePeople(ctx, tx, q, inst.ID, replan)
 	})
 	if err != nil {
 		return err
 	}
 
-	var firstErr error
 	final := attempt >= maxAttempts
+	// retry is the first retryable failure (a provider's or the framework's
+	// own, such as a database error); snooze the provider's RetryAfter.
+	var retry, failure error
+	var snooze time.Duration
 	// A person's removals apply in plan order and stop at their first
-	// failure; other people go on independently.
+	// failure; other people go on independently, so one person's broken
+	// removal never blocks everyone after it.
 	stopped := map[uuid.UUID]bool{}
+apply:
 	for _, item := range toApply {
 		if stopped[item.removal.PersonID] {
 			continue
 		}
-		again, retryErr, err := s.applyRemoval(ctx, prov, item, final)
+		retryErr, err := s.applyRemoval(ctx, prov, item, final)
 		switch {
 		case errors.Is(err, errRemovalFailed):
 			stopped[item.removal.PersonID] = true
 			continue
 		case err != nil:
-			return err
-		}
-		if errors.Is(retryErr, errInstanceInactive) {
-			break // the rest waits until the instance is provisionable again (activation queues this job)
-		}
-		if retryErr != nil {
 			stopped[item.removal.PersonID] = true
-			if firstErr == nil {
-				firstErr = retryErr
+			if failure == nil {
+				failure = err
+			}
+			continue
+		case errors.Is(retryErr, errInstanceInactive):
+			break apply // the rest waits until the instance is provisionable again (activation queues this job)
+		case retryErr != nil:
+			stopped[item.removal.PersonID] = true
+			if retry == nil {
+				retry = retryErr
+			}
+			if _, _, after := provider.Classify(retryErr); after > 0 {
+				snooze = after
+				break apply
 			}
 		}
-		if again {
-			replan[item.removal.PersonID] = true
-		}
 	}
-	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		// A confirmed batch is applied only once none of its items waits;
 		// an interrupted one stays confirmed and resumes with the next run.
@@ -872,29 +823,135 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs, 
 				return fmt.Errorf("apps: finish batch: %w", err)
 			}
 		}
-		ids := make([]uuid.UUID, 0, len(replan))
-		for id := range replan {
-			ids = append(ids, id)
-		}
-		slices.SortFunc(ids, func(a, b uuid.UUID) int { return bytes.Compare(a[:], b[:]) })
-		for _, id := range ids {
-			if err := s.enqueuePerson(ctx, tx, q, inst.ID, id, false); err != nil {
-				return err
-			}
-		}
-		if firstErr != nil {
-			return fmt.Errorf("apps: removal failed: %w", firstErr)
-		}
-		// Removals planned while this run worked wait for the next one.
+		// Removals planned while this run worked wait for the next one; a
+		// retry picks them up itself.
 		var later bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM provisioning_removals WHERE instance_id = $1 AND state = 'pending' AND updated_at >= $2)`, inst.ID, startedAt).Scan(&later); err != nil {
-			return fmt.Errorf("apps: check pending removals: %w", err)
+		if retry == nil && failure == nil {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM provisioning_removals WHERE instance_id = $1 AND state = 'pending' AND updated_at >= $2)`, inst.ID, startedAt).Scan(&later); err != nil {
+				return fmt.Errorf("apps: check pending removals: %w", err)
+			}
 		}
 		if later {
 			return s.enqueueRemovals(ctx, tx, inst.ID, removalDelay)
 		}
 		return nil
 	})
+	switch {
+	case err != nil:
+		return err
+	case snooze > 0:
+		// Before a failure: the provider asked to wait, the snoozed rerun
+		// retries everything still open (also after the last attempt, which
+		// a returned error would end, stranding the rate-limited removal).
+		return river.JobSnooze(snooze)
+	case failure != nil:
+		return failure
+	case retry != nil:
+		return fmt.Errorf("apps: removal failed: %w", retry)
+	}
+	return nil
+}
+
+// selectRemovals chooses, in q's transaction, the removals to apply: fresh
+// items of confirmed batches and fresh pending removals within the
+// threshold; above it, the fresh pending removals are held. Stale removals
+// are dropped and their people added to replan. It returns the removals to
+// apply and the confirmed batches they come from.
+func (s *Service) selectRemovals(ctx context.Context, q *store.Queries, inst Instance, startedAt time.Time, replan map[uuid.UUID]bool) ([]queuedRemoval, []uuid.UUID, error) {
+	var toApply []queuedRemoval
+	var batches []uuid.UUID
+	fresh := func(r store.ProvisioningRemoval) (bool, error) {
+		d, err := s.computeDesired(ctx, q, inst, r.PersonID)
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		} else if err != nil {
+			return false, err
+		}
+		if bytes.Equal(d.hash, r.DesiredHash) {
+			return true, nil
+		}
+		replan[r.PersonID] = true
+		return false, q.SetRemovalState(ctx, store.SetRemovalStateParams{ID: r.ID, State: removalDropped})
+	}
+	// Confirmed batches: apply what is still fresh.
+	confirmed, err := q.ListConfirmedRemovalBatches(ctx, inst.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("apps: list confirmed batches: %w", err)
+	}
+	for _, b := range confirmed {
+		items, err := q.ListBatchRemovals(ctx, &b.ID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("apps: list batch: %w", err)
+		}
+		for _, r := range items {
+			if r.State != removalHeld {
+				continue
+			}
+			ok, err := fresh(r)
+			if err != nil {
+				return nil, nil, err
+			}
+			if ok {
+				toApply = append(toApply, queuedRemoval{removal: r, state: removalHeld})
+			}
+		}
+		batches = append(batches, b.ID)
+	}
+	// Pending removals: freshness, then the threshold.
+	pending, err := q.ListPendingRemovals(ctx, inst.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("apps: list removals: %w", err)
+	}
+	var freshPending []store.ProvisioningRemoval
+	for _, r := range pending {
+		ok, err := fresh(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok {
+			freshPending = append(freshPending, r)
+		}
+	}
+	if len(freshPending) == 0 {
+		return toApply, batches, nil
+	}
+	recent, err := q.CountAppliedRemovalsSince(ctx, store.CountAppliedRemovalsSinceParams{InstanceID: inst.ID, Since: startedAt.Add(-24 * time.Hour)})
+	if err != nil {
+		return nil, nil, fmt.Errorf("apps: count removals: %w", err)
+	}
+	managed, err := q.CountManagedAccounts(ctx, inst.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("apps: count managed accounts: %w", err)
+	}
+	// While a batch is held, new removals join it instead of applying.
+	_, err = q.GetHeldRemovalBatch(ctx, inst.ID)
+	heldExists := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, fmt.Errorf("apps: load held batch: %w", err)
+	}
+	if !heldExists && int64(len(freshPending))+recent <= removalLimit(managed) {
+		for _, r := range freshPending {
+			toApply = append(toApply, queuedRemoval{removal: r, state: removalPending})
+		}
+		return toApply, batches, nil
+	}
+	return toApply, batches, s.hold(ctx, q, inst, freshPending)
+}
+
+// enqueuePeople queues provision_person for a set of people of an instance,
+// in a stable order so concurrent transactions lock their results alike.
+func (s *Service) enqueuePeople(ctx context.Context, tx pgx.Tx, q *store.Queries, instanceID uuid.UUID, people map[uuid.UUID]bool) error {
+	ids := make([]uuid.UUID, 0, len(people))
+	for id := range people {
+		ids = append(ids, id)
+	}
+	slices.SortFunc(ids, func(a, b uuid.UUID) int { return bytes.Compare(a[:], b[:]) })
+	for _, id := range ids {
+		if err := s.enqueuePerson(ctx, tx, q, instanceID, id, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // truncateRunes cuts s to at most n bytes without splitting a character.
@@ -926,53 +983,58 @@ var errRemovalFailed = errors.New("apps: the removal failed")
 // everything it depends on: the removal is still in the state it was chosen
 // in, the instance is provisionable and the person's desired access still
 // hashes to what planned the removal. A stale removal is dropped and the
-// person replanned. A permanent failure (or the last attempt's retryable
-// one) fails the person's result, which then waits for a desired-state
-// change or an admin's retry. It reports whether to replan the person and a
-// retryable error to retry the job with.
-func (s *Service) applyRemoval(ctx context.Context, prov provider.UserProvisioner, item queuedRemoval, final bool) (bool, error, error) {
+// person replanned, in one transaction; so is an applied removal and its
+// person's follow-up job (and audit entry). A permanent failure (or the last
+// attempt's retryable one without RetryAfter) fails the person's result,
+// which then waits for a desired-state change or an admin's retry. It
+// returns the retryable provider error to retry the job with (the removal
+// stays open), or errInstanceInactive.
+func (s *Service) applyRemoval(ctx context.Context, prov provider.UserProvisioner, item queuedRemoval, final bool) (error, error) {
 	r := item.removal
 	conn, release, err := sessionLock(ctx, s.pool, lockID("provision", r.InstanceID.String(), r.PersonID.String()))
 	if err != nil {
-		return false, nil, err
+		return nil, err
 	}
 	defer release()
 	q := store.New(conn)
 	cur, err := q.GetRemoval(ctx, r.ID)
 	if err != nil {
-		return false, nil, fmt.Errorf("apps: reload removal: %w", err)
+		return nil, fmt.Errorf("apps: reload removal: %w", err)
 	}
 	if cur.State != item.state {
-		return false, nil, nil // dropped or resolved meanwhile
+		return nil, nil // dropped or resolved meanwhile, by a run that replans the person
 	}
 	inst, err := s.loadInstance(ctx, q, r.InstanceID, false)
 	if err != nil {
-		return false, nil, err
+		return nil, err
 	}
 	if !inst.Provisionable() || inst.Adapter == nil {
-		return false, errInstanceInactive, nil
+		return errInstanceInactive, nil
 	}
 	d, err := s.computeDesired(ctx, q, inst, r.PersonID)
 	if errors.Is(err, ErrNotFound) {
-		return false, nil, nil // the person is gone (their rows cascade)
+		return nil, nil // the person is gone (their rows cascade)
 	} else if err != nil {
-		return false, nil, err
+		return nil, err
 	}
 	if !bytes.Equal(d.hash, cur.DesiredHash) {
-		if _, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalDropped}); err != nil {
-			return false, nil, fmt.Errorf("apps: drop removal: %w", err)
-		}
-		return true, nil, nil
+		return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			q := store.New(tx)
+			if _, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalDropped}); err != nil {
+				return fmt.Errorf("apps: drop removal: %w", err)
+			}
+			return s.enqueuePerson(ctx, tx, q, inst.ID, r.PersonID, false)
+		})
 	}
 	var a provider.Action
 	if err := json.Unmarshal(cur.Action, &a); err != nil {
-		return false, nil, fmt.Errorf("apps: decode removal: %w", err)
+		return nil, fmt.Errorf("apps: decode removal: %w", err)
 	}
 	out, applyErr := prov.Apply(ctx, s.env(inst), inst.View(), a)
 	if applyErr != nil {
-		code, retryable, _ := provider.Classify(applyErr)
-		if retryable && !final {
-			return false, applyErr, nil // stays as it is; the job retries
+		code, retryable, retryAfter := provider.Classify(applyErr)
+		if retryable && (retryAfter > 0 || !final) {
+			return applyErr, nil // stays as it is; the job retries or snoozes
 		}
 		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			q := store.New(tx)
@@ -987,28 +1049,30 @@ func (s *Service) applyRemoval(ctx context.Context, prov provider.UserProvisione
 			return s.failResult(ctx, q, inst, d, a, code)
 		})
 		if err != nil {
-			return false, nil, err
+			return nil, err
 		}
-		return false, nil, errRemovalFailed
+		return nil, errRemovalFailed
 	}
-	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+	return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		n, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalApplied})
 		if err != nil {
 			return fmt.Errorf("apps: record removal: %w", err)
 		}
-		if n == 0 || !out.Changed {
-			return nil
+		if n > 0 && out.Changed {
+			if _, err := audit.Record(ctx, q, audit.Entry{
+				Actor:    audit.System,
+				Action:   audit.ProvisioningActionApplied,
+				Target:   audit.Target{Kind: audit.TargetPerson, ID: r.PersonID.String()},
+				Metadata: map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key},
+			}); err != nil {
+				return err
+			}
 		}
-		_, err = audit.Record(ctx, q, audit.Entry{
-			Actor:    audit.System,
-			Action:   audit.ProvisioningActionApplied,
-			Target:   audit.Target{Kind: audit.TargetPerson, ID: r.PersonID.String()},
-			Metadata: map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key},
-		})
-		return err
+		// The provider changed: the person is planned again (their result
+		// waits as queued until then), whatever happened to the row.
+		return s.enqueuePerson(ctx, tx, q, inst.ID, r.PersonID, false)
 	})
-	return true, nil, err
 }
 
 // failResult marks a person's result failed because a removal failed: the
