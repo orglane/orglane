@@ -252,6 +252,20 @@ func TestRepairWaitsForRotation(t *testing.T) {
 	if !bytes.Equal(active, h.tp.Secret(inst.ID, "webhook_secret")) {
 		t.Fatal("the core's active secret is not the one the provider uses")
 	}
+	// The lost attempt's lease still holds: the repair waits for it (at most
+	// one execution per credential), then runs, and ends its own execution.
+	hooks := h.tp.Hooks(inst.ID)
+	if err := h.svc.RunEnsureWebhooks(h.ctx, apps.EnsureWebhooksArgs{InstanceID: inst.ID}); err == nil || h.tp.Hooks(inst.ID) != hooks {
+		t.Fatalf("a repair ran while another execution's lease held: %v", err)
+	}
+	expireLeases(h, inst)
+	if err := h.svc.RunEnsureWebhooks(h.ctx, apps.EnsureWebhooksArgs{InstanceID: inst.ID}); err != nil || h.tp.Hooks(inst.ID) != hooks+1 {
+		t.Fatalf("repair after the lease: %v", err)
+	}
+	if n := h.count(`SELECT count(*) FROM app_credential_calls c JOIN app_credentials a ON a.id = c.credential_id
+		WHERE a.instance_id = $1 AND c.deadline > now()`, inst.ID); n != 0 {
+		t.Fatalf("%d live executions after the repair, want none (it ends its own)", n)
+	}
 
 	// Setup with a rotation in progress: the instance is set up and
 	// activated; the hook is left to the rotation.

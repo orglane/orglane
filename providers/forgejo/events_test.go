@@ -291,6 +291,9 @@ func TestMentions(t *testing.T) {
 		{"tab-indented code", "\t@bob\n\n@carol", []string{"carol"}},
 		{"indented continuation of a paragraph", "please ask\n    @bob", []string{"bob"}},
 		{"fence interrupts a paragraph", "text @a\n```\n@bob\n```", []string{"a"}},
+		{"triple backtick code span", "```x``` @bob", []string{"bob"}},
+		{"triple backtick span, then a fence", "```a``` @bob\n```\n@eve\n```\n@carol", []string{"bob", "carol"}},
+		{"tilde fence with backticks in its info", "~~~ `x`\n@bob\n~~~\n@carol", []string{"carol"}},
 		{"double backtick span across lines", "``a `\n@bob`` @carol", []string{"carol"}},
 	} {
 		if got := Mentions(c.text); !slices.Equal(got, c.want) {
