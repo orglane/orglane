@@ -722,7 +722,7 @@ func retryOrCancel(err error) error {
 // provision_person job in the same transaction), so a failure of another
 // person, a crash or a retry never loses that work. Any error stops only
 // the person it concerns; errors are returned only after everything this
-// run did is committed.
+// run did is committed, and a RetryAfter snooze takes precedence over them.
 //
 // Retries: a retryable failure leaves the removal open and retries the job.
 // A provider's RetryAfter (a rate limit) snoozes the job until the reset
@@ -839,10 +839,13 @@ apply:
 	switch {
 	case err != nil:
 		return err
+	case snooze > 0:
+		// Before a failure: the provider asked to wait, the snoozed rerun
+		// retries everything still open (also after the last attempt, which
+		// a returned error would end, stranding the rate-limited removal).
+		return river.JobSnooze(snooze)
 	case failure != nil:
 		return failure
-	case snooze > 0:
-		return river.JobSnooze(snooze)
 	case retry != nil:
 		return fmt.Errorf("apps: removal failed: %w", retry)
 	}

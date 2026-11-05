@@ -369,8 +369,15 @@ func TestBrokenRemovalDoesNotBlockOthers(t *testing.T) {
 	if broken == alice.ID {
 		other = bob
 	}
-	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8); err == nil {
-		t.Fatal("expected a retry")
+	// On the last attempt, a rate limit after the broken removal snoozes
+	// the job (no error would end it with the other removal still open).
+	h.tp.Fail("apply:remove_from_org", rateLimited(time.Hour))
+	wantSnooze(t, h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 8, 8), time.Hour)
+	if got := h.removalPeople(inst, "pending"); len(got) != 2 {
+		t.Fatalf("pending removals of %v, want both", got)
+	}
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 8, 8); err == nil {
+		t.Fatal("expected the broken removal's error")
 	}
 	if got := h.removalPeople(inst, "applied"); !slices.Equal(got, []uuid.UUID{other.ID}) {
 		t.Fatalf("applied removals of %v, want %s", got, other.Username)
