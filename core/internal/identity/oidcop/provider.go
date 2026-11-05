@@ -183,6 +183,10 @@ func (p *Provider) AuthRequestError(w http.ResponseWriter, r *http.Request, req 
 // session.
 func ErrLoginRequired() error { return oidc.ErrLoginRequired() }
 
+// ErrAccessDenied is the OAuth error for a person the client may not sign
+// in (RFC 6749 4.1.2.1 access_denied).
+func ErrAccessDenied() error { return oidc.ErrAccessDenied() }
+
 // AccessToken is a valid OIDC access token presented to the API.
 type AccessToken struct {
 	ID       uuid.UUID

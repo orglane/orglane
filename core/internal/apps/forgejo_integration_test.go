@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/orglane/orglane/core/internal/agent"
 	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/agentclient"
@@ -334,5 +336,68 @@ func TestForgejoOIDCClientRegistration(t *testing.T) {
 	bare := apps.NewService(h.pool, reg, keyring, apps.Config{})
 	if _, err := bare.CreateInstance(h.ctx, audit.System, apps.NewInstance{Provider: forgejo.ID, Key: "git5", BaseURL: "https://git5.acme.test", Settings: settings}); apps.Code(err) != "not_supported" {
 		t.Fatalf("without a registrar: %v", err)
+	}
+}
+
+// App clients sign in only people the instance provisioned: a verified
+// provisioned link this instance established and access at the last run,
+// while the instance is active or degraded. Other clients are not app
+// clients.
+func TestOIDCAccess(t *testing.T) {
+	h := newHarnessWith(t, apps.Config{}, forgejo.New())
+	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+		Provider: forgejo.ID, Key: "git", BaseURL: "https://git.acme.test", Settings: map[string]any{forgejo.SettingOrganization: "acme"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	maya, chen := h.person("maya"), h.person("chen")
+	allowed := func(client string, person uuid.UUID) bool {
+		t.Helper()
+		ok, err := h.svc.OIDCAccess(h.ctx, client, person)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := h.pool.Exec(h.ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Not app clients.
+	if !allowed("mobile", maya.ID) || !allowed("app-unknown", maya.ID) {
+		t.Fatal("a client that is not an app instance's was refused")
+	}
+	// Installing: nobody.
+	exec(`INSERT INTO account_links (person_id, provider, realm, external_id, login, method, instance_id) VALUES ($1, 'forgejo', $2, '7', 'maya', 'provisioned', $3)`, maya.ID, inst.ID.String(), inst.ID)
+	exec(`INSERT INTO provisioning_results (instance_id, person_id, status, access) VALUES ($1, $2, 'done', true)`, inst.ID, maya.ID)
+	if allowed("app-git", maya.ID) {
+		t.Fatal("an installing instance signs people in")
+	}
+	exec(`UPDATE app_instances SET state = 'active' WHERE id = $1`, inst.ID)
+	if !allowed("app-git", maya.ID) {
+		t.Fatal("a provisioned person was refused")
+	}
+	// No link, or a link that is not the instance's provisioned one.
+	if allowed("app-git", chen.ID) {
+		t.Fatal("a person without an account was allowed")
+	}
+	exec(`INSERT INTO account_links (person_id, provider, realm, external_id, login, method) VALUES ($1, 'forgejo', $2, '8', 'chen', 'oauth')`, chen.ID, inst.ID.String())
+	exec(`INSERT INTO provisioning_results (instance_id, person_id, status, access) VALUES ($1, $2, 'done', true)`, inst.ID, chen.ID)
+	if allowed("app-git", chen.ID) {
+		t.Fatal("a link Orglane did not provision was accepted")
+	}
+	// Access gone at the last run.
+	exec(`UPDATE provisioning_results SET access = false WHERE person_id = $1`, maya.ID)
+	if allowed("app-git", maya.ID) {
+		t.Fatal("a person without access was allowed")
+	}
+	exec(`UPDATE provisioning_results SET access = true WHERE person_id = $1`, maya.ID)
+	// Removed: nobody.
+	exec(`UPDATE app_instances SET state = 'removed', data_retained = true, removed_at = now() WHERE id = $1`, inst.ID)
+	if allowed("app-git", maya.ID) {
+		t.Fatal("a removed instance signs people in")
 	}
 }

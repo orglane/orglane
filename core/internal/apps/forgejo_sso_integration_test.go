@@ -258,6 +258,21 @@ func TestForgejoSingleSignOn(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("create the account: %d %s", code, out)
 	}
+	// What provisioning records with it (#62's provisioning): the verified
+	// provisioned link and the person's access. Without them Orglane does
+	// not sign the person in to this client.
+	var created struct{ ID int64 }
+	if err := json.Unmarshal(out, &created); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO account_links (person_id, provider, realm, external_id, login, method, instance_id)
+		VALUES ($1, 'forgejo', $2, $3, $4, 'provisioned', $5)`, person.ID, inst.ID.String(), strconv.FormatInt(created.ID, 10), person.Username, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO provisioning_results (instance_id, person_id, status, access, granted_by_orglane)
+		VALUES ($1, $2, 'done', true, true)`, inst.ID, person.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	// The deep link: Forgejo's sign-in with Orglane, Orglane's existing
 	// session, back to Forgejo, signed in, at the target.
@@ -285,6 +300,35 @@ func TestForgejoSingleSignOn(t *testing.T) {
 	resp, _ = anonymous.do(t, http.MethodGet, link.URL, nil)
 	if resp.URL.Host != managedtest.WorkspaceHost || signedInToForgejo(t, anonymous, forgejoURL) {
 		t.Fatalf("without an Orglane session the deep link ended at %s", resp.URL)
+	}
+
+	// The same browser, still signed in to Forgejo as the provisioned
+	// person, signs in to Orglane as someone Orglane has not provisioned and
+	// follows the deep link. Forgejo would link that subject to the open
+	// Forgejo session's account, whatever ACCOUNT_LINKING says; Orglane
+	// refuses to sign them in to this client (access_denied), so Forgejo
+	// never gets the subject.
+	var unprovisioned string
+	for _, p := range demotest.Dataset(t).People {
+		if p.Username != person.Username {
+			unprovisioned = p.Username
+			break
+		}
+	}
+	if resp, body := br.do(t, http.MethodPost, workspace+"/api/v1/demo/sign-in", map[string]string{"username": unprovisioned}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("sign in as %s: %d %s", unprovisioned, resp.StatusCode, body)
+	}
+	br.do(t, http.MethodGet, link.URL, nil)
+	if n := b.Psql(t, "svc_git", "select count(*) from external_login_user"); n != "0" {
+		t.Fatalf("Forgejo linked a subject to an existing account (%s links)", n)
+	}
+	mixed := newBrowser(t, b)
+	if resp, body := mixed.do(t, http.MethodPost, workspace+"/api/v1/demo/sign-in", map[string]string{"username": unprovisioned}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("sign in as %s: %d %s", unprovisioned, resp.StatusCode, body)
+	}
+	mixed.do(t, http.MethodGet, link.URL, nil)
+	if signedInToForgejo(t, mixed, forgejoURL) {
+		t.Fatalf("%s got into Forgejo through another person's session", unprovisioned)
 	}
 
 	// Signed in to Orglane, but without a Forgejo account Orglane created:

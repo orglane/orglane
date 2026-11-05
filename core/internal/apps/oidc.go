@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/identity"
@@ -51,4 +55,68 @@ func (s *Service) registerOIDCClient(ctx context.Context, q *store.Queries, acto
 	}
 	_, err = s.storeCredential(ctx, q, actor, inst, spec.Secret, []byte(secret), credentialActive)
 	return err
+}
+
+// OIDCAccess decides whether a person may sign in to an OIDC client
+// (identity/web ClientAccess). Clients of app instances
+// (provider.OIDCClientID) sign in only people Orglane provisioned in that
+// instance: a verified "provisioned" link the instance established, and
+// access at the last provisioning run, while the instance is active or
+// degraded. Everyone else is refused (access_denied), so the service never
+// learns of a subject it has no account for.
+//
+// This is what keeps Forgejo from linking accounts: when its callback gets
+// a subject no account is bound to while a Forgejo session is open, it
+// links that subject to the session's account, whatever ACCOUNT_LINKING
+// says (Forgejo 15, routers/web/auth/oauth.go). With this check Forgejo
+// only ever gets subjects whose own account Orglane created, and those
+// sign in to that account.
+//
+// Other clients (registered by an operator) are not app clients: allowed.
+func (s *Service) OIDCAccess(ctx context.Context, clientID string, personID uuid.UUID) (bool, error) {
+	key, ok := strings.CutPrefix(clientID, provider.OIDCClientID(""))
+	if !ok {
+		return true, nil
+	}
+	q := store.New(s.pool)
+	rows, err := q.ListAppInstances(ctx)
+	if err != nil {
+		return false, fmt.Errorf("apps: list instances: %w", err)
+	}
+	var inst *Instance
+	for _, row := range rows {
+		if row.Key != key || (row.State == StateRemoved && !row.DataRetained) {
+			continue
+		}
+		i, err := s.instance(row)
+		if err != nil {
+			return false, err
+		}
+		inst = &i
+	}
+	if inst == nil || inst.Adapter == nil {
+		return true, nil // no app instance owns this client
+	}
+	if _, rp := inst.Adapter.RelyingParty(); !rp {
+		return true, nil
+	}
+	if !inst.Provisionable() {
+		return false, nil
+	}
+	link, err := q.GetVerifiedAccountLink(ctx, store.GetVerifiedAccountLinkParams{PersonID: personID, Provider: inst.Provider, Realm: inst.Adapter.Realm(inst.View())})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("apps: load link: %w", err)
+	}
+	if link.Method != provider.LinkProvisioned || link.InstanceID == nil || *link.InstanceID != inst.ID {
+		return false, nil
+	}
+	result, err := q.GetProvisioningResult(ctx, store.GetProvisioningResultParams{InstanceID: inst.ID, PersonID: personID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("apps: load result: %w", err)
+	}
+	return result.Access, nil
 }
