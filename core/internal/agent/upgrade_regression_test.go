@@ -653,3 +653,93 @@ func editSnapshot(edit func(*agentapi.Snapshot)) func(*testing.T, *Agent, uuid.U
 		}
 	}
 }
+
+// A failed extraction leaves no staging directory: the retry of a failed
+// rollback is a restore with another operation ID, which would not find
+// it. Staging directories left anyway (a crash) are removed by the
+// periodic cleanup once no journal exists, never while one does.
+func TestRestoreStagingIsRemoved(t *testing.T) {
+	a, _ := newTestAgent(t, time.Now)
+	if rec := put(t, a, time.Now(), "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusAccepted {
+		t.Fatal(rec.Body)
+	}
+	dir := a.instanceDir("git")
+	root := filepath.Join(dir, dataDir)
+	if err := os.MkdirAll(filepath.Join(root, "www"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{composeFile, envFile} {
+		if err := os.WriteFile(filepath.Join(dir, f), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := uuid.Must(uuid.NewV7())
+	if err := a.takeSnapshot(t.Context(), "git", testSpec(1), backupPlan{dataDirs: []string{"www"}}, agentapi.SnapshotReasonManual, id); err != nil {
+		t.Fatal(err)
+	}
+	// An archive that matches its checksum but does not extract.
+	garbage := []byte("not a gzip archive")
+	if err := os.WriteFile(filepath.Join(a.snapshotPath("git", id), snapshotData, "www.tar.gz"), garbage, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(garbage)
+	editSnapshot(func(s *agentapi.Snapshot) {
+		s.DataDirs[0].Bytes, s.DataDirs[0].SHA256 = int64(len(garbage)), hex.EncodeToString(sum[:])
+	})(t, a, id)
+	snap, _, err := a.loadSnapshot("git", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.verifySnapshot("git", snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.restoreDataDirs("git", snap, uuid.Must(uuid.NewV7())); err == nil || !strings.Contains(err.Error(), "extract www") {
+		t.Fatal("a broken archive was extracted")
+	}
+	staging := func() []string {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, e := range entries {
+			if strings.Contains(e.Name(), ".restore-") {
+				out = append(out, e.Name())
+			}
+		}
+		return out
+	}
+	if left := staging(); len(left) != 0 {
+		t.Fatalf("staging left after a failed extraction: %v", left)
+	}
+
+	// Left by a crash: kept while a journal exists, removed once none does.
+	left := filepath.Join(root, ".www.restore-"+uuid.Must(uuid.NewV7()).String())
+	if err := os.Mkdir(left, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	j := &journal{Operation: uuid.Must(uuid.NewV7()), Kind: agentapi.KindRestore, To: testSpec(1).Package, ToGeneration: 2,
+		Spec: testSpec(2), SnapshotID: id, Phase: agentapi.PhaseRollingBack}
+	if err := writeJournal(dir, j); err != nil {
+		t.Fatal(err)
+	}
+	a.cleanAllMovedAside()
+	if got := staging(); len(got) != 1 {
+		t.Fatalf("staging removed while a journal exists: %v", got)
+	}
+	if err := removeJournal(dir); err != nil {
+		t.Fatal(err)
+	}
+	a.cleanAllMovedAside()
+	if got := staging(); len(got) != 0 {
+		t.Fatalf("stale staging kept: %v", got)
+	}
+	// The live data the failed restore moved aside stays (7 days).
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(entries, func(e os.DirEntry) bool { return strings.HasPrefix(e.Name(), ".www.failed-") }) {
+		t.Fatalf("the moved-aside data was removed: %v", entries)
+	}
+}

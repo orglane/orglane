@@ -602,6 +602,9 @@ func (a *Agent) commit(ctx context.Context, in *instance, j *journal) string {
 	if err := a.cleanMovedAside(in.key, true); err != nil {
 		a.log.Warn("remove moved-aside data", "instance", in.key, "error", err)
 	}
+	if err := a.cleanRestoreStaging(in.key); err != nil {
+		a.log.Warn("remove restore staging", "instance", in.key, "error", err)
+	}
 	a.log.Info("upgrade committed", "instance", in.key, "package", j.To.String(), "generation", j.ToGeneration)
 	return ""
 }

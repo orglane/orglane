@@ -488,8 +488,9 @@ func (a *Agent) removeAllPartialSnapshots() error {
 }
 
 // cleanAllMovedAside deletes data moved aside by rollbacks and restores
-// more than 7 days ago, except for instances with a journal (a running or
-// failed rollback still needs it).
+// more than 7 days ago, and restore staging directories a failed restore
+// left, except for instances with a journal (a running or failed rollback
+// still needs them).
 func (a *Agent) cleanAllMovedAside() {
 	keys, err := a.keys()
 	if err != nil {
@@ -500,6 +501,13 @@ func (a *Agent) cleanAllMovedAside() {
 		in := a.instance(k)
 		in.files.Lock()
 		j, err := readJournal(a.instanceDir(k))
+		if err == nil && j == nil {
+			// Under the lock: a restore accepted now would create its own
+			// staging directory.
+			if err := a.cleanRestoreStaging(k); err != nil {
+				a.log.Warn("remove restore staging", "instance", k, "error", err)
+			}
+		}
 		in.files.Unlock()
 		if err != nil || j != nil {
 			continue

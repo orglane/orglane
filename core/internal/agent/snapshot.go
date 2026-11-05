@@ -554,16 +554,10 @@ func (a *Agent) restoreDataDirs(key string, snap *agentapi.Snapshot, op uuid.UUI
 		if err := os.Mkdir(tmp, 0o700); err != nil {
 			return err
 		}
-		f, err := os.Open(filepath.Join(a.snapshotPath(key, snap.ID), filepath.FromSlash(d.File))) //nolint:gosec // validated by verifySnapshot
-		if err != nil {
-			return err
-		}
-		err = extractArchive(f, tmp, chown)
-		_ = f.Close()
-		if err != nil {
-			return fmt.Errorf("extract %s: %w", d.Name, err)
-		}
-		if err := os.Rename(tmp, cur); err != nil {
+		if err := a.extractDataDir(key, snap.ID, d, tmp, cur, chown); err != nil {
+			// A retry may run under another operation (a restore after a
+			// failed rollback) and would not find this staging directory.
+			_ = os.RemoveAll(tmp)
 			return err
 		}
 	}
@@ -728,6 +722,48 @@ func (a *Agent) stage(c compose, r *packages.Rendered, fn func(file, env string)
 		return err
 	}
 	return fn(file, env)
+}
+
+// extractDataDir extracts a data directory's archive into tmp and renames
+// it to cur.
+func (a *Agent) extractDataDir(key string, id uuid.UUID, d agentapi.SnapshotDataDir, tmp, cur string, chown bool) error {
+	f, err := os.Open(filepath.Join(a.snapshotPath(key, id), filepath.FromSlash(d.File))) //nolint:gosec // validated by verifySnapshot
+	if err != nil {
+		return err
+	}
+	err = extractArchive(f, tmp, chown)
+	_ = f.Close()
+	if err != nil {
+		return fmt.Errorf("extract %s: %w", d.Name, err)
+	}
+	return os.Rename(tmp, cur)
+}
+
+// cleanRestoreStaging deletes restore staging directories
+// (data/.<name>.restore-<operation>) that a failed restore left. The
+// caller makes sure no restore runs: it holds the instance's file lock and
+// found no journal, or it is the instance's worker after a commit.
+func (a *Agent) cleanRestoreStaging(key string) error {
+	root := filepath.Join(a.instanceDir(key), dataDir)
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range entries {
+		name := e.Name()
+		i := strings.LastIndex(name, ".restore-")
+		if !strings.HasPrefix(name, ".") || i <= 0 {
+			continue
+		}
+		if _, err := uuid.Parse(name[i+len(".restore-"):]); err == nil {
+			errs = append(errs, os.RemoveAll(filepath.Join(root, name)))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // cleanMovedAside deletes data directories moved aside by earlier
