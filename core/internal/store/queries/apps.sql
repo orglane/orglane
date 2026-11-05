@@ -9,7 +9,10 @@ RETURNING *;
 SELECT * FROM app_instances WHERE id = @id;
 
 -- name: GetAppInstanceForUpdate :one
-SELECT * FROM app_instances WHERE id = @id FOR UPDATE;
+-- NO KEY UPDATE: instance IDs never change, so foreign-key checks of child
+-- inserts (credentials, webhook deliveries) never wait on this lock
+-- (docs/specs/providers.md "Credentials", lock order).
+SELECT * FROM app_instances WHERE id = @id FOR NO KEY UPDATE;
 
 -- name: ListAppInstances :many
 SELECT * FROM app_instances ORDER BY created_at, id;
@@ -170,6 +173,11 @@ SELECT * FROM app_credentials WHERE instance_id = @instance_id AND name = @name 
 -- name: GetAppCredentialForUpdate :one
 SELECT * FROM app_credentials WHERE instance_id = @instance_id AND name = @name AND version = @version FOR UPDATE;
 
+-- name: GetAppCredentialCandidateForUpdate :one
+SELECT * FROM app_credentials
+WHERE instance_id = @instance_id AND name = @name AND state IN ('pending', 'uncertain', 'abandoning')
+FOR UPDATE;
+
 -- name: GetActiveAppCredential :one
 SELECT * FROM app_credentials WHERE instance_id = @instance_id AND name = @name AND state = 'active';
 
@@ -188,34 +196,94 @@ ORDER BY version DESC;
 -- name: ListAppCredentials :many
 SELECT instance_id, name, version, state, created_at, activated_at, retire_at
 FROM app_credentials WHERE instance_id = @instance_id AND state <> 'discarded'
+  AND NOT (state = 'retiring' AND retire_at <= now())
 ORDER BY name, version DESC;
 
 -- name: SetAppCredentialStateFrom :execrows
-UPDATE app_credentials SET state = @state
-WHERE instance_id = @instance_id AND name = @name AND version = @version AND state = ANY(@from_states::text[]);
-
--- name: SetAppCredentialState :exec
-UPDATE app_credentials SET state = @state WHERE instance_id = @instance_id AND name = @name AND version = @version;
+-- A discarded version ends now (retention counts from then).
+UPDATE app_credentials
+SET state = @state, ended_at = CASE WHEN @state::text = 'discarded' THEN now() ELSE ended_at END
+WHERE id = @id AND state = ANY(@from_states::text[]);
 
 -- name: SetAppCredentialCiphertext :exec
-UPDATE app_credentials SET ciphertext = @ciphertext WHERE instance_id = @instance_id AND name = @name AND version = @version;
+UPDATE app_credentials SET ciphertext = @ciphertext WHERE id = @id;
 
 -- name: RetireActiveAppCredential :exec
-UPDATE app_credentials SET state = 'retiring', retire_at = @retire_at
+UPDATE app_credentials SET state = 'retiring', retire_at = @retire_at, ended_at = now()
 WHERE instance_id = @instance_id AND name = @name AND state = 'active';
 
--- name: ActivateAppCredential :exec
+-- name: AppCredentialCallInFlight :one
+-- Whether an execution of this credential (any row) may still be acted on
+-- by Orglane: its lease has not expired, by database time.
+SELECT EXISTS (
+    SELECT 1 FROM app_credential_calls k JOIN app_credentials c ON c.id = k.credential_id
+    WHERE c.instance_id = @instance_id AND c.name = @name AND k.deadline > now()
+);
+
+-- name: InsertAppCredentialCall :exec
+-- Starts an execution writing the row's value; its lease never shrinks.
+INSERT INTO app_credential_calls (id, credential_id, deadline)
+VALUES (@id, @credential_id, now() + make_interval(secs => @lease_seconds::double precision));
+
+-- name: EndAppCredentialCall :execrows
+-- Ends an execution after a definite answer, only while its own lease holds:
+-- zero rows means it may no longer record its result.
+DELETE FROM app_credential_calls WHERE id = @id AND deadline > now();
+
+-- name: DeleteExpiredAppCredentialCalls :execrows
+DELETE FROM app_credential_calls WHERE deadline < now() - interval '1 day';
+
+-- name: ListRetainedAppCredentials :many
+-- Retired and discarded versions still retained: incoming signatures are
+-- checked against them to detect drift, never accepted with them.
+SELECT * FROM app_credentials
+WHERE instance_id = @instance_id AND name = @name
+  AND (state = 'discarded' OR (state = 'retiring' AND retire_at <= now()))
+ORDER BY version DESC;
+
+-- name: ListDriftAppCredentials :many
+-- Usable versions that are neither active nor a candidate (retiring within
+-- their overlap), newest first.
+SELECT * FROM app_credentials
+WHERE instance_id = @instance_id AND name = @name AND state = 'retiring' AND retire_at > now()
+ORDER BY version DESC;
+
+-- name: MarkAppCredentialDrift :execrows
+-- One drift report per version, and only once the version ended longer ago
+-- than the grace period (deliveries signed just before a change).
+UPDATE app_credentials SET drift_detected_at = now()
+WHERE id = @id AND state IN ('retiring', 'discarded') AND drift_detected_at IS NULL
+  AND ended_at < now() - interval '5 minutes';
+
+-- name: ListAppCredentialDrift :many
+-- Older versions a delivery was signed with since the current active version
+-- became active.
+SELECT c.name, c.version, c.drift_detected_at::timestamptz AS detected_at
+FROM app_credentials c
+JOIN app_credentials a ON a.instance_id = c.instance_id AND a.name = c.name AND a.state = 'active'
+WHERE c.instance_id = @instance_id AND c.drift_detected_at IS NOT NULL AND c.drift_detected_at > a.activated_at
+ORDER BY c.name, c.version DESC;
+
+-- name: ActivateAppCredential :execrows
 UPDATE app_credentials SET state = 'active', activated_at = now(), retire_at = NULL
-WHERE instance_id = @instance_id AND name = @name AND version = @version;
+WHERE id = @id AND state IN ('pending', 'uncertain', 'abandoning');
 
 -- name: ListStuckAppCredentials :many
-SELECT instance_id, name, version, created_at FROM app_credentials
-WHERE state IN ('uncertain', 'abandoning') AND created_at < @before;
+SELECT * FROM app_credentials
+WHERE state IN ('uncertain', 'abandoning') AND created_at < @before AND stuck_reported_at IS NULL;
+
+-- name: MarkAppCredentialStuckReported :execrows
+-- One rotation_stuck report per credential row.
+UPDATE app_credentials SET stuck_reported_at = now()
+WHERE id = @id AND state IN ('uncertain', 'abandoning') AND stuck_reported_at IS NULL;
 
 -- name: DeleteExpiredAppCredentials :execrows
+-- Older versions are kept 7 days after they stopped being accepted (retired:
+-- past their overlap; discarded: from the discard) to detect drift; they are
+-- never accepted meanwhile.
 DELETE FROM app_credentials
-WHERE (state = 'retiring' AND retire_at <= now())
-   OR (state = 'discarded' AND created_at < now() - interval '7 days');
+WHERE (state = 'retiring' AND retire_at <= now() - interval '7 days')
+   OR (state = 'discarded' AND ended_at < now() - interval '7 days');
 
 -- Account links ------------------------------------------------------------
 
@@ -534,3 +602,55 @@ SELECT * FROM pending_account_links WHERE person_id = @person_id ORDER BY provid
 
 -- name: ListInstanceEvents :many
 SELECT * FROM events WHERE instance_id = @instance_id ORDER BY occurred_at DESC, id DESC LIMIT @row_limit;
+
+-- name: GetAppConnectStateInstance :one
+-- Lookup before taking the per-instance connect lock; consumption must still
+-- recheck all predicates under that lock, so a resume cannot revive stale state.
+SELECT instance_id FROM app_oauth_states
+WHERE state_hash = @state_hash AND kind = 'connect' AND person_id = @person_id
+  AND session_id = @session_id AND consumed_at IS NULL AND expires_at > now();
+
+-- name: InvalidateAppConnectStates :exec
+UPDATE app_oauth_states SET consumed_at = now()
+WHERE instance_id = @instance_id AND kind = 'connect' AND consumed_at IS NULL;
+
+-- name: SetConnectedAppBaseURL :exec
+UPDATE app_instances SET base_url = @base_url, updated_at = now()
+WHERE id = @id AND state = 'connecting' AND management = 'connected';
+
+-- name: ListAppCredentialRotations :many
+-- Live candidates are authoritative, even while an earlier outcome is retained.
+-- History survives ciphertext cleanup and version reuse. UUIDv7 IDs are generated
+-- on INSERT, after the credential mutation/row locks; occurred_at is transaction
+-- start time and can invert a waiting acceptance and the preceding completion.
+-- Read only safe metadata, never ciphertext.
+WITH candidates AS (
+    SELECT name, version,
+        (CASE state WHEN 'pending' THEN 'accepted' WHEN 'uncertain' THEN 'verifying'
+                    ELSE 'cancelling' END)::text AS state
+    FROM app_credentials
+    WHERE instance_id = @instance_id AND state IN ('pending', 'uncertain', 'abandoning')
+), latest AS (
+    SELECT DISTINCT ON (metadata->>'name') metadata->>'name' AS name,
+        (metadata->>'version')::integer AS version, action, metadata->>'stage' AS stage,
+        metadata->>'resolution' AS resolution
+    FROM audit_entries
+    WHERE target_kind = 'app_instance' AND target_id = @target_id
+      AND action IN ('app_credential.rotation_started', 'app_credential.rotation_failed',
+          'app_credential.rotated', 'app_credential.rotation_abandoned',
+          'app_credential.rotation_resolved')
+    ORDER BY metadata->>'name', id DESC
+)
+SELECT name, version, state FROM candidates
+UNION ALL
+SELECT latest.name::text AS name, latest.version,
+    (CASE WHEN latest.action = 'app_credential.rotation_failed' THEN 'failed'
+          WHEN latest.action = 'app_credential.rotated' THEN 'verified'
+          WHEN latest.action = 'app_credential.rotation_abandoned' THEN
+              CASE WHEN latest.stage = 'discarded' THEN 'cancelled' ELSE 'cancelling' END
+          WHEN latest.action = 'app_credential.rotation_resolved' THEN
+              CASE WHEN latest.resolution = 'active' THEN 'activated_by_admin' ELSE 'discarded_by_admin' END
+          ELSE 'accepted' END)::text AS state
+FROM latest
+WHERE NOT EXISTS (SELECT 1 FROM candidates WHERE candidates.name = latest.name)
+ORDER BY name;

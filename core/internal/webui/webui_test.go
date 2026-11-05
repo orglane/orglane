@@ -107,12 +107,18 @@ func TestSecurityHeaders(t *testing.T) {
 	for _, p := range []string{"/", "/assets/index-abc123.js", "/nope.txt"} {
 		w := get(t, h, p)
 		csp := w.Header().Get("Content-Security-Policy")
-		for _, want := range []string{"default-src 'self'", "script-src 'self'", "style-src 'self'", "frame-ancestors 'none'", "object-src 'none'"} {
+		for _, want := range []string{"default-src 'self'", "script-src 'self'", "style-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "form-action 'self' https://github.com/organizations/"} {
 			if !strings.Contains(csp, want) {
 				t.Errorf("GET %s CSP %q lacks %q", p, csp, want)
 			}
 		}
-		if strings.Contains(csp, "unsafe-") || strings.Contains(csp, "http") || strings.Contains(csp, "data:") {
+		// Only the manifest form may leave the origin. Resource loads and
+		// all other form destinations retain the original restrictions.
+		resourcePolicy := strings.Replace(csp, "form-action 'self' https://github.com/organizations/;", "", 1)
+		if strings.Count(csp, "form-action") != 1 {
+			t.Errorf("GET %s has ambiguous form destinations: %q", p, csp)
+		}
+		if strings.Contains(resourcePolicy, "unsafe-") || strings.Contains(resourcePolicy, "http") || strings.Contains(resourcePolicy, "data:") {
 			t.Errorf("GET %s CSP allows more than self: %q", p, csp)
 		}
 		if w.Header().Get("X-Content-Type-Options") != "nosniff" || w.Header().Get("X-Frame-Options") != "DENY" {

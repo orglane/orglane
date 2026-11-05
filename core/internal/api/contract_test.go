@@ -133,6 +133,9 @@ func TestContractPermissions(t *testing.T) {
 		// The provider framework is app management; a person's app access
 		// is people management; own apps are self-service; webhooks are
 		// authenticated by the provider's signature.
+		"POST /api/v1/apps/github/connect":                                                        authz.AppsManage,
+		"POST /api/v1/apps/github/connect/complete":                                               authz.AppsManage,
+		"PUT /api/v1/apps/instances/{instanceId}/credentials/{credentialName}":                    authz.AppsManage,
 		"GET /api/v1/apps/providers":                                                              authz.AppsManage,
 		"GET /api/v1/apps/instances":                                                              authz.AppsManage,
 		"GET /api/v1/apps/instances/{instanceId}":                                                 authz.AppsManage,
@@ -141,6 +144,7 @@ func TestContractPermissions(t *testing.T) {
 		"GET /api/v1/apps/instances/{instanceId}/operations":                                      authz.AppsManage,
 		"POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate":            authz.AppsManage,
 		"POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon":           authz.AppsManage,
+		"POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/resolve":           authz.AppsManage,
 		"GET /api/v1/apps/bindings":                                                               authz.AppsManage,
 		"PUT /api/v1/apps/bindings/{capability}":                                                  authz.AppsManage,
 		"GET /api/v1/apps/instances/{instanceId}/team-mappings":                                   authz.AppsManage,

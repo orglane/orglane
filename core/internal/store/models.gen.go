@@ -36,14 +36,25 @@ type AppBinding struct {
 }
 
 type AppCredential struct {
-	InstanceID  uuid.UUID
-	Name        string
-	Version     int32
-	Ciphertext  []byte
-	State       string
-	CreatedAt   time.Time
-	ActivatedAt *time.Time
-	RetireAt    *time.Time
+	InstanceID      uuid.UUID
+	Name            string
+	Version         int32
+	Ciphertext      []byte
+	State           string
+	CreatedAt       time.Time
+	ActivatedAt     *time.Time
+	RetireAt        *time.Time
+	ID              uuid.UUID
+	StuckReportedAt *time.Time
+	EndedAt         *time.Time
+	DriftDetectedAt *time.Time
+}
+
+type AppCredentialCall struct {
+	ID           uuid.UUID
+	CredentialID uuid.UUID
+	StartedAt    time.Time
+	Deadline     time.Time
 }
 
 type AppDesiredSpec struct {

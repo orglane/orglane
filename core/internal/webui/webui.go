@@ -9,7 +9,7 @@
 //     fallback), except paths that belong to the core (/api/, /oidc/,
 //     /.well-known/) or look like a missing file, which get 404.
 //   - Every response carries a Content-Security-Policy that allows only this
-//     origin: no inline scripts or styles, no third-party hosts.
+//     origin for resources, with a form-only exception for GitHub App manifests.
 //   - Text files are gzip-compressed once at startup.
 package webui
 
@@ -29,12 +29,14 @@ import (
 	"time"
 )
 
-// ContentSecurityPolicy allows only same-origin resources. Inline scripts
+// ContentSecurityPolicy allows only same-origin resources. GitHub App manifest
+// forms may POST to the GitHub organizations path; no other cross-origin form
+// destination is allowed. Inline scripts
 // and styles are refused, so the app loads its theme script as a file and
 // avoids libraries that inject <style> elements.
 const ContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; " +
 	"font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; media-src 'self'; " +
-	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	"object-src 'none'; base-uri 'none'; form-action 'self' https://github.com/organizations/; frame-ancestors 'none'"
 
 // Cache-Control values.
 const (

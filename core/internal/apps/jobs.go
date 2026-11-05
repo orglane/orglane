@@ -133,7 +133,12 @@ type RotateCredentialArgs struct {
 	InstanceID uuid.UUID `json:"instance_id" river:"unique"`
 	Name       string    `json:"name" river:"unique"`
 	Version    int32     `json:"version" river:"unique"`
-	Abandon    bool      `json:"abandon,omitempty" river:"unique"`
+	// CredentialID is the candidate row's durable identity: versions are
+	// reused after retention cleanup, so a job whose row is gone never acts
+	// on a later one. Jobs queued before it existed carry uuid.Nil and are
+	// matched by version alone.
+	CredentialID uuid.UUID `json:"credential_id" river:"unique"`
+	Abandon      bool      `json:"abandon,omitempty" river:"unique"`
 }
 
 // Kind implements river.JobArgs.

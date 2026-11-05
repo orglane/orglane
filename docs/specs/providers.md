@@ -109,6 +109,8 @@ type AccessPolicy string // "all_people" | "mapped_teams"
 type CredentialSpec struct {
     Name      string        // ^[a-z][a-z0-9_]{0,40}$, unique per provider
     Source    string        // "generated" (core makes 32 random bytes) | "provider" (from Connect/Setup) | "upload" (admin)
+    GenerateRotation bool // core-generated replacements of provider-supplied initial secrets
+    ReadBack  bool          // provider-minted values: ApplyCredential reconciles an earlier attempt of the same version (see "Provider call executions")
     Rotatable bool
     Overlap   time.Duration // how long the previous version stays valid after the new one is acknowledged
     Agent     bool          // passed to the agent as a secret input (managed packages)
@@ -513,14 +515,27 @@ CREATE TABLE app_credentials (
     name        text NOT NULL CHECK (name ~ '^[a-z][a-z0-9_]{0,40}$'),
     version     integer NOT NULL CHECK (version > 0),
     ciphertext  bytea NOT NULL,
-    state       text NOT NULL CHECK (state IN ('pending', 'uncertain', 'active', 'retiring', 'discarded')),
+    state       text NOT NULL CHECK (state IN ('pending', 'uncertain', 'abandoning', 'active', 'retiring', 'discarded')),
     created_at  timestamptz NOT NULL DEFAULT now(),
     activated_at timestamptz,         -- when the provider acknowledged it
     retire_at   timestamptz,          -- retiring versions stay valid until then
+    id          uuid NOT NULL DEFAULT uuidv7(), -- durable row identity (versions are reused after cleanup)
+    stuck_reported_at timestamptz,    -- the one rotation_stuck report of this row
+    ended_at    timestamptz,          -- when it stopped being active or a candidate (retired, discarded)
+    drift_detected_at timestamptz,    -- the one drift report of this row
     PRIMARY KEY (instance_id, name, version)
 );
 CREATE UNIQUE INDEX app_credentials_active_key ON app_credentials (instance_id, name) WHERE state = 'active';
-CREATE UNIQUE INDEX app_credentials_pending_key ON app_credentials (instance_id, name) WHERE state IN ('pending', 'uncertain');
+CREATE UNIQUE INDEX app_credentials_pending_key ON app_credentials (instance_id, name) WHERE state IN ('pending', 'uncertain', 'abandoning');
+CREATE UNIQUE INDEX app_credentials_id_key ON app_credentials (id);
+
+-- One row per provider call execution writing a credential row's value.
+CREATE TABLE app_credential_calls (
+    id            uuid PRIMARY KEY,   -- the execution's fencing token
+    credential_id uuid NOT NULL REFERENCES app_credentials (id) ON DELETE CASCADE,
+    started_at    timestamptz NOT NULL DEFAULT now(),
+    deadline      timestamptz NOT NULL  -- lease (database time); never shortened
+);
 ```
 
 See [Credentials](#credentials).
@@ -724,21 +739,69 @@ Events reference **external accounts**, not people. Recipients are resolved thro
   2. A retried job `orglane.apps.rotate_credential` hands the pending value to its consumer: the provider (Forgejo: update the org hook; GitHub: `PATCH /app/hook/config` with the App JWT; Forgejo `admin_token`: mint the new token) or the agent (a new desired generation for `Agent` credentials, acknowledged when the operation succeeds).
   3. Each attempt ends in one of three outcomes, and the adapter must classify it:
      - **Acknowledged** (the provider answered success, or a read-back proves the new value is in use): in one transaction, the candidate → `active` (`activated_at` = now), old active → `retiring` with `retire_at = activated_at + Overlap` (24 h for webhook secrets, 1 h for others).
-     - **Rejected** (a definite answer that the change was not made, such as a validation error before anything was written): the candidate → `discarded`; the active version is untouched. Only a proven rejection discards.
+     - **Rejected** (a definite answer that this attempt did not make the change, such as a validation error before anything was written): if the attempt was the candidate's first handover (it started from `pending`) or the credential is an upload, the candidate → `discarded`; the active version is untouched. Only a proven rejection discards. A rejection of an attempt that started from `uncertain` proves nothing about the earlier attempt and leaves the candidate `uncertain` (see the concurrency model below).
      - **Unknown** (timeout, connection reset, 5xx, the worker dying mid-call: the provider may or may not have committed the change): the candidate → `uncertain`. It is never discarded and never retired while uncertain.
   4. **Resolving `uncertain`**, by the same job, retried with backoff capped at one hour and without an attempt limit:
      - Proof by use: a webhook delivery that verifies only with the uncertain secret proves the provider uses it → acknowledged. A delivery that verifies only with the active secret proves nothing (it may have been sent before the change).
      - Read-back where the provider offers it: Forgejo `admin_token`: tokens are created with a name that contains the version (`orglane-<version>`); listing the service user's token names shows whether the mint committed; a committed token whose value was lost is deleted and the mint repeated. Agent credentials: the operation ID is persisted, and its state is read from the agent. Webhook secrets: neither Forgejo nor GitHub returns the secret, so there is no read-back.
      - Re-apply: setting the same value again is idempotent (hook update, `PATCH /app/hook/config`), so the job re-sends the uncertain value until it gets a definite answer; success → acknowledged.
      - Abandon (admin action only): the job first re-applies the **active** value to the provider until acknowledged, and only then marks the candidate `discarded`.
+     - Forced resolution (admin action only, last resort): see *Evidence, override and drift* below.
      After 24 h in `uncertain` the instance shows `rotation_stuck` to admins (audit `app_credential.rotation_stuck`); nothing is retired or discarded automatically.
   5. For incoming verification, `Env.Credentials` returns `pending`, `uncertain`, `active` and `retiring` versions, so deliveries signed with whichever secret the provider actually uses verify during the whole changeover.
-  6. The daily cleanup deletes `retiring` versions after `retire_at` and `discarded` versions after 7 days. It never deletes `pending` or `uncertain` versions.
+  6. The daily cleanup deletes `retiring` versions 7 days after `retire_at` and `discarded` versions 7 days after they were discarded (`ended_at`). They verify nothing meanwhile; they are kept only to detect drift. It never deletes `pending` or `uncertain` versions, and deletes execution records a day after their lease ended.
   7. Tests (#58 with `testprovider`, #63/#66 against the real provider): "provider committed, response lost" by a fault-injecting HTTP transport in front of the real API that forwards the request and then drops the response; across several retries and a worker restart the candidate stays `uncertain`, both secrets verify deliveries, and it becomes `active` after re-apply; a proven rejection discards; abandon re-applies the old value first.
+- **Concurrency model.** Binding for every credential path in `core/internal/apps` (store, connect, rotate, upload, abandon, the rotation worker, webhook proof by use, the stuck report, cleanup) and for adapters' `Env` reads.
+  - *States.* `pending` (stored, never handed over), `uncertain` (handed over; some attempt's outcome is unknown), `abandoning`, `active`, `retiring`, `discarded`. A *candidate* is a `pending`, `uncertain` or `abandoning` row; there is at most one per name (unique index). Transitions, each a conditional UPDATE whose zero-row path changes nothing and records nothing:
+
+    | From | To | By |
+    |---|---|---|
+    | (none) | `pending` | rotate / upload (admin), only without a candidate |
+    | (none) | `active`, old `active` → `retiring` | direct replacement (connect save, `StoreCredential`), only without a candidate |
+    | `pending` | `uncertain` | forward worker, committed with the call's execution record, before the provider call |
+    | `pending`/`uncertain` | `active`, old `active` → `retiring` | forward worker on *acknowledged*; proof by use |
+    | `uncertain` | `discarded` | forward worker on *rejected*, only when that attempt started from `pending` or the credential is an upload |
+    | `pending`/`uncertain` | `abandoning` | admin abandon |
+    | `uncertain`/`abandoning` | `active` or `discarded` | admin forced resolution (no lease holds) |
+    | `abandoning` | `discarded` | abandon worker, after the provider acknowledged the active value again (or there is none) |
+    | `retiring`, `discarded` | deleted | cleanup, 7 days after `retire_at` / the discard (`ended_at`) |
+  - *Uncertain, then rejected.* A rejection proves only that the rejecting attempt wrote nothing. An attempt that starts from `uncertain` follows one whose outcome is unknown (lost answer, dying worker), which may have installed the value; its rejection keeps the candidate `uncertain`: it still verifies deliveries, the job retries, the stuck report applies. Only acknowledgement, proof by use, an abandon that re-applies the active value, or an admin's forced resolution ends it. Uploads (`Source` "upload") are the exception: the admin installed the value at the provider and `ApplyCredential` only verifies it, so no attempt can have installed it and every rejection discards.
+  - *Direct replacement during a rotation* is refused with `rotation_in_progress`. Superseding the candidate would drop a value the provider may already use, and letting it finish would retire the newer value (#84). So while a candidate exists, the active version is the one the rotation started from, and acknowledgement retires exactly that one.
+  - *Provider call executions.* No database lock can fence an external call (a worker's session lock goes away with its backend while its call runs on), and no amount of elapsed time proves that the provider finished processing a request. So each `ApplyCredential` call (forward attempt, abandon re-apply) is an *execution* recorded in `app_credential_calls` on the row whose value it writes, with its own fencing token (`id`) and lease (`deadline = now() + 2 min + 1 min`, database time), in the transaction that rechecks the candidate under the lock order. The call's context ends 2 min after a local instant taken before that transaction, so Orglane itself stops acting on it before its lease ends (local intervals only; database and local clocks are never compared).
+    - *At most one execution per credential* (instance and name) holds a lease, whichever row it writes: while one does, any other execution is deferred (retryable error, no provider call), the same row included. There is no overlap, because a value the provider mints differs per attempt, and a later attempt could invalidate the one an earlier attempt published.
+    - *Retrying after an unknown outcome.* A retry repeats the same request only when that is safe: the core holds the value (generated or uploaded), or the adapter reads back what the earlier attempt did (`CredentialSpec.ReadBack`; Forgejo's `admin_token` lists tokens named after the version, deletes a stray one and mints again). Otherwise (a provider-minted value without read-back) no further attempt is made: the candidate stays `uncertain` until evidence, an abandon, or an admin's resolution; the stuck report applies.
+    - Leases never shrink. Only the execution itself removes its record, after a definite answer (acknowledged, rejected, including a rejection that leaves the candidate in place: a retry after an unknown outcome, an abandon re-apply) and only while its lease holds; then it records the result in the same transaction. If its lease ended first, it records nothing and its job *retries* (it never completes as if the candidate were resolved). An unknown answer leaves the lease to expire.
+    - While a lease holds, a new rotation or upload, a direct replacement, connect save and an admin's forced resolution return `rotation_in_progress`. The admin's abandon request only records intent; its re-apply is what waits.
+    - Leases pace Orglane's own actions; they are not safety. Safety comes from the candidate rule: while a candidate exists, and it stays `uncertain` until evidence resolves it, no new value is admitted. A remote effect that lands after everything settled is detected as drift (below) and reported, not repaired automatically.
+  - *Evidence, override and drift.*
+    - Evidence that resolves an `uncertain` candidate: a definite answer to a retry of the same value; proof by use (a delivery that verifies with the candidate and not with the active version); a provider read-back where the adapter supports one. Elapsed time is never evidence.
+    - Admin override (`POST …/credentials/{name}/resolve`, `apps.manage`, audited as `app_credential.rotation_resolved` with the resolution): forces an `uncertain` or `abandoning` candidate to `active` (old active retires as usual) or `discarded`, when retries, proof by use and cancelling cannot finish. Refused for a `pending` candidate (cancel it instead), while a lease holds, and for `active` when the candidate has no value (a provider-minted value whose answer was lost: an assertion cannot recover its bytes; `candidate_value_unknown`, only `discarded` remains). The UI asks for a confirmation naming the credential, the version and the consequence. History shows it as `activated_by_admin` or `discarded_by_admin`, never as verified, and the UI never recommends revoking the old value after it. The 24 h stuck report stays.
+    - Drift is detected, never repaired automatically (M2). A delivery whose signature verifies only with an older version, one that is neither active nor a candidate (`retiring` within its overlap: accepted; past `retire_at` or `discarded`: still rejected), is drift, unless that version ended (`ended_at`) less than 5 minutes ago (deliveries signed just before a change). It is recorded once per version (`drift_detected_at`, audit `app_credential.drift`): replays and repeated deliveries change nothing, and nothing is queued. The instance detail lists it (`credentialDrift`) while it was detected after the current active version became active, that is until the credential is rotated again; the card tells the admin to rotate it. Older versions are kept 7 days after they stopped being accepted for this, and never accepted. For webhook secrets only, through `EventSource` (GitHub's incoming verification is #66).
+  - *Identity.* Versions number the values of one name and are reused once cleanup deleted the newest row. The row's `id` is never reused: rotation jobs carry it (`credential_id`; a job whose version now names another row does nothing), rotation audit entries carry it, and the stuck report is recorded once per row (`stuck_reported_at`).
+  - *Lock order.* Locks are taken only in this order; a step may be skipped, never taken after a later one:
+    1. One session advisory lock, held across provider calls on a dedicated pool connection: `connect` (per instance) or `credential` (per instance and name, serializing forward and abandon attempts). A holder takes no second session lock. It serializes healthy workers only; provider call executions are fenced by their own records (above).
+    2. The `app_instances` row, always `FOR NO KEY UPDATE`. Instance IDs never change, so foreign-key checks of inserts into child tables (credentials, `webhook_deliveries`) take `KEY SHARE`, which never waits on it.
+    3. The candidate row (`FOR UPDATE`), then the active row (by its UPDATE).
+    4. Leaf writes: audit entries, job inserts, the webhook delivery insert.
+
+    Every transaction that changes a credential row starts with lock 2 (admin paths by loading the instance for update) and rechecks the candidate's `id` and state under lock 3; the only exception is cleanup, which deletes `retiring` and `discarded` rows no transition locks. Proof by use verifies signatures without locks, then takes 2 and 3 and rechecks before activating, in the transaction that stores the delivery.
+  - *Connections.* Provider calls run outside transactions, under lock 1 only. Whoever holds lock 1 does all database work on that lock's connection: short transactions, `Env` credential reads by the adapter, execution records and the stuck report. It never acquires a second pool connection, so these paths complete with `database.max_conns=1` and under pool saturation (`heldConn` in `core/internal/apps`; provisioning adopts it in #82). Code inside a pool transaction reads through that transaction, including the `Env` it hands to adapters. Every `Env` reads through one serialized reader per connection or transaction, so adapters may call it from several goroutines.
 - **Rollbacks and snapshots:** a snapshot restore can bring back provider-side state from before a rotation (for example Forgejo's stored hook secret or tokens minted later). Therefore, after every rollback or restore, the core runs `Lifecycle.Setup` again (idempotent) before the instance returns to `active`; it re-asserts the admin token and calls `EnsureWebhooks` with the active secrets. The agent's snapshot keeps its own copy of the secrets it was rendered with, so no core-side version has to be kept for it.
-- Each rotation step writes an audit entry (`app_credential.rotated` on activation) with name and version only.
+- Each rotation step writes an audit entry (`app_credential.rotated` on activation) with name, version and the row's `credential_id` only. Cancellation intent and its job are recorded only if the pending/uncertain → abandoning transition changes a row. A request that loses to verification, or targets an already-abandoning candidate, returns `no_rotation` (409) without another intent or job; verified history stays verified.
 - **Master secret:** credentials depend on `identity.master_secret` like every other sealed column. It must never change (existing rule); re-encryption under a new master secret is out of scope.
 - Generated secrets are 32 random bytes in unpadded base64url (`crypto.RandomToken("")`), which also satisfies the agent's secret input format (agent.md).
+
+Credential rotation visibility: the public instance detail includes the latest
+safe rotation outcome per credential, including rejection and cancellation after
+discarded credential retention cleanup. Upload acceptance, uncertain verification,
+verified activation and proven failure are distinct. Values and upstream diagnostics
+are never exposed; a failed replacement does not retire the active credential. Current
+pending/uncertain/abandoning credential rows are authoritative over retained
+history. For names with no candidate, lifecycle history uses the database-generated
+UUIDv7 audit IDs (allocated on event insertion after the credential mutation),
+not `occurred_at`, whose `now()` default is the transaction start time. This keeps
+an acceptance that waited behind a previous completion newer than that completion,
+and preserves outcomes after ciphertext cleanup and credential-version reuse.
 
 ## Account links
 
@@ -1051,7 +1114,7 @@ Owner and Admin hold `apps.manage` already; Member holds none of these.
 
 New actions (`core/internal/audit`), all in the transaction of the change; metadata never contains secrets, tokens or payloads:
 
-`app_instance.created`, `app_instance.updated`, `app_instance.removed`, `app_instance.reinstalled`, `app_instance.purged`, `app_instance.upgrade_started`, `app_instance.upgraded`, `app_instance.rolled_back`, `app_instance.logs_read`, `app_credential.created`, `app_credential.rotated`, `app_credential.rotation_failed`, `app_binding.set`, `app_team_mapping.set`, `app_team_mapping.removed`, `account_link.verified`, `account_link.revoked`, `provisioning.action_applied` (target: the person; metadata: instance, action kind, key; only when `Changed`), `provisioning.removals_confirmed`.
+`app_instance.created`, `app_instance.updated`, `app_instance.removed`, `app_instance.reinstalled`, `app_instance.purged`, `app_instance.upgrade_started`, `app_instance.upgraded`, `app_instance.rolled_back`, `app_instance.logs_read`, `app_credential.created`, `app_credential.rotated`, `app_credential.rotation_failed`, `app_credential.rotation_resolved`, `app_credential.drift`, `app_binding.set`, `app_team_mapping.set`, `app_team_mapping.removed`, `account_link.verified`, `account_link.revoked`, `provisioning.action_applied` (target: the person; metadata: instance, action kind, key; only when `Changed`), `provisioning.removals_confirmed`.
 
 New target kinds: `app_instance`, `account_link`. System jobs use `audit.System`.
 
@@ -1102,7 +1165,7 @@ Build tag `integration`, package `providers/github`, plus a scenario in `tests/i
 | variable | `ORGLANE_TEST_GITHUB_USER_LOGIN`, `ORGLANE_TEST_GITHUB_USER_ID` | The bot user (a member who is not an org owner) that tests invite, add to teams and remove |
 | secret | `ORGLANE_TEST_GITHUB_APP_PRIVATE_KEY` | The App's private key (PEM) |
 | secret | `ORGLANE_TEST_GITHUB_WEBHOOK_SECRET` | The App's webhook secret (only for the real-signature check below; never committed) |
-| secret | `ORGLANE_TEST_GITHUB_USER_TOKEN` | A fine-grained token of the bot user, only to accept invitations and to open PRs and comments that trigger webhooks |
+| secret | `ORGLANE_TEST_GITHUB_USER_TOKEN` | A fine-grained token of the bot user to accept invitations and open PRs/comments that trigger webhooks; only when repository cleanup is exercised, conditional test-only Administration: write plus bot admin access on explicitly selected disposable test repositories (see [janitor requirements](../github.md#live-test-resource-ownership-and-janitor)). No product App permission expansion, new secret, classic delete_repo scope or all-organization repository access; #64 connection and an empty janitor run require no repository admin privilege |
 
 The workflow maps all of them to environment variables of the same names; tests read only those.
 

@@ -2159,6 +2159,116 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/apps/github/connect:
+    post:
+      operationId: beginGitHubConnect
+      summary: Connect a GitHub organization through an App manifest or manual setup
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [organization, key]
+              properties:
+                organization: { type: string, minLength: 1, maxLength: 39 }
+                key: { type: string, minLength: 2, maxLength: 24 }
+                instanceId:
+                  {
+                    type: string,
+                    format: uuid,
+                    description: Resume installation of this connecting instance; organization and key must match.,
+                  }
+                manual:
+                  type: object
+                  additionalProperties: false
+                  required: [appId, clientId, privateKey, clientSecret, webhookSecret]
+                  properties:
+                    appId: { type: string, pattern: "^[1-9][0-9]{0,18}$" }
+                    clientId: { type: string, minLength: 1, maxLength: 100 }
+                    privateKey: { type: string, minLength: 1, maxLength: 16384, writeOnly: true }
+                    clientSecret: { type: string, minLength: 1, maxLength: 1000, writeOnly: true }
+                    webhookSecret: { type: string, minLength: 32, maxLength: 1000, writeOnly: true }
+      responses:
+        "200":
+          description: The next browser step; credentials are never returned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GitHubConnectStep" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/apps/github/connect/complete:
+    post:
+      operationId: completeGitHubConnect
+      summary: Consume one session-bound GitHub connection callback
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [state]
+              properties:
+                state: { type: string, minLength: 1, maxLength: 100 }
+                code: { type: string, minLength: 1, maxLength: 256 }
+                installationId: { type: string, pattern: "^[1-9][0-9]{0,18}$" }
+      responses:
+        "200":
+          description: Next installation redirect or completed connection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GitHubConnectStep" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/apps/instances/{instanceId}/credentials/{credentialName}:
+    parameters:
+      - { $ref: "#/components/parameters/InstanceId" }
+      - { $ref: "#/components/parameters/CredentialName" }
+    put:
+      operationId: uploadAppCredential
+      summary: Stage and verify a replacement GitHub App private key
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [value]
+              properties:
+                value: { type: string, minLength: 1, maxLength: 16384, writeOnly: true }
+      responses:
+        "202": { description: Replacement staged; active key remains until verified. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon:
     post:
       operationId: abandonAppCredentialRotation
@@ -2189,6 +2299,49 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/resolve:
+    post:
+      operationId: resolveAppCredentialRotation
+      summary: Force the outcome of an uncertain rotation
+      description: |
+        Records, without evidence from the provider, which value it uses:
+        `active` makes the uncertain or cancelling version the active one,
+        `discarded` drops it and keeps the current value. Only for a rotation
+        whose outcome cannot be established otherwise (rotate retries, proof
+        by use, cancelling): a wrong choice breaks the provider's use of the
+        credential until it is rotated again. Audited, and shown as an
+        admin's resolution, never as verified. 409 `no_rotation` without a
+        rotation; 409 `rotation_in_progress` while a provider call may still
+        be running; 409 `invalid_state` for a version never handed to the
+        provider (cancel it instead); 409 `candidate_value_unknown` for
+        `active` when the provider minted the new value and the answer
+        carrying it was lost (only `discarded` is possible).
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - $ref: "#/components/parameters/CredentialName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [resolution]
+              properties:
+                resolution: { type: string, enum: [active, discarded] }
+      responses:
+        "204": { description: The rotation was resolved. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/apps/bindings:
     get:
       operationId: listAppBindings
@@ -3913,6 +4066,19 @@ components:
         to:
           type: string
           example: alex@example.com
+    GitHubConnectStep:
+      type: object
+      additionalProperties: false
+      required: [instanceId, done]
+      properties:
+        instanceId: { type: string, format: uuid }
+        done: { type: boolean }
+        name: { type: string }
+        method: { type: string, enum: [GET, POST] }
+        url: { type: string, format: uri }
+        form:
+          type: object
+          additionalProperties: { type: string }
     AppManagement:
       type: string
       description: "`managed`: Orglane runs the service through the agent; `connected`: an external service Orglane talks to."
@@ -4256,6 +4422,29 @@ components:
         retireAt:
           type: string
           format: date-time
+    AppCredentialRotationStatus:
+      type: object
+      required: [name, version, state]
+      properties:
+        name: { type: string }
+        version: { type: integer }
+        state:
+          type: string
+          description: |
+            `activated_by_admin` and `discarded_by_admin` are an admin's forced
+            resolution, recorded without evidence from the provider; they are
+            not verification.
+          enum:
+            [
+              accepted,
+              verifying,
+              failed,
+              verified,
+              cancelling,
+              cancelled,
+              activated_by_admin,
+              discarded_by_admin,
+            ]
     AppProvisioningCounts:
       type: object
       required: [queued, done, pendingEmployeeAction, failed]
@@ -4276,6 +4465,8 @@ components:
           bindings,
           operations,
           credentials,
+          credentialRotations,
+          credentialDrift,
           rotationStuck,
           unmanagedAccountCount,
           provisioning,
@@ -4302,6 +4493,21 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AppCredentialVersion"
+        credentialRotations:
+          type: array
+          description: Latest staged rotation per credential, including safe terminal outcomes retained after candidate cleanup. Never contains key values or provider diagnostics.
+          items:
+            $ref: "#/components/schemas/AppCredentialRotationStatus"
+        credentialDrift:
+          type: array
+          description: Older credential versions a delivery was signed with after they stopped being in use, since the current version became active. Rotate the credential to recover. Never contains values.
+          items:
+            type: object
+            required: [name, version, detectedAt]
+            properties:
+              name: { type: string }
+              version: { type: integer }
+              detectedAt: { type: string, format: date-time }
         rotationStuck:
           type: boolean
           description: A credential rotation has been uncertain for more than 24 hours.

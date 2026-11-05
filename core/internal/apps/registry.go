@@ -9,6 +9,7 @@ import (
 
 	"github.com/orglane/orglane/core/internal/onboarding"
 	"github.com/orglane/orglane/providers/forgejo"
+	githubprovider "github.com/orglane/orglane/providers/github"
 	"github.com/orglane/orglane/providers/provider"
 )
 
@@ -16,7 +17,7 @@ import (
 // dynamic loading (docs/specs/providers.md "Code layout and registry"). The
 // in-repo test provider is added only by test builds (registry_appstest.go)
 // and by tests.
-var compiled = []provider.CapabilityManifest{forgejo.New()}
+var compiled = []provider.CapabilityManifest{forgejo.New(), githubprovider.New()}
 
 // Compiled returns the adapters compiled into this binary.
 func Compiled() []provider.CapabilityManifest { return slices.Clone(compiled) }

@@ -162,7 +162,7 @@ func appInstance(svc *apps.Service, inst apps.Instance) apigen.AppInstance {
 		out.Settings = map[string]any{}
 	}
 	if inst.Adapter != nil {
-		if _, ok := inst.Adapter.EventSource(); ok {
+		if _, ok := inst.Adapter.EventSource(); ok || inst.Provider == "github" {
 			u := svc.WebhookURL(inst.ID).String()
 			out.WebhookUrl = &u
 		}
@@ -203,6 +203,7 @@ func (s *server) GetAppInstance(ctx context.Context, req apigen.GetAppInstanceRe
 		Instance:              appInstance(svc, inst),
 		Operations:            []apigen.AppOperation{},
 		Credentials:           []apigen.AppCredentialVersion{},
+		CredentialRotations:   []apigen.AppCredentialRotationStatus{},
 		RotationStuck:         apps.RotationStuck(d.Credentials, time.Now()),
 		UnmanagedAccountCount: int(d.UnmanagedCount),
 		Provisioning:          counts(d.StatusCounts),
@@ -219,6 +220,21 @@ func (s *server) GetAppInstance(ctx context.Context, req apigen.GetAppInstanceRe
 	}
 	for _, op := range d.Operations {
 		out.Operations = append(out.Operations, appOperation(op))
+	}
+	for _, r := range d.CredentialRotations {
+		out.CredentialRotations = append(out.CredentialRotations, apigen.AppCredentialRotationStatus{Name: r.Name, Version: int(r.Version), State: apigen.AppCredentialRotationStatusState(r.State)})
+	}
+	out.CredentialDrift = make([]struct {
+		DetectedAt time.Time `json:"detectedAt"`
+		Name       string    `json:"name"`
+		Version    int       `json:"version"`
+	}, 0, len(d.CredentialDrift))
+	for _, r := range d.CredentialDrift {
+		out.CredentialDrift = append(out.CredentialDrift, struct {
+			DetectedAt time.Time `json:"detectedAt"`
+			Name       string    `json:"name"`
+			Version    int       `json:"version"`
+		}{DetectedAt: r.DetectedAt.UTC(), Name: r.Name, Version: int(r.Version)})
 	}
 	for _, c := range d.Credentials {
 		out.Credentials = append(out.Credentials, apigen.AppCredentialVersion{
@@ -329,6 +345,21 @@ func (s *server) AbandonAppCredentialRotation(ctx context.Context, req apigen.Ab
 		return nil, appsError(err)
 	}
 	return apigen.AbandonAppCredentialRotation202Response{}, nil
+}
+
+func (s *server) ResolveAppCredentialRotation(ctx context.Context, req apigen.ResolveAppCredentialRotationRequestObject) (apigen.ResolveAppCredentialRotationResponseObject, error) {
+	svc, actor, err := s.appsManager(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resolution := "" // a missing body is invalid input
+	if req.Body != nil {
+		resolution = string(req.Body.Resolution)
+	}
+	if err := svc.ResolveRotation(ctx, actor, req.InstanceId, req.CredentialName, resolution); err != nil {
+		return nil, appsError(err)
+	}
+	return apigen.ResolveAppCredentialRotation204Response{}, nil
 }
 
 func bindingList(rows []apps.Binding, capability string) apigen.AppBindingList {

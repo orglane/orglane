@@ -725,6 +725,7 @@ func TestAbandonWithoutActiveVersion(t *testing.T) {
 	if err := h.svc.AbandonRotation(h.ctx, audit.System, inst.ID, "api_token"); err != nil {
 		t.Fatal(err)
 	}
+	expireLeases(h, inst) // the lost forward call can no longer land
 	if err := h.svc.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: inst.ID, Name: "api_token", Version: version, Abandon: true}); err != nil {
 		t.Fatalf("abandon without an active version = %v", err)
 	}
