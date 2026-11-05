@@ -252,7 +252,7 @@ func TestAgentRetainingAnOlderGenerationIsResynced(t *testing.T) {
 	dir := filepath.Join(host.dataDir, "instances", inst.Key)
 	old := map[string][]byte{}
 	for _, name := range []string{"desired.json", "current.json"} {
-		if old[name], err = os.ReadFile(filepath.Join(dir, name)); err != nil {
+		if old[name], err = os.ReadFile(filepath.Join(dir, name)); err != nil { //nolint:gosec // the agent's test data directory
 			t.Fatal(err)
 		}
 	}
