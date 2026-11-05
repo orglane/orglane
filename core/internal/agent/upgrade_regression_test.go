@@ -2,12 +2,16 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/packages"
@@ -208,5 +212,147 @@ func TestRestoredProjectRejectsDifferentInputs(t *testing.T) {
 	}
 	if n := rr.count(); n != 0 {
 		t.Fatalf("changed inputs invoked Docker %d times", n)
+	}
+}
+
+// A terminal result can be durable while journal deletion still needs retry.
+// Startup and periodic retention must keep exactly that journal's operation.
+func TestJournalOperationSurvivesRetention(t *testing.T) {
+	for _, phase := range []string{agentapi.PhaseCommitting, agentapi.PhaseRestored} {
+		for _, restart := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/restart=%t", phase, restart), func(t *testing.T) {
+				now := time.Now()
+				a, _ := newTestAgent(t, func() time.Time { return now })
+				r := put(t, a, now, "git", mustJSON(t, testSpec(1)))
+				var op agentapi.Operation
+				if err := json.Unmarshal(r.Body.Bytes(), &op); err != nil {
+					t.Fatal(err)
+				}
+				dir := a.instanceDir("git")
+				j := &journal{Operation: op.ID, Kind: agentapi.KindUpgrade, To: testSpec(1).Package, ToGeneration: 1, Spec: testSpec(1), Phase: phase}
+				if err := writeJournal(dir, j); err != nil {
+					t.Fatal(err)
+				}
+				result := agentapi.OpSucceeded
+				if phase == agentapi.PhaseRestored {
+					result = agentapi.OpRolledBack
+				}
+				if _, err := a.ops.update(op.ID, func(o *agentapi.Operation) { o.State = result }); err != nil {
+					t.Fatal(err)
+				}
+				unrelated, err := a.ops.create("git", agentapi.KindSnapshot, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := a.ops.update(unrelated.ID, func(o *agentapi.Operation) { o.State = agentapi.OpSucceeded }); err != nil {
+					t.Fatal(err)
+				}
+				now = now.Add(operationRetention + time.Hour)
+				if restart {
+					a, err = New(Options{Config: a.cfg, Version: "dev", Registry: testRegistry(t), Now: func() time.Time { return now }, runner: &recordingRunner{}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if err := a.ops.prune(); err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := a.ops.get(op.ID); !ok {
+					t.Fatal("retention pruned the operation still referenced by a journal")
+				}
+				if _, ok := a.ops.get(unrelated.ID); ok {
+					t.Fatal("retention kept an unrelated expired operation")
+				}
+				if err := a.finalize(a.instance("git"), j, testSpec(1), false, result, "", ""); err != nil {
+					t.Fatal(err)
+				}
+				if retained, err := readJournal(dir); err != nil || retained != nil {
+					t.Fatalf("journal could not settle: %+v %v", retained, err)
+				}
+				if err := a.ops.prune(); err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := a.ops.get(op.ID); ok {
+					t.Fatal("retention kept the expired operation after journal removal")
+				}
+				if _, err := os.Stat(a.ops.path(op.ID)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("expired operation file: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRetentionPropagatesJournalReadFailure(t *testing.T) {
+	now := time.Now()
+	a, _ := newTestAgent(t, func() time.Time { return now })
+	r := put(t, a, now, "git", mustJSON(t, testSpec(1)))
+	var op agentapi.Operation
+	if err := json.Unmarshal(r.Body.Bytes(), &op); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ops.update(op.ID, func(o *agentapi.Operation) { o.State = agentapi.OpSucceeded }); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(a.instanceDir("git"), journalFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(operationRetention + time.Hour)
+	if err := a.ops.prune(); err == nil {
+		t.Fatal("retention ignored an unreadable journal")
+	}
+	if _, ok := a.ops.get(op.ID); !ok {
+		t.Fatal("retention deleted operation with unreadable journal")
+	}
+	if _, err := New(Options{Config: a.cfg, Version: "dev", Registry: testRegistry(t), Now: func() time.Time { return now }, runner: &recordingRunner{}}); err == nil {
+		t.Fatal("startup ignored an unreadable journal")
+	}
+	if _, err := os.Stat(a.ops.path(op.ID)); err != nil {
+		t.Fatalf("startup deleted operation despite journal read failure: %v", err)
+	}
+}
+
+// A journal whose operation file was lost (removed by hand, or by a release
+// whose retention ignored journals) must still settle: recovery recreates
+// the operation and records the journal's result on it, instead of failing
+// every finalize with "operation not found" and keeping the journal.
+func TestRecoverJournalRecreatesLostOperation(t *testing.T) {
+	now := time.Now()
+	a, _ := newTestAgent(t, func() time.Time { return now })
+	put(t, a, now, "git", mustJSON(t, testSpec(1)))
+	dir := a.instanceDir("git")
+	lost := uuid.Must(uuid.NewV7())
+	from := testSpec(1).Package
+	j := &journal{
+		Operation: lost, Kind: agentapi.KindUpgrade, From: &from, To: testSpec(2).Package,
+		FromGeneration: 1, ToGeneration: 2, Spec: testSpec(2), Phase: agentapi.PhasePreflight,
+	}
+	if err := writeJournal(dir, j); err != nil {
+		t.Fatal(err)
+	}
+	st, err := loadState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := a.recoverJournal(t.Context(), a.instance("git"), st, j); code != agentapi.CodeInterrupted {
+		t.Fatalf("recovery = %q", code)
+	}
+	if retained, err := readJournal(dir); err != nil || retained != nil {
+		t.Fatalf("journal stayed: %+v %v", retained, err)
+	}
+	op, ok := a.ops.get(lost)
+	if !ok || op.State != agentapi.OpFailed || op.ErrorCode != agentapi.CodeInterrupted ||
+		op.Kind != agentapi.KindUpgrade || op.Instance != "git" || op.Generation != 2 || op.FinishedAt == nil {
+		t.Fatalf("recreated operation = %+v (%t)", op, ok)
+	}
+	// Persisted, so the core can poll it after a restart.
+	b, err := New(Options{Config: a.cfg, Version: "dev", Registry: testRegistry(t), Now: func() time.Time { return now }, runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := b.ops.get(lost); !ok || got.State != agentapi.OpFailed {
+		t.Fatalf("after a restart = %+v (%t)", got, ok)
+	}
+	if st, err := loadState(dir); err != nil || !st.blocked.has(2) {
+		t.Fatalf("generation 2 not blocked: %+v %v", st, err)
 	}
 }

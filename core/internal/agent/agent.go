@@ -178,7 +178,7 @@ func New(opts Options) (*Agent, error) {
 	if err := writeFileAtomic(filepath.Join(a.stateDir, "boot_id"), []byte(bootID.String()+"\n"), 0o600); err != nil {
 		return nil, fmt.Errorf("agent: %w", err)
 	}
-	a.ops = newOpStore(filepath.Join(a.stateDir, "operations"), opts.Now)
+	a.ops = newOpStore(filepath.Join(a.stateDir, "operations"), a.instancesDir, opts.Now)
 	if err := a.ops.load(); err != nil {
 		return nil, fmt.Errorf("agent: load operations: %w", err)
 	}
