@@ -377,9 +377,9 @@ func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
 }
 
 // RunSetup works one attempt of the setup job: Lifecycle.Setup of a managed
-// instance. Success activates it; exhausted retries fail it with
-// setup_failed. A provider's RetryAfter snoozes the job without spending an
-// attempt, also on the last attempt.
+// instance, then its webhooks (ensureWebhooks). Success activates it;
+// exhausted retries fail it with setup_failed. A provider's RetryAfter
+// snoozes the job without spending an attempt, also on the last attempt.
 func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAttempts int) error {
 	inst, err := s.Instance(ctx, args.InstanceID)
 	if errors.Is(err, ErrNotFound) {
@@ -395,6 +395,11 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 		return river.JobCancel(ErrNotSupported)
 	}
 	setupErr := lc.Setup(ctx, s.env(inst), inst.View())
+	if setupErr == nil {
+		// The provider's webhooks are part of a set-up instance (a Setup
+		// after a restore also brings back the hook and its active secret).
+		setupErr = s.ensureWebhooks(ctx, inst)
+	}
 	if setupErr == nil {
 		_, err := s.Transition(ctx, audit.System, inst.ID, StateActive, "")
 		return err

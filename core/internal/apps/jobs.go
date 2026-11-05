@@ -167,6 +167,18 @@ func (CleanupArgs) Kind() string { return "orglane.apps.cleanup" }
 // InsertOpts implements river.JobArgsWithInsertOpts.
 func (CleanupArgs) InsertOpts() river.InsertOpts { return uniqueOpts(maxDefaultAttempts) }
 
+// EnsureWebhooksArgs repair an instance's provider-side webhooks (daily,
+// queued by the drift check).
+type EnsureWebhooksArgs struct {
+	InstanceID uuid.UUID `json:"instance_id" river:"unique"`
+}
+
+// Kind implements river.JobArgs.
+func (EnsureWebhooksArgs) Kind() string { return "orglane.apps.ensure_webhooks" }
+
+// InsertOpts implements river.JobArgsWithInsertOpts.
+func (EnsureWebhooksArgs) InsertOpts() river.InsertOpts { return uniqueOpts(maxDefaultAttempts) }
+
 // DriftCheckArgs queue the daily drift check of every instance.
 type DriftCheckArgs struct{}
 
@@ -190,6 +202,7 @@ func Register(workers *river.Workers, s *Service) error {
 		func() error { return river.AddWorkerSafely(workers, &setupWorker{s: s}) },
 		func() error { return river.AddWorkerSafely(workers, &cleanupWorker{s: s}) },
 		func() error { return river.AddWorkerSafely(workers, &driftCheckWorker{s: s}) },
+		func() error { return river.AddWorkerSafely(workers, &ensureWebhooksWorker{s: s}) },
 		func() error { return river.AddWorkerSafely(workers, &agentApplyWorker{s: s}) },
 		func() error { return river.AddWorkerSafely(workers, &agentSyncWorker{s: s}) },
 	} {
@@ -297,6 +310,15 @@ type cleanupWorker struct {
 func (w *cleanupWorker) Work(ctx context.Context, _ *river.Job[CleanupArgs]) error {
 	_, err := w.s.Cleanup(ctx)
 	return err
+}
+
+type ensureWebhooksWorker struct {
+	river.WorkerDefaults[EnsureWebhooksArgs]
+	s *Service
+}
+
+func (w *ensureWebhooksWorker) Work(ctx context.Context, job *river.Job[EnsureWebhooksArgs]) error {
+	return w.s.RunEnsureWebhooks(ctx, job.Args)
 }
 
 type driftCheckWorker struct {
