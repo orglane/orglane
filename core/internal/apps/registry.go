@@ -55,6 +55,19 @@ func (a *Adapter) Lifecycle() (provider.Lifecycle, bool) {
 	return p, ok && a.Manifest.Management == provider.Managed
 }
 
+// validateTeamMapping runs the adapter's TeamMappingValidator, if it has
+// one. A refusal is an invalid mode.
+func (a *Adapter) validateTeamMapping(inst provider.Instance, mode, ref string) error {
+	v, ok := a.impl.(provider.TeamMappingValidator)
+	if !ok {
+		return nil
+	}
+	if err := v.ValidateTeamMapping(inst, mode, ref); err != nil {
+		return invalid("mode", "%v", err)
+	}
+	return nil
+}
+
 // RelyingParty returns the adapter's OIDCRelyingParty, if it has one.
 func (a *Adapter) RelyingParty() (provider.OIDCRelyingParty, bool) {
 	p, ok := a.impl.(provider.OIDCRelyingParty)

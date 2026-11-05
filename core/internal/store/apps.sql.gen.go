@@ -3064,6 +3064,37 @@ func (q *Queries) NextAppCredentialVersion(ctx context.Context, arg NextAppCrede
 	return column_1, err
 }
 
+const refreshAccountLinkLogin = `-- name: RefreshAccountLinkLogin :execrows
+UPDATE account_links SET login = $1, updated_at = now()
+WHERE person_id = $2 AND provider = $3 AND realm = $4 AND external_id = $5
+  AND state = 'verified' AND login <> $1
+`
+
+type RefreshAccountLinkLoginParams struct {
+	Login      string
+	PersonID   uuid.UUID
+	Provider   string
+	Realm      string
+	ExternalID string
+}
+
+// The provider-side login of a verified link changed (informational: links
+// are keyed by the immutable external ID). Only that person's link of that
+// account changes.
+func (q *Queries) RefreshAccountLinkLogin(ctx context.Context, arg RefreshAccountLinkLoginParams) (int64, error) {
+	result, err := q.db.Exec(ctx, refreshAccountLinkLogin,
+		arg.Login,
+		arg.PersonID,
+		arg.Provider,
+		arg.Realm,
+		arg.ExternalID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const retireActiveAppCredential = `-- name: RetireActiveAppCredential :exec
 UPDATE app_credentials SET state = 'retiring', retire_at = $1, ended_at = now()
 WHERE instance_id = $2 AND name = $3 AND state = 'active'

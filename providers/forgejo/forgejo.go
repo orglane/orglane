@@ -213,10 +213,11 @@ func sourceURL(inst provider.Instance, elem ...string) (*url.URL, error) {
 }
 
 var (
-	_ provider.UserProvisioner   = (*Adapter)(nil)
-	_ provider.OIDCRelyingParty  = (*Adapter)(nil)
-	_ provider.DeepLinker        = (*Adapter)(nil)
-	_ provider.SettingsValidator = (*Adapter)(nil)
-	_ provider.Lifecycle         = (*Adapter)(nil)
-	_ provider.CredentialRotator = (*Adapter)(nil)
+	_ provider.TeamMappingValidator = (*Adapter)(nil)
+	_ provider.UserProvisioner      = (*Adapter)(nil)
+	_ provider.OIDCRelyingParty     = (*Adapter)(nil)
+	_ provider.DeepLinker           = (*Adapter)(nil)
+	_ provider.SettingsValidator    = (*Adapter)(nil)
+	_ provider.Lifecycle            = (*Adapter)(nil)
+	_ provider.CredentialRotator    = (*Adapter)(nil)
 )

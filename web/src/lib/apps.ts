@@ -460,6 +460,16 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
     id: "apps.code.forgejoUnavailable",
     defaultMessage: "Forgejo did not answer. Orglane retries automatically.",
   },
+  team_not_synced: {
+    id: "apps.code.teamNotSynced",
+    defaultMessage:
+      "A team this person is mapped to does not exist in the app yet. Orglane creates it and retries automatically.",
+  },
+  team_not_managed: {
+    id: "apps.code.teamNotManaged",
+    defaultMessage:
+      "A team this person is mapped to is not managed by Orglane, so Orglane does not change it. Map the Orglane team again so Orglane creates its own.",
+  },
   forgejo_rejected: {
     id: "apps.code.forgejoRejected",
     defaultMessage: "Forgejo refused the change. Check the details, then retry.",
