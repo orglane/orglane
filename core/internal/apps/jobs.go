@@ -143,6 +143,9 @@ func (RotateCredentialArgs) InsertOpts() river.InsertOpts { return uniqueOpts(ma
 // SetupArgs run Lifecycle.Setup of a managed instance.
 type SetupArgs struct {
 	InstanceID uuid.UUID `json:"instance_id" river:"unique"`
+	// Retry identifies an admin's retry (RetrySetup), so a job of an earlier
+	// attempt that is still running does not swallow it.
+	Retry uuid.UUID `json:"retry,omitzero" river:"unique"`
 }
 
 // Kind implements river.JobArgs.
@@ -309,6 +312,23 @@ func (s *Service) enqueue(ctx context.Context, tx pgx.Tx, args river.JobArgs) er
 	}
 	if _, err := queue.InsertTx(ctx, tx, args, nil); err != nil {
 		return fmt.Errorf("apps: queue %s: %w", args.Kind(), err)
+	}
+	return nil
+}
+
+// enqueueNew inserts a job that must be new: a state change that needs its
+// own job fails rather than commit when River deduplicates it.
+func (s *Service) enqueueNew(ctx context.Context, tx pgx.Tx, args river.JobArgs) error {
+	queue, err := s.getQueue()
+	if err != nil {
+		return err
+	}
+	res, err := queue.InsertTx(ctx, tx, args, nil)
+	if err != nil {
+		return fmt.Errorf("apps: queue %s: %w", args.Kind(), err)
+	}
+	if res.UniqueSkippedAsDuplicate {
+		return fmt.Errorf("apps: queue %s: an identical job exists", args.Kind())
 	}
 	return nil
 }

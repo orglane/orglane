@@ -176,7 +176,7 @@ func (p *Provider) SetPackageSettings(settings map[string]any) {
 
 // Fail makes the next calls of op fail with errs, one per call. Ops:
 // "plan", "apply:<action key>", "apply:<action kind>", "sync_teams",
-// "members", "setup", "inputs", "health".
+// "members", "setup", "inputs", "health", "rotate:<credential name>".
 func (p *Provider) Fail(op string, errs ...error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -609,6 +609,9 @@ func (p *Provider) ApplyCredential(_ context.Context, _ provider.Env, inst provi
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls = append(p.calls, fmt.Sprintf("rotate:%s:%d", name, version))
+	if err := p.fault("rotate:" + name); err != nil {
+		return provider.Rotation{}, err
+	}
 	o := p.org(inst)
 	if out := p.outcomes[name]; len(out) > 0 {
 		p.outcomes[name] = out[1:]

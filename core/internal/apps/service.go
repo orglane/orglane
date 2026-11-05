@@ -659,7 +659,10 @@ func (s *Service) activated(ctx context.Context, tx pgx.Tx, q *store.Queries, in
 }
 
 // RetrySetup retries Lifecycle.Setup of a managed instance whose setup
-// failed: the instance goes back to installing and the setup job runs again.
+// failed: the instance goes back to installing and a new setup job is
+// queued in the same transaction. The job carries a fresh retry ID, so the
+// failed attempt's job, which River may still show running after RunSetup
+// committed setup_failed, never deduplicates it away.
 func (s *Service) RetrySetup(ctx context.Context, actor audit.Actor, id uuid.UUID) (Instance, error) {
 	var out Instance
 	err := s.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
@@ -679,7 +682,7 @@ func (s *Service) RetrySetup(ctx context.Context, actor audit.Actor, id uuid.UUI
 		if out, err = s.transition(ctx, tx, q, actor, id, StateInstalling, ""); err != nil {
 			return err
 		}
-		return s.enqueue(ctx, tx, SetupArgs{InstanceID: id})
+		return s.enqueueNew(ctx, tx, SetupArgs{InstanceID: id, Retry: uuid.Must(uuid.NewV7())})
 	})
 	return out, err
 }
