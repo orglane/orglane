@@ -214,6 +214,13 @@ type Server struct {
 	// reachable from Traefik, never published. Empty (the default) disables
 	// it.
 	InternalListen string `yaml:"internal_listen"`
+	// InternalAllowedPeers is a comma-separated list of the addresses
+	// (CIDRs) that may use the internal listener, e.g. the Traefik
+	// container, "172.30.0.2/32"; requests from other peers get 403. Empty
+	// (the default) or "any" allows every peer that can reach the listener.
+	// The Compose bundle sets Traefik's fixed address: managed services
+	// share the network with the core (docs/specs/agent.md).
+	InternalAllowedPeers string `yaml:"internal_allowed_peers"`
 	// ShutdownTimeout bounds graceful shutdown. Defaults to 15s.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 	// TrustedProxies is a comma-separated list of the addresses (CIDRs) of
@@ -232,6 +239,21 @@ func (s Server) TrustedProxyPrefixes() ([]netip.Prefix, error) {
 	if raw == "" || strings.EqualFold(raw, "none") {
 		return nil, nil
 	}
+	return parsePrefixes(raw)
+}
+
+// InternalAllowedPeerPrefixes parses Server.InternalAllowedPeers. No
+// prefixes means every peer is allowed.
+func (s Server) InternalAllowedPeerPrefixes() ([]netip.Prefix, error) {
+	raw := strings.TrimSpace(s.InternalAllowedPeers)
+	if raw == "" || strings.EqualFold(raw, "any") {
+		return nil, nil
+	}
+	return parsePrefixes(raw)
+}
+
+// parsePrefixes parses a comma-separated list of CIDRs.
+func parsePrefixes(raw string) ([]netip.Prefix, error) {
 	var out []netip.Prefix
 	for part := range strings.SplitSeq(raw, ",") {
 		p, err := netip.ParsePrefix(strings.TrimSpace(part))
@@ -320,6 +342,10 @@ type Ingress struct {
 type Jobs struct {
 	// MaxWorkers caps concurrently running jobs. Defaults to 5.
 	MaxWorkers int `yaml:"max_workers"`
+	// AppsMaxWorkers caps concurrently running provider jobs (provisioning,
+	// webhooks) on their own queue, so provider slowness never blocks
+	// email or identity jobs. Defaults to 2.
+	AppsMaxWorkers int `yaml:"apps_max_workers"`
 	// FetchPollInterval is the fallback poll interval for new jobs; new jobs
 	// are normally picked up through LISTEN/NOTIFY. Defaults to 5s.
 	FetchPollInterval time.Duration `yaml:"fetch_poll_interval"`
@@ -398,6 +424,7 @@ func Default() Config {
 		Ingress:     Ingress{Mode: IngressDomain, CertResolver: DefaultCertResolver, HSTSMaxAge: 365 * 24 * time.Hour},
 		Jobs: Jobs{
 			MaxWorkers:        5,
+			AppsMaxWorkers:    2,
 			FetchPollInterval: 5 * time.Second,
 			Noop:              PeriodicJob{Interval: time.Hour},
 		},
@@ -614,6 +641,9 @@ func (c *Config) Validate() error {
 	if _, err := c.Server.TrustedProxyPrefixes(); err != nil {
 		fail("server.trusted_proxies", "%v (a comma-separated list of CIDRs, or none)", err)
 	}
+	if _, err := c.Server.InternalAllowedPeerPrefixes(); err != nil {
+		fail("server.internal_allowed_peers", "%v (a comma-separated list of CIDRs, or any)", err)
+	}
 
 	switch {
 	case strings.TrimSpace(c.Database.URL) == "":
@@ -660,6 +690,9 @@ func (c *Config) Validate() error {
 
 	if c.Jobs.MaxWorkers < 1 {
 		fail("jobs.max_workers", "must be at least 1")
+	}
+	if c.Jobs.AppsMaxWorkers < 1 {
+		fail("jobs.apps_max_workers", "must be at least 1")
 	}
 	if c.Jobs.FetchPollInterval < 100*time.Millisecond {
 		fail("jobs.fetch_poll_interval", "must be at least 100ms")

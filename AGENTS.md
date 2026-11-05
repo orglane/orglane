@@ -4,11 +4,13 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project status
 
-Pre-alpha (releases 0.0.x until the v0.1 Developer Preview). M0 (Foundation) and M1 (People) are done; M2 (Code) is next (see [ROADMAP.md](ROADMAP.md)).
+Pre-alpha (releases 0.0.x until the v0.1 Developer Preview). M0 (Foundation) and M1 (People) are done; M2 (Code) is in progress (see [ROADMAP.md](ROADMAP.md)).
 
 In place from M0: the monorepo tooling, the core skeleton (server/agent/cli modes, PostgreSQL, migrations, job queue, contract-first API), the data model (people, roles, devices, sessions, audit log), identity (embedded OpenID Provider, password and passkey sign-in, sessions), the web skeleton (React SPA embedded into the binary, design tokens, i18n), the Compose bundle with Traefik, the one-command installer (`deploy/install.sh`) and the orglane.app website (`website/`).
 
 In place from M1: teams and memberships, profile fields (field library, custom fields, visibility), the people directory and profile pages, system email over SMTP and invitations, the onboarding checklist and welcome flow, and the staged people import from CSV/XLSX and from a GitHub organization. Their specs are in [docs/specs/](docs/specs/), the GitHub import setup in [docs/github-import.md](docs/github-import.md).
+
+In place from M2 so far: the provider framework ([docs/specs/providers.md](docs/specs/providers.md)): adapter contracts in `providers/provider`, the registry, app instances, bindings, sealed credentials with staged rotation, team mappings, provisioning with the removal guard, webhook ingestion and normalized events in `core/internal/apps` (River queue `apps`), and Settings → Apps. The in-repo fake provider `providers/testprovider` is only for framework tests and the web acceptance build (build tag `appstest`); no real adapter exists yet.
 
 ## Toolchain
 
@@ -38,6 +40,7 @@ make dev-down          # stop the local Postgres
 make demo              # demo mode: local Postgres + `orglane server --demo` with the "Acme Robotics" dataset (own database)
 make demo-reset        # drop the demo database
 make image             # build the core container image (orglane:dev, with the web UI)
+make image-agent       # build the agent image for managed services (orglane-agent:dev: same binary + Docker CLI and Compose)
 make website           # build the orglane.app website into website/dist and check it (serves deploy/install.sh)
 make website-dev       # run the website with live reload on http://localhost:4321
 make generate          # regenerate the Go server code and the TypeScript client from core/api/openapi.yaml, the sqlc query layer, tokens.css and the English i18n catalog
@@ -75,7 +78,7 @@ Configuration is a YAML file (`-config` or `ORGLANE_CONFIG`) plus `ORGLANE_*` en
 
 ### Compose bundle and Traefik
 
-The production bundle is `deploy/compose/compose.yaml` (Traefik, the core image from the root `Dockerfile`, PostgreSQL); usage is in [deploy/README.md](deploy/README.md). Traefik has no Docker socket: it polls its routes from the core's internal listener (`server.internal_listen`, `GET /traefik/config`), which is never published or routed (ADR 0008). The routes are generated in `core/internal/ingress` from the domain settings and `ingress.mode` (`domain`: HTTPS via Let's Encrypt, HSTS, HTTP→HTTPS redirect, production; `local`: plain HTTP for `--demo`, development). In the bundle, `ORGLANE_INGRESS_MODE` selects `deploy/compose/modes/<mode>.env`. Traefik has a fixed address and is the only entry in `server.trusted_proxies`. Pin every image in the bundle and the `Dockerfile` by version and digest. Changes to routing or the bundle need `make test-compose` to pass.
+The production bundle is `deploy/compose/compose.yaml` (Traefik, the core image from the root `Dockerfile`, PostgreSQL); usage is in [deploy/README.md](deploy/README.md). Traefik has no Docker socket: it polls its routes from the core's internal listener (`server.internal_listen`, `GET /traefik/config`), which is never published or routed (ADR 0008). The routes are generated in `core/internal/ingress` from the domain settings and `ingress.mode` (`domain`: HTTPS via Let's Encrypt, HSTS, HTTP→HTTPS redirect, production; `local`: plain HTTP for `--demo`, development). In the bundle, `ORGLANE_INGRESS_MODE` selects `deploy/compose/modes/<mode>.env`. Traefik has a fixed address and is the only entry in `server.trusted_proxies`. Pin every image in the bundle and the `Dockerfile` by version and digest. Managed services (ADR 0019) add the `agent` service in the Compose profile `managed` (off by default; `install.sh enable-managed` turns it on): the only container with the Docker socket, from the `agent` target of the `Dockerfile` (`ghcr.io/orglane/orglane-agent`). The core container never gets the Docker socket, and its internal listener answers only Traefik's address (`server.internal_allowed_peers`). Changes to routing or the bundle need `make test-compose` to pass.
 
 ### Installer
 

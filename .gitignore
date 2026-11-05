@@ -1,5 +1,8 @@
 # Build output
 /bin/
+# `go build ./tools/ci/` (or ./core/cmd/orglane) in the repository root
+/ci
+/orglane
 dist/
 # web/dist is embedded into the binary (go:embed) and must exist before the
 # first build; only its placeholder is committed.

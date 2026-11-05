@@ -5,6 +5,7 @@ package onboarding
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -68,8 +69,7 @@ func (r Registry) Progress(ctx context.Context, v Viewer, id uuid.UUID) ([]Resul
 		}
 		seen[step.ID] = true
 		if step.ActionURL != "" {
-			u, err := url.Parse(step.ActionURL)
-			if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(step.ActionURL, "/") || strings.HasPrefix(step.ActionURL, "//") || strings.ContainsAny(step.ActionURL, "\\\r\n") {
+			if err := ValidateActionURL(step.ActionURL); err != nil {
 				return nil, fmt.Errorf("onboarding: invalid action for %q", step.ID)
 			}
 		}
@@ -79,4 +79,18 @@ func (r Registry) Progress(ctx context.Context, v Viewer, id uuid.UUID) ([]Resul
 		out = append(out, *step)
 	}
 	return out, nil
+}
+
+// ValidateActionURL checks that an action URL is a local app path: it starts
+// with a single "/", has no scheme or host and no backslashes or line
+// breaks. The empty string is valid (no action).
+func ValidateActionURL(action string) error {
+	if action == "" {
+		return nil
+	}
+	u, err := url.Parse(action)
+	if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(action, "/") || strings.HasPrefix(action, "//") || strings.ContainsAny(action, "\\\r\n") {
+		return errors.New("onboarding: the action must be a local path")
+	}
+	return nil
 }

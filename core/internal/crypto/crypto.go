@@ -45,6 +45,13 @@ const (
 	// the agent (docs/specs/agent.md). It is derived from ORGLANE_AGENT_SECRET,
 	// never from the master secret (ADR 0019).
 	PurposeAgentTransport Purpose = "orglane/v1/agent-transport"
+	// PurposeAppCredentials encrypts credentials of app instances (provider
+	// tokens, keys, generated passwords and webhook secrets).
+	PurposeAppCredentials Purpose = "orglane/v1/app-credentials" //nolint:gosec // a derivation label, not a credential
+	// PurposeWebhookDeliveries encrypts stored webhook delivery bodies.
+	PurposeWebhookDeliveries Purpose = "orglane/v1/webhook-deliveries"
+	// PurposeAppOAuthState encrypts PKCE verifiers of provider round trips.
+	PurposeAppOAuthState Purpose = "orglane/v1/app-oauth-state"
 )
 
 // keySize is the size of every derived key (256 bits).

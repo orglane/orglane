@@ -439,6 +439,9 @@ func (s *Service) AcceptInvitation(ctx context.Context, actor audit.Actor, token
 		}); err != nil {
 			return err
 		}
+		if err := s.directoryChanged(ctx, q, []uuid.UUID{p.ID}); err != nil {
+			return err
+		}
 		if err := setPasswordHash(ctx, q, self, p.ID, hash); err != nil {
 			return err
 		}

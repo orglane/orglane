@@ -236,7 +236,10 @@ func (s *Service) ArchiveTeam(ctx context.Context, actor audit.Actor, id uuid.UU
 			Target:   teamTarget(id),
 			Metadata: map[string]any{"slug": team.Slug},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return s.directoryChanged(ctx, q, nil, id)
 	})
 	if err != nil {
 		return store.Team{}, err
@@ -283,7 +286,10 @@ func (s *Service) SetTeamMember(ctx context.Context, actor audit.Actor, teamID, 
 				Target:   teamTarget(teamID),
 				Metadata: map[string]any{"person_id": personID, "role": role},
 			})
-			return err
+			if err != nil {
+				return err
+			}
+			return s.directoryChanged(ctx, q, []uuid.UUID{personID})
 		case err != nil:
 			return fmt.Errorf("identity: load team membership: %w", err)
 		case current.Role == string(role):
@@ -336,7 +342,10 @@ func (s *Service) RemoveTeamMember(ctx context.Context, actor audit.Actor, teamI
 			Target:   teamTarget(teamID),
 			Metadata: map[string]any{"person_id": personID, "role": current.Role},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return s.directoryChanged(ctx, q, []uuid.UUID{personID})
 	})
 }
 

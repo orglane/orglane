@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -86,6 +87,7 @@ type Service struct {
 	webAuthn *webauthn.WebAuthn
 	mailer   Mailer
 	invites  InvitationConfig
+	observer DirectoryObserver
 	// dummyHash is verified for unknown accounts, so a sign-in takes as long
 	// whether or not the account exists.
 	dummyHash func() (string, error)
@@ -199,4 +201,26 @@ func uniqueViolation(err error) error {
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// DirectoryObserver is told, inside the transaction of a directory change,
+// which people and teams it affects, so it can queue work atomically with
+// the change (the provider framework queues provisioning). Every member of
+// a listed team is affected.
+type DirectoryObserver interface {
+	DirectoryChanged(ctx context.Context, q *store.Queries, people, teams []uuid.UUID) error
+}
+
+// SetDirectoryObserver attaches the observer of directory changes. Set it
+// before serving requests.
+func (s *Service) SetDirectoryObserver(o DirectoryObserver) {
+	s.observer = o
+}
+
+// directoryChanged reports a change to the observer, if any.
+func (s *Service) directoryChanged(ctx context.Context, q *store.Queries, people []uuid.UUID, teams ...uuid.UUID) error {
+	if s.observer == nil || (len(people) == 0 && len(teams) == 0) {
+		return nil
+	}
+	return s.observer.DirectoryChanged(ctx, q, people, teams)
 }

@@ -32,6 +32,8 @@ import (
 	"github.com/orglane/orglane/core/internal/identity/web"
 	"github.com/orglane/orglane/core/internal/jobs"
 	"github.com/orglane/orglane/core/internal/store"
+	"github.com/orglane/orglane/providers/provider"
+	"github.com/orglane/orglane/providers/testprovider"
 	"github.com/orglane/orglane/tests/pgtest"
 )
 
@@ -74,6 +76,8 @@ type env struct {
 	stack *web.Stack
 	srv   *httptest.Server
 	clock *clock
+	// tp is the in-repo test provider, registered in every test stack.
+	tp *testprovider.Provider
 }
 
 func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
@@ -103,7 +107,8 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 	_ = migrator.Close()
 
 	clk := &clock{t: time.Now()}
-	stack, err := web.NewStack(pool, &cfg, logger, web.StackOptions{Hasher: fastHasher, Now: clk.Now})
+	tp := testprovider.New()
+	stack, err := web.NewStack(pool, &cfg, logger, web.StackOptions{Hasher: fastHasher, Now: clk.Now, Adapters: []provider.CapabilityManifest{tp}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,13 +121,14 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 	handler, err := api.NewHandler(api.Options{
 		Version: "test", BaseDomain: cfg.Domain.Base, WorkspaceHost: workspaceHost, WorkspaceURL: cfg.WorkspaceURL(),
 		Auth: stack.Auth, Profile: stack.Profile, Imports: stack.Imports, Mail: stack.Mail, WorkEmail: cfg.WorkEmail, Logger: logger,
+		Apps: stack.Apps, EmployeeSteps: stack.Apps.EmployeeSteps(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewTLSServer(handler)
 	t.Cleanup(srv.Close)
-	return &env{t: t, cfg: &cfg, pool: pool, stack: stack, srv: srv, clock: clk}
+	return &env{t: t, cfg: &cfg, pool: pool, stack: stack, srv: srv, clock: clk, tp: tp}
 }
 
 // startJobs starts the job queue, which delivers queued email, for the
@@ -132,7 +138,7 @@ func (e *env) startJobs() {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := e.cfg.Jobs
 	cfg.FetchPollInterval = 200 * time.Millisecond
-	client, err := jobs.NewClient(e.pool, cfg, logger, jobs.Options{Mail: e.stack.Mail})
+	client, err := jobs.NewClient(e.pool, cfg, logger, jobs.Options{Mail: e.stack.Mail, Apps: e.stack.Apps})
 	if err != nil {
 		e.t.Fatal(err)
 	}

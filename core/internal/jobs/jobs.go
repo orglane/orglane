@@ -16,6 +16,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/orglane/orglane/core/internal/apps"
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/mail"
 )
@@ -100,6 +101,10 @@ type Options struct {
 	// Mail, when set, delivers queued system email (mail.SendArgs). The
 	// client is attached to it as its queue.
 	Mail *mail.Service
+	// Apps, when set, runs the provider framework's jobs on their own
+	// queue (apps.QueueName) with the daily cleanup and drift check. The
+	// client is attached to it as its queue.
+	Apps *apps.Service
 }
 
 // NewClient builds the job queue client. Start it with Start and stop it with
@@ -117,6 +122,18 @@ func NewClient(pool *pgxpool.Pool, cfg config.Jobs, logger *slog.Logger, opts Op
 	}
 
 	var periodic []*river.PeriodicJob
+	queues := map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: cfg.MaxWorkers}}
+	if opts.Apps != nil {
+		if err := apps.Register(workers, opts.Apps); err != nil {
+			return nil, err
+		}
+		periodic = append(periodic, apps.PeriodicJobs()...)
+		n := cfg.AppsMaxWorkers
+		if n < 1 {
+			n = apps.DefaultMaxWorkers
+		}
+		queues[apps.QueueName] = river.QueueConfig{MaxWorkers: n}
+	}
 	if opts.IdentityMaintenance != nil {
 		if err := river.AddWorkerSafely(workers, &IdentityMaintenanceWorker{Maintain: opts.IdentityMaintenance}); err != nil {
 			return nil, fmt.Errorf("register identity maintenance worker: %w", err)
@@ -146,7 +163,7 @@ func NewClient(pool *pgxpool.Pool, cfg config.Jobs, logger *slog.Logger, opts Op
 	}
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues:            map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: cfg.MaxWorkers}},
+		Queues:            queues,
 		Workers:           workers,
 		PeriodicJobs:      periodic,
 		FetchPollInterval: cfg.FetchPollInterval,
@@ -157,6 +174,9 @@ func NewClient(pool *pgxpool.Pool, cfg config.Jobs, logger *slog.Logger, opts Op
 	}
 	if opts.Mail != nil {
 		opts.Mail.SetQueue(client)
+	}
+	if opts.Apps != nil {
+		opts.Apps.SetQueue(client)
 	}
 	return client, nil
 }

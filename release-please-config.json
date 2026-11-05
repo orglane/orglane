@@ -20,6 +20,8 @@
     { "type": "chore", "section": "Chores", "hidden": true }
   ],
   "packages": {
-    ".": {}
+    ".": {
+      "extra-files": [{ "type": "generic", "path": "deploy/compose/compose.yaml" }]
+    }
   }
 }

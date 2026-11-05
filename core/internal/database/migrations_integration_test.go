@@ -29,6 +29,10 @@ var coreTables = []string{
 	"profile_fields", "profile_field_values",
 	"invitations", "email_outbox",
 	"person_onboarding",
+	"app_instances", "app_desired_specs", "app_operations", "app_bindings", "app_credentials",
+	"account_links", "app_oauth_states", "app_team_mappings", "app_unmanaged_accounts",
+	"provisioning_results", "provisioning_removal_batches", "provisioning_removals",
+	"webhook_deliveries", "events",
 }
 
 func newGoose(t *testing.T, pool *pgxpool.Pool) *goose.Provider {
