@@ -33,6 +33,9 @@ var (
 	// ErrBatchChanged: the removal batch is no longer held or differs from
 	// what the admin saw.
 	ErrBatchChanged = errors.New("apps: the removal batch changed")
+	// ErrForbidden: the caller may not do this (e.g. a person who is not
+	// active opening an app).
+	ErrForbidden = errors.New("apps: not allowed")
 	// ErrNoQueue: the job queue is not attached (see SetQueue).
 	ErrNoQueue = errors.New("apps: the job queue is not running")
 )
@@ -53,6 +56,7 @@ func Code(err error) string {
 		{ErrNoRotation, "no_rotation"},
 		{ErrCandidateValueUnknown, "candidate_value_unknown"},
 		{ErrBatchChanged, "batch_changed"},
+		{ErrForbidden, "forbidden"},
 	} {
 		if errors.Is(err, c.err) {
 			return c.code

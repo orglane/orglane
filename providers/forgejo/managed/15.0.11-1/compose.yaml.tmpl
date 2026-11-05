@@ -35,7 +35,14 @@ services:
       FORGEJO__security__INSTALL_LOCK: "true"
       FORGEJO__security__SECRET_KEY: {{secret "secret_key"}}
       # Accounts come from Orglane; nobody registers or browses anonymously.
+      # People sign in only through Orglane (the "orglane" source the
+      # configure hook maintains): no password form, no automatic accounts
+      # (Orglane creates them), no linking of other accounts by name or
+      # email. The service admin keeps API access with basic auth.
       FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__ENABLE_INTERNAL_SIGNIN: "false"
+      FORGEJO__oauth2_client__ENABLE_AUTO_REGISTRATION: "false"
+      FORGEJO__oauth2_client__ACCOUNT_LINKING: "disabled"
       FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
       FORGEJO__service__DEFAULT_KEEP_EMAIL_PRIVATE: "true"
       FORGEJO__openid__ENABLE_OPENID_SIGNIN: "false"
@@ -67,6 +74,10 @@ services:
       ORGLANE_ADMIN_USERNAME: "orglane-admin"
       ORGLANE_ADMIN_EMAIL: {{printf "orglane-admin@%s" (index .Hosts "web") | quote}}
       ORGLANE_ADMIN_PASSWORD: {{secret "admin_password"}}
+      ORGLANE_OIDC_CLIENT_ID: {{index .Settings "oidc_client_id" | quote}}
+      ORGLANE_OIDC_CLIENT_SECRET: {{secret "oidc_client_secret"}}
+      # Forgejo reaches Orglane by its public name (Traefik's alias).
+      ORGLANE_OIDC_DISCOVERY_URL: {{printf "%s/.well-known/openid-configuration" .URLs.Issuer | quote}}
     volumes:
       - type: bind
         source: {{dir "forgejo" | quote}}

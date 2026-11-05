@@ -22,6 +22,8 @@ data_dirs:
   - { name: forgejo, owner: "1000:1000", mode: "0750" }
 settings:
   - { name: ssh_port, type: int, min: 1024, max: 65535, default: 2222 }
+  # The instance's OIDC client in Orglane (app-<key>).
+  - { name: oidc_client_id, type: string, pattern: "app-[a-z][a-z0-9-]{0,22}[a-z0-9]" }
 secrets:
   - db_password
   # Forgejo's SECRET_KEY (encrypts two-factor and OAuth2 secrets in the
@@ -30,6 +32,8 @@ secrets:
   # Password of the service admin the configure hook maintains; Setup uses
   # it to mint the admin token.
   - admin_password
+  # Secret of the instance's OIDC client, for the Orglane sign-in source.
+  - oidc_client_secret
 capabilities_add: []
 resources:
   memory: { min: 256Mi, recommended: 512Mi }

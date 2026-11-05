@@ -70,9 +70,10 @@ func forgejoSpec(mode string) *agentapi.Spec {
 			Instance: scheme + "://git.acme.test", Webhook: scheme + "://work.acme.test/api/v1/webhooks/x",
 		},
 		Ingress:  mode,
-		Settings: map[string]any{"ssh_port": float64(2222)},
+		Settings: map[string]any{"ssh_port": float64(2222), "oidc_client_id": "app-git"},
 		Secrets: map[string]string{ //nolint:gosec // test secrets
 			"db_password": "ZGItcGFzc3dvcmQ", "secret_key": "c2VjcmV0LWtleQ", "admin_password": "YWRtaW4tcGFzc3dvcmQ",
+			"oidc_client_secret": "b2xjc19vaWRjLXNlY3JldA",
 		},
 	}
 }
@@ -140,19 +141,25 @@ func TestRenderForgejo(t *testing.T) {
 		t.Error("forgejo is not on the services network (PostgreSQL)")
 	}
 	want := map[string]string{
-		"FORGEJO__database__HOST":               "postgres:5432",
-		"FORGEJO__database__NAME":               "svc_git",
-		"FORGEJO__database__USER":               "svc_git",
-		"FORGEJO__database__PASSWD":             "${ORGLANE_SECRET_DB_PASSWORD}",
-		"FORGEJO__security__SECRET_KEY":         "${ORGLANE_SECRET_SECRET_KEY}",
-		"ORGLANE_ADMIN_PASSWORD":                "${ORGLANE_SECRET_ADMIN_PASSWORD}",
-		"FORGEJO__server__DOMAIN":               "git.acme.test",
-		"FORGEJO__server__ROOT_URL":             "https://git.acme.test/",
-		"FORGEJO__server__SSH_DOMAIN":           "git.acme.test",
-		"FORGEJO__server__SSH_PORT":             "2222",
-		"FORGEJO__session__COOKIE_SECURE":       "true",
-		"FORGEJO__webhook__ALLOWED_HOST_LIST":   "work.acme.test",
-		"FORGEJO__service__REQUIRE_SIGNIN_VIEW": "true",
+		"FORGEJO__database__HOST":                          "postgres:5432",
+		"FORGEJO__database__NAME":                          "svc_git",
+		"FORGEJO__database__USER":                          "svc_git",
+		"FORGEJO__database__PASSWD":                        "${ORGLANE_SECRET_DB_PASSWORD}",
+		"FORGEJO__security__SECRET_KEY":                    "${ORGLANE_SECRET_SECRET_KEY}",
+		"ORGLANE_ADMIN_PASSWORD":                           "${ORGLANE_SECRET_ADMIN_PASSWORD}",
+		"FORGEJO__server__DOMAIN":                          "git.acme.test",
+		"FORGEJO__server__ROOT_URL":                        "https://git.acme.test/",
+		"FORGEJO__server__SSH_DOMAIN":                      "git.acme.test",
+		"FORGEJO__server__SSH_PORT":                        "2222",
+		"FORGEJO__session__COOKIE_SECURE":                  "true",
+		"FORGEJO__webhook__ALLOWED_HOST_LIST":              "work.acme.test",
+		"FORGEJO__service__REQUIRE_SIGNIN_VIEW":            "true",
+		"FORGEJO__service__ENABLE_INTERNAL_SIGNIN":         "false",
+		"FORGEJO__oauth2_client__ENABLE_AUTO_REGISTRATION": "false",
+		"FORGEJO__oauth2_client__ACCOUNT_LINKING":          "disabled",
+		"ORGLANE_OIDC_CLIENT_ID":                           "app-git",
+		"ORGLANE_OIDC_CLIENT_SECRET":                       "${ORGLANE_SECRET_OIDC_CLIENT_SECRET}",
+		"ORGLANE_OIDC_DISCOVERY_URL":                       "https://work.acme.test/.well-known/openid-configuration",
 	}
 	for k, v := range want {
 		if got := f.Environment[k]; got != v {

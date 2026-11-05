@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -84,6 +85,9 @@ type Provider struct {
 	nextID   int
 	// packageSettings are what Inputs returns (managed variant).
 	packageSettings map[string]any
+	// openOrigin, if set, is the origin OpenURL links to instead of the
+	// base URL's (to test the core's origin check).
+	openOrigin *url.URL
 }
 
 // Option configures New.
@@ -684,7 +688,31 @@ func sortedKeys(m map[string]bool) []string {
 	return keys
 }
 
+// OpenURL implements provider.DeepLinker: the target under the instance's
+// base URL.
+func (p *Provider) OpenURL(inst provider.Instance, target string) (*url.URL, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if inst.BaseURL == nil {
+		return nil, errors.New("testprovider: no base URL")
+	}
+	origin := inst.BaseURL
+	if p.openOrigin != nil {
+		origin = p.openOrigin
+	}
+	return url.Parse(origin.Scheme + "://" + origin.Host + target)
+}
+
+// LinkToOrigin makes OpenURL link to another origin, as a broken adapter
+// would.
+func (p *Provider) LinkToOrigin(origin *url.URL) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.openOrigin = origin
+}
+
 var (
+	_ provider.DeepLinker        = (*Provider)(nil)
 	_ provider.UserProvisioner   = (*Provider)(nil)
 	_ provider.EventSource       = (*Provider)(nil)
 	_ provider.CredentialRotator = (*Provider)(nil)
