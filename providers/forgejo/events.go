@@ -451,7 +451,8 @@ func Mentions(text string) []string {
 // non-blank lines (where code spans may continue across lines). Code
 // blocks are fenced (a line of three or more backticks or tildes, indented
 // at most three spaces, up to a closing fence of the same character at
-// least as long, or the end) or indented (four or more columns, starting
+// least as long, or the end; an opening backtick fence has no backtick
+// after it on its line) or indented (four or more columns, starting
 // where no paragraph continues, running on over indented and blank lines).
 func paragraphs(text string) []string {
 	var out []string
@@ -484,7 +485,9 @@ func paragraphs(text string) []string {
 			continue
 		}
 		indented = false
-		if f := fenceOf(trimmed); indent <= 3 && f != "" {
+		if f := fenceOf(trimmed); indent <= 3 && f != "" && (f[0] != '`' || !strings.Contains(trimmed[len(f):], "`")) {
+			// A backtick fence's info string has no backtick: "```x``` @bob"
+			// is a code span in a paragraph, not a fence.
 			flush()
 			fence = f
 			continue

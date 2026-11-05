@@ -441,6 +441,12 @@ func TestForgejoWebhooks(t *testing.T) {
 	if credState(lost) != "active" {
 		t.Fatalf("candidate = %s, want active (proven by use)", credState(lost))
 	}
+	// The lost execution's lease still holds (Forgejo may still act on it):
+	// the repair waits for it, at most one execution per credential.
+	if err := h.svc.RunEnsureWebhooks(h.ctx, apps.EnsureWebhooksArgs{InstanceID: s.inst.ID}); err == nil || len(s.ourHooks(t)) != 2 {
+		t.Fatalf("a repair ran while the lost execution's lease held: %v, %d hooks", err, len(s.ourHooks(t)))
+	}
+	expireLeases(h, s.inst)
 	if err := h.svc.RunDriftCheck(h.ctx); err != nil {
 		t.Fatal(err)
 	}
