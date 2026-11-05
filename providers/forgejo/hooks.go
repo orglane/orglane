@@ -164,7 +164,12 @@ func (*Adapter) EnsureWebhooks(ctx context.Context, env provider.Env, inst provi
 		return &provider.Error{Code: CodeInvalidSettings, Err: err}
 	}
 	secret, err := env.Credential(ctx, CredentialWebhookSecret)
-	if err != nil {
+	if errors.Is(err, provider.ErrNotFound) {
+		// No active version: the first one is being rotated in (the core
+		// creates a missing secret before it calls this). Retryable: the
+		// rotation establishes it.
+		return &provider.Error{Code: CodeNoWebhookSecret, Retryable: true, Err: err}
+	} else if err != nil {
 		return fmt.Errorf("forgejo: webhook secret: %w", err)
 	}
 	c, err := newClient(ctx, env, inst, true)

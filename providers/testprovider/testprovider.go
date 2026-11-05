@@ -582,6 +582,13 @@ func (p *Provider) Normalize(inst provider.Instance, d provider.Delivery) ([]pro
 	return []provider.Event{e}, nil
 }
 
+// Hooks returns how often EnsureWebhooks ran for an instance.
+func (p *Provider) Hooks(instanceID uuid.UUID) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.org(provider.Instance{ID: instanceID}).hooks
+}
+
 // EnsureWebhooks implements provider.EventSource.
 func (p *Provider) EnsureWebhooks(_ context.Context, _ provider.Env, inst provider.Instance) error {
 	p.mu.Lock()

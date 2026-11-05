@@ -38,6 +38,8 @@ const (
 	// CodeSSONotConfigured: the sign-in source for Orglane does not exist
 	// (yet). Retryable: the package's configure hook creates it.
 	CodeSSONotConfigured = "sso_not_configured"
+	// CodeNoWebhookSecret: the instance has no active webhook secret yet.
+	CodeNoWebhookSecret = "webhook_secret_missing"
 )
 
 // statusError is a non-2xx answer. It carries only the status: response
