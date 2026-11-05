@@ -1,0 +1,6 @@
+services:
+  nginx:
+    volumes: !override
+      - ${HULY_NGINX_PATH:?Set HULY_NGINX_PATH to the downloaded upstream config}:/etc/nginx/conf.d/default.conf:ro
+  kvs:
+    ports: !reset []

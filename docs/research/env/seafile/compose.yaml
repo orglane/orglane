@@ -1,0 +1,42 @@
+# Reduced official CE stack: no Caddy, SeaDoc, AI or notification extension.
+services:
+  app:
+    image: seafileltd/seafile-mc:14.0.9
+    ports: ["127.0.0.1:18110:80"]
+    environment:
+      SEAFILE_MYSQL_DB_HOST: db
+      SEAFILE_MYSQL_DB_USER: seafile
+      SEAFILE_MYSQL_DB_PASSWORD: research
+      INIT_SEAFILE_MYSQL_ROOT_PASSWORD: research-root
+      INIT_SEAFILE_ADMIN_EMAIL: admin@example.com
+      INIT_SEAFILE_ADMIN_PASSWORD: research-pass-1
+      SEAFILE_SERVER_HOSTNAME: localhost:18110
+      SEAFILE_SERVER_PROTOCOL: http
+      JWT_PRIVATE_KEY: research-only-seafile-01234567890123456789
+      ENABLE_SEADOC: "false"
+      ENABLE_SEAFILE_AI: "false"
+      CACHE_PROVIDER: redis
+      REDIS_HOST: redis
+      REDIS_PASSWORD: research
+    volumes: ["data:/shared"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+  db:
+    image: mariadb:10.11
+    environment:
+      MYSQL_ROOT_PASSWORD: research-root
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes: ["db:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 3s
+      retries: 60
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "research", "--save", "", "--appendonly", "no"]
+volumes:
+  data:
+  db:
