@@ -178,21 +178,21 @@ func (s *Service) Install(ctx context.Context, actor audit.Actor, in NewInstance
 		}
 	}
 	in.Settings = settings
+	host, err := s.validHost(in.BaseURL)
+	if err != nil {
+		return Instance{}, err
+	}
 	if s.cfg.InstallPreflight != nil {
 		key := in.Key
 		if key == "" {
 			key = adapter.Manifest.DefaultKey
 		}
-		u, err := url.Parse(in.BaseURL)
-		if err != nil {
-			return Instance{}, invalid("host", "must be a valid host name")
-		}
-		if err := s.cfg.InstallPreflight(ctx, InstallPlan{Provider: in.Provider, Key: key, Host: u.Hostname(), BaseURL: in.BaseURL, Package: pkg}); err != nil {
+		if err := s.cfg.InstallPreflight(ctx, InstallPlan{Provider: in.Provider, Key: key, Host: host, BaseURL: in.BaseURL, Package: pkg}); err != nil {
 			return Instance{}, err
 		}
 	}
 	created, err := s.createInstance(ctx, actor, in, func(tx pgx.Tx, q *store.Queries, created Instance) error {
-		if err := s.checkHost(ctx, q, in.BaseURL, created.ID); err != nil {
+		if err := s.checkHost(ctx, q, host, created.ID); err != nil {
 			return err
 		}
 		_, err := s.recordDesired(ctx, tx, q, actor, created, DesiredChange{
