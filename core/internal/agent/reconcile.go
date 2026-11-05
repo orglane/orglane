@@ -393,7 +393,7 @@ func writeConfigured(dir, hash string) error {
 // checkPolicy writes the rendered project to the staging directory,
 // normalizes it with `docker compose config` and checks it against the
 // package policy. Nothing is started from staging.
-func (a *Agent) checkPolicy(ctx context.Context, pkg *packages.Package, r *packages.Rendered, in packages.Inputs, rc packages.RenderContext, c compose) error {
+func (a *Agent) checkPolicy(ctx context.Context, pkg *packages.Package, r *packages.Rendered, in packages.Inputs, rc packages.RenderContext, c compose, originalAliases ...string) error {
 	staging := filepath.Join(rc.InstanceDir, stagingDir)
 	if err := os.RemoveAll(staging); err != nil {
 		return failed(agentapi.CodeComposeFailed, err)
@@ -419,6 +419,11 @@ func (a *Agent) checkPolicy(ctx context.Context, pkg *packages.Package, r *packa
 			return &opError{code: agentapi.CodePolicyViolation, rule: pe.Rule, err: err}
 		}
 		return failed(agentapi.CodePolicyViolation, err)
+	}
+	if rc.Fenced {
+		if err := checkFenced(normalized, originalAliases...); err != nil {
+			return &opError{code: agentapi.CodePolicyViolation, rule: packages.RuleAlias, err: err}
+		}
 	}
 	return nil
 }

@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -255,6 +256,7 @@ func TestUpgrades(t *testing.T) {
 	t.Parallel()
 	s := &upgradeSuite{project: startBundle(t), registry: agenttestRegistry(t)}
 	s.run(t, "path", s.testPath)
+	s.run(t, "candidate-route-collision", s.testCandidateRouteCollision)
 	s.rollback(t)
 	s.run(t, "stays-rolled-back", s.testStaysRolledBack)
 	s.run(t, "unembedded-rollback-repair", s.testUnembeddedRollbackRepair)
@@ -805,5 +807,91 @@ func (e *testEnv) assertV1IntactWithDatabaseWrite(key string, port int, acknowle
 	}
 	if _, err := os.Stat(filepath.Join(e.agent.instanceDir(key), journalFile)); !errors.Is(err, os.ErrNotExist) {
 		e.t.Fatalf("drift repair revived journal: %v", err)
+	}
+}
+
+// Package rules keep routed aliases out of the fenced namespace
+// (packages.FencedName), so a service rename cannot give a candidate a
+// routed alias. A deployment this release did not render may still carry
+// such an alias (here: the routed alias <key>-web-fenced, as an earlier
+// version with a service "web-fenced" had). Preflight must reject the
+// upgrade before anything stops, so no route reaches the unconfirmed
+// candidate and acknowledges a write that a rollback would discard.
+func (s *upgradeSuite) testCandidateRouteCollision(t *testing.T) {
+	const key = "aliasrename"
+	cleanupProject(t, s.project, key)
+	e := launchAgent(t, s.project, s.registry, agentOptions{})
+	id := uuid.Must(uuid.NewV7())
+	port := freePort(t)
+	e.installV1(key, id, port)
+	containers := e.containers(key)
+	slices.Sort(containers)
+
+	// With the agent stopped, nothing re-renders the deployment before
+	// the upgrade reads it; the spec is accepted as if before the stop.
+	dir := e.agent.instanceDir(key)
+	if err := e.stop(); err != nil {
+		t.Fatal(err)
+	}
+	compose, err := os.ReadFile(filepath.Join(dir, composeFile)) //nolint:gosec // test path
+	if err != nil {
+		t.Fatal(err)
+	}
+	routed := packages.ServiceAlias(key, "web", false)
+	legacy := strconv.Quote(routed + packages.FencedSuffix)
+	if !bytes.Contains(compose, []byte(strconv.Quote(routed))) {
+		t.Fatalf("deployment has no alias %s:\n%s", routed, compose)
+	}
+	compose = bytes.ReplaceAll(compose, []byte(strconv.Quote(routed)), []byte(legacy))
+	if err := writeFileAtomic(filepath.Join(dir, composeFile), compose, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSpec(filepath.Join(dir, desiredFile), versionSpec(id, 2, port, agenttest.Version2, "none")); err != nil {
+		t.Fatal(err)
+	}
+	e = launchAgent(t, s.project, s.registry, agentOptions{dataDir: e.dataDir})
+
+	var op agentapi.Operation
+	eventually(t, 2*time.Minute, "the upgrade is rejected or awaits confirmation", func() bool {
+		var ok bool
+		op, ok = e.agent.ops.forGeneration(key, 2)
+		return ok && (op.Terminal() || op.State == agentapi.OpAwaitingConfirmation)
+	})
+	if op.State == agentapi.OpAwaitingConfirmation {
+		if _, err := e.client.Abort(t.Context(), op.ID); err != nil {
+			t.Fatal(err)
+		}
+		e.waitTerminal(op.ID)
+		t.Fatal("a candidate whose fenced alias is a routed alias of the deployment was started")
+	}
+	if op.Kind != agentapi.KindUpgrade || op.State != agentapi.OpFailed || op.ErrorCode != agentapi.CodePolicyViolation ||
+		op.Rule != packages.RuleAlias || op.SnapshotID != "" {
+		t.Fatalf("rejected upgrade = %+v", op)
+	}
+	if snapshots, err := e.client.Snapshots(t.Context(), key); err != nil || len(snapshots) != 0 {
+		t.Fatalf("rejected upgrade took a snapshot: %+v %v", snapshots, err)
+	}
+	// The running version was never stopped or replaced, and keeps its data.
+	current := e.containers(key)
+	slices.Sort(current)
+	if !slices.Equal(current, containers) {
+		t.Fatalf("preflight replaced running containers: %v -> %v", containers, current)
+	}
+	eventually(t, 2*time.Minute, "1.0.0-1 serves", func() bool {
+		v, err := httpPath(port, "/version")
+		return err == nil && v == agenttest.Version+"\n"
+	})
+	clientWrite(t, port, "after-rejected-upgrade")
+	if got := writesLog(t, e, key); !slices.Equal(got, []string{"before-upgrade", "after-rejected-upgrade"}) {
+		t.Fatalf("acknowledged writes changed: %v", got)
+	}
+	for _, decide := range []func(context.Context, uuid.UUID) (*agentapi.Operation, error){e.client.Confirm, e.client.Abort} {
+		var pe *agentclient.ProblemError
+		if _, err := decide(t.Context(), op.ID); !errors.As(err, &pe) || pe.Code != agentapi.CodeNotAwaitingConfirmation {
+			t.Fatalf("rejected upgrade accepted a decision: %v", err)
+		}
+	}
+	if err := e.stop(); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -289,18 +290,12 @@ func (a *Agent) forward(ctx context.Context, in *instance, j *journal, from *age
 		return err
 	}
 
-	if err := a.enter(in, j, agentapi.PhasePulling); err != nil {
-		return err
-	}
 	c := a.compose(key, secretsOf(from, j.Spec))
 	fencedRC := a.renderContext(key)
 	fencedRC.Fenced = true
 	candidate, err := pkg.Render(j.Spec, inputs, fencedRC)
 	if err != nil {
 		return failed(agentapi.CodeInvalidInput, err)
-	}
-	if err := a.checkPolicy(ctx, pkg, candidate, inputs, fencedRC, c); err != nil {
-		return err
 	}
 	// The commit renders unfenced: check that render now, not after the
 	// switch.
@@ -309,7 +304,34 @@ func (a *Agent) forward(ctx context.Context, in *instance, j *journal, from *age
 	if err != nil {
 		return failed(agentapi.CodeInvalidInput, err)
 	}
+	// No routed alias may reach the unconfirmed candidate. The package
+	// rules keep routed and fenced aliases disjoint (packages.FencedName);
+	// a deployment this release did not render (a restored older version)
+	// is checked here as well: the normalized candidate may share no alias
+	// with the running deployment or the target's unfenced render. This
+	// happens before anything is pulled, stopped or switched.
+	var aliases []string
+	original, err := os.ReadFile(filepath.Join(c.dir, composeFile)) //nolint:gosec // agent-owned current deployment
+	switch {
+	case err == nil:
+		if aliases, err = composeAliases(original); err != nil {
+			return failed(agentapi.CodeComposeFailed, err)
+		}
+	case !errors.Is(err, fs.ErrNotExist): // no deployment: nothing is routed to it
+		return failed(agentapi.CodeComposeFailed, err)
+	}
+	finalAliases, err := composeAliases(final.Compose)
+	if err != nil {
+		return failed(agentapi.CodeInvalidInput, err)
+	}
+	aliases = append(aliases, finalAliases...)
+	if err := a.checkPolicy(ctx, pkg, candidate, inputs, fencedRC, c, aliases...); err != nil {
+		return err
+	}
 	if err := a.checkPolicy(ctx, pkg, final, inputs, rc, c); err != nil {
+		return err
+	}
+	if err := a.enter(in, j, agentapi.PhasePulling); err != nil {
 		return err
 	}
 	if err := a.stage(c, candidate, func(file, env string) error { return c.pull(ctx, file, env) }); err != nil {

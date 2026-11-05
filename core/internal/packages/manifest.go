@@ -267,6 +267,9 @@ func (m *Manifest) validate() error {
 		if slices.Contains(reservedServices, s) {
 			fail("services: %q is reserved for the bundle", s)
 		}
+		if FencedName(s) {
+			fail("services: %q ends in the fence suffix %q", s, FencedSuffix)
+		}
 	}
 	routeNames := map[string]bool{}
 	for i, r := range m.Routes {

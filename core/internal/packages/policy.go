@@ -392,6 +392,11 @@ func (c *policyCheck) serviceNetworks(service string, v any) error {
 			continue
 		}
 		want := ServiceAlias(c.rc.Key, service, c.rc.Fenced)
+		if FencedName(service) {
+			// Declared services are checked by the manifest; this covers
+			// one-shot services too.
+			return violation(RuleAlias, service, "service names ending in %q are reserved for the write fence", FencedSuffix)
+		}
 		if kind != "edge" || len(aliases) != 1 || aliases[0] != want {
 			return violation(RuleAlias, service, "aliases %v on network %q are not allowed (only %s on the edge network)", aliases, key, want)
 		}

@@ -113,6 +113,8 @@ func TestManifestValidation(t *testing.T) {
 		"unpinned image":        {"busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec", "busybox:1.37.0"},
 		"implicit registry":     {"docker.io/library/busybox", "busybox"},
 		"reserved service":      {"services: [web, worker]", "services: [web, worker, postgres]"},
+		"fence suffix service":  {"services: [web, worker]", "services: [web, worker, web-fenced]"},
+		"fence name service":    {"services: [web, worker]", "services: [web, worker, fenced]"},
 		"bad version":           {"version: 1.0.0-1", "version: 1.0.0"},
 		"wrong format":          {"format: 1", "format: 2"},
 		"database password":     {"secrets: [db_password]", "secrets: [other]"},
@@ -490,6 +492,14 @@ func TestPolicy(t *testing.T) {
 				"ports": []any{map[string]any{"target": float64(1), "published": "1"}},
 			}
 		}, RuleOneShot},
+		// The reviewed collision: an unfenced alias in the fenced namespace
+		// would let a route reach another version's fenced project.
+		"fence suffix alias": {func(p map[string]any) {
+			p["services"].(map[string]any)["web-fenced"] = map[string]any{
+				"image": svc(p, "web")["image"], "restart": "no",
+				"networks": map[string]any{"edge": map[string]any{"aliases": []any{"at1-web-fenced"}}},
+			}
+		}, RuleAlias},
 		"missing service":     {func(p map[string]any) { delete(p["services"].(map[string]any), "worker") }, RuleService},
 		"restart always":      {setWeb("restart", "always"), RuleRestart},
 		"no healthcheck":      {setWeb("healthcheck", nil), RuleHealthcheck},
