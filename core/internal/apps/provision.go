@@ -720,8 +720,9 @@ func retryOrCancel(err error) error {
 // Durability: every state change of a removal commits together with what
 // follows from it (a dropped or applied removal queues its person's
 // provision_person job in the same transaction), so a failure of another
-// person, a crash or a retry never loses that work. Retry errors are
-// returned only after everything this run did is committed.
+// person, a crash or a retry never loses that work. Any error stops only
+// the person it concerns; errors are returned only after everything this
+// run did is committed.
 //
 // Retries: a retryable failure leaves the removal open and retries the job.
 // A provider's RetryAfter (a rate limit) snoozes the job until the reset
@@ -769,11 +770,13 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs, 
 	}
 
 	final := attempt >= maxAttempts
-	// retry is the first retryable failure; snooze the provider's RetryAfter.
-	var retry error
+	// retry is the first retryable failure (a provider's or the framework's
+	// own, such as a database error); snooze the provider's RetryAfter.
+	var retry, failure error
 	var snooze time.Duration
 	// A person's removals apply in plan order and stop at their first
-	// failure; other people go on independently.
+	// failure; other people go on independently, so one person's broken
+	// removal never blocks everyone after it.
 	stopped := map[uuid.UUID]bool{}
 apply:
 	for _, item := range toApply {
@@ -786,7 +789,11 @@ apply:
 			stopped[item.removal.PersonID] = true
 			continue
 		case err != nil:
-			return err // what earlier removals did is committed
+			stopped[item.removal.PersonID] = true
+			if failure == nil {
+				failure = err
+			}
+			continue
 		case errors.Is(retryErr, errInstanceInactive):
 			break apply // the rest waits until the instance is provisionable again (activation queues this job)
 		case retryErr != nil:
@@ -819,7 +826,7 @@ apply:
 		// Removals planned while this run worked wait for the next one; a
 		// retry picks them up itself.
 		var later bool
-		if retry == nil {
+		if retry == nil && failure == nil {
 			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM provisioning_removals WHERE instance_id = $1 AND state = 'pending' AND updated_at >= $2)`, inst.ID, startedAt).Scan(&later); err != nil {
 				return fmt.Errorf("apps: check pending removals: %w", err)
 			}
@@ -832,6 +839,8 @@ apply:
 	switch {
 	case err != nil:
 		return err
+	case failure != nil:
+		return failure
 	case snooze > 0:
 		return river.JobSnooze(snooze)
 	case retry != nil:

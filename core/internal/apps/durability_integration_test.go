@@ -348,3 +348,37 @@ func TestRotationRateLimitSnoozes(t *testing.T) {
 		t.Fatalf("candidate = %s, want discarded", s)
 	}
 }
+
+// TestBrokenRemovalDoesNotBlockOthers: a removal that fails inside the
+// framework (here an undecodable action) stops only its person; the
+// people after it are removed and replanned, and the job retries.
+func TestBrokenRemovalDoesNotBlockOthers(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	alice, bob := h.person("alice"), h.person("bob")
+	h.drain()
+	h.planRemovals(inst, alice, bob)
+	// The first removal in apply order is broken.
+	var broken uuid.UUID
+	if err := h.pool.QueryRow(h.ctx, `UPDATE provisioning_removals SET action = '{"kind": 5}'
+		WHERE id = (SELECT id FROM provisioning_removals WHERE instance_id = $1 AND state = 'pending' ORDER BY created_at, id LIMIT 1)
+		RETURNING person_id`, inst.ID).Scan(&broken); err != nil {
+		t.Fatal(err)
+	}
+	other := alice
+	if broken == alice.ID {
+		other = bob
+	}
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8); err == nil {
+		t.Fatal("expected a retry")
+	}
+	if got := h.removalPeople(inst, "applied"); !slices.Equal(got, []uuid.UUID{other.ID}) {
+		t.Fatalf("applied removals of %v, want %s", got, other.Username)
+	}
+	if n := h.personJobs(other.ID); n != 1 {
+		t.Fatalf("%d provision_person jobs for %s, want 1", n, other.Username)
+	}
+	if acct, _ := h.tp.Account(inst.ID, other.Username); acct.Member {
+		t.Fatalf("%s kept access", other.Username)
+	}
+}
