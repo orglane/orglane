@@ -2442,6 +2442,8 @@ export interface components {
             default?: unknown;
             /** @description False if fixed once the instance is created. */
             mutable: boolean;
+            /** @description True if the instance needs it: creating an instance without it (and without a default) is refused, and it cannot be removed. */
+            required: boolean;
         };
         AppEmployeeStep: {
             /** @example github.link-account */

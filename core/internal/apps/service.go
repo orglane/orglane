@@ -33,6 +33,7 @@ import (
 
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/crypto"
+	"github.com/orglane/orglane/core/internal/packages"
 	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/providers/provider"
 )
@@ -94,6 +95,10 @@ type Config struct {
 	Now func() time.Time
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
+	// Packages are the embedded managed packages: the routes and upstreams
+	// of managed instances come from them. Nil: managed instances have
+	// none.
+	Packages *packages.Registry
 }
 
 // Service changes and reads everything the provider framework owns.
@@ -179,6 +184,9 @@ type Instance struct {
 	Settings map[string]any
 	// Adapter is nil when the provider is not compiled into this binary.
 	Adapter *Adapter
+	// upstream is the direct URL of a managed instance on the edge network
+	// (provider.Instance.Upstream); nil when its package is not embedded.
+	upstream *url.URL
 }
 
 // View returns the read-only view adapters get.
@@ -189,6 +197,7 @@ func (i Instance) View() provider.Instance {
 		Provider:   provider.ID(i.Provider),
 		Management: provider.Management(i.Management),
 		Settings:   i.Settings,
+		Upstream:   i.upstream,
 	}
 	if i.BaseUrl != nil {
 		if u, err := url.Parse(*i.BaseUrl); err == nil {
@@ -211,6 +220,7 @@ func (s *Service) instance(row store.AppInstance) (Instance, error) {
 		inst.Adapter = a
 		canonicalSettings(a.Manifest.Settings, settings)
 	}
+	inst.upstream = s.Upstream(row)
 	return inst, nil
 }
 
@@ -296,6 +306,9 @@ func (s *Service) CreateInstance(ctx context.Context, actor audit.Actor, in NewI
 	}
 	settings, err := mergeSettings(m.Settings, nil, in.Settings, true)
 	if err != nil {
+		return Instance{}, err
+	}
+	if err := adapter.validateSettings(settings); err != nil {
 		return Instance{}, err
 	}
 	rawSettings, err := json.Marshal(settings)
@@ -428,6 +441,9 @@ func (s *Service) UpdateInstance(ctx context.Context, actor audit.Actor, id uuid
 			}
 			merged, err := mergeSettings(current.Adapter.Manifest.Settings, current.Settings, in.Settings, false)
 			if err != nil {
+				return err
+			}
+			if err := current.Adapter.validateSettings(merged); err != nil {
 				return err
 			}
 			raw, err := json.Marshal(merged)

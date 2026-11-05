@@ -1,0 +1,50 @@
+# Forgejo, the managed code forge (docs/specs/agent.md "Package format").
+# 15.0 is Forgejo's long-term support line; the image is pinned by version
+# and by the digest of its multi-architecture index.
+format: 1
+id: forgejo
+version: 15.0.11-1
+provider: forgejo
+images:
+  forgejo: codeberg.org/forgejo/forgejo:15.0.11-rootless@sha256:3cd6bc2b74c87cbde0a0fd527c9665cb416f5a0540dee54fe5afb3fa2df9f40c
+services: [forgejo]
+routes:
+  - { name: web, service: forgejo, port: 3000, host_label: git }
+ports:
+  # Git over SSH on a direct host port: SSH has no host name in its
+  # handshake, so Traefik cannot route it (agent.md "Forgejo SSH").
+  - { name: ssh, service: forgejo, container: 2222, setting: ssh_port }
+database:
+  enabled: true
+data_dirs:
+  # The rootless image runs as git (1000:1000) and keeps everything under
+  # /var/lib/gitea: app.ini, repositories, LFS, avatars, SSH host keys.
+  - { name: forgejo, owner: "1000:1000", mode: "0750" }
+settings:
+  - { name: ssh_port, type: int, min: 1024, max: 65535, default: 2222 }
+secrets:
+  - db_password
+  # Forgejo's SECRET_KEY (encrypts two-factor and OAuth2 secrets in the
+  # database). Never rotated: Forgejo cannot re-encrypt with a new key.
+  - secret_key
+  # Password of the service admin the configure hook maintains; Setup uses
+  # it to mint the admin token.
+  - admin_password
+capabilities_add: []
+resources:
+  memory: { min: 256Mi, recommended: 512Mi }
+  disk: { min: 2Gi }
+health:
+  # The first start creates the schema; upgrades migrate on start.
+  start_timeout: 5m
+hooks:
+  configure:
+    - { service: forgejo, command: ["/orglane/files/configure.sh"], timeout: 2m }
+backup:
+  database: true
+  data_dirs: [forgejo]
+  stop_services: [forgejo]
+upgrade:
+  # The first packaged version: there is nothing older to upgrade from.
+  # Forgejo migrates its database on start, so no migrate hook.
+  confirm_timeout: 10m

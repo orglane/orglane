@@ -3922,7 +3922,7 @@ components:
           description: Passed to the agent as a secret input (managed packages); rotates with the managed service.
     AppSettingSpec:
       type: object
-      required: [name, type, mutable]
+      required: [name, type, mutable, required]
       properties:
         name:
           type: string
@@ -3947,6 +3947,11 @@ components:
         mutable:
           type: boolean
           description: False if fixed once the instance is created.
+        required:
+          type: boolean
+          description: >-
+            True if the instance needs it: creating an instance without it
+            (and without a default) is refused, and it cannot be removed.
     AppEmployeeStep:
       type: object
       required: [id, title, description, actionPath, required]

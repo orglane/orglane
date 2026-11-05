@@ -113,7 +113,7 @@ func appProvider(a *apps.Adapter) apigen.AppProvider {
 		p.Credentials = append(p.Credentials, apigen.AppCredentialSpec{Name: c.Name, Source: apigen.AppCredentialSpecSource(c.Source), Rotatable: c.Rotatable, Agent: c.Agent})
 	}
 	for _, st := range m.Settings {
-		spec := apigen.AppSettingSpec{Name: st.Name, Type: apigen.AppSettingSpecType(st.Type), Mutable: st.Mutable, Default: st.Default}
+		spec := apigen.AppSettingSpec{Name: st.Name, Type: apigen.AppSettingSpecType(st.Type), Mutable: st.Mutable, Required: st.Required, Default: st.Default}
 		if st.Pattern != "" {
 			spec.Pattern = &st.Pattern
 		}

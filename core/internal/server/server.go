@@ -105,9 +105,12 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		return errors.Join(err, jobClient.Stop(context.WithoutCancel(ctx)))
 	}
 
+	// Requests Traefik sends for an app instance being upgraded get the
+	// maintenance answer (docs/specs/providers.md "Ingress routes").
+	handler = ingress.Maintenance(cfg.WorkspaceHostname(), handler)
 	listeners := []listener{{name: "public", addr: cfg.Server.Listen, handler: handler}}
 	if cfg.Server.InternalListen != "" {
-		internal, err := ingress.NewHandler(cfg, logger)
+		internal, err := ingress.NewHandler(cfg, stack.Apps.IngressRoutes, logger)
 		if err != nil {
 			return errors.Join(err, jobClient.Stop(context.WithoutCancel(ctx)))
 		}
