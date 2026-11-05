@@ -29,7 +29,14 @@ import (
 
 // Run starts the server and blocks until ctx is canceled (SIGINT/SIGTERM in
 // the binary), then shuts down gracefully within cfg.Server.ShutdownTimeout.
-func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.Logger) (err error) {
+func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.Logger) error {
+	return RunWithStack(ctx, cfg, version, logger, web.StackOptions{})
+}
+
+// RunWithStack is Run with options for the identity and apps stack. Only
+// tests set them (e.g. an HTTP client that reaches managed services from
+// outside Docker).
+func RunWithStack(ctx context.Context, cfg *config.Config, version string, logger *slog.Logger, opts web.StackOptions) (err error) {
 	logger.InfoContext(ctx, "starting orglane server", "version", version, "environment", cfg.Environment,
 		"workspace_host", cfg.Domain.WorkspaceHost, "base_domain", cfg.Domain.Base)
 
@@ -47,7 +54,10 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	if err := migrator.Up(ctx); err != nil {
 		return err
 	}
-	stack, err := web.NewStack(pool, cfg, logger, web.StackOptions{Version: version})
+	if opts.Version == "" {
+		opts.Version = version
+	}
+	stack, err := web.NewStack(pool, cfg, logger, opts)
 	if err != nil {
 		return err
 	}
