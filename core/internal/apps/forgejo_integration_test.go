@@ -1,0 +1,236 @@
+//go:build integration
+
+package apps_test
+
+import (
+	"context"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/orglane/orglane/core/internal/agent"
+	"github.com/orglane/orglane/core/internal/agentapi"
+	"github.com/orglane/orglane/core/internal/agentclient"
+	"github.com/orglane/orglane/core/internal/apps"
+	"github.com/orglane/orglane/core/internal/audit"
+	"github.com/orglane/orglane/core/internal/config"
+	"github.com/orglane/orglane/core/internal/managedtest"
+	"github.com/orglane/orglane/core/internal/packages"
+	"github.com/orglane/orglane/providers/forgejo"
+	forgejopkg "github.com/orglane/orglane/providers/forgejo/managed"
+)
+
+const agentSecret = "integration-agent-secret-0123456789abcdef" //nolint:gosec // a test secret
+
+// startAgent runs the real agent in-process against the bundle.
+func startAgent(t *testing.T, b *managedtest.Bundle, registry *packages.Registry) *agentclient.Client {
+	t.Helper()
+	sockDir, err := os.MkdirTemp("", "apps-agent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	cfg := config.Default().Agent
+	cfg.Secret = agentSecret
+	cfg.Listen = filepath.Join(sockDir, "agent.sock")
+	cfg.DataDir = t.TempDir()
+	cfg.PeerUID = -1
+	cfg.ComposeProject = b.Project
+	cfg.EdgeNetwork, cfg.ServicesNetwork = b.Project+"_edge", b.Project+"_services"
+	cfg.ReconcileInterval = time.Hour
+	a, err := agent.New(agent.Options{Config: cfg, Version: "dev", Registry: registry, Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("agent: %v", err)
+		}
+	})
+	managedtest.Eventually(t, 10*time.Second, "the agent listens", func() bool {
+		c, err := (&net.Dialer{}).DialContext(t.Context(), "unix", cfg.Listen)
+		if err == nil {
+			_ = c.Close()
+		}
+		return err == nil
+	})
+	client, err := agentclient.New(cfg.Listen, agentSecret, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Close)
+	return client
+}
+
+// TestForgejoAdminTokenRotation rotates the admin token of a real Forgejo
+// through the framework (RotateCredential, AbandonRotation and the
+// rotation job), so the adapter's answers are checked against what the
+// core does with them (docs/specs/providers.md "Credentials"): the first
+// version is minted; a second one is minted but its answer lost (uncertain);
+// abandoning it keeps the active token working, deletes the candidate's
+// token in Forgejo and mints nothing.
+func TestForgejoAdminTokenRotation(t *testing.T) {
+	if managedtest.RunAsRoot(t) {
+		return
+	}
+	b := managedtest.StartBundle(t)
+	registry, err := packages.NewRegistry(forgejopkg.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentClient := startAgent(t, b, registry)
+	httpClient, faults := managedtest.WithFaults(b.Client())
+	h := newHarnessWith(t, apps.Config{HTTPClient: httpClient, Packages: registry}, forgejo.New())
+
+	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+		Provider: forgejo.ID, BaseURL: "http://" + managedtest.ForgejoHost,
+		Settings: map[string]any{forgejo.SettingOrganization: "orglane"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.View().Upstream == nil || inst.View().Upstream.Host != "git-forgejo:3000" {
+		t.Fatalf("upstream = %v", inst.View().Upstream)
+	}
+	// The agent installs it with the credentials the core generated.
+	env := h.svc.EnvForTest(inst)
+	secrets := map[string]string{}
+	for _, name := range []string{forgejo.CredentialDBPassword, forgejo.CredentialSecretKey, forgejo.CredentialAdminPassword} {
+		v, err := env.Credential(h.ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secrets[name] = string(v)
+	}
+	project := packages.InstanceProject(b.Project, inst.Key)
+	t.Cleanup(func() {
+		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", project, "down", "--remove-orphans").Run() //nolint:gosec // test commands
+	})
+	b.Routes(t, managedtest.ForgejoRoutes(inst.Key)...)
+	spec := managedtest.ForgejoSpec(inst.ID, 1, managedtest.FreePort(t), secrets, agentapi.StateRunning)
+	op, _, err := agentClient.Apply(t.Context(), inst.Key, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedtest.Eventually(t, 5*time.Minute, "the install finishes", func() bool {
+		op, err = agentClient.Operation(t.Context(), op.ID)
+		return err == nil && op.Terminal()
+	})
+	if op.State != agentapi.OpSucceeded {
+		t.Fatalf("install: %+v", op)
+	}
+	lc, _ := inst.Adapter.Lifecycle()
+	if err := lc.Setup(h.ctx, env, inst.View()); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	tokens := func(name string) string {
+		return b.Psql(t, "svc_git", "select count(*) from access_token where name = '"+name+"'")
+	}
+	works := func(token []byte) int {
+		code, _ := managedtest.Request(t, b.Client(), http.MethodGet, managedtest.ForgejoHost, "/api/v1/user", managedtest.Auth{Token: string(token)}, nil)
+		return code
+	}
+	state := func(version int32) string {
+		var st string
+		if err := h.pool.QueryRow(h.ctx, `SELECT state FROM app_credentials WHERE instance_id = $1 AND name = $2 AND version = $3`,
+			inst.ID, forgejo.CredentialAdminToken, version).Scan(&st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	run := func(version int32, abandon bool) error {
+		return h.svc.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: inst.ID, Name: forgejo.CredentialAdminToken, Version: version, Abandon: abandon})
+	}
+
+	// Version 1: minted and active.
+	v1, err := h.svc.RotateCredential(h.ctx, audit.System, inst.ID, forgejo.CredentialAdminToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run(v1, false); err != nil {
+		t.Fatalf("rotate to version 1: %v", err)
+	}
+	active, err := env.Credential(h.ctx, forgejo.CredentialAdminToken)
+	if err != nil || state(v1) != "active" {
+		t.Fatalf("version 1: %s, %v", state(v1), err)
+	}
+	if code := works(active); code != http.StatusOK {
+		t.Fatalf("the active token: %d", code)
+	}
+
+	// Version 2: Forgejo mints it, the answer is lost.
+	v2, err := h.svc.RotateCredential(h.ctx, audit.System, inst.ID, forgejo.CredentialAdminToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	faults.Drop(http.MethodPost, "/api/v1/users/"+forgejo.AdminUsername+"/tokens")
+	if err := run(v2, false); err == nil {
+		t.Fatal("a lost answer was taken as an outcome")
+	}
+	if state(v2) != "uncertain" || tokens(forgejo.TokenName(int(v2))) != "1" {
+		t.Fatalf("after the lost answer: %s, %s tokens", state(v2), tokens(forgejo.TokenName(int(v2))))
+	}
+
+	// Abandon: the job re-applies the active version, then discards.
+	if err := h.svc.AbandonRotation(h.ctx, audit.System, inst.ID, forgejo.CredentialAdminToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(v2, true); err != nil {
+		t.Fatalf("abandon: %v", err)
+	}
+	if state(v2) != "discarded" || state(v1) != "active" {
+		t.Fatalf("after abandon: v1 %s, v2 %s", state(v1), state(v2))
+	}
+	still, err := env.Credential(h.ctx, forgejo.CredentialAdminToken)
+	if err != nil || string(still) != string(active) {
+		t.Fatalf("the core's active value changed: %v", err)
+	}
+	if code := works(still); code != http.StatusOK {
+		t.Fatalf("the active token after abandon: %d, want 200 (the core holds a token Forgejo deleted)", code)
+	}
+	if got := tokens(forgejo.TokenName(int(v2))) + tokens(forgejo.TokenName(int(v1))); got != "01" {
+		t.Fatalf("tokens of versions 2 and 1 after abandon: %s, want none and one", got)
+	}
+}
+
+// The organization is fixed once the instance exists, so the core refuses
+// names Forgejo would refuse before anything is stored (the adapter's
+// SettingsValidator).
+func TestForgejoOrganizationSetting(t *testing.T) {
+	h := newHarnessWith(t, apps.Config{}, forgejo.New())
+	for _, bad := range []string{"acme-", "acme..org", "Explore", "orglane-admin", "team.keys"} {
+		_, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+			Provider: forgejo.ID, Key: "git", BaseURL: "https://git.acme.test",
+			Settings: map[string]any{forgejo.SettingOrganization: bad},
+		})
+		if apps.Code(err) != "invalid_input" || !strings.Contains(err.Error(), "settings.organization") {
+			t.Errorf("%q: %v, want invalid settings.organization", bad, err)
+		}
+	}
+	var n int
+	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM app_instances`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("instances stored: %d, %v", n, err)
+	}
+	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+		Provider: forgejo.ID, Key: "git", BaseURL: "https://git.acme.test",
+		Settings: map[string]any{forgejo.SettingOrganization: "Acme.Robotics"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mutable settings still validate the whole set on update.
+	if _, err := h.svc.UpdateInstance(h.ctx, audit.System, inst.ID, apps.InstanceUpdate{Settings: map[string]any{forgejo.SettingSSHPort: 2422}}); err != nil {
+		t.Fatalf("update ssh_port: %v", err)
+	}
+}

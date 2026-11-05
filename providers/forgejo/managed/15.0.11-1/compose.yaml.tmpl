@@ -48,12 +48,19 @@ services:
       FORGEJO__actions__ENABLED: "false"
       FORGEJO__log__MODE: "console"
       FORGEJO__log__LEVEL: "Info"
-{{- if .Fenced}}
+      # Orglane decides about upgrades: no release check from Forgejo.
+      FORGEJO__cron_0X2E_update_checker__ENABLED: "false"
       # Upgrade candidate (agent.md "Upgrade"): no outbound side effects
-      # until the upgrade is committed.
-      FORGEJO__cron__ENABLED: "false"
+      # until the upgrade is committed. Forgejo keeps these values in
+      # app.ini when a variable disappears, so every key the fence changes
+      # is set in both renders. Never the global [cron] ENABLED: "true"
+      # there also turns on tasks that are off by default, such as deleting
+      # inactive accounts.
+{{- if .Fenced}}
+      FORGEJO__cron_0X2E_update_mirrors__ENABLED: "false"
       FORGEJO__webhook__ALLOWED_HOST_LIST: "orglane-fenced.invalid"
 {{- else}}
+      FORGEJO__cron_0X2E_update_mirrors__ENABLED: "true"
       # Webhooks reach Orglane by its public name through Traefik's alias.
       FORGEJO__webhook__ALLOWED_HOST_LIST: {{index .Hosts "workspace" | quote}}
 {{- end}}

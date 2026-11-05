@@ -3,6 +3,7 @@ package apps
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 
@@ -19,33 +20,30 @@ import (
 var routedStates = []string{StateInstalling, StateActive, StateDegraded, StateUpgrading}
 
 // IngressRoutes returns the public routes of the managed instances for
-// Traefik: one per route of the instance's package, to the service's alias
-// on the edge network, or to the core's maintenance answer while the
-// instance is upgrading.
+// Traefik: the first route of the instance's package (InstancePackage), on
+// the host of the instance's base URL, to its Upstream, or to the core's
+// maintenance answer while the instance is upgrading.
 //
-// In M2 a package has one route, and its host is the host of the
-// instance's base URL; further routes of a package would need their own
-// hosts and are left out.
-func (s *Service) IngressRoutes(ctx context.Context, pkgs *packages.Registry) ([]ingress.AppRoute, error) {
+// In M2 a package has one route; further routes would need their own hosts
+// and are left out.
+func (s *Service) IngressRoutes(ctx context.Context) ([]ingress.AppRoute, error) {
 	rows, err := store.New(s.pool).ListAppInstancesInState(ctx, routedStates)
 	if err != nil {
 		return nil, fmt.Errorf("apps: list routed instances: %w", err)
 	}
 	var out []ingress.AppRoute
 	for _, row := range rows {
-		r, ok := instanceRoute(row, pkgs)
-		if !ok {
-			continue
+		if r, ok := s.instanceRoute(row); ok {
+			out = append(out, r)
 		}
-		out = append(out, r)
 	}
 	return out, nil
 }
 
 // instanceRoute returns the route of one instance, ok = false if it has
 // none (yet).
-func instanceRoute(row store.AppInstance, pkgs *packages.Registry) (ingress.AppRoute, bool) {
-	if row.Management != "managed" || row.PackageID == nil || row.BaseUrl == nil {
+func (s *Service) instanceRoute(row store.AppInstance) (ingress.AppRoute, bool) {
+	if row.Management != "managed" || row.BaseUrl == nil {
 		return ingress.AppRoute{}, false
 	}
 	if row.State == StateInstalling && (row.DesiredGeneration == 0 || row.ObservedGeneration < row.DesiredGeneration) {
@@ -55,40 +53,58 @@ func instanceRoute(row store.AppInstance, pkgs *packages.Registry) (ingress.AppR
 	if err != nil || u.Hostname() == "" {
 		return ingress.AppRoute{}, false
 	}
-	m, ok := routeManifest(pkgs, *row.PackageID, row.PackageVersion)
-	if !ok || len(m.Routes) == 0 {
+	pkg, ok := s.InstancePackage(row)
+	upstream := s.Upstream(row)
+	if !ok || upstream == nil {
 		return ingress.AppRoute{}, false
 	}
-	route := m.Routes[0]
-	r := ingress.AppRoute{Key: row.Key, Route: route.Name, Host: u.Hostname()}
+	r := ingress.AppRoute{Key: row.Key, Route: pkg.Manifest.Routes[0].Name, Host: u.Hostname()}
 	if row.State == StateUpgrading {
 		r.Maintenance = true
 		return r, true
 	}
-	r.Upstream = "http://" + packages.ServiceAlias(row.Key, route.Service, false) + ":" + strconv.Itoa(route.Port)
+	r.Upstream = upstream.String()
 	return r, true
 }
 
-// routeManifest returns the manifest whose routes apply: the running
-// version's, else (not reported yet, or no longer embedded) the newest
-// embedded version's.
-func routeManifest(pkgs *packages.Registry, id string, running *string) (*packages.Manifest, bool) {
-	if pkgs == nil {
+// The helpers below have the names and behavior of #75's (core/internal/apps
+// agent.go there); whichever merges second drops its copy.
+
+// Upstream is a managed instance's first route on the edge network, the
+// alias Traefik's routes use (agent.md "Networking"), from the package
+// InstancePackage returns; nil without one.
+func (s *Service) Upstream(row store.AppInstance) *url.URL {
+	pkg, ok := s.InstancePackage(row)
+	if !ok || len(pkg.Manifest.Routes) == 0 {
+		return nil
+	}
+	r := pkg.Manifest.Routes[0]
+	return &url.URL{Scheme: "http", Host: net.JoinHostPort(packages.ServiceAlias(row.Key, r.Service, false), strconv.Itoa(r.Port))}
+}
+
+// InstancePackage is the package version whose routes and hosts apply to
+// a managed instance: the running version, else (not reported yet, or no
+// longer embedded) the newest embedded one.
+func (s *Service) InstancePackage(row store.AppInstance) (*packages.Package, bool) {
+	if row.PackageID == nil || s.cfg.Packages == nil {
 		return nil, false
 	}
-	if running != nil {
-		if p, ok := pkgs.Get(agentapi.PackageRef{ID: id, Version: *running}); ok {
-			return p.Manifest, true
-		}
+	if p, ok := s.cfg.Packages.Get(agentapi.PackageRef{ID: *row.PackageID, Version: derefString(row.PackageVersion)}); ok {
+		return p, true
+	}
+	return s.latestPackage(*row.PackageID)
+}
+
+// latestPackage returns the newest embedded version of a package.
+func (s *Service) latestPackage(id string) (*packages.Package, bool) {
+	if s.cfg.Packages == nil {
+		return nil, false
 	}
 	var newest *packages.Package
-	for _, ref := range pkgs.List() { // sorted by ID and version
+	for _, ref := range s.cfg.Packages.List() { // sorted by ID, then version
 		if ref.ID == id {
-			newest, _ = pkgs.Get(ref)
+			newest, _ = s.cfg.Packages.Get(ref)
 		}
 	}
-	if newest == nil {
-		return nil, false
-	}
-	return newest.Manifest, true
+	return newest, newest != nil
 }

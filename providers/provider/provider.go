@@ -448,6 +448,24 @@ type Rotation struct {
 	Value []byte
 }
 
+// SettingsValidator checks instance settings beyond what SettingSpec can
+// express (e.g. a product's reserved names). The core calls it with the
+// merged, typed settings when an instance is created and when its settings
+// change, before anything is stored; an error refuses the change. It must
+// be a pure function of its input.
+type SettingsValidator interface {
+	ValidateSettings(settings map[string]any) error
+}
+
+// SettingError is a refused setting: Setting names it, Reason says why in
+// English (no secrets: settings are not secret).
+type SettingError struct {
+	Setting string
+	Reason  string
+}
+
+func (e *SettingError) Error() string { return "provider: setting " + e.Setting + ": " + e.Reason }
+
 // AccountRealmer names the realm of a provider's accounts for an instance:
 // accounts with the same realm are the same accounts, whichever instance
 // they were linked through (GitHub: "github.com"). Without it the realm is

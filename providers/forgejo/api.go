@@ -52,6 +52,12 @@ type client struct {
 	base     *url.URL
 	user     string
 	password []byte
+	token    string // API token instead of basic auth (withToken)
+}
+
+// withToken returns a client that authenticates with an API token.
+func (c *client) withToken(token string) *client {
+	return &client{http: c.http, base: c.base, token: token}
 }
 
 func newClient(ctx context.Context, env provider.Env, inst provider.Instance, auth bool) (*client, error) {
@@ -95,7 +101,10 @@ func (c *client) doQuery(ctx context.Context, method, path string, query url.Val
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.user != "" {
+	switch {
+	case c.token != "":
+		req.Header.Set("Authorization", "token "+c.token)
+	case c.user != "":
 		req.SetBasicAuth(c.user, string(c.password))
 	}
 	resp, err := c.http.Do(req)
@@ -126,6 +135,14 @@ func retryAfter(v string) time.Duration {
 	return 0
 }
 
+// definite reports whether err is an answer that refuses the request for
+// good: a 4xx other than a timeout or rate limit. Only such an answer can
+// prove that a write was not made, and only for the request it answers.
+func definite(err error) bool {
+	s := status(err)
+	return s >= 400 && s < 500 && s != http.StatusRequestTimeout && s != http.StatusTooManyRequests
+}
+
 // status returns the HTTP status of err, or 0 if Forgejo did not answer.
 func status(err error) int {
 	var se *statusError
@@ -151,7 +168,10 @@ func classify(err error) error {
 	case se.Status == http.StatusTooManyRequests:
 		return &provider.Error{Code: CodeRateLimited, Retryable: true, RetryAfter: se.RetryAfter, Err: err}
 	case se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden:
-		return &provider.Error{Code: CodeAdminAuth, Err: err}
+		// Retryable: right after an install, a reinstall or a new admin
+		// password the configure hook may not have finished; Setup's
+		// attempts are bounded.
+		return &provider.Error{Code: CodeAdminAuth, Retryable: true, Err: err}
 	case se.Status == http.StatusRequestTimeout || se.Status >= 500:
 		return &provider.Error{Code: CodeUnavailable, Retryable: true, RetryAfter: se.RetryAfter, Err: err}
 	default:

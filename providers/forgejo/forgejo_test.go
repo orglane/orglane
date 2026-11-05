@@ -55,19 +55,44 @@ func env() testEnv {
 // fakeForgejo is an httptest stand-in for the Forgejo API endpoints the
 // adapter uses (unit tests only; integration tests run the real Forgejo).
 type fakeForgejo struct {
-	mu       sync.Mutex
-	orgs     map[string]bool
-	tokens   []accessToken
-	nextID   int64
-	health   int
-	admin    bool
-	fail     map[string]int // "METHOD path" -> status to answer once
+	mu     sync.Mutex
+	orgs   map[string]bool
+	tokens []accessToken
+	nextID int64
+	health int
+	admin  bool
+	// fail answers the next requests of "METHOD path" with these statuses
+	// in turn (0: answer normally).
+	fail     map[string][]int
 	requests []string
+	values   map[string]int64 // token value -> token ID
+	// beforeMint runs before a token is minted (a concurrent attempt).
+	beforeMint func(f *fakeForgejo)
+}
+
+// mintLocked adds a token; f.mu is held.
+func (f *fakeForgejo) mintLocked(name string) accessToken {
+	f.nextID++
+	t := accessToken{ID: f.nextID, Name: name, SHA1: fmt.Sprintf("token-%d", f.nextID)}
+	f.tokens = append(f.tokens, accessToken{ID: t.ID, Name: t.Name})
+	f.values[t.SHA1] = t.ID
+	return t
+}
+
+func (f *fakeForgejo) hasToken(id int64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, t := range f.tokens {
+		if t.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func newFake(t *testing.T) (*fakeForgejo, provider.Instance) {
 	t.Helper()
-	f := &fakeForgejo{orgs: map[string]bool{}, health: http.StatusOK, admin: true, fail: map[string]int{}}
+	f := &fakeForgejo{orgs: map[string]bool{}, health: http.StatusOK, admin: true, fail: map[string][]int{}, values: map[string]int64{}}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	u, _ := url.Parse(srv.URL)
@@ -82,10 +107,12 @@ func (f *fakeForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	key := r.Method + " " + r.URL.Path
 	f.requests = append(f.requests, key)
-	if code, ok := f.fail[key]; ok {
-		delete(f.fail, key)
-		w.WriteHeader(code)
-		return
+	if codes := f.fail[key]; len(codes) > 0 {
+		f.fail[key] = codes[1:]
+		if codes[0] != 0 {
+			w.WriteHeader(codes[0])
+			return
+		}
 	}
 	if r.URL.Path == "/api/healthz" {
 		w.WriteHeader(f.health)
@@ -94,6 +121,14 @@ func (f *fakeForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = "fail"
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
+		return
+	}
+	if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "token "); ok {
+		if _, valid := f.values[tok]; !valid || key != "GET /api/v1/user" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": AdminUsername, "is_admin": f.admin})
 		return
 	}
 	if u, p, ok := r.BasicAuth(); !ok || u != AdminUsername || p != testPassword {
@@ -125,15 +160,18 @@ func (f *fakeForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case key == "POST "+tokens:
 		var in struct{ Name string }
 		_ = json.NewDecoder(r.Body).Decode(&in)
+		if f.beforeMint != nil {
+			f.beforeMint(f)
+			f.beforeMint = nil
+		}
 		for _, t := range f.tokens {
 			if t.Name == in.Name {
-				w.WriteHeader(http.StatusUnprocessableEntity)
+				// Forgejo 15 answers 400 when the name is taken.
+				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
 		}
-		f.nextID++
-		t := accessToken{ID: f.nextID, Name: in.Name, SHA1: fmt.Sprintf("token-%d", f.nextID)}
-		f.tokens = append(f.tokens, accessToken{ID: t.ID, Name: t.Name})
+		t := f.mintLocked(in.Name)
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(t)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, tokens+"/"):
@@ -141,6 +179,11 @@ func (f *fakeForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for i, t := range f.tokens {
 			if t.ID == id {
 				f.tokens = append(f.tokens[:i], f.tokens[i+1:]...)
+				for v, vid := range f.values {
+					if vid == id {
+						delete(f.values, v)
+					}
+				}
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
@@ -219,7 +262,7 @@ func TestSetup(t *testing.T) {
 	// finds it.
 	f2, inst2 := newFake(t)
 	f2.orgs["acme"] = true
-	f2.fail["GET /api/v1/orgs/acme"] = http.StatusNotFound
+	f2.fail["GET /api/v1/orgs/acme"] = []int{http.StatusNotFound}
 	if err := a.Setup(t.Context(), env(), inst2); err != nil {
 		t.Fatalf("race: %v", err)
 	}
@@ -231,13 +274,15 @@ func TestSetup(t *testing.T) {
 	}{
 		"no organization setting": {func(_ *fakeForgejo, i *provider.Instance, _ *testEnv) { delete(i.Settings, SettingOrganization) }, CodeInvalidSettings, false},
 		"bad organization":        {func(_ *fakeForgejo, i *provider.Instance, _ *testEnv) { i.Settings[SettingOrganization] = "-x" }, CodeInvalidSettings, false},
+		"reserved organization":   {func(_ *fakeForgejo, i *provider.Instance, _ *testEnv) { i.Settings[SettingOrganization] = "Explore" }, CodeInvalidSettings, false},
+		// Retryable: the configure hook may still be setting the password.
 		"wrong password": {func(_ *fakeForgejo, _ *provider.Instance, e *testEnv) {
 			e.creds[CredentialAdminPassword] = []byte("wrong")
-		}, CodeAdminAuth, false},
+		}, CodeAdminAuth, true},
 		"not an admin":    {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.admin = false }, CodeAdminAuth, false},
-		"server error":    {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.fail["GET /api/v1/user"] = 502 }, CodeUnavailable, true},
-		"rate limited":    {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.fail["GET /api/v1/orgs/acme"] = 429 }, CodeRateLimited, true},
-		"rejected create": {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.fail["POST /api/v1/orgs"] = 400 }, CodeRejected, false},
+		"server error":    {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.fail["GET /api/v1/user"] = []int{502} }, CodeUnavailable, true},
+		"rate limited":    {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.fail["GET /api/v1/orgs/acme"] = []int{429} }, CodeRateLimited, true},
+		"rejected create": {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.fail["POST /api/v1/orgs"] = []int{400} }, CodeRejected, false},
 		"no upstream":     {func(_ *fakeForgejo, i *provider.Instance, _ *testEnv) { i.Upstream = nil }, CodeNoUpstream, true},
 	}
 	for name, c := range cases {
@@ -318,22 +363,28 @@ func TestApplyCredential(t *testing.T) {
 
 	tokens := "/api/v1/users/" + AdminUsername + "/tokens"
 	cases := map[string]struct {
-		status  int
-		path    string
+		fail    map[string][]int
 		outcome provider.RotationOutcome
 	}{
-		"unauthorized mint": {http.StatusUnauthorized, "POST " + tokens, provider.RotationRejected},
-		"invalid request":   {http.StatusBadRequest, "POST " + tokens, provider.RotationRejected},
-		"server error":      {http.StatusInternalServerError, "POST " + tokens, provider.RotationUnknown},
-		"name conflict":     {http.StatusUnprocessableEntity, "POST " + tokens, provider.RotationUnknown},
-		"list unavailable":  {http.StatusBadGateway, "GET " + tokens, provider.RotationUnknown},
-		"list rate limited": {http.StatusTooManyRequests, "GET " + tokens, provider.RotationUnknown},
-		"list unauthorized": {http.StatusForbidden, "GET " + tokens, provider.RotationRejected},
+		// A refusal backed by a read-back without the token is proof.
+		"unauthorized mint": {map[string][]int{"POST " + tokens: {http.StatusUnauthorized}}, provider.RotationRejected},
+		"invalid request":   {map[string][]int{"POST " + tokens: {http.StatusBadRequest}}, provider.RotationRejected},
+		"server error":      {map[string][]int{"POST " + tokens: {http.StatusInternalServerError}}, provider.RotationUnknown},
+		"rate limited mint": {map[string][]int{"POST " + tokens: {http.StatusTooManyRequests}}, provider.RotationUnknown},
+		// Read-backs and cleanups that fail prove nothing, whatever the
+		// status: an earlier attempt may have minted the token.
+		"list unavailable":  {map[string][]int{"GET " + tokens: {http.StatusBadGateway}}, provider.RotationUnknown},
+		"list rate limited": {map[string][]int{"GET " + tokens: {http.StatusTooManyRequests}}, provider.RotationUnknown},
+		"list unauthorized": {map[string][]int{"GET " + tokens: {http.StatusForbidden}}, provider.RotationUnknown},
+		"list not found":    {map[string][]int{"GET " + tokens: {http.StatusNotFound}}, provider.RotationUnknown},
+		"refused, read-back fails": {map[string][]int{
+			"POST " + tokens: {http.StatusBadRequest}, "GET " + tokens: {0, http.StatusUnauthorized},
+		}, provider.RotationUnknown},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			f, inst := newFake(t)
-			f.fail[c.path] = c.status
+			f.fail = c.fail
 			r, err := a.ApplyCredential(t.Context(), env(), inst, CredentialAdminToken, 1, nil)
 			if r.Outcome != c.outcome {
 				t.Fatalf("outcome = %s (%v), want %s", r.Outcome, err, c.outcome)
@@ -347,6 +398,30 @@ func TestApplyCredential(t *testing.T) {
 		})
 	}
 
+	// A token of the version appears between the read-back and the mint
+	// (an attempt still in flight): Forgejo refuses the name with 400. That
+	// is no proof: unknown, and the next attempt deletes and mints again.
+	f, inst = newFake(t)
+	f.beforeMint = func(f *fakeForgejo) { f.mintLocked(TokenName(1)) }
+	if r, err := a.ApplyCredential(t.Context(), env(), inst, CredentialAdminToken, 1, nil); r.Outcome != provider.RotationUnknown || err == nil {
+		t.Fatalf("name taken after the read-back = %+v, %v", r, err)
+	}
+	if r, err := a.ApplyCredential(t.Context(), env(), inst, CredentialAdminToken, 1, nil); r.Outcome != provider.RotationAcknowledged || err != nil {
+		t.Fatalf("next attempt = %+v, %v", r, err)
+	}
+
+	// A committed mint whose answer was lost, then an attempt that cannot
+	// authenticate: unknown, never rejected (the token exists).
+	f, inst = newFake(t)
+	f.mu.Lock()
+	f.mintLocked(TokenName(1))
+	f.mu.Unlock()
+	wrong := env()
+	wrong.creds[CredentialAdminPassword] = []byte("wrong")
+	if r, err := a.ApplyCredential(t.Context(), wrong, inst, CredentialAdminToken, 1, nil); r.Outcome != provider.RotationUnknown || err == nil {
+		t.Fatalf("lost mint, then no authentication = %+v, %v", r, err)
+	}
+
 	// A timeout is unknown: Forgejo may have minted the token.
 	_, inst = newFake(t)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -358,5 +433,117 @@ func TestApplyCredential(t *testing.T) {
 	// Other credentials are not rotated through the adapter.
 	if r, _ := a.ApplyCredential(t.Context(), env(), inst, CredentialSecretKey, 2, []byte("x")); r.Outcome != provider.RotationRejected {
 		t.Fatalf("secret_key rotation = %+v", r)
+	}
+}
+
+// Abandon: the core re-applies the active version it holds (value set).
+// The held token stays valid and nothing is minted; newer tokens (the
+// abandoned candidate, possibly minted) are deleted; older ones stay.
+func TestReassertToken(t *testing.T) {
+	a := New()
+	f, inst := newFake(t)
+	f.mu.Lock()
+	old := f.mintLocked(TokenName(1))
+	active := f.mintLocked(TokenName(2))
+	candidate := f.mintLocked(TokenName(3))
+	other := f.mintLocked("someone-else")
+	f.mu.Unlock()
+
+	r, err := a.ApplyCredential(t.Context(), env(), inst, CredentialAdminToken, 2, []byte(active.SHA1))
+	if err != nil || r.Outcome != provider.RotationAcknowledged || r.Value != nil {
+		t.Fatalf("re-apply = %+v, %v", r, err)
+	}
+	if !f.hasToken(active.ID) || !f.hasToken(old.ID) || !f.hasToken(other.ID) {
+		t.Fatal("re-applying the active version deleted a token it must keep")
+	}
+	if f.hasToken(candidate.ID) {
+		t.Fatal("the abandoned candidate's token is still valid")
+	}
+	if len(f.values) != 3 {
+		t.Fatalf("tokens after re-apply: %d, want 3 (nothing minted)", len(f.values))
+	}
+
+	// A held value Forgejo no longer accepts is not in use: rejected.
+	if r, err := a.ApplyCredential(t.Context(), env(), inst, CredentialAdminToken, 2, []byte("token-unknown")); err != nil || r.Outcome != provider.RotationRejected {
+		t.Fatalf("revoked held value = %+v, %v", r, err)
+	}
+	tokens := "/api/v1/users/" + AdminUsername + "/tokens"
+	for name, fail := range map[string]func(candidate int64) map[string][]int{
+		"list fails": func(int64) map[string][]int { return map[string][]int{"GET " + tokens: {http.StatusBadGateway}} },
+		"delete fails": func(id int64) map[string][]int {
+			return map[string][]int{"DELETE " + tokens + "/" + strconv.FormatInt(id, 10): {http.StatusInternalServerError}}
+		},
+		"check fails": func(int64) map[string][]int {
+			return map[string][]int{"GET /api/v1/user": {http.StatusServiceUnavailable}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, inst := newFake(t)
+			f.mu.Lock()
+			held := f.mintLocked(TokenName(2))
+			candidate := f.mintLocked(TokenName(3))
+			f.mu.Unlock()
+			f.fail = fail(candidate.ID)
+			if r, err := a.ApplyCredential(t.Context(), env(), inst, CredentialAdminToken, 2, []byte(held.SHA1)); r.Outcome != provider.RotationUnknown || err == nil {
+				t.Fatalf("outcome = %+v, %v; want unknown", r, err)
+			}
+		})
+	}
+}
+
+// A refused organization creation is read back; the read-back's own
+// failure keeps its classification, and only a read-back that finds no
+// organization makes the refusal final.
+func TestSetupConflictReadBack(t *testing.T) {
+	a := New()
+	for name, c := range map[string]struct {
+		readBack int // status of the second GET; 0: the organization exists
+		code     string
+		retry    bool
+	}{
+		"created meanwhile":   {0, "", false},
+		"read-back 503":       {http.StatusServiceUnavailable, CodeUnavailable, true},
+		"read-back 429":       {http.StatusTooManyRequests, CodeRateLimited, true},
+		"read-back 401":       {http.StatusUnauthorized, CodeAdminAuth, true},
+		"not there after all": {http.StatusNotFound, CodeRejected, false},
+	} {
+		for _, refusal := range []int{http.StatusConflict, http.StatusUnprocessableEntity, http.StatusBadRequest} {
+			t.Run(fmt.Sprintf("%s/%d", name, refusal), func(t *testing.T) {
+				f, inst := newFake(t)
+				f.orgs["acme"] = c.readBack == 0
+				f.fail["GET /api/v1/orgs/acme"] = []int{http.StatusNotFound, c.readBack}
+				f.fail["POST /api/v1/orgs"] = []int{refusal}
+				err := a.Setup(t.Context(), env(), inst)
+				got, retry, _ := provider.Classify(err)
+				if c.code == "" {
+					if err != nil {
+						t.Fatalf("Setup: %v", err)
+					}
+					return
+				}
+				if err == nil || got != c.code || retry != c.retry {
+					t.Fatalf("error = %v (code %s, retryable %v), want %s, %v", err, got, retry, c.code, c.retry)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateSettings(t *testing.T) {
+	a := New()
+	for _, ok := range []string{"acme", "Acme-Robotics", "a.b_c-d", "a", "x1", strings.Repeat("a", 40)} {
+		if err := a.ValidateSettings(map[string]any{SettingOrganization: ok}); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "acme-", "acme..org", "a--b", "-acme", ".acme", "_x", "acme_", "a b", "über",
+		strings.Repeat("a", 41), "admin", "Explore", "api", "orglane-admin", "acme.keys", "Acme.RSS", "ghost"} {
+		var se *provider.SettingError
+		if err := a.ValidateSettings(map[string]any{SettingOrganization: bad}); !errors.As(err, &se) || se.Setting != SettingOrganization {
+			t.Errorf("%q accepted: %v", bad, err)
+		}
+	}
+	if err := a.ValidateSettings(map[string]any{SettingSSHPort: int64(2222)}); err != nil {
+		t.Errorf("without an organization: %v", err)
 	}
 }

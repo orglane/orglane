@@ -22,7 +22,6 @@ import (
 	"github.com/orglane/orglane/core/internal/identity/web"
 	"github.com/orglane/orglane/core/internal/ingress"
 	"github.com/orglane/orglane/core/internal/jobs"
-	"github.com/orglane/orglane/core/internal/packages"
 	"github.com/orglane/orglane/core/internal/webui"
 	"github.com/orglane/orglane/demo"
 	webapp "github.com/orglane/orglane/web"
@@ -111,12 +110,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	handler = ingress.Maintenance(cfg.WorkspaceHostname(), handler)
 	listeners := []listener{{name: "public", addr: cfg.Server.Listen, handler: handler}}
 	if cfg.Server.InternalListen != "" {
-		pkgs, err := packages.Embedded()
-		if err != nil {
-			return errors.Join(err, jobClient.Stop(context.WithoutCancel(ctx)))
-		}
-		routes := func(ctx context.Context) ([]ingress.AppRoute, error) { return stack.Apps.IngressRoutes(ctx, pkgs) }
-		internal, err := ingress.NewHandler(cfg, routes, logger)
+		internal, err := ingress.NewHandler(cfg, stack.Apps.IngressRoutes, logger)
 		if err != nil {
 			return errors.Join(err, jobClient.Stop(context.WithoutCancel(ctx)))
 		}

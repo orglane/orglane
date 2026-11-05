@@ -18,6 +18,7 @@ import (
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/identity/oidcop"
 	"github.com/orglane/orglane/core/internal/mail"
+	"github.com/orglane/orglane/core/internal/packages"
 	"github.com/orglane/orglane/core/internal/peopleimport"
 	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/core/internal/store"
@@ -138,7 +139,11 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	if err != nil {
 		return nil, err
 	}
-	appsSvc := apps.NewService(pool, registry, keyring, apps.Config{WorkspaceURL: u, IssuerURL: issuer, Logger: logger})
+	pkgs, err := packages.Embedded()
+	if err != nil {
+		return nil, err
+	}
+	appsSvc := apps.NewService(pool, registry, keyring, apps.Config{WorkspaceURL: u, IssuerURL: issuer, Logger: logger, Packages: pkgs})
 	svc.SetDirectoryObserver(appsSvc)
 	return &Stack{Identity: svc, Profile: profiles, Imports: peopleimport.NewService(pool, svc, profiles, keyring, peopleimport.WithLogger(logger)), Keys: keys, Provider: provider, Auth: auth, Mail: mailer, Apps: appsSvc}, nil
 }

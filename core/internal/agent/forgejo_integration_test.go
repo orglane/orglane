@@ -3,23 +3,13 @@
 package agent
 
 import (
-	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,303 +17,71 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/orglane/orglane/core/internal/agentapi"
-	"github.com/orglane/orglane/core/internal/config"
-	"github.com/orglane/orglane/core/internal/crypto"
-	"github.com/orglane/orglane/core/internal/ingress"
+	"github.com/orglane/orglane/core/internal/managedtest"
 	"github.com/orglane/orglane/core/internal/packages"
 	"github.com/orglane/orglane/providers/forgejo"
 	forgejopkg "github.com/orglane/orglane/providers/forgejo/managed"
 	"github.com/orglane/orglane/providers/provider"
 )
 
-// traefikImage is the bundle's Traefik image (deploy/compose).
-const traefikImage = "traefik:v3.7.17@sha256:30ff62491aacdb862ceb8c9edcf2627da638d7deafdd4b6dab32fe34f8aa3e90"
-
-// forgejoHost is the instance host in local mode (agent.md "Local mode").
-const forgejoHost = "git.orglane.localhost"
-
-// startTraefikBundle starts a minimal stand-in for the Compose bundle with
-// the real Traefik: PostgreSQL on the services network and Traefik on the
-// edge network, publishing its HTTP entry point on a loopback port and
-// reading its dynamic configuration from a file the test writes (in the
-// bundle it polls the core instead). It returns the project, the directory
-// of the dynamic configuration and Traefik's host port.
-func startTraefikBundle(t *testing.T) (project, dynamicDir string, port int) {
-	t.Helper()
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	project = "fgj" + hex.EncodeToString(b)
-	dir := t.TempDir()
-	dynamicDir = filepath.Join(dir, "dynamic")
-	if err := os.Mkdir(dynamicDir, 0o755); err != nil { //nolint:gosec // read by Traefik
-		t.Fatal(err)
-	}
-	file := filepath.Join(dir, "compose.yaml")
-	bundle := fmt.Sprintf(`name: %s
-services:
-  postgres:
-    image: %s
-    environment: {POSTGRES_USER: orglane, POSTGRES_DB: orglane, POSTGRES_PASSWORD: bundle-test}
-    networks: [database, services]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U orglane -d orglane"]
-      interval: 1s
-      retries: 60
-  traefik:
-    image: %s
-    command:
-      - --entrypoints.web.address=:80
-      - --providers.file.directory=/etc/traefik/dynamic
-      - --providers.file.watch=true
-      - --ping=true
-      - --log.level=ERROR
-    volumes:
-      - %s:/etc/traefik/dynamic:ro
-    ports: ["127.0.0.1::80"]
-    networks: [edge]
-    healthcheck:
-      test: ["CMD", "traefik", "healthcheck", "--ping"]
-      interval: 1s
-      retries: 60
-networks:
-  edge: {}
-  database: {internal: true}
-  services: {internal: true}
-`, project, postgresImage, traefikImage, dynamicDir)
-	if err := os.WriteFile(file, []byte(bundle), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		out, err := exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", project, "-f", file, "down", "--volumes", "--remove-orphans").CombinedOutput() //nolint:gosec // test commands
-		if err != nil {
-			t.Logf("bundle down: %v\n%s", err, out)
-		}
-	})
-	docker(t, "compose", "-p", project, "-f", file, "up", "--detach", "--wait")
-	addr := docker(t, "compose", "-p", project, "-f", file, "port", "traefik", "80")
-	_, p, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatalf("traefik port %q: %v", addr, err)
-	}
-	port, _ = strconv.Atoi(p)
-	return project, dynamicDir, port
-}
-
-// writeRoutes writes the core's Traefik configuration (ingress.Build) for
-// the routes into Traefik's file provider. JSON is valid YAML.
-func writeRoutes(t *testing.T, dir string, routes []ingress.AppRoute) {
-	t.Helper()
-	cfg, err := config.Load("", func(k string) (string, bool) {
-		v, ok := map[string]string{
-			"ORGLANE_DATABASE_URL":           "postgres://orglane@postgres:5432/orglane",
-			"ORGLANE_DOMAIN_BASE":            "orglane.localhost",
-			"ORGLANE_DOMAIN_SCHEME":          "http",
-			"ORGLANE_ENVIRONMENT":            "development",
-			"ORGLANE_INGRESS_MODE":           "local",
-			"ORGLANE_SERVER_INTERNAL_LISTEN": ":9090",
-			"ORGLANE_INGRESS_UPSTREAM_URL":   "http://orglane:8080",
-		}[k]
-		return v, ok
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := json.Marshal(ingress.Build(cfg, routes))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmp := filepath.Join(dir, ".orglane.yaml.tmp")
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil { //nolint:gosec // read by Traefik
-		t.Fatal(err)
-	}
-	if err := os.Rename(tmp, filepath.Join(dir, "orglane.yaml")); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// viaTraefik is an HTTP client that sends every request to Traefik's
-// published port, whatever the URL's host: the host decides the route, as
-// for a browser that resolves *.localhost to loopback.
-func viaTraefik(port int) *http.Client {
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	return &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				return dialer.DialContext(ctx, network, "127.0.0.1:"+strconv.Itoa(port))
-			},
-		},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-}
-
-// forgejoEnv is the core's provider.Env for the adapter: fixed credentials
-// and the client through Traefik.
-type forgejoEnv struct {
-	creds  map[string][]byte
-	client *http.Client
-}
-
-func (e *forgejoEnv) Credential(_ context.Context, name string) ([]byte, error) {
-	if v, ok := e.creds[name]; ok {
-		return v, nil
-	}
-	return nil, provider.ErrNotFound
-}
-
-func (e *forgejoEnv) Credentials(ctx context.Context, name string) ([][]byte, error) {
-	v, err := e.Credential(ctx, name)
-	return [][]byte{v}, err
-}
-
-func (e *forgejoEnv) HTTPClient() *http.Client { return e.client }
-func (*forgejoEnv) Logger() *slog.Logger       { return slog.New(slog.DiscardHandler) }
-func (*forgejoEnv) Now() time.Time             { return time.Now() }
-func (*forgejoEnv) WorkspaceURL() *url.URL {
-	return &url.URL{Scheme: "http", Host: "orglane.localhost"}
-}
-func (*forgejoEnv) IssuerURL() *url.URL { return &url.URL{Scheme: "http", Host: "orglane.localhost"} }
-func (*forgejoEnv) WebhookURL(uuid.UUID) *url.URL {
-	return &url.URL{Scheme: "http", Host: "orglane.localhost"}
-}
-
-// dropResponse forwards a request and then loses the answer of the first
-// one that matches: Forgejo committed the change, the caller never hears.
-type dropResponse struct {
-	next   http.RoundTripper
-	method string
-	path   string
-	armed  bool
-}
-
-func (d *dropResponse) RoundTrip(r *http.Request) (*http.Response, error) {
-	resp, err := d.next.RoundTrip(r)
-	if err == nil && d.armed && r.Method == d.method && r.URL.Path == d.path {
-		d.armed = false
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		return nil, errors.New("connection reset (test)")
-	}
-	return resp, err
-}
-
-func forgejoSpec(id uuid.UUID, gen int64, sshPort int, secrets map[string]string, state string) *agentapi.Spec {
-	return &agentapi.Spec{
-		InstanceID: id,
-		Generation: gen,
-		Package:    agentapi.PackageRef{ID: "forgejo", Version: forgejopkg.Current},
-		State:      state,
-		Hosts:      map[string]string{"workspace": "orglane.localhost", "web": forgejoHost},
-		URLs: agentapi.URLs{
-			Workspace: "http://orglane.localhost", Issuer: "http://orglane.localhost",
-			Instance: "http://" + forgejoHost, Webhook: "http://orglane.localhost/api/v1/webhooks/" + id.String(),
-		},
-		Ingress:  agentapi.IngressLocal,
-		Settings: map[string]any{forgejo.SettingSSHPort: sshPort},
-		Secrets:  secrets,
-	}
-}
-
-func forgejoSecrets() map[string]string {
-	return map[string]string{
-		forgejo.CredentialDBPassword:    crypto.RandomToken(""),
-		forgejo.CredentialSecretKey:     crypto.RandomToken(""),
-		forgejo.CredentialAdminPassword: crypto.RandomToken(""),
-	}
-}
-
-// sshBanner reads the SSH identification line of a server.
-func sshBanner(port int) (string, error) {
-	c, err := (&net.Dialer{Timeout: 3 * time.Second}).Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	return bufio.NewReader(c).ReadString('\n')
-}
-
-// apiGet calls the Forgejo API through Traefik with basic auth or a token
-// and returns the status.
-func apiGet(t *testing.T, c *http.Client, path, user, password, token string) int {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+forgejoHost+path, http.NoBody)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if user != "" {
-		req.SetBasicAuth(user, password)
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "token "+token)
-	}
-	resp, err := c.Do(req)
-	if err != nil {
-		t.Fatalf("GET %s: %v", path, err)
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	return resp.StatusCode
-}
-
 // TestForgejoPackage installs the Forgejo package with the real agent on
-// PostgreSQL and reaches it through Traefik with the routes the core
-// builds; then it runs the adapter's Lifecycle against it (health, setup,
-// the admin token with a lost answer), checks Git over SSH on the published
-// port, changes settings and secrets, removes and reinstalls it with its
-// data, and purges it so the key starts empty (docs/specs/agent.md
-// "Testing", providers.md "Keys and removal").
+// PostgreSQL and reaches it through the real Traefik with the routes the
+// core builds. Then: the adapter's Lifecycle against it (health, setup,
+// organization names), the admin token with every ambiguous answer the
+// adapter must not mistake for proof, Git over SSH on the published port, a
+// fenced start followed by the unfenced render (the fence must not outlive
+// it), changed settings and secrets, remove, reinstall with the data, and
+// purge so the key starts empty (docs/specs/agent.md "Testing",
+// providers.md "Keys and removal").
 func TestForgejoPackage(t *testing.T) {
-	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		// Forgejo runs as uid 1000 and needs its data directory to be its
-		// own: only an agent running as root (as in the bundle) sets the
-		// owner. make test-compose installs Forgejo with the real agent
-		// container in CI.
-		t.Skip("needs root on Linux: the agent sets the owner of Forgejo's data directory only as root")
+	if managedtest.RunAsRoot(t) {
+		return
 	}
-	project, dynamicDir, traefikPort := startTraefikBundle(t)
+	b := managedtest.StartBundle(t)
 	registry, err := packages.NewRegistry(forgejopkg.FS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := startAgent(t, project, registry)
+	e := startAgent(t, b.Project, registry)
 	const key = "git"
 	dir := e.agent.instanceDir(key)
 	t.Cleanup(func() {
-		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", packages.InstanceProject(project, key), "down", "--remove-orphans").Run() //nolint:gosec // test commands
+		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "compose", "-p", packages.InstanceProject(b.Project, key), "down", "--remove-orphans").Run() //nolint:gosec // test commands
 	})
-	client := viaTraefik(traefikPort)
+	client := b.Client()
 	adapter := forgejo.New()
 	id := uuid.Must(uuid.NewV7())
-	secrets := forgejoSecrets()
-	sshPort := freePort(t)
-	env := &forgejoEnv{client: client, creds: map[string][]byte{forgejo.CredentialAdminPassword: []byte(secrets[forgejo.CredentialAdminPassword])}}
-	// The core reaches the upstream on the edge network; the test reaches
-	// it through Traefik under the public name.
+	secrets := managedtest.ForgejoSecrets()
+	sshPort := managedtest.FreePort(t)
+	env := &managedtest.Env{Client: client, Creds: map[string][]byte{forgejo.CredentialAdminPassword: []byte(secrets[forgejo.CredentialAdminPassword])}}
+	upstream := &url.URL{Scheme: "http", Host: packages.ServiceAlias(key, "forgejo", false) + ":3000"}
 	inst := provider.Instance{
 		ID: id, Key: key, Provider: forgejo.ID, Management: provider.Managed,
-		BaseURL: &url.URL{Scheme: "http", Host: forgejoHost}, Upstream: &url.URL{Scheme: "http", Host: forgejoHost},
+		BaseURL: &url.URL{Scheme: "http", Host: managedtest.ForgejoHost}, Upstream: upstream,
 		Settings: map[string]any{forgejo.SettingOrganization: "orglane", forgejo.SettingSSHPort: int64(sshPort)},
 	}
+	admin := managedtest.Auth{User: forgejo.AdminUsername, Password: secrets[forgejo.CredentialAdminPassword]}
+	get := func(path string, auth managedtest.Auth) int {
+		code, _ := managedtest.Request(t, client, http.MethodGet, managedtest.ForgejoHost, path, auth, nil)
+		return code
+	}
+	healthy := func() bool { return get("/api/healthz", managedtest.Auth{}) == http.StatusOK }
+	tokens := e.psqlCount("svc_git", "access_token")
 
-	// The route goes in before the install, as for a reinstall: Traefik
+	// The routes go in before the install, as for a reinstall: Traefik
 	// answers 502 until the service is up.
-	route := ingress.AppRoute{Key: key, Route: "web", Host: forgejoHost, Upstream: "http://" + packages.ServiceAlias(key, "forgejo", false) + ":3000"}
-	writeRoutes(t, dynamicDir, []ingress.AppRoute{route})
+	b.Routes(t, managedtest.ForgejoRoutes(key)...)
 
 	start := time.Now()
-	e.mustApplyKey(key, forgejoSpec(id, 1, sshPort, secrets, agentapi.StateRunning))
+	gen := int64(1)
+	e.mustApplyKey(key, managedtest.ForgejoSpec(id, gen, sshPort, secrets, agentapi.StateRunning))
 	t.Logf("installed Forgejo %s in %s", forgejopkg.Current, time.Since(start).Round(time.Second))
-
-	// Health through Traefik, then the adapter's checks.
-	eventually(t, time.Minute, "Forgejo answers through Traefik", func() bool {
-		return apiGet(t, client, "/api/healthz", "", "", "") == http.StatusOK
-	})
+	managedtest.Eventually(t, time.Minute, "Forgejo answers through Traefik", healthy)
 	if err := adapter.CheckHealth(t.Context(), env, inst); err != nil {
 		t.Fatalf("CheckHealth: %v", err)
 	}
 	// Nobody browses anonymously.
-	if code := apiGet(t, client, "/explore/repos", "", "", ""); code != http.StatusSeeOther {
+	if code := get("/explore/repos", managedtest.Auth{}); code != http.StatusSeeOther {
 		t.Fatalf("anonymous explore = %d, want a redirect to sign in", code)
 	}
 
@@ -334,94 +92,82 @@ func TestForgejoPackage(t *testing.T) {
 			t.Fatalf("Setup: %v", err)
 		}
 	}
-	admin, password := forgejo.AdminUsername, secrets[forgejo.CredentialAdminPassword]
-	if code := apiGet(t, client, "/api/v1/orgs/orglane", admin, password, ""); code != http.StatusOK {
+	if code := get("/api/v1/orgs/orglane", admin); code != http.StatusOK {
 		t.Fatalf("organization = %d", code)
 	}
 	if got := e.psql("svc_git", `select visibility from "user" where lower_name = 'orglane'`); got != "1" { // 1: limited
 		t.Fatalf("organization visibility = %q, want limited", got)
 	}
 
-	// The admin token: minted, used, and minted again after a lost answer.
-	r, err := adapter.ApplyCredential(t.Context(), env, inst, forgejo.CredentialAdminToken, 1, nil)
-	if err != nil || r.Outcome != provider.RotationAcknowledged {
-		t.Fatalf("mint: %+v, %v", r, err)
+	// Organization names: what the setting accepts, Forgejo accepts; what
+	// Forgejo refuses never reaches it.
+	edge := inst
+	edge.Settings = map[string]any{forgejo.SettingOrganization: "Acme.Robo_t-1"}
+	if err := adapter.Setup(t.Context(), env, edge); err != nil {
+		t.Fatalf("Setup with an edge-case name: %v", err)
 	}
-	token1 := string(r.Value)
-	if code := apiGet(t, client, "/api/v1/user", "", "", token1); code != http.StatusOK {
-		t.Fatalf("the minted token does not work: %d", code)
-	}
-	lossy := *client
-	lossy.Transport = &dropResponse{next: client.Transport, method: http.MethodPost, path: "/api/v1/users/" + admin + "/tokens", armed: true}
-	lossyEnv := &forgejoEnv{client: &lossy, creds: env.creds}
-	if r, err := adapter.ApplyCredential(t.Context(), lossyEnv, inst, forgejo.CredentialAdminToken, 2, nil); err == nil || r.Outcome != provider.RotationUnknown {
-		t.Fatalf("lost answer: %+v, %v (want unknown)", r, err)
-	}
-	if got := e.psql("svc_git", `select count(*) from access_token where name = 'orglane-2'`); got != "1" {
-		t.Fatalf("the lost mint did not commit (%s tokens): the fault is not realistic", got)
-	}
-	r, err = adapter.ApplyCredential(t.Context(), lossyEnv, inst, forgejo.CredentialAdminToken, 2, nil)
-	if err != nil || r.Outcome != provider.RotationAcknowledged {
-		t.Fatalf("retry after the lost answer: %+v, %v", r, err)
-	}
-	token2 := string(r.Value)
-	if got := e.psql("svc_git", `select count(*) from access_token where name = 'orglane-2'`); got != "1" {
-		t.Fatalf("tokens of version 2 after the retry: %s, want 1", got)
-	}
-	for tok, want := range map[string]int{token1: http.StatusOK, token2: http.StatusOK} {
-		if code := apiGet(t, client, "/api/v1/user", "", "", tok); code != want {
-			t.Fatalf("token: %d, want %d", code, want)
+	for _, bad := range []string{"acme-", "acme..org", "explore", "a.keys"} {
+		edge.Settings = map[string]any{forgejo.SettingOrganization: bad}
+		if err := adapter.Setup(t.Context(), env, edge); err == nil {
+			t.Errorf("Setup accepted %q", bad)
+		} else if c, _, _ := provider.Classify(err); c != forgejo.CodeInvalidSettings {
+			t.Errorf("Setup %q: %v, want %s before Forgejo", bad, err, forgejo.CodeInvalidSettings)
 		}
 	}
 
+	testAdminToken(t, e, adapter, env, inst, client, tokens)
+
 	// Git over SSH on the published port, bound to loopback in local mode.
-	eventually(t, 30*time.Second, "the SSH port answers", func() bool {
-		b, err := sshBanner(sshPort)
+	managedtest.Eventually(t, 30*time.Second, "the SSH port answers", func() bool {
+		b, err := managedtest.SSHBanner(sshPort)
 		return err == nil && strings.HasPrefix(b, "SSH-2.0-")
 	})
+
+	gen = testFence(t, e, b, key, id, gen, sshPort, secrets, admin)
 
 	// A new SSH port and a new admin password: re-rendered, the configure
 	// hook resets the password, the old one stops working.
-	secrets2 := forgejoSecrets()
+	secrets2 := managedtest.ForgejoSecrets()
 	secrets2[forgejo.CredentialDBPassword] = secrets[forgejo.CredentialDBPassword]
 	secrets2[forgejo.CredentialSecretKey] = secrets[forgejo.CredentialSecretKey]
-	sshPort2 := freePort(t)
-	e.mustApplyKey(key, forgejoSpec(id, 2, sshPort2, secrets2, agentapi.StateRunning))
-	eventually(t, time.Minute, "Forgejo answers after the change", func() bool {
-		return apiGet(t, client, "/api/healthz", "", "", "") == http.StatusOK
-	})
-	if code := apiGet(t, client, "/api/v1/user", admin, secrets2[forgejo.CredentialAdminPassword], ""); code != http.StatusOK {
+	sshPort2 := managedtest.FreePort(t)
+	gen++
+	e.mustApplyKey(key, managedtest.ForgejoSpec(id, gen, sshPort2, secrets2, agentapi.StateRunning))
+	managedtest.Eventually(t, time.Minute, "Forgejo answers after the change", healthy)
+	admin2 := managedtest.Auth{User: forgejo.AdminUsername, Password: secrets2[forgejo.CredentialAdminPassword]}
+	if code := get("/api/v1/user", admin2); code != http.StatusOK {
 		t.Fatalf("the new admin password does not work: %d", code)
 	}
-	if code := apiGet(t, client, "/api/v1/user", admin, password, ""); code != http.StatusUnauthorized {
+	if code := get("/api/v1/user", admin); code != http.StatusUnauthorized {
 		t.Fatalf("the old admin password still works: %d", code)
 	}
-	eventually(t, 30*time.Second, "SSH on the new port", func() bool {
-		b, err := sshBanner(sshPort2)
+	managedtest.Eventually(t, 30*time.Second, "SSH on the new port", func() bool {
+		b, err := managedtest.SSHBanner(sshPort2)
 		return err == nil && strings.HasPrefix(b, "SSH-2.0-")
 	})
-	if _, err := sshBanner(sshPort); err == nil {
+	if _, err := managedtest.SSHBanner(sshPort); err == nil {
 		t.Fatal("the old SSH port is still published")
 	}
-	env.creds[forgejo.CredentialAdminPassword] = []byte(secrets2[forgejo.CredentialAdminPassword])
+	env.Creds[forgejo.CredentialAdminPassword] = []byte(secrets2[forgejo.CredentialAdminPassword])
+	token := e.mintToken(t, adapter, env, inst, 10)
 
-	logIdleMemory(t, packages.InstanceProject(project, key))
+	logIdleMemory(t, packages.InstanceProject(b.Project, key))
 
 	// Remove: containers go, data and database stay.
-	e.mustApplyKey(key, forgejoSpec(id, 3, sshPort2, secrets2, agentapi.StateAbsent))
+	gen++
+	e.mustApplyKey(key, managedtest.ForgejoSpec(id, gen, sshPort2, secrets2, agentapi.StateAbsent))
 	if c := e.containers(key); len(c) != 0 {
 		t.Fatalf("containers after remove: %v", c)
 	}
-	if code := apiGet(t, client, "/api/healthz", "", "", ""); code != http.StatusBadGateway {
+	if code := get("/api/healthz", managedtest.Auth{}); code != http.StatusBadGateway {
 		t.Fatalf("a removed instance answers %d through its route, want 502", code)
 	}
 
 	// Reinstall: same instance, same secrets, same data.
-	e.mustApplyKey(key, forgejoSpec(id, 4, sshPort2, secrets2, agentapi.StateRunning))
-	eventually(t, time.Minute, "Forgejo answers after the reinstall", func() bool {
-		return apiGet(t, client, "/api/healthz", "", "", "") == http.StatusOK
-	})
-	if code := apiGet(t, client, "/api/v1/orgs/orglane", "", "", token2); code != http.StatusOK {
+	gen++
+	e.mustApplyKey(key, managedtest.ForgejoSpec(id, gen, sshPort2, secrets2, agentapi.StateRunning))
+	managedtest.Eventually(t, time.Minute, "Forgejo answers after the reinstall", healthy)
+	if code := get("/api/v1/orgs/orglane", managedtest.Auth{Token: token}); code != http.StatusOK {
 		t.Fatalf("organization after the reinstall = %d", code)
 	}
 	if err := adapter.Setup(t.Context(), env, inst); err != nil {
@@ -429,7 +175,7 @@ func TestForgejoPackage(t *testing.T) {
 	}
 
 	// Purge: the directory, the database and the role go.
-	purge := forgejoSpec(id, 5, sshPort2, secrets2, agentapi.StateAbsent)
+	purge := managedtest.ForgejoSpec(id, gen+1, sshPort2, secrets2, agentapi.StateAbsent)
 	purge.Purge = true
 	e.mustApplyKey(key, purge)
 	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
@@ -441,22 +187,181 @@ func TestForgejoPackage(t *testing.T) {
 
 	// The key starts empty for a new instance: no organization, no tokens.
 	id2 := uuid.Must(uuid.NewV7())
-	secrets3 := forgejoSecrets()
-	e.mustApplyKey(key, forgejoSpec(id2, 1, sshPort2, secrets3, agentapi.StateRunning))
-	eventually(t, time.Minute, "the new instance answers", func() bool {
-		return apiGet(t, client, "/api/healthz", "", "", "") == http.StatusOK
-	})
-	if code := apiGet(t, client, "/api/v1/orgs/orglane", forgejo.AdminUsername, secrets3[forgejo.CredentialAdminPassword], ""); code != http.StatusNotFound {
+	secrets3 := managedtest.ForgejoSecrets()
+	e.mustApplyKey(key, managedtest.ForgejoSpec(id2, 1, sshPort2, secrets3, agentapi.StateRunning))
+	managedtest.Eventually(t, time.Minute, "the new instance answers", healthy)
+	if code := get("/api/v1/orgs/orglane", managedtest.Auth{User: forgejo.AdminUsername, Password: secrets3[forgejo.CredentialAdminPassword]}); code != http.StatusNotFound {
 		t.Fatalf("organization of the new instance = %d, want 404", code)
 	}
-	if code := apiGet(t, client, "/api/v1/user", "", "", token2); code != http.StatusUnauthorized {
+	if code := get("/api/v1/user", managedtest.Auth{Token: token}); code != http.StatusUnauthorized {
 		t.Fatalf("an old token works on the new instance: %d", code)
 	}
-	e.mustApplyKey(key, func() *agentapi.Spec {
-		s := forgejoSpec(id2, 2, sshPort2, secrets3, agentapi.StateAbsent)
-		s.Purge = true
-		return s
-	}())
+	purge = managedtest.ForgejoSpec(id2, 2, sshPort2, secrets3, agentapi.StateAbsent)
+	purge.Purge = true
+	e.mustApplyKey(key, purge)
+}
+
+// psqlCount returns a function counting rows of table with the name.
+func (e *testEnv) psqlCount(db, table string) func(name string) string {
+	return func(name string) string {
+		return e.psql(db, "select count(*) from "+table+" where name = '"+name+"'")
+	}
+}
+
+func (e *testEnv) mintToken(t *testing.T, a *forgejo.Adapter, env provider.Env, inst provider.Instance, version int) string {
+	t.Helper()
+	r, err := a.ApplyCredential(t.Context(), env, inst, forgejo.CredentialAdminToken, version, nil)
+	if err != nil || r.Outcome != provider.RotationAcknowledged {
+		t.Fatalf("mint version %d: %+v, %v", version, r, err)
+	}
+	return string(r.Value)
+}
+
+// testAdminToken runs the admin token's rotation outcomes against the real
+// API: only proof acknowledges or rejects, everything ambiguous is unknown.
+func testAdminToken(t *testing.T, e *testEnv, a *forgejo.Adapter, env *managedtest.Env, inst provider.Instance, client *http.Client, tokens func(string) string) {
+	t.Helper()
+	works := func(token string) int {
+		code, _ := managedtest.Request(t, client, http.MethodGet, managedtest.ForgejoHost, "/api/v1/user", managedtest.Auth{Token: token}, nil)
+		return code
+	}
+	tokensPath := "/api/v1/users/" + forgejo.AdminUsername + "/tokens"
+	token1 := e.mintToken(t, a, env, inst, 1)
+	if code := works(token1); code != http.StatusOK {
+		t.Fatalf("the minted token does not work: %d", code)
+	}
+
+	// Committed, answer lost: unknown. A later attempt that cannot
+	// authenticate proves nothing either: still unknown, the token exists.
+	lossy, faults := managedtest.WithFaults(client)
+	lossyEnv := &managedtest.Env{Client: lossy, Creds: env.Creds}
+	faults.Drop(http.MethodPost, tokensPath)
+	if r, err := a.ApplyCredential(t.Context(), lossyEnv, inst, forgejo.CredentialAdminToken, 2, nil); err == nil || r.Outcome != provider.RotationUnknown {
+		t.Fatalf("lost answer: %+v, %v (want unknown)", r, err)
+	}
+	if got := tokens(forgejo.TokenName(2)); got != "1" {
+		t.Fatalf("the lost mint did not commit (%s tokens): the fault is not realistic", got)
+	}
+	wrong := &managedtest.Env{Client: client, Creds: map[string][]byte{forgejo.CredentialAdminPassword: []byte("wrong")}}
+	if r, err := a.ApplyCredential(t.Context(), wrong, inst, forgejo.CredentialAdminToken, 2, nil); err == nil || r.Outcome != provider.RotationUnknown {
+		t.Fatalf("lost mint, then no authentication: %+v, %v (want unknown)", r, err)
+	}
+	// The next attempt deletes the lost token and mints again.
+	token2 := e.mintToken(t, a, lossyEnv, inst, 2)
+	if got := tokens(forgejo.TokenName(2)); got != "1" {
+		t.Fatalf("tokens of version 2 after the retry: %s, want 1", got)
+	}
+
+	// The name is taken between the read-back and the mint (an attempt
+	// still in flight): Forgejo refuses it, which is no proof. Unknown.
+	faults.Before(http.MethodPost, tokensPath, func() {
+		code, _ := managedtest.Request(t, client, http.MethodPost, managedtest.ForgejoHost, tokensPath,
+			managedtest.Auth{User: forgejo.AdminUsername, Password: string(env.Creds[forgejo.CredentialAdminPassword])},
+			map[string]any{"name": forgejo.TokenName(3), "scopes": []string{"read:user"}})
+		if code != http.StatusCreated {
+			t.Errorf("concurrent mint: %d", code)
+		}
+	})
+	if r, err := a.ApplyCredential(t.Context(), lossyEnv, inst, forgejo.CredentialAdminToken, 3, nil); err == nil || r.Outcome != provider.RotationUnknown {
+		t.Fatalf("name taken by a concurrent mint: %+v, %v (want unknown)", r, err)
+	}
+
+	// Abandon of version 3: the core re-applies the active version 2 with
+	// its value. The held token keeps working, nothing is minted, and the
+	// candidate's token is deleted.
+	r, err := a.ApplyCredential(t.Context(), env, inst, forgejo.CredentialAdminToken, 2, []byte(token2))
+	if err != nil || r.Outcome != provider.RotationAcknowledged || r.Value != nil {
+		t.Fatalf("re-apply the active version: %+v, %v", r, err)
+	}
+	if code := works(token2); code != http.StatusOK {
+		t.Fatalf("the active token after re-applying it: %d, want 200", code)
+	}
+	if got := tokens(forgejo.TokenName(3)); got != "0" {
+		t.Fatalf("tokens of the abandoned version 3: %s, want 0", got)
+	}
+	if got := tokens(forgejo.TokenName(2)) + tokens(forgejo.TokenName(1)); got != "11" {
+		t.Fatalf("tokens of versions 2 and 1: %s, want one each", got)
+	}
+	// A held value Forgejo no longer has is rejected, never re-minted.
+	if r, err := a.ApplyCredential(t.Context(), env, inst, forgejo.CredentialAdminToken, 2, []byte("0000000000000000000000000000000000000000")); err != nil || r.Outcome != provider.RotationRejected {
+		t.Fatalf("re-apply an unknown value: %+v, %v", r, err)
+	}
+}
+
+// testFence runs an upgrade candidate's fenced render on the instance's
+// data and then the unfenced render again, as an upgrade that commits
+// (agent.md "Upgrade"). The agent stops the instance (so it does not repair
+// the drift meanwhile); the fenced render runs as a project of its own on
+// the same data directory and database: no published SSH port, only the
+// fenced alias, no mirror updates. Then the agent starts the unfenced
+// render: mirror updates are scheduled again, although Forgejo keeps
+// app.ini values whose variables disappear. It returns the last generation.
+func testFence(t *testing.T, e *testEnv, b *managedtest.Bundle, key string, id uuid.UUID, gen int64, sshPort int, secrets map[string]string, admin managedtest.Auth) int64 {
+	t.Helper()
+	client := b.Client()
+	fencedHost := packages.ServiceAlias(key, "forgejo", true)
+	gen++
+	e.mustApplyKey(key, managedtest.ForgejoSpec(id, gen, sshPort, secrets, agentapi.StateStopped))
+
+	pkg, _ := e.registry.Get(agentapi.PackageRef{ID: "forgejo", Version: forgejopkg.Current})
+	spec := managedtest.ForgejoSpec(id, gen, sshPort, secrets, agentapi.StateRunning)
+	in, err := pkg.Inputs(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc := e.agent.renderContext(key)
+	rc.Fenced = true
+	rc.ComposeProject += "fence" // not an instance project of the agent
+	fenced, err := pkg.Render(spec, in, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	compose, envPath := filepath.Join(dir, composeFile), filepath.Join(dir, envFile)
+	if err := os.WriteFile(compose, fenced.Compose, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, fenced.Env, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	compose1 := []string{"compose", "--project-name", rc.Project(), "--project-directory", dir, "-f", compose, "--env-file", envPath}
+	t.Cleanup(func() {
+		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", append(compose1, "down", "--remove-orphans")...).Run() //nolint:gosec // test commands
+	})
+	managedtest.Docker(t, append(compose1, "up", "--detach", "--wait")...)
+	if code, _ := managedtest.Request(t, client, http.MethodGet, fencedHost, "/api/healthz", managedtest.Auth{}, nil); code != http.StatusOK {
+		t.Fatalf("the fenced candidate is not reachable on its alias: %d", code)
+	}
+	if code, _ := managedtest.Request(t, client, http.MethodGet, managedtest.ForgejoHost, "/api/healthz", managedtest.Auth{}, nil); code != http.StatusBadGateway {
+		t.Fatalf("the public route reaches the fenced candidate: %d", code)
+	}
+	if _, err := managedtest.SSHBanner(sshPort); err == nil {
+		t.Fatal("the fenced candidate publishes SSH")
+	}
+	if s := managedtest.CronSchedule(t, client, fencedHost, admin, "update_mirrors"); s != "-" {
+		t.Fatalf("mirror updates while fenced: %q, want off", s)
+	}
+	managedtest.Docker(t, append(compose1, "down", "--remove-orphans")...)
+
+	gen++
+	e.mustApplyKey(key, managedtest.ForgejoSpec(id, gen, sshPort, secrets, agentapi.StateRunning))
+	managedtest.Eventually(t, time.Minute, "the unfenced render answers", func() bool {
+		code, _ := managedtest.Request(t, client, http.MethodGet, managedtest.ForgejoHost, "/api/healthz", managedtest.Auth{}, nil)
+		return code == http.StatusOK
+	})
+	if s := managedtest.CronSchedule(t, client, managedtest.ForgejoHost, admin, "update_mirrors"); s == "-" {
+		t.Fatal("mirror updates stay off after the fence: the fenced render persisted")
+	}
+	for _, off := range []string{"update_checker", "delete_inactive_accounts"} {
+		if s := managedtest.CronSchedule(t, client, managedtest.ForgejoHost, admin, off); s != "-" {
+			t.Errorf("cron task %s is scheduled (%q), want off", off, s)
+		}
+	}
+	managedtest.Eventually(t, 30*time.Second, "SSH is published again", func() bool {
+		b, err := managedtest.SSHBanner(sshPort)
+		return err == nil && strings.HasPrefix(b, "SSH-2.0-")
+	})
+	return gen
 }
 
 // logIdleMemory logs the memory use of the project's containers after a
@@ -464,8 +369,8 @@ func TestForgejoPackage(t *testing.T) {
 func logIdleMemory(t *testing.T, project string) {
 	t.Helper()
 	time.Sleep(20 * time.Second)
-	ids := strings.Fields(docker(t, "ps", "--quiet", "--filter", "label=com.docker.compose.project="+project))
+	ids := strings.Fields(managedtest.Docker(t, "ps", "--quiet", "--filter", "label=com.docker.compose.project="+project))
 	for _, id := range ids {
-		t.Logf("idle memory: %s", docker(t, "stats", "--no-stream", "--format", "{{.Name}} {{.MemUsage}}", id))
+		t.Logf("idle memory: %s", managedtest.Docker(t, "stats", "--no-stream", "--format", "{{.Name}} {{.MemUsage}}", id))
 	}
 }

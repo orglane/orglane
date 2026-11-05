@@ -1,6 +1,7 @@
 package apps
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -63,6 +64,24 @@ func (a *Adapter) Rotator() (provider.CredentialRotator, bool) {
 func (a *Adapter) DeepLinker() (provider.DeepLinker, bool) {
 	p, ok := a.impl.(provider.DeepLinker)
 	return p, ok
+}
+
+// validateSettings runs the adapter's SettingsValidator, if it has one, on
+// merged settings. A refusal is an invalid input of the named setting.
+func (a *Adapter) validateSettings(settings map[string]any) error {
+	v, ok := a.impl.(provider.SettingsValidator)
+	if !ok {
+		return nil
+	}
+	err := v.ValidateSettings(settings)
+	if err == nil {
+		return nil
+	}
+	var se *provider.SettingError
+	if errors.As(err, &se) {
+		return invalid("settings."+se.Setting, "%s", se.Reason)
+	}
+	return invalid("settings", "%v", err)
 }
 
 // Realm returns the account realm of an instance of this adapter.

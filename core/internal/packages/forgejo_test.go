@@ -1,6 +1,7 @@
 package packages
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -158,8 +159,12 @@ func TestRenderForgejo(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got, v)
 		}
 	}
+	if f.Environment["FORGEJO__cron_0X2E_update_mirrors__ENABLED"] != "true" || f.Environment["FORGEJO__cron_0X2E_update_checker__ENABLED"] != "false" {
+		t.Errorf("cron environment = %v", f.Environment)
+	}
+	// The global switch would also turn on tasks that are off by default.
 	if _, ok := f.Environment["FORGEJO__cron__ENABLED"]; ok {
-		t.Error("cron is disabled outside a fenced render")
+		t.Error("the global cron switch is set")
 	}
 	for _, secret := range forgejoSpec(agentapi.IngressDomain).Secrets {
 		if strings.Contains(string(out.Compose), secret) {
@@ -192,8 +197,18 @@ func TestRenderForgejo(t *testing.T) {
 	if len(f.Ports) != 0 || !slices.Equal(f.Networks["edge"].Aliases, []string{"git-forgejo-fenced"}) {
 		t.Errorf("fenced: ports %v, aliases %v", f.Ports, f.Networks["edge"].Aliases)
 	}
-	if f.Environment["FORGEJO__cron__ENABLED"] != "false" || f.Environment["FORGEJO__webhook__ALLOWED_HOST_LIST"] != "orglane-fenced.invalid" {
+	if f.Environment["FORGEJO__cron_0X2E_update_mirrors__ENABLED"] != "false" || f.Environment["FORGEJO__webhook__ALLOWED_HOST_LIST"] != "orglane-fenced.invalid" {
 		t.Errorf("fenced environment = %v", f.Environment)
+	}
+	// Forgejo keeps a value in app.ini when its variable disappears, so a
+	// fenced render must not set anything the unfenced one leaves unset
+	// (or the fence outlives the upgrade).
+	fencedEnv := f.Environment
+	_, project = renderForgejo(t, forgejoSpec(agentapi.IngressDomain), forgejoContext(t, "0.0.0.0"))
+	unfencedEnv := project.Services["forgejo"].Environment
+	if !slices.Equal(slices.Sorted(maps.Keys(fencedEnv)), slices.Sorted(maps.Keys(unfencedEnv))) {
+		t.Errorf("fenced and unfenced renders set different keys:\nfenced   %v\nunfenced %v",
+			slices.Sorted(maps.Keys(fencedEnv)), slices.Sorted(maps.Keys(unfencedEnv)))
 	}
 }
 

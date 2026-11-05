@@ -8,6 +8,8 @@
 package forgejo
 
 import (
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/orglane/orglane/providers/forgejo/managed"
@@ -50,9 +52,28 @@ const AdminUsername = "orglane-admin"
 // the host's own SSH daemon).
 const DefaultSSHPort = 2222
 
-// organizationPattern is the setting's pattern: Forgejo's rules for user
-// and organization names, at most 40 characters.
-const organizationPattern = `[A-Za-z0-9][A-Za-z0-9_.-]{0,38}`
+// organizationPattern is the setting's pattern, Forgejo's rule for user
+// and organization names (15.0, modules/validation): letters and digits in
+// runs separated by single '-', '.' or '_', so no punctuation at either end
+// and no two in a row. ValidateSettings adds the length and reserved names.
+const organizationPattern = `[A-Za-z0-9]+(?:[-._][A-Za-z0-9]+)*`
+
+// maxOrganization is Forgejo's limit for organization names.
+const maxOrganization = 40
+
+// reservedNames are names Forgejo 15.0 refuses for users and organizations
+// (models/user: reservedUsernames), compared case-insensitively, plus the
+// service admin, which takes its name from the same namespace.
+var reservedNames = []string{
+	".", "..", "-", ".well-known", "api", "metrics", "v2", "assets", "attachments",
+	"avatar", "avatars", "repo-avatars", "captcha", "login", "org", "repo", "user",
+	"admin", "explore", "issues", "pulls", "milestones", "notifications", "report_abuse",
+	"favicon.ico", "manifest.json", "robots.txt", "sitemap.xml", "ssh_info", "swagger.v1.json",
+	"ghost", "gitea-actions", "forgejo-actions", AdminUsername,
+}
+
+// reservedSuffixes are Forgejo's reserved name patterns (*.keys, ...).
+var reservedSuffixes = []string{".keys", ".gpg", ".rss", ".atom", ".png"}
 
 // planned is the milestone of what #62 and #63 add in M2.
 const planned = "M2"
@@ -109,7 +130,40 @@ func (*Adapter) Manifest() provider.Manifest {
 	}
 }
 
+// ValidateSettings implements provider.SettingsValidator: the organization
+// must be a name Forgejo accepts, because it is fixed once the instance
+// exists and Setup would fail on every retry otherwise.
+func (*Adapter) ValidateSettings(settings map[string]any) error {
+	v, ok := settings[SettingOrganization]
+	if !ok {
+		return nil
+	}
+	org, _ := v.(string)
+	return validOrganization(org)
+}
+
+func validOrganization(org string) error {
+	fail := func(reason string) error { return &provider.SettingError{Setting: SettingOrganization, Reason: reason} }
+	if !organizationRE.MatchString(org) {
+		return fail("must be letters and digits, separated by single '-', '.' or '_'")
+	}
+	if len(org) > maxOrganization {
+		return fail("must be at most 40 characters")
+	}
+	lower := strings.ToLower(org)
+	if slices.Contains(reservedNames, lower) {
+		return fail("is reserved by Forgejo")
+	}
+	for _, suffix := range reservedSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return fail("is reserved by Forgejo")
+		}
+	}
+	return nil
+}
+
 var (
+	_ provider.SettingsValidator = (*Adapter)(nil)
 	_ provider.Lifecycle         = (*Adapter)(nil)
 	_ provider.CredentialRotator = (*Adapter)(nil)
 )

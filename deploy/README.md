@@ -71,10 +71,10 @@ Every install gets `ORGLANE_AGENT_SECRET` (64 hex characters) in `.env`, the sec
 
 Forgejo is the first managed service (code, from M2). Orglane ships it as a tested package: Forgejo 15, Forgejo's long-term support line, pinned by version and digest and upgraded with Orglane releases. It runs as `instances/git/` (project `<COMPOSE_PROJECT_NAME>-git`) with its own database and role (`svc_git`) on the bundle's PostgreSQL, and Traefik serves it on its own host, `git.<base domain>` by default (`domain.service_host_template`).
 
-- **DNS (domain mode):** `git.<base domain>` must resolve to this server, like the workspace host (an `A`/`AAAA` record or the wildcard `*.<base domain>`); Orglane checks this before it installs Forgejo, because Let's Encrypt validates the new host.
+- **DNS (domain mode):** `git.<base domain>` must resolve to this server, like the workspace host (an `A`/`AAAA` record or the wildcard `*.<base domain>`), because Let's Encrypt validates the new host. (The install flow in Settings → Apps will check it before installing; until then, check it yourself, for example with `dig +short git.<base domain>`.)
 - **Git over SSH** uses a direct host port, **2222** by default (22 is the host's own SSH daemon; SSH has no host name Traefik could route by). In domain mode open it in the host's and the cloud provider's firewall; clone URLs look like `ssh://git@git.acme.com:2222/acme/robot.git`. In local and demo mode it listens on `127.0.0.1` only. While an upgrade is being verified the port is closed and the web routes answer `503`.
 - **Memory:** about 100 MiB when idle; the package asks for at least 256 MiB free (512 MiB recommended) and 2 GiB of disk.
-- **Demo mode** has no services preinstalled. With `install.sh demo --managed` (workspace `http://orglane.localhost`) an admin can install Forgejo from Settings → Apps and open it at `http://git.orglane.localhost`; `make demo` runs without the agent.
+- **Demo mode** has no services preinstalled. With `install.sh --mode demo --managed` (workspace `http://orglane.localhost`) an admin can install Forgejo from Settings → Apps and open it at `http://git.orglane.localhost`; `make demo` runs without the agent.
 
 ### Domain mode: DNS and reachability first
 

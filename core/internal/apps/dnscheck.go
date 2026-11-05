@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,12 @@ const dnsTimeout = 10 * time.Second
 type Resolver interface {
 	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
+
+// NewDNSResolver returns the resolver for CheckServiceHost: Go's resolver
+// with strict errors, so a temporary failure of one record type (say AAAA)
+// fails the lookup instead of returning the other type's addresses, which
+// could match the workspace by accident.
+func NewDNSResolver() *net.Resolver { return &net.Resolver{PreferGo: true, StrictErrors: true} }
 
 // DNSError is a failed DNS check. It names the host and, for a mismatch,
 // the addresses on both sides: what the admin needs to fix the records.
@@ -58,7 +65,9 @@ func (e *DNSError) Unwrap() error { return e.Err }
 // the addresses of the workspace host: both are served by this server's
 // Traefik, and Let's Encrypt validates every address in DNS (as the
 // installer checks the workspace host). Local mode needs no check: every
-// *.localhost name is loopback.
+// *.localhost name is loopback. r should come from NewDNSResolver: a
+// resolver that returns partial results can pass a host whose other
+// addresses differ.
 func CheckServiceHost(ctx context.Context, r Resolver, workspaceHost, host string) error {
 	ctx, cancel := context.WithTimeout(ctx, dnsTimeout)
 	defer cancel()
@@ -83,9 +92,12 @@ func CheckServiceHost(ctx context.Context, r Resolver, workspaceHost, host strin
 	return nil
 }
 
-// lookup returns the sorted, unique addresses of a host.
+// lookup returns the sorted, unique addresses of a host. The name is looked
+// up rooted (with a trailing dot), so the resolver never tries the host
+// with the system's search domains appended: a record under a search
+// domain must not stand in for the public name.
 func lookup(ctx context.Context, r Resolver, host string) ([]netip.Addr, error) {
-	addrs, err := r.LookupNetIP(ctx, "ip", host)
+	addrs, err := r.LookupNetIP(ctx, "ip", strings.TrimSuffix(host, ".")+".")
 	if err != nil {
 		return nil, err
 	}
