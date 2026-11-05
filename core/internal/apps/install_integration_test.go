@@ -6,7 +6,12 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/riverqueue/river"
 
 	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/apps"
@@ -181,16 +186,16 @@ func TestInstallChecks(t *testing.T) {
 	pkg, _ := registry.Get(agentapi.PackageRef{ID: "agenttest", Version: agenttest.Version})
 	plan := apps.InstallPlan{Provider: "agenttest", Key: "x", Host: "agenttest.orglane.localhost", Package: pkg}
 	// Local mode: service hosts under .localhost, a workspace under it.
-	if err := h.svc.CheckInstall(ctx, apps.InstallPlan{Host: "git.example.com", Package: pkg}); apps.Code(err) != apps.CodeHostNotLocal {
+	if _, err := h.svc.CheckInstall(ctx, apps.InstallPlan{Host: "git.example.com", Package: pkg}); apps.Code(err) != apps.CodeHostNotLocal {
 		t.Fatalf("a non-local host = %v", err)
 	}
 	// Without an agent: refused.
-	if err := h.svc.CheckInstall(ctx, plan); apps.Code(err) != apps.CodeAgentUnavailable {
+	if _, err := h.svc.CheckInstall(ctx, plan); apps.Code(err) != apps.CodeAgentUnavailable {
 		t.Fatalf("without an agent = %v", err)
 	}
 	bare, _ := url.Parse("http://localhost:8080")
 	other := h.restartCore(func(c *apps.Config) { c.WorkspaceURL = bare })
-	if err := other.CheckInstall(ctx, plan); apps.Code(err) != apps.CodeLocalhostWorkspace {
+	if _, err := other.CheckInstall(ctx, plan); apps.Code(err) != apps.CodeLocalhostWorkspace {
 		t.Fatalf("a bare localhost workspace = %v", err)
 	}
 
@@ -224,7 +229,9 @@ func TestInstallChecks(t *testing.T) {
 	}
 	// An invalid host is invalid input before any preflight (DNS, agent).
 	refusing := h.restartCore(func(c *apps.Config) {
-		c.InstallPreflight = func(context.Context, apps.InstallPlan) error { return errors.New("the preflight ran") }
+		c.InstallPreflight = func(context.Context, apps.InstallPlan) (apps.InstallBudget, error) {
+			return apps.InstallBudget{}, errors.New("the preflight ran")
+		}
 	})
 	for _, host := range []string{"http://bad_host.example", "http://orglane.localhost:8080", "http://third.orglane.localhost:65536"} {
 		if _, err := refusing.Install(ctx, audit.System, apps.NewInstance{Provider: "agenttest", Key: "third", BaseURL: host}); !errors.Is(err, apps.ErrInvalid) {
@@ -238,5 +245,208 @@ func TestInstallChecks(t *testing.T) {
 	st, err := h.svc.AgentStatus(ctx)
 	if err != nil || st.Enabled || st.Connected || st.Code != apps.CodeAgentUnavailable {
 		t.Fatalf("agent status %+v, %v", st, err)
+	}
+}
+
+// budgetAgent reports a fixed host: total memory, plenty of disk.
+type budgetAgent struct{ total uint64 }
+
+func (a budgetAgent) Health(context.Context) (*agentapi.Health, error) {
+	return &agentapi.Health{Version: "dev", MemTotal: a.total, DiskFree: 1 << 40}, nil
+}
+func (budgetAgent) Instances(context.Context) ([]agentapi.InstanceStatus, error) { return nil, nil }
+func (budgetAgent) Apply(context.Context, string, *agentapi.Spec) (*agentapi.Operation, bool, error) {
+	return nil, false, errors.New("not used")
+}
+func (budgetAgent) Operation(context.Context, uuid.UUID) (*agentapi.Operation, error) {
+	return nil, errors.New("not used")
+}
+
+// TestConcurrentInstallsShareTheMemoryBudget: two installs whose
+// preflights both passed against the same remaining memory (enough for
+// one) are serialized by the install lock, which counts the first: only one
+// is recorded, the other is refused with insufficient_memory. (The agent's
+// health is the only fake here: the host's memory cannot be set otherwise.)
+func TestConcurrentInstallsShareTheMemoryBudget(t *testing.T) {
+	registry, err := packages.NewRegistry(agenttest.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, _ := registry.Get(agentapi.PackageRef{ID: "agenttest", Version: agenttest.Version})
+	total := uint64(apps.BundleMemory) + uint64(pkg.Manifest.Resources.Memory.Min) //nolint:gosec // a small constant
+	var svc *apps.Service
+	var ready sync.WaitGroup
+	ready.Add(2)
+	release := make(chan struct{})
+	local, _ := url.Parse("http://orglane.localhost")
+	h := newHarness(t, func(c *apps.Config) {
+		c.WorkspaceURL, c.Packages, c.Agent, c.CoreVersion = local, registry, budgetAgent{total}, "dev"
+		c.InstallPreflight = func(ctx context.Context, p apps.InstallPlan) (apps.InstallBudget, error) {
+			b, err := svc.CheckInstall(ctx, p)
+			ready.Done()
+			<-release // both preflights passed before either install records anything
+			return b, err
+		}
+	})
+	svc = h.svc
+	results := make(chan error, 2)
+	for _, key := range []string{"first", "second"} {
+		go func() {
+			_, err := svc.Install(h.ctx, audit.System, apps.NewInstance{Provider: "agenttest", Key: key, BaseURL: "http://" + key + ".orglane.localhost"})
+			results <- err
+		}()
+	}
+	ready.Wait()
+	close(release)
+	var accepted, refusedMemory int
+	for range 2 {
+		switch err := <-results; {
+		case err == nil:
+			accepted++
+		case apps.Code(err) == apps.CodeInsufficientMemory:
+			refusedMemory++
+		default:
+			t.Errorf("install: %v", err)
+		}
+	}
+	st, err := svc.AgentStatus(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted != 1 || refusedMemory != 1 || st.MemoryReserved > total {
+		t.Fatalf("accepted %d, refused for memory %d, reserved %d of %d", accepted, refusedMemory, st.MemoryReserved, total)
+	}
+	if n := h.count(`SELECT count(*) FROM app_instances`); n != 1 {
+		t.Fatalf("%d instances recorded", n)
+	}
+}
+
+// TestConcurrentInstallsReserveHostAndKey: two concurrent installs of the
+// same host (distinct keys), or the same key (distinct hosts): one wins.
+func TestConcurrentInstallsReserveHostAndKey(t *testing.T) {
+	registry, err := packages.NewRegistry(agenttest.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sameKey := range []bool{false, true} {
+		t.Run(map[bool]string{false: "host", true: "key"}[sameKey], func(t *testing.T) {
+			h := newHarness(t, func(c *apps.Config) { c.Packages = registry })
+			start := make(chan struct{})
+			results := make(chan error, 2)
+			for _, name := range []string{"first", "second"} {
+				go func() {
+					key, host := name, "shared.work.acme.test"
+					if sameKey {
+						key, host = "shared", name+".work.acme.test"
+					}
+					<-start
+					_, err := h.svc.Install(h.ctx, audit.System, apps.NewInstance{Provider: "agenttest", Key: key, BaseURL: "https://" + host})
+					results <- err
+				}()
+			}
+			close(start)
+			accepted := 0
+			for range 2 {
+				if err := <-results; err == nil {
+					accepted++
+				} else if !errors.Is(err, apps.ErrKeyReserved) && apps.Code(err) != apps.CodeHostTaken {
+					t.Errorf("install: %v", err)
+				}
+			}
+			if accepted != 1 {
+				t.Fatalf("accepted %d, want 1", accepted)
+			}
+		})
+	}
+}
+
+// queuedAgent accepts every spec with an operation that stays queued, as
+// the merged agent does for a purge retry that races with the purge's
+// completion (#83): the replacement operation is never started.
+type queuedAgent struct {
+	mu      sync.Mutex
+	started time.Time
+	ops     map[uuid.UUID]*agentapi.Operation
+}
+
+func (a *queuedAgent) Health(context.Context) (*agentapi.Health, error) {
+	return &agentapi.Health{Version: "dev", MemTotal: 1 << 40, DiskFree: 1 << 40}, nil
+}
+func (a *queuedAgent) Instances(context.Context) ([]agentapi.InstanceStatus, error) { return nil, nil }
+func (a *queuedAgent) Apply(_ context.Context, key string, spec *agentapi.Spec) (*agentapi.Operation, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	op := &agentapi.Operation{ID: uuid.Must(uuid.NewV7()), Instance: key, Kind: agentapi.KindRemove, Generation: spec.Generation, State: agentapi.OpQueued, StartedAt: a.started}
+	a.ops[op.ID] = op
+	return op, true, nil
+}
+func (a *queuedAgent) Operation(_ context.Context, id uuid.UUID) (*agentapi.Operation, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	op := *a.ops[id]
+	return &op, nil
+}
+
+// TestStalledOperationEnds: an operation the agent keeps queued is polled
+// until Config.AgentQueueTimeout, then ends failed with agent_stalled; a
+// purge stalled like this leaves the instance failed (remove_failed), from
+// where it can be removed again, instead of removing forever. (The agent's
+// API is the only fake: the merged agent's #83 race cannot be timed from a
+// test, and the agent side is fixed in #83.)
+func TestStalledOperationEnds(t *testing.T) {
+	registry, err := packages.NewRegistry(agenttest.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &queuedAgent{started: time.Now(), ops: map[uuid.UUID]*agentapi.Operation{}}
+	h := newHarness(t, func(c *apps.Config) {
+		c.Packages, c.Agent, c.CoreVersion, c.AgentQueueTimeout = registry, agent, "dev", time.Hour
+	})
+	ctx := h.ctx
+	inst, err := h.svc.Install(ctx, audit.System, apps.NewInstance{Provider: "agenttest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.FinishForTest(ctx, inst.ID, 1, agentapi.OpSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Transition(ctx, audit.System, inst.ID, apps.StateActive, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Remove(ctx, audit.System, inst.ID, true, inst.Key); err != nil {
+		t.Fatal(err)
+	}
+	purge := apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 2}
+	// Queued for a moment: polled (snoozed), nothing changes.
+	var snooze *river.JobSnoozeError
+	if err := h.svc.RunAgentApply(ctx, purge); !errors.As(err, &snooze) {
+		t.Fatalf("a freshly queued operation = %v", err)
+	}
+	if op := h.operation(inst.ID, 2); op.FinishedAt != nil || op.AgentOperationID == nil {
+		t.Fatalf("operation %+v", op)
+	}
+	// Queued for longer than the timeout: it ends, and so does the removal.
+	agent.mu.Lock()
+	for _, op := range agent.ops {
+		op.StartedAt = time.Now().Add(-2 * time.Hour)
+	}
+	agent.mu.Unlock()
+	if err := h.svc.RunAgentApply(ctx, purge); err != nil {
+		t.Fatalf("a stalled operation = %v", err)
+	}
+	op := h.operation(inst.ID, 2)
+	if op.State != agentapi.OpFailed || derefS(op.ErrorCode) != apps.CodeAgentStalled || op.FinishedAt == nil {
+		t.Fatalf("stalled operation %+v (code %s)", op, derefS(op.ErrorCode))
+	}
+	got := h.reload(inst.ID)
+	if got.State != apps.StateFailed || derefS(got.HealthCode) != apps.CodeRemoveFailed {
+		t.Fatalf("after a stalled purge: %s %s", got.State, derefS(got.HealthCode))
+	}
+	if h.count(`SELECT count(*) FROM app_credentials WHERE instance_id = $1`, inst.ID) == 0 {
+		t.Fatal("a purge that did not finish deleted the credentials")
+	}
+	// The purge can be requested again.
+	if _, err := h.svc.Remove(ctx, audit.System, inst.ID, true, inst.Key); err != nil {
+		t.Fatalf("purging again: %v", err)
 	}
 }

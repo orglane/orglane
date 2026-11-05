@@ -78,6 +78,9 @@ const (
 	// Core-side ends of an operation before the agent ran it.
 	CodePackageUnavailable = "package_unavailable"
 	CodeCredentialMissing  = "credential_missing" //nolint:gosec // an error code, not a credential
+	// CodeAgentStalled: the agent kept an operation queued for longer than
+	// Config.AgentQueueTimeout.
+	CodeAgentStalled = "agent_stalled"
 	// Health codes the sync owns (and may clear again).
 	CodeAgentUnhealthy       = "agent_unhealthy"
 	CodeAgentInstanceMissing = "agent_instance_missing"
@@ -93,6 +96,7 @@ const (
 	defaultAgentPollInterval  = 2 * time.Second
 	defaultAgentRetryMax      = time.Minute
 	defaultAgentWatchInterval = 30 * time.Second
+	defaultAgentQueueTimeout  = time.Hour
 )
 
 // DesiredChange is a new desired state of a managed instance.
@@ -182,17 +186,18 @@ func (s *Service) Install(ctx context.Context, actor audit.Actor, in NewInstance
 	if err != nil {
 		return Instance{}, err
 	}
+	var budget InstallBudget
 	if s.cfg.InstallPreflight != nil {
 		key := in.Key
 		if key == "" {
 			key = adapter.Manifest.DefaultKey
 		}
-		if err := s.cfg.InstallPreflight(ctx, InstallPlan{Provider: in.Provider, Key: key, Host: host, BaseURL: in.BaseURL, Package: pkg}); err != nil {
+		if budget, err = s.cfg.InstallPreflight(ctx, InstallPlan{Provider: in.Provider, Key: key, Host: host, BaseURL: in.BaseURL, Package: pkg}); err != nil {
 			return Instance{}, err
 		}
 	}
 	created, err := s.createInstance(ctx, actor, in, func(tx pgx.Tx, q *store.Queries, created Instance) error {
-		if err := s.checkHost(ctx, q, host, created.ID); err != nil {
+		if err := s.reserve(ctx, q, host, created.ID, budget, pkg); err != nil {
 			return err
 		}
 		_, err := s.recordDesired(ctx, tx, q, actor, created, DesiredChange{

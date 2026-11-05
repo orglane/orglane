@@ -131,6 +131,11 @@ type Config struct {
 	// AgentWatchInterval is how often WatchAgent asks the agent for its boot
 	// ID. Defaults to 30s.
 	AgentWatchInterval time.Duration
+	// AgentQueueTimeout is how long an agent operation may stay queued
+	// before the core gives up on it (agent_stalled). The agent runs one
+	// operation per instance at a time, so a long upgrade ahead of it is
+	// the only legitimate wait. Defaults to an hour.
+	AgentQueueTimeout time.Duration
 	// DomainBase is config domain.base, for installation-dependent setting
 	// defaults (provider.SettingDefaulter).
 	DomainBase string
@@ -141,8 +146,9 @@ type Config struct {
 	Resolver Resolver
 	// InstallPreflight, if set, checks an install before anything is
 	// recorded (#61: host, DNS, agent health, resource hints); its error is
-	// returned by Install.
-	InstallPreflight func(ctx context.Context, plan InstallPlan) error
+	// returned by Install. The budget it returns (the host's resources) is
+	// checked again in the install transaction, under the install lock.
+	InstallPreflight func(ctx context.Context, plan InstallPlan) (InstallBudget, error)
 }
 
 // OIDCClients registers OIDC clients in the caller's transaction.
@@ -196,6 +202,7 @@ func NewService(pool *pgxpool.Pool, reg *Registry, keyring *crypto.Keyring, cfg 
 	cfg.AgentPollInterval = cmp.Or(cfg.AgentPollInterval, defaultAgentPollInterval)
 	cfg.AgentRetryMax = cmp.Or(cfg.AgentRetryMax, defaultAgentRetryMax)
 	cfg.AgentWatchInterval = cmp.Or(cfg.AgentWatchInterval, defaultAgentWatchInterval)
+	cfg.AgentQueueTimeout = cmp.Or(cfg.AgentQueueTimeout, defaultAgentQueueTimeout)
 	if cfg.Resolver == nil {
 		cfg.Resolver = NewDNSResolver()
 	}

@@ -162,7 +162,9 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	// The production checks of an install (local mode, agent, resources,
 	// DNS) are the service's own; the hook reaches it once it exists.
 	var appsSvc *apps.Service
-	appsCfg.InstallPreflight = func(ctx context.Context, plan apps.InstallPlan) error { return appsSvc.CheckInstall(ctx, plan) }
+	appsCfg.InstallPreflight = func(ctx context.Context, plan apps.InstallPlan) (apps.InstallBudget, error) {
+		return appsSvc.CheckInstall(ctx, plan)
+	}
 	agent, err := agentclient.FromConfig(cfg.Agent, opts.Version)
 	if err != nil {
 		return nil, fmt.Errorf("agent: %w", err)
