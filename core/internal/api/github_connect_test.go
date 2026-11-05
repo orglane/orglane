@@ -29,6 +29,9 @@ func TestGitHubAuthenticationContract(t *testing.T) {
 		{"/api/v1/apps/github/connect", "post", []map[string][]string{{"sessionCookie": {}}}},
 		{"/api/v1/apps/github/connect/complete", "post", []map[string][]string{{"sessionCookie": {}}}},
 		{"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}", "put", []map[string][]string{{"sessionCookie": {}}, {"bearerAuth": {}}}},
+		// Link states are bound to the browser session.
+		{"/api/v1/me/account-links/{provider}/start", "post", []map[string][]string{{"sessionCookie": {}}}},
+		{"/api/v1/me/account-links/{provider}/complete", "post", []map[string][]string{{"sessionCookie": {}}}},
 	} {
 		var op struct {
 			Security []map[string][]string `yaml:"security"`

@@ -95,6 +95,11 @@ func TestAppsAPIPermissions(t *testing.T) {
 		{"POST", base + "/provisioning/removal-batches/" + uuid.NewString() + "/confirm", map[string]any{"itemsHash": strings.Repeat("0", 64)}, authz.AppsManage, 404},
 		{"GET", "/api/v1/people/" + memberPerson.ID.String() + "/apps", nil, authz.PeopleManage, 200},
 		{"GET", "/api/v1/me/apps", nil, authz.Authenticated, 200},
+		{"GET", "/api/v1/me/account-links", nil, authz.Authenticated, 200},
+		{"POST", "/api/v1/me/account-links/github/start", map[string]any{}, authz.Authenticated, 409},                                       // no GitHub instance: not_supported
+		{"POST", "/api/v1/me/account-links/github/complete", map[string]any{"state": "oll_unknown", "code": "c"}, authz.Authenticated, 409}, // invalid_state
+		{"DELETE", "/api/v1/me/account-links/" + uuid.NewString(), nil, authz.Authenticated, 404},
+		{"DELETE", "/api/v1/people/" + memberPerson.ID.String() + "/account-links/" + uuid.NewString(), nil, authz.PeopleManage, 404},
 	}
 	for _, op := range ops {
 		r := anonymous.req(op.method, op.path, op.body)

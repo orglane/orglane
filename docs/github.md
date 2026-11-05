@@ -79,6 +79,26 @@ The same public `POST /api/v1/apps/github/connect` API accepts `manual` alongsid
 `organization`, `key` and `instanceId`; no private admin endpoint is used.
 Never put credentials into a shell command, issue, PR, screenshot or repository.
 
+## Linking people's GitHub accounts
+
+Each person proves their own GitHub account once: the onboarding step **Link
+your GitHub account** (optional; at `/me/accounts/github`) sends them to
+GitHub's authorization page for your App and back to
+`/me/accounts/github/callback`. Orglane then knows their GitHub account by its
+numeric user ID, never by login or email, uses the token only to read who
+authorized, and revokes the authorization right away. The step appears for
+people with access to a GitHub instance (with the default `mapped_teams`
+policy, people in a mapped team).
+
+- An account already linked to someone else cannot be linked again; an admin
+  can revoke the wrong link on the person's page (**Apps and accounts**).
+  Admins can revoke links, never create them.
+- Linking another account replaces the person's own link; the old account is
+  no longer managed (reported, never removed).
+- Accounts from the GitHub people import (M1) are shown as expected
+  accounts. They prove nothing: if the linked account differs, both are shown;
+  if another person linked the expected account, it is marked as a conflict.
+
 ## Minimal App permissions
 
 Checked against GitHub's official documentation on 2026-11-05. These are the

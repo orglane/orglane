@@ -49,13 +49,22 @@ func New() *Adapter { return &Adapter{tokens: map[string]cachedToken{}} }
 func (*Adapter) Manifest() provider.Manifest {
 	features := make([]provider.FeatureSupport, 0, len(provider.Features))
 	for _, f := range provider.Features {
-		features = append(features, provider.FeatureSupport{Feature: f, Support: provider.Unsupported})
+		support := provider.Unsupported
+		if f == provider.FeatureAccountsLink {
+			support = provider.Supported // the employee step (OAuth through the App)
+		}
+		features = append(features, provider.FeatureSupport{Feature: f, Support: support})
 	}
 	settings := []provider.SettingSpec{}
 	for _, n := range []string{"organization", "organization_id", "app_id", "app_slug", "app_client_id", "installation_id"} {
 		settings = append(settings, provider.SettingSpec{Name: n, Type: provider.SettingString})
 	}
 	return provider.Manifest{ID: "github", Name: "GitHub", Management: provider.Connected, Capabilities: []provider.Capability{"code"}, Features: features, DefaultKey: "github", DefaultPolicy: provider.MappedTeams, Settings: settings,
+		EmployeeSteps: []provider.EmployeeStepSpec{{
+			ID: StepLinkAccount, Title: "Link your GitHub account",
+			Description: "Sign in to GitHub once so Orglane knows which GitHub account is yours.",
+			ActionPath:  "/me/accounts/github",
+		}},
 		Credentials: []provider.CredentialSpec{
 			{Name: "app_private_key", Source: provider.SourceUpload, Rotatable: true, Overlap: time.Hour},
 			{Name: "app_client_secret", Source: provider.SourceProvider},
@@ -362,34 +371,70 @@ type APIError struct{ Status int }
 
 func (e *APIError) Error() string     { return fmt.Sprintf("github: API status %d", e.Status) }
 func protocolError(code string) error { return &provider.Error{Code: code, Retryable: false} }
-func request(ctx context.Context, env provider.Env, method, path, token string, body, out any) error {
 
+// GitHub hosts the adapter talks to; never anything else.
+const (
+	apiHost = "api.github.com"
+	webHost = "github.com"
+)
+
+// call is one request to a fixed GitHub host.
+type call struct {
+	host, method, path string
+	// authorization is the whole Authorization header value, or "".
+	authorization string
+	body          any         // JSON-encoded, or url.Values form-encoded
+	accept        string      // default application/vnd.github+json
+	out           interface{} // decoded JSON response, or nil
+}
+
+func request(ctx context.Context, env provider.Env, method, path, token string, body, out any) error {
+	c := call{host: apiHost, method: method, path: path, body: body, out: out}
+	if token != "" {
+		c.authorization = "Bearer " + token
+	}
+	return do(ctx, env, c)
+}
+
+func do(ctx context.Context, env provider.Env, c call) error {
+	path, method, out := c.path, c.method, c.out
 	// Build the authority independently of caller-supplied path/query data.
 	parsed, err := url.ParseRequestURI(path)
-	if err != nil || !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" || strings.ContainsAny(path, "\\#") {
+	if err != nil || (c.host != apiHost && c.host != webHost) || !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" || strings.ContainsAny(path, "\\#") {
 		return protocolError("invalid_request")
 	}
-	endpoint := url.URL{Scheme: "https", Host: "api.github.com", Path: parsed.Path, RawPath: parsed.RawPath, RawQuery: parsed.RawQuery}
+	endpoint := url.URL{Scheme: "https", Host: c.host, Path: parsed.Path, RawPath: parsed.RawPath, RawQuery: parsed.RawQuery}
 	var r io.Reader
-	if body != nil {
+	contentType := ""
+	switch body := c.body.(type) {
+	case nil:
+	case url.Values:
+		r, contentType = strings.NewReader(body.Encode()), "application/x-www-form-urlencoded"
+	default:
 		raw, err := json.Marshal(body)
 		if err != nil {
 			return protocolError("invalid_request")
 		}
-		r = bytes.NewReader(raw)
+		r, contentType = bytes.NewReader(raw), "application/json"
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), r)
 	if err != nil {
 		return protocolError("invalid_request")
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("User-Agent", "Orglane")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	accept := c.accept
+	if accept == "" {
+		accept = "application/vnd.github+json"
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", accept)
+	if c.host == apiHost {
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	}
+	req.Header.Set("User-Agent", "Orglane")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if c.authorization != "" {
+		req.Header.Set("Authorization", c.authorization)
 	}
 	// Do not follow even same-host redirects for credential-bearing requests.
 	client := *env.HTTPClient()
@@ -436,15 +481,25 @@ func rateLimited(now time.Time, res *http.Response) error {
 	}
 	limited := res.StatusCode == http.StatusTooManyRequests
 	var after time.Duration
+	// Seconds are capped before they become a Duration, so huge header
+	// values cannot overflow into a negative or tiny delay.
+	const maxWait = int64(time.Hour / time.Second)
 	if v := strings.TrimSpace(res.Header.Get("Retry-After")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			limited, after = true, time.Duration(n)*time.Second
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			limited, after = true, time.Duration(min(n, maxWait))*time.Second
+		} else if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(v, "-") {
+			limited, after = true, time.Hour
 		}
 	}
 	if strings.TrimSpace(res.Header.Get("X-RateLimit-Remaining")) == "0" {
 		limited = true
-		if reset, err := strconv.ParseInt(strings.TrimSpace(res.Header.Get("X-RateLimit-Reset")), 10, 64); err == nil && after == 0 {
-			after = time.Unix(reset, 0).Sub(now) + time.Second
+		reset, err := strconv.ParseInt(strings.TrimSpace(res.Header.Get("X-RateLimit-Reset")), 10, 64)
+		if errors.Is(err, strconv.ErrRange) && after == 0 {
+			after = time.Hour
+		} else if err == nil && after == 0 {
+			if wait := reset - now.Unix(); wait > 0 {
+				after = time.Duration(min(wait, maxWait)+1) * time.Second
+			}
 		}
 	}
 	if !limited {

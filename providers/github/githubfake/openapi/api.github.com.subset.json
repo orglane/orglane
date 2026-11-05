@@ -1,0 +1,3494 @@
+{
+  "components": {
+    "examples": {
+      "base-installation": {
+        "value": {
+          "access_tokens_url": "https://api.github.com/app/installations/1/access_tokens",
+          "account": {
+            "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+            "events_url": "https://api.github.com/users/octocat/events{/privacy}",
+            "followers_url": "https://api.github.com/users/octocat/followers",
+            "following_url": "https://api.github.com/users/octocat/following{/other_user}",
+            "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}",
+            "gravatar_id": "",
+            "html_url": "https://github.com/octocat",
+            "id": 1,
+            "login": "octocat",
+            "node_id": "MDQ6VXNlcjE=",
+            "organizations_url": "https://api.github.com/users/octocat/orgs",
+            "received_events_url": "https://api.github.com/users/octocat/received_events",
+            "repos_url": "https://api.github.com/users/octocat/repos",
+            "site_admin": false,
+            "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/octocat/subscriptions",
+            "type": "User",
+            "url": "https://api.github.com/users/octocat"
+          },
+          "app_id": 1,
+          "app_slug": "github-actions",
+          "created_at": "2017-07-08T16:18:44-04:00",
+          "events": ["push", "pull_request"],
+          "has_multiple_single_files": true,
+          "html_url": "https://github.com/organizations/github/settings/installations/1",
+          "id": 1,
+          "permissions": {
+            "checks": "write",
+            "contents": "read",
+            "metadata": "read"
+          },
+          "repositories_url": "https://api.github.com/installation/repositories",
+          "repository_selection": "selected",
+          "single_file_name": "config.yaml",
+          "single_file_paths": ["config.yml", ".github/issue_TEMPLATE.md"],
+          "suspended_at": null,
+          "suspended_by": null,
+          "target_id": 1,
+          "target_type": "Organization",
+          "updated_at": "2017-07-08T16:18:44-04:00"
+        }
+      },
+      "installation-token": {
+        "value": {
+          "expires_at": "2016-07-11T22:14:10Z",
+          "permissions": {
+            "contents": "read",
+            "issues": "write"
+          },
+          "repositories": [
+            {
+              "allow_auto_merge": false,
+              "allow_merge_commit": true,
+              "allow_rebase_merge": true,
+              "allow_squash_merge": true,
+              "archive_url": "https://api.github.com/repos/octocat/Hello-World/{archive_format}{/ref}",
+              "archived": false,
+              "assignees_url": "https://api.github.com/repos/octocat/Hello-World/assignees{/user}",
+              "blobs_url": "https://api.github.com/repos/octocat/Hello-World/git/blobs{/sha}",
+              "branches_url": "https://api.github.com/repos/octocat/Hello-World/branches{/branch}",
+              "clone_url": "https://github.com/octocat/Hello-World.git",
+              "collaborators_url": "https://api.github.com/repos/octocat/Hello-World/collaborators{/collaborator}",
+              "comments_url": "https://api.github.com/repos/octocat/Hello-World/comments{/number}",
+              "commits_url": "https://api.github.com/repos/octocat/Hello-World/commits{/sha}",
+              "compare_url": "https://api.github.com/repos/octocat/Hello-World/compare/{base}...{head}",
+              "contents_url": "https://api.github.com/repos/octocat/Hello-World/contents/{+path}",
+              "contributors_url": "https://api.github.com/repos/octocat/Hello-World/contributors",
+              "created_at": "2011-01-26T19:01:12Z",
+              "default_branch": "master",
+              "delete_branch_on_merge": true,
+              "deployments_url": "https://api.github.com/repos/octocat/Hello-World/deployments",
+              "description": "This your first repo!",
+              "disabled": false,
+              "downloads_url": "https://api.github.com/repos/octocat/Hello-World/downloads",
+              "events_url": "https://api.github.com/repos/octocat/Hello-World/events",
+              "fork": false,
+              "forks": 1,
+              "forks_count": 9,
+              "forks_url": "https://api.github.com/repos/octocat/Hello-World/forks",
+              "full_name": "octocat/Hello-World",
+              "git_commits_url": "https://api.github.com/repos/octocat/Hello-World/git/commits{/sha}",
+              "git_refs_url": "https://api.github.com/repos/octocat/Hello-World/git/refs{/sha}",
+              "git_tags_url": "https://api.github.com/repos/octocat/Hello-World/git/tags{/sha}",
+              "git_url": "git:github.com/octocat/Hello-World.git",
+              "has_downloads": true,
+              "has_issues": true,
+              "has_pages": false,
+              "has_projects": true,
+              "has_wiki": true,
+              "homepage": "https://github.com",
+              "hooks_url": "https://api.github.com/repos/octocat/Hello-World/hooks",
+              "html_url": "https://github.com/octocat/Hello-World",
+              "id": 1296269,
+              "is_template": true,
+              "issue_comment_url": "https://api.github.com/repos/octocat/Hello-World/issues/comments{/number}",
+              "issue_events_url": "https://api.github.com/repos/octocat/Hello-World/issues/events{/number}",
+              "issues_url": "https://api.github.com/repos/octocat/Hello-World/issues{/number}",
+              "keys_url": "https://api.github.com/repos/octocat/Hello-World/keys{/key_id}",
+              "labels_url": "https://api.github.com/repos/octocat/Hello-World/labels{/name}",
+              "language": null,
+              "languages_url": "https://api.github.com/repos/octocat/Hello-World/languages",
+              "license": {
+                "html_url": "https://github.com/licenses/mit",
+                "key": "mit",
+                "name": "MIT License",
+                "node_id": "MDc6TGljZW5zZW1pdA==",
+                "spdx_id": "MIT",
+                "url": "https://api.github.com/licenses/mit"
+              },
+              "merges_url": "https://api.github.com/repos/octocat/Hello-World/merges",
+              "milestones_url": "https://api.github.com/repos/octocat/Hello-World/milestones{/number}",
+              "mirror_url": "git:git.example.com/octocat/Hello-World",
+              "name": "Hello-World",
+              "network_count": 0,
+              "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
+              "notifications_url": "https://api.github.com/repos/octocat/Hello-World/notifications{?since,all,participating}",
+              "open_issues": 1,
+              "open_issues_count": 0,
+              "owner": {
+                "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+                "events_url": "https://api.github.com/users/octocat/events{/privacy}",
+                "followers_url": "https://api.github.com/users/octocat/followers",
+                "following_url": "https://api.github.com/users/octocat/following{/other_user}",
+                "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}",
+                "gravatar_id": "",
+                "html_url": "https://github.com/octocat",
+                "id": 1,
+                "login": "octocat",
+                "node_id": "MDQ6VXNlcjE=",
+                "organizations_url": "https://api.github.com/users/octocat/orgs",
+                "received_events_url": "https://api.github.com/users/octocat/received_events",
+                "repos_url": "https://api.github.com/users/octocat/repos",
+                "site_admin": false,
+                "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+                "subscriptions_url": "https://api.github.com/users/octocat/subscriptions",
+                "type": "User",
+                "url": "https://api.github.com/users/octocat"
+              },
+              "permissions": {
+                "admin": false,
+                "pull": true,
+                "push": false
+              },
+              "private": false,
+              "pulls_url": "https://api.github.com/repos/octocat/Hello-World/pulls{/number}",
+              "pushed_at": "2011-01-26T19:06:43Z",
+              "releases_url": "https://api.github.com/repos/octocat/Hello-World/releases{/id}",
+              "size": 108,
+              "ssh_url": "git@github.com:octocat/Hello-World.git",
+              "stargazers_count": 80,
+              "stargazers_url": "https://api.github.com/repos/octocat/Hello-World/stargazers",
+              "statuses_url": "https://api.github.com/repos/octocat/Hello-World/statuses/{sha}",
+              "subscribers_count": 42,
+              "subscribers_url": "https://api.github.com/repos/octocat/Hello-World/subscribers",
+              "subscription_url": "https://api.github.com/repos/octocat/Hello-World/subscription",
+              "svn_url": "https://svn.github.com/octocat/Hello-World",
+              "tags_url": "https://api.github.com/repos/octocat/Hello-World/tags",
+              "teams_url": "https://api.github.com/repos/octocat/Hello-World/teams",
+              "temp_clone_token": "ABTLWHOULUVAXGTRYU7OC2876QJ2O",
+              "template_repository": null,
+              "topics": ["octocat", "atom", "electron", "api"],
+              "trees_url": "https://api.github.com/repos/octocat/Hello-World/git/trees{/sha}",
+              "updated_at": "2011-01-26T19:14:43Z",
+              "url": "https://api.github.com/repos/octocat/Hello-World",
+              "visibility": "public",
+              "watchers": 1,
+              "watchers_count": 80
+            }
+          ],
+          "repository_selection": "selected",
+          "token": "ghs_16C7e42F292c6912E7710c838347Ae178B4a"
+        }
+      },
+      "integration": {
+        "value": {
+          "client_id": "Iv1.ab1112223334445c",
+          "created_at": "2017-07-08T16:18:44-04:00",
+          "description": "",
+          "events": ["push", "pull_request"],
+          "external_url": "https://example.com",
+          "html_url": "https://github.com/apps/octoapp",
+          "id": 1,
+          "name": "Octocat App",
+          "node_id": "MDExOkludGVncmF0aW9uMQ==",
+          "owner": {
+            "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+            "events_url": "https://api.github.com/users/octocat/events{/privacy}",
+            "followers_url": "https://api.github.com/users/octocat/followers",
+            "following_url": "https://api.github.com/users/octocat/following{/other_user}",
+            "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}",
+            "gravatar_id": "",
+            "html_url": "https://github.com/octocat",
+            "id": 1,
+            "login": "octocat",
+            "node_id": "MDQ6VXNlcjE=",
+            "organizations_url": "https://api.github.com/users/octocat/orgs",
+            "received_events_url": "https://api.github.com/users/octocat/received_events",
+            "repos_url": "https://api.github.com/users/octocat/repos",
+            "site_admin": false,
+            "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/octocat/subscriptions",
+            "type": "User",
+            "url": "https://api.github.com/users/octocat"
+          },
+          "permissions": {
+            "contents": "read",
+            "issues": "write",
+            "metadata": "read",
+            "single_file": "write"
+          },
+          "slug": "octoapp",
+          "updated_at": "2017-07-08T16:18:44-04:00"
+        }
+      },
+      "integration-from-manifest": {
+        "value": {
+          "client_id": "Iv1.8a61f9b3a7aba766",
+          "client_secret": "1726be1638095a19edd134c77bde3aa2ece1e5d8",
+          "created_at": "2017-07-08T16:18:44-04:00",
+          "description": "",
+          "events": ["push", "pull_request"],
+          "external_url": "https://example.com",
+          "html_url": "https://github.com/apps/octoapp",
+          "id": 1,
+          "name": "Octocat App",
+          "node_id": "MDxOkludGVncmF0aW9uMQ==",
+          "owner": {
+            "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+            "events_url": "https://api.github.com/orgs/github/events",
+            "followers_url": "https://api.github.com/users/octocat/followers",
+            "following_url": "https://api.github.com/users/octocat/following{/other_user}",
+            "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}",
+            "gravatar_id": "",
+            "html_url": "https://github.com/octocat",
+            "id": 1,
+            "login": "github",
+            "node_id": "MDEyOk9yZ2FuaXphdGlvbjE=",
+            "organizations_url": "https://api.github.com/users/octocat/orgs",
+            "received_events_url": "https://api.github.com/users/octocat/received_events",
+            "repos_url": "https://api.github.com/orgs/github/repos",
+            "site_admin": true,
+            "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/octocat/subscriptions",
+            "type": "User",
+            "url": "https://api.github.com/orgs/github"
+          },
+          "pem": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAuEPzOUE+kiEH1WLiMeBytTEF856j0hOVcSUSUkZxKvqczkWM\n9vo1gDyC7ZXhdH9fKh32aapba3RSsp4ke+giSmYTk2mGR538ShSDxh0OgpJmjiKP\nX0Bj4j5sFqfXuCtl9SkH4iueivv4R53ktqM+n6hk98l6hRwC39GVIblAh2lEM4L/\n6WvYwuQXPMM5OG2Ryh2tDZ1WS5RKfgq+9ksNJ5Q9UtqtqHkO+E63N5OK9sbzpUUm\noNaOl3udTlZD3A8iqwMPVxH4SxgATBPAc+bmjk6BMJ0qIzDcVGTrqrzUiywCTLma\nszdk8GjzXtPDmuBgNn+o6s02qVGpyydgEuqmTQIDAQABAoIBACL6AvkjQVVLn8kJ\ndBYznJJ4M8ECo+YEgaFwgAHODT0zRQCCgzd+Vxl4YwHmKV2Lr+y2s0drZt8GvYva\nKOK8NYYZyi15IlwFyRXmvvykF1UBpSXluYFDH7KaVroWMgRreHcIys5LqVSIb6Bo\ngDmK0yBLPp8qR29s2b7ScZRtLaqGJiX+j55rNzrZwxHkxFHyG9OG+u9IsBElcKCP\nkYCVE8ZdYexfnKOZbgn2kZB9qu0T/Mdvki8yk3I2bI6xYO24oQmhnT36qnqWoCBX\nNuCNsBQgpYZeZET8mEAUmo9d+ABmIHIvSs005agK8xRaP4+6jYgy6WwoejJRF5yd\nNBuF7aECgYEA50nZ4FiZYV0vcJDxFYeY3kYOvVuKn8OyW+2rg7JIQTremIjv8FkE\nZnwuF9ZRxgqLxUIfKKfzp/5l5LrycNoj2YKfHKnRejxRWXqG+ZETfxxlmlRns0QG\nJ4+BYL0CoanDSeA4fuyn4Bv7cy/03TDhfg/Uq0Aeg+hhcPE/vx3ebPsCgYEAy/Pv\neDLssOSdeyIxf0Brtocg6aPXIVaLdus+bXmLg77rJIFytAZmTTW8SkkSczWtucI3\nFI1I6sei/8FdPzAl62/JDdlf7Wd9K7JIotY4TzT7Tm7QU7xpfLLYIP1bOFjN81rk\n77oOD4LsXcosB/U6s1blPJMZ6AlO2EKs10UuR1cCgYBipzuJ2ADEaOz9RLWwi0AH\nPza2Sj+c2epQD9ZivD7Zo/Sid3ZwvGeGF13JyR7kLEdmAkgsHUdu1rI7mAolXMaB\n1pdrsHureeLxGbRM6za3tzMXWv1Il7FQWoPC8ZwXvMOR1VQDv4nzq7vbbA8z8c+c\n57+8tALQHOTDOgQIzwK61QKBgERGVc0EJy4Uag+VY8J4m1ZQKBluqo7TfP6DQ7O8\nM5MX73maB/7yAX8pVO39RjrhJlYACRZNMbK+v/ckEQYdJSSKmGCVe0JrGYDuPtic\nI9+IGfSorf7KHPoMmMN6bPYQ7Gjh7a++tgRFTMEc8956Hnt4xGahy9NcglNtBpVN\n6G8jAoGBAMCh028pdzJa/xeBHLLaVB2sc0Fe7993WlsPmnVE779dAz7qMscOtXJK\nfgtriltLSSD6rTA9hUAsL/X62rY0wdXuNdijjBb/qvrx7CAV6i37NK1CjABNjsfG\nZM372Ac6zc1EqSrid2IjET1YqyIW2KGLI1R2xbQc98UGlt48OdWu\n-----END RSA PRIVATE KEY-----\n",
+          "permissions": {
+            "contents": "read",
+            "issues": "write",
+            "metadata": "read",
+            "single_file": "write"
+          },
+          "slug": "octoapp",
+          "updated_at": "2017-07-08T16:18:44-04:00",
+          "webhook_secret": "e340154128314309424b7c8e90325147d99fdafa"
+        }
+      },
+      "organization-full": {
+        "value": {
+          "advanced_security_enabled_for_new_repositories": false,
+          "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+          "billing_email": "mona@github.com",
+          "blog": "https://github.com/blog",
+          "collaborators": 8,
+          "company": "GitHub",
+          "created_at": "2008-01-14T04:33:35Z",
+          "default_repository_branch": "main",
+          "default_repository_permission": "read",
+          "dependabot_alerts_enabled_for_new_repositories": false,
+          "dependabot_security_updates_enabled_for_new_repositories": false,
+          "dependency_graph_enabled_for_new_repositories": false,
+          "deploy_keys_enabled_for_repositories": false,
+          "description": "A great organization",
+          "disk_usage": 10000,
+          "display_commenter_full_name_setting_enabled": false,
+          "email": "octocat@github.com",
+          "events_url": "https://api.github.com/orgs/github/events",
+          "followers": 20,
+          "following": 0,
+          "has_organization_projects": true,
+          "has_repository_projects": true,
+          "hooks_url": "https://api.github.com/orgs/github/hooks",
+          "html_url": "https://github.com/octocat",
+          "id": 1,
+          "is_verified": true,
+          "issues_url": "https://api.github.com/orgs/github/issues",
+          "location": "San Francisco",
+          "login": "github",
+          "members_allowed_repository_creation_type": "all",
+          "members_can_change_repo_visibility": true,
+          "members_can_create_internal_repositories": false,
+          "members_can_create_pages": true,
+          "members_can_create_private_pages": true,
+          "members_can_create_private_repositories": false,
+          "members_can_create_public_pages": true,
+          "members_can_create_public_repositories": false,
+          "members_can_create_repositories": true,
+          "members_can_create_teams": true,
+          "members_can_delete_issues": false,
+          "members_can_delete_repositories": true,
+          "members_can_fork_private_repositories": false,
+          "members_can_invite_outside_collaborators": true,
+          "members_can_view_dependency_insights": true,
+          "members_url": "https://api.github.com/orgs/github/members{/member}",
+          "name": "github",
+          "node_id": "MDEyOk9yZ2FuaXphdGlvbjE=",
+          "owned_private_repos": 100,
+          "plan": {
+            "filled_seats": 4,
+            "name": "Medium",
+            "private_repos": 20,
+            "seats": 5,
+            "space": 400
+          },
+          "private_gists": 81,
+          "public_gists": 1,
+          "public_members_url": "https://api.github.com/orgs/github/public_members{/member}",
+          "public_repos": 2,
+          "readers_can_create_discussions": true,
+          "repos_url": "https://api.github.com/orgs/github/repos",
+          "secret_scanning_enabled_for_new_repositories": false,
+          "secret_scanning_push_protection_custom_link": "https://github.com/octo-org/octo-repo/blob/main/im-blocked.md",
+          "secret_scanning_push_protection_custom_link_enabled": false,
+          "secret_scanning_push_protection_enabled_for_new_repositories": false,
+          "total_private_repos": 100,
+          "twitter_username": "github",
+          "two_factor_requirement_enabled": true,
+          "type": "Organization",
+          "updated_at": "2014-03-03T18:58:10Z",
+          "url": "https://api.github.com/orgs/github",
+          "web_commit_signoff_required": false
+        }
+      },
+      "private-user-response-with-public-and-private-profile-information": {
+        "summary": "Response with public and private profile information",
+        "value": {
+          "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+          "bio": "There once was...",
+          "blog": "https://github.com/blog",
+          "collaborators": 8,
+          "company": "GitHub",
+          "created_at": "2008-01-14T04:33:35Z",
+          "disk_usage": 10000,
+          "email": "octocat@github.com",
+          "events_url": "https://api.github.com/users/octocat/events{/privacy}",
+          "followers": 20,
+          "followers_url": "https://api.github.com/users/octocat/followers",
+          "following": 0,
+          "following_url": "https://api.github.com/users/octocat/following{/other_user}",
+          "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}",
+          "gravatar_id": "",
+          "hireable": false,
+          "html_url": "https://github.com/octocat",
+          "id": 1,
+          "location": "San Francisco",
+          "login": "octocat",
+          "name": "monalisa octocat",
+          "node_id": "MDQ6VXNlcjE=",
+          "organizations_url": "https://api.github.com/users/octocat/orgs",
+          "owned_private_repos": 100,
+          "plan": {
+            "collaborators": 0,
+            "name": "Medium",
+            "private_repos": 20,
+            "space": 400
+          },
+          "private_gists": 81,
+          "public_gists": 1,
+          "public_repos": 2,
+          "received_events_url": "https://api.github.com/users/octocat/received_events",
+          "repos_url": "https://api.github.com/users/octocat/repos",
+          "site_admin": false,
+          "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/octocat/subscriptions",
+          "total_private_repos": 100,
+          "twitter_username": "monatheoctocat",
+          "two_factor_authentication": true,
+          "type": "User",
+          "updated_at": "2008-01-14T04:33:35Z",
+          "url": "https://api.github.com/users/octocat"
+        }
+      },
+      "private-user-response-with-public-profile-information": {
+        "summary": "Response with public profile information",
+        "value": {
+          "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+          "bio": "There once was...",
+          "blog": "https://github.com/blog",
+          "company": "GitHub",
+          "created_at": "2008-01-14T04:33:35Z",
+          "email": "octocat@github.com",
+          "events_url": "https://api.github.com/users/octocat/events{/privacy}",
+          "followers": 20,
+          "followers_url": "https://api.github.com/users/octocat/followers",
+          "following": 0,
+          "following_url": "https://api.github.com/users/octocat/following{/other_user}",
+          "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}",
+          "gravatar_id": "",
+          "hireable": false,
+          "html_url": "https://github.com/octocat",
+          "id": 1,
+          "location": "San Francisco",
+          "login": "octocat",
+          "name": "monalisa octocat",
+          "node_id": "MDQ6VXNlcjE=",
+          "organizations_url": "https://api.github.com/users/octocat/orgs",
+          "public_gists": 1,
+          "public_repos": 2,
+          "received_events_url": "https://api.github.com/users/octocat/received_events",
+          "repos_url": "https://api.github.com/users/octocat/repos",
+          "site_admin": false,
+          "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/octocat/subscriptions",
+          "twitter_username": "monatheoctocat",
+          "type": "User",
+          "updated_at": "2008-01-14T04:33:35Z",
+          "url": "https://api.github.com/users/octocat"
+        }
+      },
+      "webhook-config": {
+        "value": {
+          "content_type": "json",
+          "insecure_ssl": "0",
+          "secret": "********",
+          "url": "https://example.com/webhook"
+        }
+      }
+    },
+    "parameters": {
+      "client-id": {
+        "description": "The client ID of the GitHub app.",
+        "examples": {
+          "default": {
+            "value": "Iv1.8a61f9b3a7aba766"
+          }
+        },
+        "in": "path",
+        "name": "client_id",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "installation-id": {
+        "description": "The unique identifier of the installation.",
+        "examples": {
+          "default": {
+            "value": 1
+          }
+        },
+        "in": "path",
+        "name": "installation_id",
+        "required": true,
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "org": {
+        "description": "The organization name. The name is not case sensitive.",
+        "in": "path",
+        "name": "org",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "responses": {
+      "forbidden": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/basic-error"
+            }
+          }
+        },
+        "description": "Forbidden"
+      },
+      "not_found": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/basic-error"
+            }
+          }
+        },
+        "description": "Resource not found"
+      },
+      "not_modified": {
+        "description": "Not modified"
+      },
+      "requires_authentication": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/basic-error"
+            }
+          }
+        },
+        "description": "Requires authentication"
+      },
+      "validation_failed": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/validation-error"
+            }
+          }
+        },
+        "description": "Validation failed, or the endpoint has been spammed."
+      },
+      "validation_failed_simple": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/validation-error-simple"
+            }
+          }
+        },
+        "description": "Validation failed, or the endpoint has been spammed."
+      }
+    },
+    "schemas": {
+      "app-permissions": {
+        "description": "The permissions granted to the fine-grained access token.",
+        "example": {
+          "contents": "read",
+          "deployments": "write",
+          "issues": "read",
+          "single_file": "read"
+        },
+        "properties": {
+          "actions": {
+            "description": "The level of permission to grant the access token for GitHub Actions workflows, workflow runs, and artifacts.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "administration": {
+            "description": "The level of permission to grant the access token for repository creation, deletion, settings, teams, and collaborators creation.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "artifact_metadata": {
+            "description": "The level of permission to grant the access token to create and retrieve build artifact metadata records.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "attestations": {
+            "description": "The level of permission to create and retrieve the access token for repository attestations.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "checks": {
+            "description": "The level of permission to grant the access token for checks on code.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "code_quality": {
+            "description": "The level of permission to grant the access token to view and manage code quality data.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "codespaces": {
+            "description": "The level of permission to grant the access token to create, edit, delete, and list Codespaces.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "contents": {
+            "description": "The level of permission to grant the access token for repository contents, commits, branches, downloads, releases, and merges.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "custom_properties_for_organizations": {
+            "description": "The level of permission to grant the access token to view and edit custom properties for an organization, when allowed by the property.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "dependabot_secrets": {
+            "description": "The level of permission to grant the access token to manage Dependabot secrets.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "deployments": {
+            "description": "The level of permission to grant the access token for deployments and deployment statuses.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "discussions": {
+            "description": "The level of permission to grant the access token for discussions and related comments and labels.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "email_addresses": {
+            "description": "The level of permission to grant the access token to manage the email addresses belonging to a user.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "enterprise_custom_properties_for_organizations": {
+            "description": "The level of permission to grant the access token for organization custom properties management at the enterprise level.",
+            "enum": ["read", "write", "admin"],
+            "type": "string"
+          },
+          "environments": {
+            "description": "The level of permission to grant the access token for managing repository environments.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "followers": {
+            "description": "The level of permission to grant the access token to manage the followers belonging to a user.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "git_ssh_keys": {
+            "description": "The level of permission to grant the access token to manage git SSH keys.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "gpg_keys": {
+            "description": "The level of permission to grant the access token to view and manage GPG keys belonging to a user.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "interaction_limits": {
+            "description": "The level of permission to grant the access token to view and manage interaction limits on a repository.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "issues": {
+            "description": "The level of permission to grant the access token for issues and related comments, assignees, labels, and milestones.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "members": {
+            "description": "The level of permission to grant the access token for organization teams and members.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "merge_queues": {
+            "description": "The level of permission to grant the access token to manage the merge queues for a repository.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "metadata": {
+            "description": "The level of permission to grant the access token to search repositories, list collaborators, and access repository metadata.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_administration": {
+            "description": "The level of permission to grant the access token to manage access to an organization.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_announcement_banners": {
+            "description": "The level of permission to grant the access token to view and manage announcement banners for an organization.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_copilot_agent_settings": {
+            "description": "The level of permission to grant the access token to view and manage Copilot cloud agent settings for an organization.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_copilot_requests": {
+            "description": "The level of permission to grant the access token to make Copilot requests billed to the organization where the app is installed. This property is in public preview and is subject to change.",
+            "enum": ["read"],
+            "type": "string"
+          },
+          "organization_copilot_seat_management": {
+            "description": "The level of permission to grant the access token for managing access to GitHub Copilot for members of an organization with a Copilot Business subscription. This property is in public preview and is subject to change.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_custom_org_roles": {
+            "description": "The level of permission to grant the access token for custom organization roles management.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_custom_properties": {
+            "description": "The level of permission to grant the access token for repository custom properties management at the organization level.",
+            "enum": ["read", "write", "admin"],
+            "type": "string"
+          },
+          "organization_custom_roles": {
+            "description": "The level of permission to grant the access token for custom repository roles management.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_events": {
+            "description": "The level of permission to grant the access token to view events triggered by an activity in an organization.",
+            "enum": ["read"],
+            "type": "string"
+          },
+          "organization_external_properties_for_repos": {
+            "description": "The level of permission to grant the access token for managing external custom properties for repositories in an organization.",
+            "enum": ["read", "write", "admin"],
+            "type": "string"
+          },
+          "organization_hooks": {
+            "description": "The level of permission to grant the access token to manage the post-receive hooks for an organization.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_packages": {
+            "description": "The level of permission to grant the access token for organization packages published to GitHub Packages.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_personal_access_token_requests": {
+            "description": "The level of permission to grant the access token for viewing and managing fine-grained personal access tokens that have been approved by an organization.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_personal_access_tokens": {
+            "description": "The level of permission to grant the access token for viewing and managing fine-grained personal access token requests to an organization.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_plan": {
+            "description": "The level of permission to grant the access token for viewing an organization's plan.",
+            "enum": ["read"],
+            "type": "string"
+          },
+          "organization_projects": {
+            "description": "The level of permission to grant the access token to manage organization projects and projects public preview (where available).",
+            "enum": ["read", "write", "admin"],
+            "type": "string"
+          },
+          "organization_secrets": {
+            "description": "The level of permission to grant the access token to manage organization secrets.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_self_hosted_runners": {
+            "description": "The level of permission to grant the access token to view and manage GitHub Actions self-hosted runners available to an organization.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "organization_user_blocking": {
+            "description": "The level of permission to grant the access token to view and manage users blocked by the organization.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "packages": {
+            "description": "The level of permission to grant the access token for packages published to GitHub Packages.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "pages": {
+            "description": "The level of permission to grant the access token to retrieve Pages statuses, configuration, and builds, as well as create new builds.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "profile": {
+            "description": "The level of permission to grant the access token to manage the profile settings belonging to a user.",
+            "enum": ["write"],
+            "type": "string"
+          },
+          "pull_requests": {
+            "description": "The level of permission to grant the access token for pull requests and related comments, assignees, labels, milestones, and merges.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "repository_custom_properties": {
+            "description": "The level of permission to grant the access token to view and edit custom properties for a repository, when allowed by the property.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "repository_hooks": {
+            "description": "The level of permission to grant the access token to manage the post-receive hooks for a repository.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "repository_projects": {
+            "description": "The level of permission to grant the access token to manage repository projects, columns, and cards.",
+            "enum": ["read", "write", "admin"],
+            "type": "string"
+          },
+          "secret_scanning_alerts": {
+            "description": "The level of permission to grant the access token to view and manage secret scanning alerts.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "secrets": {
+            "description": "The level of permission to grant the access token to manage repository secrets.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "security_events": {
+            "description": "The level of permission to grant the access token to view and manage security events like code scanning alerts.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "single_file": {
+            "description": "The level of permission to grant the access token to manage just a single file.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "starring": {
+            "description": "The level of permission to grant the access token to list and manage repositories a user is starring.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "statuses": {
+            "description": "The level of permission to grant the access token for commit statuses.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "vulnerability_alerts": {
+            "description": "The level of permission to grant the access token to manage Dependabot alerts.",
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "workflows": {
+            "description": "The level of permission to grant the access token to update GitHub Actions workflow files.",
+            "enum": ["write"],
+            "type": "string"
+          }
+        },
+        "title": "App Permissions",
+        "type": "object"
+      },
+      "basic-error": {
+        "description": "Basic Error",
+        "properties": {
+          "documentation_url": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "title": "Basic Error",
+        "type": "object"
+      },
+      "enterprise": {
+        "description": "An enterprise on GitHub.",
+        "properties": {
+          "avatar_url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "created_at": {
+            "example": "2019-01-26T19:01:12Z",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "description": {
+            "description": "A short description of the enterprise.",
+            "nullable": true,
+            "type": "string"
+          },
+          "html_url": {
+            "example": "https://github.com/enterprises/octo-business",
+            "format": "uri",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique identifier of the enterprise",
+            "example": 42,
+            "type": "integer"
+          },
+          "name": {
+            "description": "The name of the enterprise.",
+            "example": "Octo Business",
+            "type": "string"
+          },
+          "node_id": {
+            "example": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
+            "type": "string"
+          },
+          "slug": {
+            "description": "The slug url identifier for the enterprise.",
+            "example": "octo-business",
+            "type": "string"
+          },
+          "updated_at": {
+            "example": "2019-01-26T19:14:43Z",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "website_url": {
+            "description": "The enterprise's website URL.",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "node_id",
+          "name",
+          "slug",
+          "html_url",
+          "created_at",
+          "updated_at",
+          "avatar_url"
+        ],
+        "title": "Enterprise",
+        "type": "object"
+      },
+      "installation": {
+        "description": "Installation",
+        "properties": {
+          "access_tokens_url": {
+            "example": "https://api.github.com/app/installations/1/access_tokens",
+            "format": "uri",
+            "type": "string"
+          },
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/simple-user"
+              },
+              {
+                "$ref": "#/components/schemas/enterprise"
+              }
+            ],
+            "nullable": true
+          },
+          "app_id": {
+            "example": 1,
+            "type": "integer"
+          },
+          "app_slug": {
+            "example": "github-actions",
+            "type": "string"
+          },
+          "client_id": {
+            "example": "Iv1.ab1112223334445c",
+            "type": "string"
+          },
+          "contact_email": {
+            "example": "\"test_13f1e99741e3e004@d7e1eb0bc0a1ba12.com\"",
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "has_multiple_single_files": {
+            "example": true,
+            "type": "boolean"
+          },
+          "html_url": {
+            "example": "https://github.com/organizations/github/settings/installations/1",
+            "format": "uri",
+            "type": "string"
+          },
+          "id": {
+            "description": "The ID of the installation.",
+            "example": 1,
+            "type": "integer"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/app-permissions"
+          },
+          "repositories_url": {
+            "example": "https://api.github.com/installation/repositories",
+            "format": "uri",
+            "type": "string"
+          },
+          "repository_selection": {
+            "description": "Describe whether all repositories have been selected or there's a selection involved",
+            "enum": ["all", "selected"],
+            "type": "string"
+          },
+          "single_file_name": {
+            "example": "config.yaml",
+            "nullable": true,
+            "type": "string"
+          },
+          "single_file_paths": {
+            "example": ["config.yml", ".github/issue_TEMPLATE.md"],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "suspended_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "suspended_by": {
+            "$ref": "#/components/schemas/nullable-simple-user"
+          },
+          "target_id": {
+            "description": "The ID of the user or organization this token is being scoped to.",
+            "type": "integer"
+          },
+          "target_type": {
+            "example": "Organization",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "app_id",
+          "app_slug",
+          "target_id",
+          "target_type",
+          "single_file_name",
+          "repository_selection",
+          "access_tokens_url",
+          "html_url",
+          "repositories_url",
+          "events",
+          "account",
+          "permissions",
+          "created_at",
+          "updated_at",
+          "suspended_by",
+          "suspended_at"
+        ],
+        "title": "Installation",
+        "type": "object"
+      },
+      "installation-token": {
+        "description": "Authentication token for a GitHub App installed on a user or org.",
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "has_multiple_single_files": {
+            "example": true,
+            "type": "boolean"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/app-permissions"
+          },
+          "repositories": {
+            "items": {
+              "$ref": "#/components/schemas/repository"
+            },
+            "type": "array"
+          },
+          "repository_selection": {
+            "enum": ["all", "selected"],
+            "type": "string"
+          },
+          "single_file": {
+            "example": "README.md",
+            "type": "string"
+          },
+          "single_file_paths": {
+            "example": ["config.yml", ".github/issue_TEMPLATE.md"],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": ["token", "expires_at"],
+        "title": "Installation Token",
+        "type": "object"
+      },
+      "integration": {
+        "description": "GitHub apps are a new way to extend GitHub. They can be installed directly on organizations and user accounts and granted access to specific repositories. They come with granular permissions and built-in webhooks. GitHub apps are first class actors within GitHub.",
+        "nullable": true,
+        "properties": {
+          "client_id": {
+            "example": "\"Iv1.25b5d1e65ffc4022\"",
+            "type": "string"
+          },
+          "created_at": {
+            "example": "2017-07-08T16:18:44-04:00",
+            "format": "date-time",
+            "type": "string"
+          },
+          "description": {
+            "example": "The description of the app.",
+            "nullable": true,
+            "type": "string"
+          },
+          "events": {
+            "description": "The list of events for the GitHub app. Note that the `installation_target`, `security_advisory`, and `meta` events are not included because they are global events and not specific to an installation.",
+            "example": ["label", "deployment"],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "external_url": {
+            "example": "https://example.com",
+            "format": "uri",
+            "type": "string"
+          },
+          "html_url": {
+            "example": "https://github.com/apps/super-ci",
+            "format": "uri",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique identifier of the GitHub app",
+            "example": 37,
+            "type": "integer"
+          },
+          "installations_count": {
+            "description": "The number of installations associated with the GitHub app. Only returned when the integration is requesting details about itself.",
+            "example": 5,
+            "type": "integer"
+          },
+          "name": {
+            "description": "The name of the GitHub app",
+            "example": "Probot Owners",
+            "type": "string"
+          },
+          "node_id": {
+            "example": "MDExOkludGVncmF0aW9uMQ==",
+            "type": "string"
+          },
+          "owner": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/simple-user"
+              },
+              {
+                "$ref": "#/components/schemas/enterprise"
+              }
+            ]
+          },
+          "permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The set of permissions for the GitHub app",
+            "example": {
+              "deployments": "write",
+              "issues": "read"
+            },
+            "properties": {
+              "checks": {
+                "type": "string"
+              },
+              "contents": {
+                "type": "string"
+              },
+              "deployments": {
+                "type": "string"
+              },
+              "issues": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "slug": {
+            "description": "The slug name of the GitHub app",
+            "example": "probot-owners",
+            "type": "string"
+          },
+          "updated_at": {
+            "example": "2017-07-08T16:18:44-04:00",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "node_id",
+          "owner",
+          "name",
+          "description",
+          "external_url",
+          "html_url",
+          "created_at",
+          "updated_at",
+          "permissions",
+          "events"
+        ],
+        "title": "GitHub app",
+        "type": "object"
+      },
+      "nullable-license-simple": {
+        "description": "License Simple",
+        "nullable": true,
+        "properties": {
+          "html_url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "key": {
+            "example": "mit",
+            "type": "string"
+          },
+          "name": {
+            "example": "MIT License",
+            "type": "string"
+          },
+          "node_id": {
+            "example": "MDc6TGljZW5zZW1pdA==",
+            "type": "string"
+          },
+          "spdx_id": {
+            "example": "MIT",
+            "nullable": true,
+            "type": "string"
+          },
+          "url": {
+            "example": "https://api.github.com/licenses/mit",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": ["key", "name", "url", "spdx_id", "node_id"],
+        "title": "License Simple",
+        "type": "object"
+      },
+      "nullable-simple-user": {
+        "description": "A GitHub user.",
+        "nullable": true,
+        "properties": {
+          "avatar_url": {
+            "example": "https://github.com/images/error/octocat_happy.gif",
+            "format": "uri",
+            "type": "string"
+          },
+          "email": {
+            "nullable": true,
+            "type": "string"
+          },
+          "events_url": {
+            "example": "https://api.github.com/users/octocat/events{/privacy}",
+            "type": "string"
+          },
+          "followers_url": {
+            "example": "https://api.github.com/users/octocat/followers",
+            "format": "uri",
+            "type": "string"
+          },
+          "following_url": {
+            "example": "https://api.github.com/users/octocat/following{/other_user}",
+            "type": "string"
+          },
+          "gists_url": {
+            "example": "https://api.github.com/users/octocat/gists{/gist_id}",
+            "type": "string"
+          },
+          "gravatar_id": {
+            "example": "41d064eb2195891e12d0413f63227ea7",
+            "nullable": true,
+            "type": "string"
+          },
+          "html_url": {
+            "example": "https://github.com/octocat",
+            "format": "uri",
+            "type": "string"
+          },
+          "id": {
+            "example": 1,
+            "format": "int64",
+            "type": "integer"
+          },
+          "login": {
+            "example": "octocat",
+            "type": "string"
+          },
+          "name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "node_id": {
+            "example": "MDQ6VXNlcjE=",
+            "type": "string"
+          },
+          "organizations_url": {
+            "example": "https://api.github.com/users/octocat/orgs",
+            "format": "uri",
+            "type": "string"
+          },
+          "received_events_url": {
+            "example": "https://api.github.com/users/octocat/received_events",
+            "format": "uri",
+            "type": "string"
+          },
+          "repos_url": {
+            "example": "https://api.github.com/users/octocat/repos",
+            "format": "uri",
+            "type": "string"
+          },
+          "site_admin": {
+            "type": "boolean"
+          },
+          "starred_at": {
+            "example": "\"2020-07-09T00:17:55Z\"",
+            "type": "string"
+          },
+          "starred_url": {
+            "example": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+            "type": "string"
+          },
+          "subscriptions_url": {
+            "example": "https://api.github.com/users/octocat/subscriptions",
+            "format": "uri",
+            "type": "string"
+          },
+          "type": {
+            "example": "User",
+            "type": "string"
+          },
+          "url": {
+            "example": "https://api.github.com/users/octocat",
+            "format": "uri",
+            "type": "string"
+          },
+          "user_view_type": {
+            "example": "public",
+            "type": "string"
+          }
+        },
+        "required": [
+          "avatar_url",
+          "events_url",
+          "followers_url",
+          "following_url",
+          "gists_url",
+          "gravatar_id",
+          "html_url",
+          "id",
+          "node_id",
+          "login",
+          "organizations_url",
+          "received_events_url",
+          "repos_url",
+          "site_admin",
+          "starred_url",
+          "subscriptions_url",
+          "type",
+          "url"
+        ],
+        "title": "Simple User",
+        "type": "object"
+      },
+      "organization-full": {
+        "description": "Organization Full",
+        "properties": {
+          "advanced_security_enabled_for_new_repositories": {
+            "deprecated": true,
+            "description": "**Endpoint closing down notice.** Please use [code security configurations](https://docs.github.com/rest/code-security/configurations) instead.\n\nWhether GitHub Advanced Security is enabled for new repositories and repositories transferred to this organization.\n\nThis field is only visible to organization owners or members of a team with the security manager role.",
+            "example": false,
+            "type": "boolean"
+          },
+          "archived_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "avatar_url": {
+            "example": "https://github.com/images/error/octocat_happy.gif",
+            "type": "string"
+          },
+          "billing_email": {
+            "example": "org@example.com",
+            "format": "email",
+            "nullable": true,
+            "type": "string"
+          },
+          "blog": {
+            "example": "https://github.com/blog",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "collaborators": {
+            "description": "The number of collaborators on private repositories.\n\nThis field may be null if the number of private repositories is over 50,000.",
+            "example": 8,
+            "nullable": true,
+            "type": "integer"
+          },
+          "company": {
+            "example": "GitHub",
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "example": "2008-01-14T04:33:35Z",
+            "format": "date-time",
+            "type": "string"
+          },
+          "default_repository_branch": {
+            "description": "The default branch for repositories created in this organization.",
+            "example": "main",
+            "nullable": true,
+            "type": "string"
+          },
+          "default_repository_permission": {
+            "nullable": true,
+            "type": "string"
+          },
+          "dependabot_alerts_enabled_for_new_repositories": {
+            "deprecated": true,
+            "description": "**Endpoint closing down notice.** Please use [code security configurations](https://docs.github.com/rest/code-security/configurations) instead.\n\nWhether Dependabot alerts are automatically enabled for new repositories and repositories transferred to this organization.\n\nThis field is only visible to organization owners or members of a team with the security manager role.",
+            "example": false,
+            "type": "boolean"
+          },
+          "dependabot_security_updates_enabled_for_new_repositories": {
+            "deprecated": true,
+            "description": "**Endpoint closing down notice.** Please use [code security configurations](https://docs.github.com/rest/code-security/configurations) instead.\n\nWhether Dependabot security updates are automatically enabled for new repositories and repositories transferred to this organization.\n\nThis field is only visible to organization owners or members of a team with the security manager role.",
+            "example": false,
+            "type": "boolean"
+          },
+          "dependency_graph_enabled_for_new_repositories": {
+            "deprecated": true,
+            "description": "**Endpoint closing down notice.** Please use [code security configurations](https://docs.github.com/rest/code-security/configurations) instead.\n\nWhether dependency graph is automatically enabled for new repositories and repositories transferred to this organization.\n\nThis field is only visible to organization owners or members of a team with the security manager role.",
+            "example": false,
+            "type": "boolean"
+          },
+          "deploy_keys_enabled_for_repositories": {
+            "description": "Controls whether or not deploy keys may be added and used for repositories in the organization.",
+            "example": false,
+            "type": "boolean"
+          },
+          "description": {
+            "example": "A great organization",
+            "nullable": true,
+            "type": "string"
+          },
+          "disk_usage": {
+            "example": 10000,
+            "nullable": true,
+            "type": "integer"
+          },
+          "display_commenter_full_name_setting_enabled": {
+            "example": true,
+            "type": "boolean"
+          },
+          "email": {
+            "example": "octocat@github.com",
+            "format": "email",
+            "nullable": true,
+            "type": "string"
+          },
+          "events_url": {
+            "example": "https://api.github.com/orgs/github/events",
+            "format": "uri",
+            "type": "string"
+          },
+          "followers": {
+            "example": 20,
+            "type": "integer"
+          },
+          "following": {
+            "example": 0,
+            "type": "integer"
+          },
+          "has_organization_projects": {
+            "example": true,
+            "type": "boolean"
+          },
+          "has_repository_projects": {
+            "example": true,
+            "type": "boolean"
+          },
+          "hooks_url": {
+            "example": "https://api.github.com/orgs/github/hooks",
+            "type": "string"
+          },
+          "html_url": {
+            "example": "https://github.com/octocat",
+            "format": "uri",
+            "type": "string"
+          },
+          "id": {
+            "example": 1,
+            "type": "integer"
+          },
+          "is_verified": {
+            "example": true,
+            "type": "boolean"
+          },
+          "issues_url": {
+            "example": "https://api.github.com/orgs/github/issues",
+            "type": "string"
+          },
+          "location": {
+            "example": "San Francisco",
+            "nullable": true,
+            "type": "string"
+          },
+          "login": {
+            "example": "github",
+            "type": "string"
+          },
+          "members_allowed_repository_creation_type": {
+            "example": "all",
+            "type": "string"
+          },
+          "members_can_change_repo_visibility": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_create_internal_repositories": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_create_pages": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_create_private_pages": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_create_private_repositories": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_create_public_pages": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_create_public_repositories": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_create_repositories": {
+            "example": true,
+            "nullable": true,
+            "type": "boolean"
+          },
+          "members_can_create_teams": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_delete_issues": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_delete_repositories": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_fork_private_repositories": {
+            "example": false,
+            "nullable": true,
+            "type": "boolean"
+          },
+          "members_can_invite_outside_collaborators": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_can_view_dependency_insights": {
+            "example": true,
+            "type": "boolean"
+          },
+          "members_url": {
+            "example": "https://api.github.com/orgs/github/members{/member}",
+            "type": "string"
+          },
+          "name": {
+            "example": "github",
+            "type": "string"
+          },
+          "node_id": {
+            "example": "MDEyOk9yZ2FuaXphdGlvbjE=",
+            "type": "string"
+          },
+          "owned_private_repos": {
+            "example": 100,
+            "type": "integer"
+          },
+          "plan": {
+            "properties": {
+              "filled_seats": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "private_repos": {
+                "type": "integer"
+              },
+              "seats": {
+                "type": "integer"
+              },
+              "space": {
+                "type": "integer"
+              }
+            },
+            "required": ["name", "space", "private_repos"],
+            "type": "object"
+          },
+          "private_gists": {
+            "example": 81,
+            "nullable": true,
+            "type": "integer"
+          },
+          "public_gists": {
+            "example": 1,
+            "type": "integer"
+          },
+          "public_members_url": {
+            "example": "https://api.github.com/orgs/github/public_members{/member}",
+            "type": "string"
+          },
+          "public_repos": {
+            "example": 2,
+            "type": "integer"
+          },
+          "readers_can_create_discussions": {
+            "example": true,
+            "type": "boolean"
+          },
+          "repos_url": {
+            "example": "https://api.github.com/orgs/github/repos",
+            "format": "uri",
+            "type": "string"
+          },
+          "secret_scanning_enabled_for_new_repositories": {
+            "deprecated": true,
+            "description": "**Endpoint closing down notice.** Please use [code security configurations](https://docs.github.com/rest/code-security/configurations) instead.\n\nWhether secret scanning is automatically enabled for new repositories and repositories transferred to this organization.\n\nThis field is only visible to organization owners or members of a team with the security manager role.",
+            "example": false,
+            "type": "boolean"
+          },
+          "secret_scanning_push_protection_custom_link": {
+            "description": "An optional URL string to display to contributors who are blocked from pushing a secret.",
+            "example": "https://github.com/test-org/test-repo/blob/main/README.md",
+            "nullable": true,
+            "type": "string"
+          },
+          "secret_scanning_push_protection_custom_link_enabled": {
+            "description": "Whether a custom link is shown to contributors who are blocked from pushing a secret by push protection.",
+            "example": false,
+            "type": "boolean"
+          },
+          "secret_scanning_push_protection_enabled_for_new_repositories": {
+            "deprecated": true,
+            "description": "**Endpoint closing down notice.** Please use [code security configurations](https://docs.github.com/rest/code-security/configurations) instead.\n\nWhether secret scanning push protection is automatically enabled for new repositories and repositories transferred to this organization.\n\nThis field is only visible to organization owners or members of a team with the security manager role.",
+            "example": false,
+            "type": "boolean"
+          },
+          "total_private_repos": {
+            "example": 100,
+            "type": "integer"
+          },
+          "twitter_username": {
+            "example": "github",
+            "nullable": true,
+            "type": "string"
+          },
+          "two_factor_requirement_enabled": {
+            "example": true,
+            "nullable": true,
+            "type": "boolean"
+          },
+          "type": {
+            "example": "Organization",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "url": {
+            "example": "https://api.github.com/orgs/github",
+            "format": "uri",
+            "type": "string"
+          },
+          "web_commit_signoff_required": {
+            "example": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "login",
+          "url",
+          "id",
+          "node_id",
+          "repos_url",
+          "events_url",
+          "hooks_url",
+          "issues_url",
+          "members_url",
+          "public_members_url",
+          "avatar_url",
+          "description",
+          "html_url",
+          "has_organization_projects",
+          "has_repository_projects",
+          "public_repos",
+          "public_gists",
+          "followers",
+          "following",
+          "type",
+          "created_at",
+          "updated_at",
+          "archived_at"
+        ],
+        "title": "Organization Full",
+        "type": "object"
+      },
+      "private-user": {
+        "description": "Private User",
+        "properties": {
+          "avatar_url": {
+            "example": "https://github.com/images/error/octocat_happy.gif",
+            "format": "uri",
+            "type": "string"
+          },
+          "bio": {
+            "example": "There once was...",
+            "nullable": true,
+            "type": "string"
+          },
+          "blog": {
+            "example": "https://github.com/blog",
+            "nullable": true,
+            "type": "string"
+          },
+          "business_plus": {
+            "type": "boolean"
+          },
+          "collaborators": {
+            "example": 8,
+            "type": "integer"
+          },
+          "company": {
+            "example": "GitHub",
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "example": "2008-01-14T04:33:35Z",
+            "format": "date-time",
+            "type": "string"
+          },
+          "disk_usage": {
+            "example": 10000,
+            "type": "integer"
+          },
+          "email": {
+            "example": "octocat@github.com",
+            "format": "email",
+            "nullable": true,
+            "type": "string"
+          },
+          "events_url": {
+            "example": "https://api.github.com/users/octocat/events{/privacy}",
+            "type": "string"
+          },
+          "followers": {
+            "example": 20,
+            "type": "integer"
+          },
+          "followers_url": {
+            "example": "https://api.github.com/users/octocat/followers",
+            "format": "uri",
+            "type": "string"
+          },
+          "following": {
+            "example": 0,
+            "type": "integer"
+          },
+          "following_url": {
+            "example": "https://api.github.com/users/octocat/following{/other_user}",
+            "type": "string"
+          },
+          "gists_url": {
+            "example": "https://api.github.com/users/octocat/gists{/gist_id}",
+            "type": "string"
+          },
+          "gravatar_id": {
+            "example": "41d064eb2195891e12d0413f63227ea7",
+            "nullable": true,
+            "type": "string"
+          },
+          "hireable": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "html_url": {
+            "example": "https://github.com/octocat",
+            "format": "uri",
+            "type": "string"
+          },
+          "id": {
+            "example": 1,
+            "format": "int64",
+            "type": "integer"
+          },
+          "ldap_dn": {
+            "type": "string"
+          },
+          "location": {
+            "example": "San Francisco",
+            "nullable": true,
+            "type": "string"
+          },
+          "login": {
+            "example": "octocat",
+            "type": "string"
+          },
+          "name": {
+            "example": "monalisa octocat",
+            "nullable": true,
+            "type": "string"
+          },
+          "node_id": {
+            "example": "MDQ6VXNlcjE=",
+            "type": "string"
+          },
+          "notification_email": {
+            "example": "octocat@github.com",
+            "format": "email",
+            "nullable": true,
+            "type": "string"
+          },
+          "organizations_url": {
+            "example": "https://api.github.com/users/octocat/orgs",
+            "format": "uri",
+            "type": "string"
+          },
+          "owned_private_repos": {
+            "example": 100,
+            "type": "integer"
+          },
+          "plan": {
+            "properties": {
+              "collaborators": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "private_repos": {
+                "type": "integer"
+              },
+              "space": {
+                "type": "integer"
+              }
+            },
+            "required": ["collaborators", "name", "space", "private_repos"],
+            "type": "object"
+          },
+          "private_gists": {
+            "example": 81,
+            "type": "integer"
+          },
+          "public_gists": {
+            "example": 1,
+            "type": "integer"
+          },
+          "public_repos": {
+            "example": 2,
+            "type": "integer"
+          },
+          "received_events_url": {
+            "example": "https://api.github.com/users/octocat/received_events",
+            "format": "uri",
+            "type": "string"
+          },
+          "repos_url": {
+            "example": "https://api.github.com/users/octocat/repos",
+            "format": "uri",
+            "type": "string"
+          },
+          "site_admin": {
+            "type": "boolean"
+          },
+          "starred_url": {
+            "example": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+            "type": "string"
+          },
+          "subscriptions_url": {
+            "example": "https://api.github.com/users/octocat/subscriptions",
+            "format": "uri",
+            "type": "string"
+          },
+          "total_private_repos": {
+            "example": 100,
+            "type": "integer"
+          },
+          "twitter_username": {
+            "example": "monalisa",
+            "nullable": true,
+            "type": "string"
+          },
+          "two_factor_authentication": {
+            "example": true,
+            "type": "boolean"
+          },
+          "type": {
+            "example": "User",
+            "type": "string"
+          },
+          "updated_at": {
+            "example": "2008-01-14T04:33:35Z",
+            "format": "date-time",
+            "type": "string"
+          },
+          "url": {
+            "example": "https://api.github.com/users/octocat",
+            "format": "uri",
+            "type": "string"
+          },
+          "user_view_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "avatar_url",
+          "events_url",
+          "followers_url",
+          "following_url",
+          "gists_url",
+          "gravatar_id",
+          "html_url",
+          "id",
+          "node_id",
+          "login",
+          "organizations_url",
+          "received_events_url",
+          "repos_url",
+          "site_admin",
+          "starred_url",
+          "subscriptions_url",
+          "type",
+          "url",
+          "bio",
+          "blog",
+          "company",
+          "email",
+          "followers",
+          "following",
+          "hireable",
+          "location",
+          "name",
+          "public_gists",
+          "public_repos",
+          "created_at",
+          "updated_at",
+          "collaborators",
+          "disk_usage",
+          "owned_private_repos",
+          "private_gists",
+          "total_private_repos",
+          "two_factor_authentication"
+        ],
+        "title": "Private User",
+        "type": "object"
+      },
+      "public-user": {
+        "additionalProperties": false,
+        "description": "Public User",
+        "properties": {
+          "avatar_url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "bio": {
+            "nullable": true,
+            "type": "string"
+          },
+          "blog": {
+            "nullable": true,
+            "type": "string"
+          },
+          "collaborators": {
+            "example": 3,
+            "type": "integer"
+          },
+          "company": {
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "disk_usage": {
+            "example": 1,
+            "type": "integer"
+          },
+          "email": {
+            "format": "email",
+            "nullable": true,
+            "type": "string"
+          },
+          "events_url": {
+            "type": "string"
+          },
+          "followers": {
+            "type": "integer"
+          },
+          "followers_url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "following": {
+            "type": "integer"
+          },
+          "following_url": {
+            "type": "string"
+          },
+          "gists_url": {
+            "type": "string"
+          },
+          "gravatar_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "hireable": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "html_url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "location": {
+            "nullable": true,
+            "type": "string"
+          },
+          "login": {
+            "type": "string"
+          },
+          "name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "notification_email": {
+            "format": "email",
+            "nullable": true,
+            "type": "string"
+          },
+          "organizations_url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "owned_private_repos": {
+            "example": 2,
+            "type": "integer"
+          },
+          "plan": {
+            "properties": {
+              "collaborators": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "private_repos": {
+                "type": "integer"
+              },
+              "space": {
+                "type": "integer"
+              }
+            },
+            "required": ["collaborators", "name", "space", "private_repos"],
+            "type": "object"
+          },
+          "private_gists": {
+            "example": 1,
+            "type": "integer"
+          },
+          "public_gists": {
+            "type": "integer"
+          },
+          "public_repos": {
+            "type": "integer"
+          },
+          "received_events_url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "repos_url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "site_admin": {
+            "type": "boolean"
+          },
+          "starred_url": {
+            "type": "string"
+          },
+          "subscriptions_url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "total_private_repos": {
+            "example": 2,
+            "type": "integer"
+          },
+          "twitter_username": {
+            "nullable": true,
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "user_view_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "avatar_url",
+          "events_url",
+          "followers_url",
+          "following_url",
+          "gists_url",
+          "gravatar_id",
+          "html_url",
+          "id",
+          "node_id",
+          "login",
+          "organizations_url",
+          "received_events_url",
+          "repos_url",
+          "site_admin",
+          "starred_url",
+          "subscriptions_url",
+          "type",
+          "url",
+          "bio",
+          "blog",
+          "company",
+          "email",
+          "followers",
+          "following",
+          "hireable",
+          "location",
+          "name",
+          "public_gists",
+          "public_repos",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Public User",
+        "type": "object"
+      },
+      "repository": {
+        "description": "A repository on GitHub.",
+        "properties": {
+          "allow_auto_merge": {
+            "default": false,
+            "description": "Whether to allow Auto-merge to be used on pull requests.",
+            "example": false,
+            "type": "boolean"
+          },
+          "allow_forking": {
+            "description": "Whether to allow forking this repo",
+            "type": "boolean"
+          },
+          "allow_merge_commit": {
+            "default": true,
+            "description": "Whether to allow merge commits for pull requests.",
+            "example": true,
+            "type": "boolean"
+          },
+          "allow_rebase_merge": {
+            "default": true,
+            "description": "Whether to allow rebase merges for pull requests.",
+            "example": true,
+            "type": "boolean"
+          },
+          "allow_squash_merge": {
+            "default": true,
+            "description": "Whether to allow squash merges for pull requests.",
+            "example": true,
+            "type": "boolean"
+          },
+          "allow_update_branch": {
+            "default": false,
+            "description": "Whether or not a pull request head branch that is behind its base branch can always be updated even if it is not required to be up to date before merging.",
+            "example": false,
+            "type": "boolean"
+          },
+          "anonymous_access_enabled": {
+            "description": "Whether anonymous git access is enabled for this repository",
+            "type": "boolean"
+          },
+          "archive_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/{archive_format}{/ref}",
+            "type": "string"
+          },
+          "archived": {
+            "default": false,
+            "description": "Whether the repository is archived.",
+            "type": "boolean"
+          },
+          "assignees_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/assignees{/user}",
+            "type": "string"
+          },
+          "blobs_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/git/blobs{/sha}",
+            "type": "string"
+          },
+          "branches_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/branches{/branch}",
+            "type": "string"
+          },
+          "clone_url": {
+            "example": "https://github.com/octocat/Hello-World.git",
+            "type": "string"
+          },
+          "code_search_index_status": {
+            "description": "The status of the code search index for this repository",
+            "properties": {
+              "lexical_commit_sha": {
+                "type": "string"
+              },
+              "lexical_search_ok": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "collaborators_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/collaborators{/collaborator}",
+            "type": "string"
+          },
+          "comments_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/comments{/number}",
+            "type": "string"
+          },
+          "commits_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/commits{/sha}",
+            "type": "string"
+          },
+          "compare_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/compare/{base}...{head}",
+            "type": "string"
+          },
+          "contents_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/contents/{+path}",
+            "type": "string"
+          },
+          "contributors_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/contributors",
+            "format": "uri",
+            "type": "string"
+          },
+          "created_at": {
+            "example": "2011-01-26T19:01:12Z",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "default_branch": {
+            "description": "The default branch of the repository.",
+            "example": "master",
+            "type": "string"
+          },
+          "delete_branch_on_merge": {
+            "default": false,
+            "description": "Whether to delete head branches when pull requests are merged",
+            "example": false,
+            "type": "boolean"
+          },
+          "deployments_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/deployments",
+            "format": "uri",
+            "type": "string"
+          },
+          "description": {
+            "example": "This your first repo!",
+            "nullable": true,
+            "type": "string"
+          },
+          "disabled": {
+            "description": "Returns whether or not this repository disabled.",
+            "type": "boolean"
+          },
+          "downloads_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/downloads",
+            "format": "uri",
+            "type": "string"
+          },
+          "events_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/events",
+            "format": "uri",
+            "type": "string"
+          },
+          "fork": {
+            "type": "boolean"
+          },
+          "forks": {
+            "type": "integer"
+          },
+          "forks_count": {
+            "example": 9,
+            "type": "integer"
+          },
+          "forks_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/forks",
+            "format": "uri",
+            "type": "string"
+          },
+          "full_name": {
+            "example": "octocat/Hello-World",
+            "type": "string"
+          },
+          "git_commits_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/git/commits{/sha}",
+            "type": "string"
+          },
+          "git_refs_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/git/refs{/sha}",
+            "type": "string"
+          },
+          "git_tags_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/git/tags{/sha}",
+            "type": "string"
+          },
+          "git_url": {
+            "example": "git:github.com/octocat/Hello-World.git",
+            "type": "string"
+          },
+          "has_discussions": {
+            "default": false,
+            "description": "Whether discussions are enabled.",
+            "example": true,
+            "type": "boolean"
+          },
+          "has_downloads": {
+            "default": true,
+            "deprecated": true,
+            "description": "Whether downloads are enabled.",
+            "example": true,
+            "type": "boolean"
+          },
+          "has_issues": {
+            "default": true,
+            "description": "Whether issues are enabled.",
+            "example": true,
+            "type": "boolean"
+          },
+          "has_pages": {
+            "type": "boolean"
+          },
+          "has_projects": {
+            "default": true,
+            "description": "Whether projects are enabled.",
+            "example": true,
+            "type": "boolean"
+          },
+          "has_pull_requests": {
+            "default": true,
+            "description": "Whether pull requests are enabled.",
+            "example": true,
+            "type": "boolean"
+          },
+          "has_wiki": {
+            "default": true,
+            "description": "Whether the wiki is enabled.",
+            "example": true,
+            "type": "boolean"
+          },
+          "homepage": {
+            "example": "https://github.com",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "hooks_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/hooks",
+            "format": "uri",
+            "type": "string"
+          },
+          "html_url": {
+            "example": "https://github.com/octocat/Hello-World",
+            "format": "uri",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique identifier of the repository",
+            "example": 42,
+            "format": "int64",
+            "type": "integer"
+          },
+          "is_template": {
+            "default": false,
+            "description": "Whether this repository acts as a template that can be used to generate new repositories.",
+            "example": true,
+            "type": "boolean"
+          },
+          "issue_comment_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/issues/comments{/number}",
+            "type": "string"
+          },
+          "issue_events_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/issues/events{/number}",
+            "type": "string"
+          },
+          "issues_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/issues{/number}",
+            "type": "string"
+          },
+          "keys_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/keys{/key_id}",
+            "type": "string"
+          },
+          "labels_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/labels{/name}",
+            "type": "string"
+          },
+          "language": {
+            "nullable": true,
+            "type": "string"
+          },
+          "languages_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/languages",
+            "format": "uri",
+            "type": "string"
+          },
+          "license": {
+            "$ref": "#/components/schemas/nullable-license-simple"
+          },
+          "master_branch": {
+            "type": "string"
+          },
+          "merge_commit_message": {
+            "description": "The default value for a merge commit message.\n\n- `PR_TITLE` - default to the pull request's title.\n- `PR_BODY` - default to the pull request's body.\n- `BLANK` - default to a blank commit message.",
+            "enum": ["PR_BODY", "PR_TITLE", "BLANK"],
+            "type": "string"
+          },
+          "merge_commit_title": {
+            "description": "The default value for a merge commit title.\n\n- `PR_TITLE` - default to the pull request's title.\n- `MERGE_MESSAGE` - default to the classic title for a merge message (e.g., Merge pull request #123 from branch-name).",
+            "enum": ["PR_TITLE", "MERGE_MESSAGE"],
+            "type": "string"
+          },
+          "merges_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/merges",
+            "format": "uri",
+            "type": "string"
+          },
+          "milestones_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/milestones{/number}",
+            "type": "string"
+          },
+          "mirror_url": {
+            "example": "git:git.example.com/octocat/Hello-World",
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+          },
+          "name": {
+            "description": "The name of the repository.",
+            "example": "Team Environment",
+            "type": "string"
+          },
+          "node_id": {
+            "example": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
+            "type": "string"
+          },
+          "notifications_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/notifications{?since,all,participating}",
+            "type": "string"
+          },
+          "open_issues": {
+            "type": "integer"
+          },
+          "open_issues_count": {
+            "example": 0,
+            "type": "integer"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/simple-user"
+          },
+          "permissions": {
+            "properties": {
+              "admin": {
+                "type": "boolean"
+              },
+              "maintain": {
+                "type": "boolean"
+              },
+              "pull": {
+                "type": "boolean"
+              },
+              "push": {
+                "type": "boolean"
+              },
+              "triage": {
+                "type": "boolean"
+              }
+            },
+            "required": ["admin", "pull", "push"],
+            "type": "object"
+          },
+          "private": {
+            "default": false,
+            "description": "Whether the repository is private or public.",
+            "type": "boolean"
+          },
+          "pull_request_creation_policy": {
+            "description": "The policy controlling who can create pull requests: all or collaborators_only.",
+            "enum": ["all", "collaborators_only"],
+            "example": "all",
+            "type": "string"
+          },
+          "pulls_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/pulls{/number}",
+            "type": "string"
+          },
+          "pushed_at": {
+            "example": "2011-01-26T19:06:43Z",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "releases_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/releases{/id}",
+            "type": "string"
+          },
+          "size": {
+            "description": "The size of the repository, in kilobytes. Size is calculated hourly. When a repository is initially created, the size is 0.",
+            "example": 108,
+            "type": "integer"
+          },
+          "squash_merge_commit_message": {
+            "description": "The default value for a squash merge commit message:\n\n- `PR_BODY` - default to the pull request's body.\n- `COMMIT_MESSAGES` - default to the branch's commit messages.\n- `BLANK` - default to a blank commit message.",
+            "enum": ["PR_BODY", "COMMIT_MESSAGES", "BLANK"],
+            "type": "string"
+          },
+          "squash_merge_commit_title": {
+            "description": "The default value for a squash merge commit title:\n\n- `PR_TITLE` - default to the pull request's title.\n- `COMMIT_OR_PR_TITLE` - default to the commit's title (if only one commit) or the pull request's title (when more than one commit).",
+            "enum": ["PR_TITLE", "COMMIT_OR_PR_TITLE"],
+            "type": "string"
+          },
+          "ssh_url": {
+            "example": "git@github.com:octocat/Hello-World.git",
+            "type": "string"
+          },
+          "stargazers_count": {
+            "example": 80,
+            "type": "integer"
+          },
+          "stargazers_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/stargazers",
+            "format": "uri",
+            "type": "string"
+          },
+          "starred_at": {
+            "example": "\"2020-07-09T00:17:42Z\"",
+            "type": "string"
+          },
+          "statuses_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/statuses/{sha}",
+            "type": "string"
+          },
+          "subscribers_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/subscribers",
+            "format": "uri",
+            "type": "string"
+          },
+          "subscription_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/subscription",
+            "format": "uri",
+            "type": "string"
+          },
+          "svn_url": {
+            "example": "https://svn.github.com/octocat/Hello-World",
+            "format": "uri",
+            "type": "string"
+          },
+          "tags_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/tags",
+            "format": "uri",
+            "type": "string"
+          },
+          "teams_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/teams",
+            "format": "uri",
+            "type": "string"
+          },
+          "temp_clone_token": {
+            "description": "When present and non-empty, a temporary credential for read-only Git access to this repository.\nIt expires five minutes after generation and cannot be used to push changes.\nTreat this value as sensitive and avoid recording it in logs.",
+            "type": "string"
+          },
+          "topics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "trees_url": {
+            "example": "http://api.github.com/repos/octocat/Hello-World/git/trees{/sha}",
+            "type": "string"
+          },
+          "updated_at": {
+            "example": "2011-01-26T19:14:43Z",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "url": {
+            "example": "https://api.github.com/repos/octocat/Hello-World",
+            "format": "uri",
+            "type": "string"
+          },
+          "use_squash_pr_title_as_default": {
+            "default": false,
+            "deprecated": true,
+            "description": "Whether a squash merge commit can use the pull request title as default. **This property is closing down. Please use `squash_merge_commit_title` instead.",
+            "type": "boolean"
+          },
+          "visibility": {
+            "default": "public",
+            "description": "The repository visibility: public, private, or internal.",
+            "type": "string"
+          },
+          "watchers": {
+            "type": "integer"
+          },
+          "watchers_count": {
+            "example": 80,
+            "type": "integer"
+          },
+          "web_commit_signoff_required": {
+            "default": false,
+            "description": "Whether to require contributors to sign off on web-based commits",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "archive_url",
+          "assignees_url",
+          "blobs_url",
+          "branches_url",
+          "collaborators_url",
+          "comments_url",
+          "commits_url",
+          "compare_url",
+          "contents_url",
+          "contributors_url",
+          "deployments_url",
+          "description",
+          "downloads_url",
+          "events_url",
+          "fork",
+          "forks_url",
+          "full_name",
+          "git_commits_url",
+          "git_refs_url",
+          "git_tags_url",
+          "hooks_url",
+          "html_url",
+          "id",
+          "node_id",
+          "issue_comment_url",
+          "issue_events_url",
+          "issues_url",
+          "keys_url",
+          "labels_url",
+          "languages_url",
+          "merges_url",
+          "milestones_url",
+          "name",
+          "notifications_url",
+          "owner",
+          "private",
+          "pulls_url",
+          "releases_url",
+          "stargazers_url",
+          "statuses_url",
+          "subscribers_url",
+          "subscription_url",
+          "tags_url",
+          "teams_url",
+          "trees_url",
+          "url",
+          "clone_url",
+          "default_branch",
+          "forks",
+          "forks_count",
+          "git_url",
+          "has_downloads",
+          "has_issues",
+          "has_projects",
+          "has_wiki",
+          "has_pages",
+          "homepage",
+          "language",
+          "archived",
+          "disabled",
+          "mirror_url",
+          "open_issues",
+          "open_issues_count",
+          "license",
+          "pushed_at",
+          "size",
+          "ssh_url",
+          "stargazers_count",
+          "svn_url",
+          "watchers",
+          "watchers_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Repository",
+        "type": "object"
+      },
+      "simple-user": {
+        "description": "A GitHub user.",
+        "properties": {
+          "avatar_url": {
+            "example": "https://github.com/images/error/octocat_happy.gif",
+            "format": "uri",
+            "type": "string"
+          },
+          "email": {
+            "nullable": true,
+            "type": "string"
+          },
+          "events_url": {
+            "example": "https://api.github.com/users/octocat/events{/privacy}",
+            "type": "string"
+          },
+          "followers_url": {
+            "example": "https://api.github.com/users/octocat/followers",
+            "format": "uri",
+            "type": "string"
+          },
+          "following_url": {
+            "example": "https://api.github.com/users/octocat/following{/other_user}",
+            "type": "string"
+          },
+          "gists_url": {
+            "example": "https://api.github.com/users/octocat/gists{/gist_id}",
+            "type": "string"
+          },
+          "gravatar_id": {
+            "example": "41d064eb2195891e12d0413f63227ea7",
+            "nullable": true,
+            "type": "string"
+          },
+          "html_url": {
+            "example": "https://github.com/octocat",
+            "format": "uri",
+            "type": "string"
+          },
+          "id": {
+            "example": 1,
+            "format": "int64",
+            "type": "integer"
+          },
+          "login": {
+            "example": "octocat",
+            "type": "string"
+          },
+          "name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "node_id": {
+            "example": "MDQ6VXNlcjE=",
+            "type": "string"
+          },
+          "organizations_url": {
+            "example": "https://api.github.com/users/octocat/orgs",
+            "format": "uri",
+            "type": "string"
+          },
+          "received_events_url": {
+            "example": "https://api.github.com/users/octocat/received_events",
+            "format": "uri",
+            "type": "string"
+          },
+          "repos_url": {
+            "example": "https://api.github.com/users/octocat/repos",
+            "format": "uri",
+            "type": "string"
+          },
+          "site_admin": {
+            "type": "boolean"
+          },
+          "starred_at": {
+            "example": "\"2020-07-09T00:17:55Z\"",
+            "type": "string"
+          },
+          "starred_url": {
+            "example": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+            "type": "string"
+          },
+          "subscriptions_url": {
+            "example": "https://api.github.com/users/octocat/subscriptions",
+            "format": "uri",
+            "type": "string"
+          },
+          "type": {
+            "example": "User",
+            "type": "string"
+          },
+          "url": {
+            "example": "https://api.github.com/users/octocat",
+            "format": "uri",
+            "type": "string"
+          },
+          "user_view_type": {
+            "example": "public",
+            "type": "string"
+          }
+        },
+        "required": [
+          "avatar_url",
+          "events_url",
+          "followers_url",
+          "following_url",
+          "gists_url",
+          "gravatar_id",
+          "html_url",
+          "id",
+          "node_id",
+          "login",
+          "organizations_url",
+          "received_events_url",
+          "repos_url",
+          "site_admin",
+          "starred_url",
+          "subscriptions_url",
+          "type",
+          "url"
+        ],
+        "title": "Simple User",
+        "type": "object"
+      },
+      "validation-error": {
+        "description": "Validation Error",
+        "properties": {
+          "documentation_url": {
+            "type": "string"
+          },
+          "errors": {
+            "items": {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "integer"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "resource": {
+                  "type": "string"
+                },
+                "value": {
+                  "oneOf": [
+                    {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    {
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    {
+                      "items": {
+                        "type": "string"
+                      },
+                      "nullable": true,
+                      "type": "array"
+                    }
+                  ]
+                }
+              },
+              "required": ["code"],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["message", "documentation_url"],
+        "title": "Validation Error",
+        "type": "object"
+      },
+      "validation-error-simple": {
+        "description": "Validation Error Simple",
+        "properties": {
+          "documentation_url": {
+            "type": "string"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["message", "documentation_url"],
+        "title": "Validation Error Simple",
+        "type": "object"
+      },
+      "webhook-config": {
+        "description": "Configuration object of the webhook",
+        "properties": {
+          "content_type": {
+            "$ref": "#/components/schemas/webhook-config-content-type"
+          },
+          "insecure_ssl": {
+            "$ref": "#/components/schemas/webhook-config-insecure-ssl"
+          },
+          "secret": {
+            "$ref": "#/components/schemas/webhook-config-secret"
+          },
+          "url": {
+            "$ref": "#/components/schemas/webhook-config-url"
+          }
+        },
+        "title": "Webhook Configuration",
+        "type": "object"
+      },
+      "webhook-config-content-type": {
+        "description": "The media type used to serialize the payloads. Supported values include `json` and `form`. The default is `form`.",
+        "example": "\"json\"",
+        "type": "string"
+      },
+      "webhook-config-insecure-ssl": {
+        "oneOf": [
+          {
+            "description": "Determines whether the SSL certificate of the host for `url` will be verified when delivering payloads. Supported values include `0` (verification is performed) and `1` (verification is not performed). The default is `0`. **We strongly recommend not setting this to `1` as you are subject to man-in-the-middle and other attacks.**",
+            "example": "\"0\"",
+            "type": "string"
+          },
+          {
+            "type": "number"
+          }
+        ]
+      },
+      "webhook-config-secret": {
+        "description": "If provided, the `secret` will be used as the `key` to generate the HMAC hex digest value for [delivery signature headers](https://docs.github.com/webhooks/event-payloads/#delivery-headers).",
+        "example": "\"********\"",
+        "type": "string"
+      },
+      "webhook-config-url": {
+        "description": "The URL to which the payloads will be delivered.",
+        "example": "https://example.com/webhook",
+        "format": "uri",
+        "type": "string"
+      }
+    }
+  },
+  "info": {
+    "contact": {
+      "name": "Support",
+      "url": "https://support.github.com/contact?tags=dotcom-rest-api"
+    },
+    "description": "GitHub's v3 REST API.",
+    "license": {
+      "name": "MIT",
+      "url": "https://spdx.org/licenses/MIT"
+    },
+    "termsOfService": "https://docs.github.com/articles/github-terms-of-service",
+    "title": "GitHub v3 REST API",
+    "version": "1.1.4",
+    "x-github-plan": "api.github.com"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/app": {
+      "get": {
+        "description": "Returns the GitHub App associated with the authentication credentials used. To see how many app installations are associated with this GitHub App, see the `installations_count` in the response. For more details about your app's installations, see the \"[List installations for the authenticated app](https://docs.github.com/rest/apps/apps#list-installations-for-the-authenticated-app)\" endpoint.\n\nYou must use a [JWT](https://docs.github.com/apps/building-github-apps/authenticating-with-github-apps/#authenticating-as-a-github-app) to access this endpoint.",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/apps#get-the-authenticated-app"
+        },
+        "operationId": "apps/get-authenticated",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "default": {
+                    "$ref": "#/components/examples/integration"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/integration"
+                }
+              }
+            },
+            "description": "Response"
+          }
+        },
+        "summary": "Get the authenticated app",
+        "tags": ["apps"],
+        "x-github": {
+          "category": "apps",
+          "enabledForGitHubApps": true,
+          "githubCloudOnly": false,
+          "subcategory": "apps"
+        }
+      }
+    },
+    "/app-manifests/{code}/conversions": {
+      "post": {
+        "description": "Use this endpoint to complete the handshake necessary when implementing the [GitHub App Manifest flow](https://docs.github.com/apps/building-github-apps/creating-github-apps-from-a-manifest/). When you create a GitHub App with the manifest flow, you receive a temporary `code` used to retrieve the GitHub App's `id`, `pem` (private key), and `webhook_secret`.",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/apps#create-a-github-app-from-a-manifest"
+        },
+        "operationId": "apps/create-from-manifest",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "default": {
+                    "$ref": "#/components/examples/integration-from-manifest"
+                  }
+                },
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/integration"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "properties": {
+                        "client_id": {
+                          "type": "string"
+                        },
+                        "client_secret": {
+                          "type": "string"
+                        },
+                        "pem": {
+                          "type": "string"
+                        },
+                        "webhook_secret": {
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      },
+                      "required": ["client_id", "client_secret", "webhook_secret", "pem"],
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed_simple"
+          }
+        },
+        "summary": "Create a GitHub App from a manifest",
+        "tags": ["apps"],
+        "x-github": {
+          "category": "apps",
+          "enabledForGitHubApps": false,
+          "githubCloudOnly": false,
+          "subcategory": "apps"
+        }
+      }
+    },
+    "/app/hook/config": {
+      "patch": {
+        "description": "Updates the webhook configuration for a GitHub App. For more information about configuring a webhook for your app, see \"[Creating a GitHub App](/developers/apps/creating-a-github-app).\"\n\nYou must use a [JWT](https://docs.github.com/apps/building-github-apps/authenticating-with-github-apps/#authenticating-as-a-github-app) to access this endpoint.",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/webhooks#update-a-webhook-configuration-for-an-app"
+        },
+        "operationId": "apps/update-webhook-config-for-app",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "default": {
+                  "value": {
+                    "content_type": "json",
+                    "insecure_ssl": "0",
+                    "secret": "********",
+                    "url": "https://example.com/webhook"
+                  }
+                }
+              },
+              "schema": {
+                "properties": {
+                  "content_type": {
+                    "$ref": "#/components/schemas/webhook-config-content-type"
+                  },
+                  "insecure_ssl": {
+                    "$ref": "#/components/schemas/webhook-config-insecure-ssl"
+                  },
+                  "secret": {
+                    "$ref": "#/components/schemas/webhook-config-secret"
+                  },
+                  "url": {
+                    "$ref": "#/components/schemas/webhook-config-url"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "default": {
+                    "$ref": "#/components/examples/webhook-config"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/webhook-config"
+                }
+              }
+            },
+            "description": "Response"
+          }
+        },
+        "summary": "Update a webhook configuration for an app",
+        "tags": ["apps"],
+        "x-github": {
+          "category": "apps",
+          "enabledForGitHubApps": false,
+          "githubCloudOnly": false,
+          "subcategory": "webhooks"
+        }
+      }
+    },
+    "/app/installations/{installation_id}": {
+      "get": {
+        "description": "Enables an authenticated GitHub App to find an installation's information using the installation id.\n\nYou must use a [JWT](https://docs.github.com/apps/building-github-apps/authenticating-with-github-apps/#authenticating-as-a-github-app) to access this endpoint.",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/apps#get-an-installation-for-the-authenticated-app"
+        },
+        "operationId": "apps/get-installation",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/installation-id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "default": {
+                    "$ref": "#/components/examples/base-installation"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/installation"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          }
+        },
+        "summary": "Get an installation for the authenticated app",
+        "tags": ["apps"],
+        "x-github": {
+          "category": "apps",
+          "enabledForGitHubApps": true,
+          "githubCloudOnly": false,
+          "subcategory": "apps"
+        }
+      }
+    },
+    "/app/installations/{installation_id}/access_tokens": {
+      "post": {
+        "description": "Creates an installation access token that enables a GitHub App to make authenticated API requests for the app's installation on an organization or individual account. Installation tokens expire one hour from the time you create them. Using an expired token produces a status code of `401 - Unauthorized`, and requires creating a new installation token. By default the installation token has access to all repositories that the installation can access.\n\n\u003e [!NOTE]\n\u003e Starting April 27, 2026, GitHub began a staged rollout of a stateless format (`ghs_APPID_JWT`) to all newly minted GitHub App installation tokens, making them more performant and improving the reliability of our API surface. If your application expects or relies on installation tokens being exactly 40 characters long, it may not handle this new token format correctly. You can now validate your apps and workflows using a temporary request header that lets you enable the token format on demand. For more information about the temporary header, see [the GitHub blog](https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header).\n\nOptionally, you can use the `repositories` or `repository_ids` body parameters to specify individual repositories that the installation access token can access. If you don't use `repositories` or `repository_ids` to grant access to specific repositories, the installation access token will have access to all repositories that the installation was granted access to. The installation access token cannot be granted access to repositories that the installation was not granted access to. Up to 500 repositories can be listed in this manner.\n\nOptionally, use the `permissions` body parameter to specify the permissions that the installation access token should have. If `permissions` is not specified, the installation access token will have all of the permissions that were granted to the app. The installation access token cannot be granted permissions that the app was not granted.\n\nYou must use a [JWT](https://docs.github.com/apps/building-github-apps/authenticating-with-github-apps/#authenticating-as-a-github-app) to access this endpoint.",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app"
+        },
+        "operationId": "apps/create-installation-access-token",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/installation-id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "default": {
+                  "value": {
+                    "permissions": {
+                      "contents": "read",
+                      "issues": "write"
+                    },
+                    "repositories": ["Hello-World"]
+                  }
+                }
+              },
+              "schema": {
+                "properties": {
+                  "permissions": {
+                    "$ref": "#/components/schemas/app-permissions"
+                  },
+                  "repositories": {
+                    "description": "List of repository names that the token should have access to",
+                    "items": {
+                      "example": "rails",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "repository_ids": {
+                    "description": "List of repository IDs that the token should have access to",
+                    "example": [1],
+                    "items": {
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "default": {
+                    "$ref": "#/components/examples/installation-token"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/installation-token"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "401": {
+            "$ref": "#/components/responses/requires_authentication"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "summary": "Create an installation access token for an app",
+        "tags": ["apps"],
+        "x-github": {
+          "category": "apps",
+          "enabledForGitHubApps": true,
+          "githubCloudOnly": false,
+          "subcategory": "apps"
+        }
+      }
+    },
+    "/applications/{client_id}/grant": {
+      "delete": {
+        "description": "OAuth and GitHub application owners can revoke a grant for their application and a specific user. You must provide a valid OAuth `access_token` as an input parameter and the grant for the token's owner will be deleted.\nDeleting an application's grant will also delete all OAuth tokens associated with the application for the user. Once deleted, the application will have no access to the user's account and will no longer be listed on [the application authorizations settings screen within GitHub](https://github.com/settings/applications#authorized).",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/oauth-applications#delete-an-app-authorization"
+        },
+        "operationId": "apps/delete-authorization",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/client-id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "default": {
+                  "value": {
+                    "access_token": "e72e16c7e42f292c6912e7710c838347ae178b4a"
+                  }
+                }
+              },
+              "schema": {
+                "properties": {
+                  "access_token": {
+                    "description": "The OAuth access token used to authenticate to the GitHub API.",
+                    "type": "string"
+                  }
+                },
+                "required": ["access_token"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Response"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "summary": "Delete an app authorization",
+        "tags": ["apps"],
+        "x-github": {
+          "category": "apps",
+          "enabledForGitHubApps": false,
+          "githubCloudOnly": false,
+          "subcategory": "oauth-applications"
+        }
+      }
+    },
+    "/orgs/{org}": {
+      "get": {
+        "description": "Gets information about an organization.\n\nWhen the value of `two_factor_requirement_enabled` is `true`, the organization requires all members, billing managers, outside collaborators, guest collaborators, repository collaborators, or everyone with access to any repository within the organization to enable [two-factor authentication](https://docs.github.com/articles/securing-your-account-with-two-factor-authentication-2fa/).\n\nTo see the full details about an organization, the authenticated user must be an organization owner.\n\nOAuth app tokens and personal access tokens (classic) need the `admin:org` scope to see the full details about an organization.\n\nTo see information about an organization's GitHub plan, GitHub Apps need the `Organization plan` permission.",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/orgs/orgs#get-an-organization"
+        },
+        "operationId": "orgs/get",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/org"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "default-response": {
+                    "$ref": "#/components/examples/organization-full"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/organization-full"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          }
+        },
+        "summary": "Get an organization",
+        "tags": ["orgs"],
+        "x-github": {
+          "category": "orgs",
+          "enabledForGitHubApps": true,
+          "githubCloudOnly": false,
+          "subcategory": "orgs"
+        }
+      }
+    },
+    "/user": {
+      "get": {
+        "description": "OAuth app tokens and personal access tokens (classic) need the `read:user` scope, or the broader `user` scope, for this endpoint to return the private user response. The private user response includes additional fields such as `private_gists`, `total_private_repos`, `owned_private_repos`, `disk_usage`, `collaborators`, and `two_factor_authentication`. Tokens without these scopes receive the public user response.\n\nThe private and public user response types are unrelated to the [private profile](https://docs.github.com/account-and-profile/concepts/personal-profile#private-profiles) setting. A token without scopes still authenticates as the token's owner, so values subject to private profile visibility, such as `followers` and `following`, may differ from an unauthenticated response.\n\nFor enterprise-managed users, if their email is unverified, this endpoint will return a placeholder email in the format `email+shortcode@domain.com` instead of their actual email. This placeholder email [may cause issues with some third-party apps](https://github.blog/changelog/2024-08-01-enterprise-managed-user-accounts-now-require-email-verification/). Once the user has [verified their email address](https://docs.github.com/account-and-profile/how-tos/email-preferences/verifying-your-email-address), the endpoint will return their real email.",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/users/users#get-the-authenticated-user"
+        },
+        "operationId": "users/get-authenticated",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "response-with-public-and-private-profile-information": {
+                    "$ref": "#/components/examples/private-user-response-with-public-and-private-profile-information"
+                  },
+                  "response-with-public-profile-information": {
+                    "$ref": "#/components/examples/private-user-response-with-public-profile-information"
+                  }
+                },
+                "schema": {
+                  "discriminator": {
+                    "mapping": {
+                      "private": "#/components/schemas/private-user",
+                      "public": "#/components/schemas/public-user"
+                    },
+                    "propertyName": "user_view_type"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/private-user"
+                    },
+                    {
+                      "$ref": "#/components/schemas/public-user"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "304": {
+            "$ref": "#/components/responses/not_modified"
+          },
+          "401": {
+            "$ref": "#/components/responses/requires_authentication"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          }
+        },
+        "summary": "Get the authenticated user",
+        "tags": ["users"],
+        "x-github": {
+          "category": "users",
+          "enabledForGitHubApps": false,
+          "githubCloudOnly": false,
+          "subcategory": "users"
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.github.com"
+    }
+  ]
+}

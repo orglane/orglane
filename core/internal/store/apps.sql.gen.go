@@ -425,6 +425,32 @@ func (q *Queries) FinishWebhookDelivery(ctx context.Context, arg FinishWebhookDe
 	return err
 }
 
+const getAccountLink = `-- name: GetAccountLink :one
+SELECT id, person_id, provider, realm, external_id, login, method, instance_id, state, evidence, verified_at, revoked_at, created_at, updated_at FROM account_links WHERE id = $1
+`
+
+func (q *Queries) GetAccountLink(ctx context.Context, id uuid.UUID) (AccountLink, error) {
+	row := q.db.QueryRow(ctx, getAccountLink, id)
+	var i AccountLink
+	err := row.Scan(
+		&i.ID,
+		&i.PersonID,
+		&i.Provider,
+		&i.Realm,
+		&i.ExternalID,
+		&i.Login,
+		&i.Method,
+		&i.InstanceID,
+		&i.State,
+		&i.Evidence,
+		&i.VerifiedAt,
+		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getActiveAppCredential = `-- name: GetActiveAppCredential :one
 SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND state = 'active'
 `
@@ -1479,6 +1505,24 @@ func (q *Queries) InvalidateAppConnectStates(ctx context.Context, instanceID uui
 	return err
 }
 
+const invalidateAppLinkStates = `-- name: InvalidateAppLinkStates :exec
+
+UPDATE app_oauth_states SET consumed_at = now()
+WHERE kind = 'link' AND person_id = $1 AND instance_id = $2 AND consumed_at IS NULL
+`
+
+type InvalidateAppLinkStatesParams struct {
+	PersonID   uuid.UUID
+	InstanceID uuid.UUID
+}
+
+// Account linking (docs/specs/providers.md "Account links") -----------------
+// A new start invalidates the person's older link states for the instance.
+func (q *Queries) InvalidateAppLinkStates(ctx context.Context, arg InvalidateAppLinkStatesParams) error {
+	_, err := q.db.Exec(ctx, invalidateAppLinkStates, arg.PersonID, arg.InstanceID)
+	return err
+}
+
 const listAppBindings = `-- name: ListAppBindings :many
 
 SELECT b.capability, b.instance_id, b.is_default, b.created_at, i.key AS instance_key, i.display_name AS instance_display_name, i.provider AS instance_provider, i.state AS instance_state
@@ -2229,6 +2273,46 @@ func (q *Queries) ListInstancePeopleWithLinks(ctx context.Context, arg ListInsta
 	return items, nil
 }
 
+const listPendingAccountLinksForOrganization = `-- name: ListPendingAccountLinksForOrganization :many
+SELECT provider, organization_id, external_id, person_id, login, avatar_url, state, created_at FROM pending_account_links
+WHERE provider = $1 AND organization_id = $2
+ORDER BY person_id, external_id
+`
+
+type ListPendingAccountLinksForOrganizationParams struct {
+	Provider       string
+	OrganizationID int64
+}
+
+func (q *Queries) ListPendingAccountLinksForOrganization(ctx context.Context, arg ListPendingAccountLinksForOrganizationParams) ([]PendingAccountLink, error) {
+	rows, err := q.db.Query(ctx, listPendingAccountLinksForOrganization, arg.Provider, arg.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PendingAccountLink{}
+	for rows.Next() {
+		var i PendingAccountLink
+		if err := rows.Scan(
+			&i.Provider,
+			&i.OrganizationID,
+			&i.ExternalID,
+			&i.PersonID,
+			&i.Login,
+			&i.AvatarUrl,
+			&i.State,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingRemovals = `-- name: ListPendingRemovals :many
 SELECT id, instance_id, person_id, action, action_key, desired_hash, state, batch_id, error_code, created_at, updated_at FROM provisioning_removals WHERE instance_id = $1 AND state = 'pending'
 ORDER BY created_at, id FOR UPDATE
@@ -2370,6 +2454,60 @@ func (q *Queries) ListPersonPendingAccountLinks(ctx context.Context, personID uu
 			&i.AvatarUrl,
 			&i.State,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPersonPendingAccountLinksWithConflict = `-- name: ListPersonPendingAccountLinksWithConflict :many
+SELECT p.provider, p.organization_id, p.external_id, p.person_id, p.login, p.avatar_url, p.state, p.created_at, EXISTS (
+    SELECT 1 FROM account_links l
+    WHERE l.state = 'verified' AND l.provider = p.provider AND l.realm = 'github.com'
+      AND l.external_id = p.external_id::text AND l.person_id <> p.person_id
+)::boolean AS conflict
+FROM pending_account_links p WHERE p.person_id = $1
+ORDER BY p.provider, p.organization_id, p.login
+`
+
+type ListPersonPendingAccountLinksWithConflictRow struct {
+	Provider       string
+	OrganizationID int64
+	ExternalID     int64
+	PersonID       uuid.UUID
+	Login          string
+	AvatarUrl      string
+	State          string
+	CreatedAt      time.Time
+	Conflict       bool
+}
+
+// A person's import evidence, and whether the account it names is verified
+// for someone else (shown as conflicting, never resolved automatically).
+func (q *Queries) ListPersonPendingAccountLinksWithConflict(ctx context.Context, personID uuid.UUID) ([]ListPersonPendingAccountLinksWithConflictRow, error) {
+	rows, err := q.db.Query(ctx, listPersonPendingAccountLinksWithConflict, personID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPersonPendingAccountLinksWithConflictRow{}
+	for rows.Next() {
+		var i ListPersonPendingAccountLinksWithConflictRow
+		if err := rows.Scan(
+			&i.Provider,
+			&i.OrganizationID,
+			&i.ExternalID,
+			&i.PersonID,
+			&i.Login,
+			&i.AvatarUrl,
+			&i.State,
+			&i.CreatedAt,
+			&i.Conflict,
 		); err != nil {
 			return nil, err
 		}
@@ -2958,6 +3096,25 @@ func (q *Queries) NextAppCredentialVersion(ctx context.Context, arg NextAppCrede
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const refreshAccountLinkLogin = `-- name: RefreshAccountLinkLogin :execrows
+UPDATE account_links SET login = $1, updated_at = now()
+WHERE id = $2 AND state = 'verified' AND login <> $1
+`
+
+type RefreshAccountLinkLoginParams struct {
+	Login string
+	ID    uuid.UUID
+}
+
+// Logins change; the link is keyed by the external ID.
+func (q *Queries) RefreshAccountLinkLogin(ctx context.Context, arg RefreshAccountLinkLoginParams) (int64, error) {
+	result, err := q.db.Exec(ctx, refreshAccountLinkLogin, arg.Login, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const retireActiveAppCredential = `-- name: RetireActiveAppCredential :exec

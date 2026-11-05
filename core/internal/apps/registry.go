@@ -42,6 +42,12 @@ func (a *Adapter) Provisioner() (provider.UserProvisioner, bool) {
 	return p, ok
 }
 
+// Verifier returns the adapter's AccountVerifier, if it has one.
+func (a *Adapter) Verifier() (provider.AccountVerifier, bool) {
+	p, ok := a.impl.(provider.AccountVerifier)
+	return p, ok
+}
+
 // EventSource returns the adapter's EventSource, if it has one.
 func (a *Adapter) EventSource() (provider.EventSource, bool) {
 	p, ok := a.impl.(provider.EventSource)
