@@ -161,6 +161,11 @@ type SettingSpec struct {
 	Min, Max int64 // ints
 	Default  any
 	Mutable  bool // false: fixed after the instance is created (e.g. organization)
+	// Required: the instance cannot work without it. The core refuses to
+	// create an instance without it (unless Default fills it) and never
+	// removes it. An immutable setting the adapter needs must be required,
+	// or an instance created without it could never be repaired.
+	Required bool
 }
 
 // Team mapping modes.
@@ -447,6 +452,24 @@ type Rotation struct {
 	// otherwise.
 	Value []byte
 }
+
+// SettingsValidator checks instance settings beyond what SettingSpec can
+// express (e.g. a product's reserved names). The core calls it with the
+// merged, typed settings when an instance is created and when its settings
+// change, before anything is stored; an error refuses the change. It must
+// be a pure function of its input.
+type SettingsValidator interface {
+	ValidateSettings(settings map[string]any) error
+}
+
+// SettingError is a refused setting: Setting names it, Reason says why in
+// English (no secrets: settings are not secret).
+type SettingError struct {
+	Setting string
+	Reason  string
+}
+
+func (e *SettingError) Error() string { return "provider: setting " + e.Setting + ": " + e.Reason }
 
 // AccountRealmer names the realm of a provider's accounts for an instance:
 // accounts with the same realm are the same accounts, whichever instance

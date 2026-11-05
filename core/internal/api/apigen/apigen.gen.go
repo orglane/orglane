@@ -1129,8 +1129,11 @@ type AppSettingSpec struct {
 	Name    string `json:"name"`
 
 	// Pattern Strings only; an RE2 pattern the whole value must match.
-	Pattern *string            `json:"pattern,omitempty"`
-	Type    AppSettingSpecType `json:"type"`
+	Pattern *string `json:"pattern,omitempty"`
+
+	// Required True if the instance needs it: creating an instance without it (and without a default) is refused, and it cannot be removed.
+	Required bool               `json:"required"`
+	Type     AppSettingSpecType `json:"type"`
 }
 
 // AppSettingSpecType defines model for AppSettingSpec.Type.

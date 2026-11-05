@@ -1,11 +1,15 @@
 package packages
 
-import "io/fs"
+import (
+	"io/fs"
+
+	forgejo "github.com/orglane/orglane/providers/forgejo/managed"
+)
 
 // sources are the managed/ directories of the compiled-in packages. The
 // test package agenttest is added only in builds with the "agenttest" tag
 // (embedded_agenttest.go), so a production agent cannot install it.
-var sources []fs.FS
+var sources = []fs.FS{forgejo.FS}
 
 // Embedded returns the registry of the package versions embedded into this
 // binary.

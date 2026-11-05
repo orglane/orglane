@@ -12,6 +12,7 @@ import (
 
 	"github.com/orglane/orglane/core/internal/agentapi"
 	agenttest "github.com/orglane/orglane/providers/agenttest/managed"
+	forgejo "github.com/orglane/orglane/providers/forgejo/managed"
 )
 
 // composeConfig writes a rendered project into rc.InstanceDir and returns
@@ -96,5 +97,37 @@ func TestPolicyWithCompose(t *testing.T) {
 				t.Fatalf("error = %v, want rule %s", err, rule)
 			}
 		})
+	}
+}
+
+// TestForgejoPolicyWithCompose renders the Forgejo package in both ingress
+// modes, fenced and unfenced, normalizes it with the real `docker compose
+// config` and checks it against the policy.
+func TestForgejoPolicyWithCompose(t *testing.T) {
+	for _, mode := range []string{agentapi.IngressDomain, agentapi.IngressLocal} {
+		for _, fenced := range []bool{false, true} {
+			rc := forgejoContext(t, "127.0.0.1")
+			rc.Fenced = fenced
+			spec := forgejoSpec(mode)
+			r, err := NewRegistry(forgejo.FS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, _ := r.Get(spec.Package)
+			in, err := p.Inputs(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := p.Render(spec, in, rc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(rc.DataPath("forgejo"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.CheckPolicy(composeConfig(t, out, rc), in, rc); err != nil {
+				t.Errorf("%s mode, fenced %v: %v", mode, fenced, err)
+			}
+		}
 	}
 }

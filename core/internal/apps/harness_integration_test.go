@@ -51,6 +51,13 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWith(t, apps.Config{})
+}
+
+// newHarnessWith is newHarness with more of the service's configuration
+// (WorkspaceURL and Logger are set here) and further adapters.
+func newHarnessWith(t *testing.T, cfg apps.Config, adapters ...provider.CapabilityManifest) *harness {
+	t.Helper()
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pool, err := database.Connect(ctx, config.Database{URL: pgtest.NewDatabase(t), MaxConns: 10, ConnectTimeout: 10 * time.Second}, logger)
@@ -72,12 +79,13 @@ func newHarness(t *testing.T) *harness {
 	}
 	tp := testprovider.New()
 	managed := testprovider.New(testprovider.WithID("testmanaged"), testprovider.Managed())
-	reg, err := apps.NewRegistry(tp, managed)
+	reg, err := apps.NewRegistry(append([]provider.CapabilityManifest{tp, managed}, adapters...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ws, _ := url.Parse("https://work.acme.test")
-	svc := apps.NewService(pool, reg, keyring, apps.Config{WorkspaceURL: ws, Logger: logger})
+	cfg.WorkspaceURL, cfg.Logger = ws, logger
+	svc := apps.NewService(pool, reg, keyring, cfg)
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Logger: logger})
 	if err != nil {
 		t.Fatal(err)
