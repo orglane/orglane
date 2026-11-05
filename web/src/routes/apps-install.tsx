@@ -92,6 +92,11 @@ const messages = defineMessages({
     id: "appInstall.hostInvalid",
     defaultMessage: "Enter a host name such as git.acme.com, without http:// or a path.",
   },
+  hostIsWorkspace: defineMessage<{ workspace: string }>({
+    id: "appInstall.hostIsWorkspace",
+    defaultMessage:
+      "{workspace} is the workspace's own address. Give the app an address of its own on the same domain, such as git.{workspace}.",
+  }),
   required: { id: "appInstall.required", defaultMessage: "Required." },
   numberRange: defineMessage<{ min: number; max: number }>({
     id: "appInstall.numberRange",
@@ -151,6 +156,11 @@ const messages = defineMessages({
     id: "appLifecycle.reinstallExplain",
     defaultMessage:
       "This app was removed and its data kept. Reinstalling brings it back with its data.",
+  },
+  purgeFailed: {
+    id: "appLifecycle.purgeFailed",
+    defaultMessage:
+      "Deleting this app's data did not finish and may have deleted part of it, so it can only be deleted permanently again.",
   },
   removing: {
     id: "appLifecycle.removing",
@@ -313,12 +323,20 @@ export function InstallAppPage({ providerId }: { providerId: string }) {
       await navigate({ to: "/settings/apps/$instanceId", params: { instanceId: inst.id } });
     },
     onError: (err) => {
-      // invalid_input names the field ("host: must be ..."): mark it.
+      // invalid_input names the field ("host: must be ..."): mark it and
+      // move focus there.
       if (err instanceof ApiError && err.status === 400 && err.problem.detail) {
-        const field = err.problem.detail.split(":")[0] ?? "";
+        const [field = "", reason = ""] = err.problem.detail.split(/:\s*/, 2);
         const name = field === "display_name" ? "displayName" : field;
         if (values && name in values) {
-          setErrors({ [name]: intl.formatMessage(messages.serverRefused) });
+          const message =
+            name === "host" && reason.includes("workspace")
+              ? intl.formatMessage(messages.hostIsWorkspace, {
+                  workspace: window.location.hostname,
+                })
+              : intl.formatMessage(messages.serverRefused);
+          setErrors({ [name]: message });
+          window.setTimeout(() => document.getElementById(`install-${name}`)?.focus());
         }
       }
     },
@@ -386,7 +404,11 @@ export function InstallAppPage({ providerId }: { providerId: string }) {
       .trim()
       .toLowerCase();
     if (!keyPattern.test(key)) found.key = intl.formatMessage(messages.keyInvalid);
-    if (!hostPattern.test(host)) found.host = intl.formatMessage(messages.hostInvalid);
+    if (!hostPattern.test(host)) {
+      found.host = intl.formatMessage(messages.hostInvalid);
+    } else if (host === window.location.hostname) {
+      found.host = intl.formatMessage(messages.hostIsWorkspace, { workspace: host });
+    }
     const settings: Record<string, unknown> = {};
     for (const s of provider.settings) {
       const name = `settings.${s.name}`;
@@ -509,7 +531,9 @@ export function InstallAppPage({ providerId }: { providerId: string }) {
                     onChange={(v) => set(`settings.${s.name}`, v)}
                   />
                 ))}
-                {submit.isError && <Alert>{refusal ?? errorMessage(intl, submit.error)}</Alert>}
+                {submit.isError && Object.keys(errors).length === 0 && (
+                  <Alert>{refusal ?? errorMessage(intl, submit.error)}</Alert>
+                )}
                 <Button type="submit" loading={submit.isPending} disabled={!a.connected || !fits}>
                   <FormattedMessage {...messages.install} />
                 </Button>
@@ -627,7 +651,10 @@ export function InstanceLifecycle({
     window.setTimeout(() => back.current?.focus());
   };
   const state = instance.state;
-  const removable = state === "active" || state === "degraded" || state === "failed";
+  // After a failed purge only another purge may follow (purge_failed).
+  const purgeFailed = state === "failed" && instance.healthCode === "purge_failed";
+  const removable =
+    (state === "active" || state === "degraded" || state === "failed") && !purgeFailed;
   const retained = state === "removed" && instance.dataRetained;
   const failure = remove.error ?? reinstall.error;
   return (
@@ -666,7 +693,12 @@ export function InstanceLifecycle({
               errorMessage(intl, failure)}
           </Alert>
         )}
-        {(removable || retained) && mode === null && (
+        {purgeFailed && (
+          <p>
+            <FormattedMessage {...messages.purgeFailed} />
+          </p>
+        )}
+        {(removable || retained || purgeFailed) && mode === null && (
           <div className="flex flex-wrap gap-2">
             {removable && (
               <Button ref={removeButton} variant="outline" onClick={() => setMode("remove")}>
@@ -679,10 +711,17 @@ export function InstanceLifecycle({
           </div>
         )}
         {mode && (
+          // Escape cancels the confirmation from any control in it.
           <fieldset
             id={panelId}
             className="space-y-3 rounded-lg border border-destructive/40 p-4"
             aria-describedby={`${panelId}-explain`}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                cancel();
+              }
+            }}
           >
             <legend className="px-1 font-medium">
               <FormattedMessage {...(mode === "remove" ? messages.remove : messages.purge)} />
@@ -705,7 +744,6 @@ export function InstanceLifecycle({
                   autoCapitalize="none"
                   spellCheck={false}
                   onChange={(e) => setTyped(e.target.value)}
-                  onKeyDown={(e) => e.key === "Escape" && cancel()}
                 />
               </div>
             )}

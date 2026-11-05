@@ -405,6 +405,11 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
     defaultMessage:
       "The agent did not start this operation within an hour, so Orglane stopped waiting. Check the agent, then try again.",
   },
+  purge_failed: {
+    id: "apps.code.purgeFailed",
+    defaultMessage:
+      "Deleting this app's data failed. Check the agent's logs, then delete it permanently again.",
+  },
   remove_failed: {
     id: "apps.code.removeFailed",
     defaultMessage: "Removing this app failed. Check the agent's logs, then remove it again.",

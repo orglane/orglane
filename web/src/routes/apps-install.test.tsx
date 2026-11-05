@@ -182,6 +182,34 @@ describe("Install an app", () => {
   });
 });
 
+describe("Install refusals", () => {
+  it("explains a workspace address and moves focus to it", async () => {
+    const user = userEvent.setup();
+    renderApp("/settings/apps/install/forgejo", {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [forgejo] } },
+      "GET /api/v1/apps/agent": { status: 200, body: connected },
+      "POST /api/v1/apps/instances": {
+        status: 400,
+        body: {
+          type: "about:blank",
+          title: "Bad Request",
+          status: 400,
+          code: "invalid_input",
+          detail: "host: must differ from the workspace host",
+        },
+      },
+    });
+    const form = await screen.findByRole("form", { name: "Install Forgejo" });
+    await user.click(within(form).getByRole("button", { name: "Install" }));
+    const host = within(form).getByLabelText("Address");
+    await waitFor(() => expect(host).toHaveFocus());
+    expect(host).toHaveAccessibleDescription(/is the workspace's own address/);
+    expect(host).toHaveAttribute("aria-invalid", "true");
+    expect(screen.queryByText("Something went wrong. Try again.")).not.toBeInTheDocument();
+  });
+});
+
 describe("Remove, delete permanently, reinstall", () => {
   it("asks before removing, keeps focus, and needs the key to delete permanently", async () => {
     const user = userEvent.setup();
@@ -249,5 +277,67 @@ describe("Remove, delete permanently, reinstall", () => {
     expect(screen.getByRole("button", { name: "Delete permanently" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Reinstall" }));
     await waitFor(() => expect(reinstalled).toBe(true));
+  });
+
+  it("cancels a confirmation with Escape from any control and returns focus", async () => {
+    const user = userEvent.setup();
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [forgejo] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: detail(instance),
+      [`GET /api/v1/apps/instances/${instanceId}/operations`]: {
+        status: 200,
+        body: { items: [], hasMore: false },
+      },
+    });
+    await user.click(await screen.findByRole("button", { name: "Delete permanently" }));
+    const purge = screen.getByRole("group", { name: "Delete permanently" });
+    await user.type(within(purge).getByLabelText(/type the app's key git/), "git");
+    const confirm = within(purge).getByRole("button", { name: "Delete all data" });
+    confirm.focus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("group", { name: "Delete permanently" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Delete permanently" })).toHaveFocus(),
+    );
+    // From the Remove confirmation's Cancel button too.
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Remove" })).toHaveFocus());
+  });
+
+  it("after a failed purge offers only to delete permanently again", async () => {
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [forgejo] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: detail({
+        ...instance,
+        state: "failed",
+        health: "unhealthy",
+        healthCode: "purge_failed",
+      }),
+      [`GET /api/v1/apps/instances/${instanceId}/operations`]: {
+        status: 200,
+        body: { items: [], hasMore: false },
+      },
+    });
+    expect(await screen.findByText(/can only be deleted permanently again/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete permanently" })).toBeInTheDocument();
+  });
+
+  it("lets a long name wrap on the instance page", async () => {
+    const long = "x".repeat(100);
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [forgejo] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: detail({ ...instance, displayName: long }),
+      [`GET /api/v1/apps/instances/${instanceId}/operations`]: {
+        status: 200,
+        body: { items: [], hasMore: false },
+      },
+    });
+    const heading = await screen.findByRole("heading", { name: long, level: 1 });
+    expect(heading.className).toContain("[overflow-wrap:anywhere]");
   });
 });
