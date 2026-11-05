@@ -3,6 +3,7 @@
 package apps_test
 
 import (
+	"context"
 	"errors"
 	"net/url"
 	"testing"
@@ -213,6 +214,15 @@ func TestInstallChecks(t *testing.T) {
 		}
 		if want == nil && apps.Code(err) != apps.CodeHostTaken {
 			t.Errorf("host %s = %v, want host_taken", host, err)
+		}
+	}
+	// An invalid host is invalid input before any preflight (DNS, agent).
+	refusing := h.restartCore(func(c *apps.Config) {
+		c.InstallPreflight = func(context.Context, apps.InstallPlan) error { return errors.New("the preflight ran") }
+	})
+	for _, host := range []string{"http://bad_host.example", "http://orglane.localhost:8080"} {
+		if _, err := refusing.Install(ctx, audit.System, apps.NewInstance{Provider: "agenttest", Key: "third", BaseURL: host}); !errors.Is(err, apps.ErrInvalid) {
+			t.Errorf("host %s with a preflight = %v, want invalid input", host, err)
 		}
 	}
 	if n := h.count(`SELECT count(*) FROM app_instances WHERE key = 'second'`); n != 0 {

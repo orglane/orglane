@@ -207,18 +207,26 @@ func checkResources(st AgentStatus, pkg *packages.Package) error {
 	return nil
 }
 
-// checkHost refuses a host that is not a hostname, is the workspace host,
-// or is held by an instance other than self. It runs in the install's transaction under
-// a lock, so two concurrent installs cannot take the same host.
-func (s *Service) checkHost(ctx context.Context, q *store.Queries, rawURL string, self uuid.UUID) error {
+// validHost returns the host of a base URL, refusing one that is not a
+// host name or is the workspace host. It needs nothing but the input, so
+// Install runs it before the preflight: an invalid host is invalid input,
+// never a DNS or agent refusal.
+func (s *Service) validHost(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || !packages.ValidHostname(u.Hostname()) {
-		return invalid("host", "must be a valid host name")
+		return "", invalid("host", "must be a valid host name")
 	}
 	host := u.Hostname()
 	if strings.EqualFold(host, s.cfg.WorkspaceURL.Hostname()) {
-		return invalid("host", "must differ from the workspace host")
+		return "", invalid("host", "must differ from the workspace host")
 	}
+	return host, nil
+}
+
+// checkHost refuses a host held by an instance other than self. It runs in
+// the install's transaction under a lock, so two concurrent installs cannot
+// take the same host.
+func (s *Service) checkHost(ctx context.Context, q *store.Queries, host string, self uuid.UUID) error {
 	if err := q.AcquireXactLock(ctx, lockID("app-host")); err != nil {
 		return fmt.Errorf("apps: lock hosts: %w", err)
 	}
