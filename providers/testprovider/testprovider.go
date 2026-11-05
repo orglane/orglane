@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -81,6 +82,8 @@ type Provider struct {
 	blocks   map[string]*block
 	calls    []string
 	nextID   int
+	// packageSettings are what Inputs returns (managed variant).
+	packageSettings map[string]any
 }
 
 // Option configures New.
@@ -153,15 +156,27 @@ func (p *Provider) Manifest() provider.Manifest {
 		DefaultPolicy: provider.AllPeople,
 	}
 	if p.management == provider.Managed {
+		m.Name = "Managed test provider"
 		m.Package = string(p.id)
 		m.DefaultKey = "managed-test"
+		// The package's database password (the agenttest package declares
+		// it), passed to the agent as a secret.
+		m.Credentials = append(m.Credentials, provider.CredentialSpec{Name: "db_password", Source: provider.SourceGenerated, Agent: true})
 	}
 	return m
 }
 
+// SetPackageSettings sets the package settings Inputs returns (managed
+// variant), e.g. a free host port for the agenttest package.
+func (p *Provider) SetPackageSettings(settings map[string]any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.packageSettings = maps.Clone(settings)
+}
+
 // Fail makes the next calls of op fail with errs, one per call. Ops:
 // "plan", "apply:<action key>", "apply:<action kind>", "sync_teams",
-// "members", "setup".
+// "members", "setup", "inputs", "health".
 func (p *Provider) Fail(op string, errs ...error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -617,9 +632,19 @@ func (p *Provider) ApplyCredential(_ context.Context, _ provider.Env, inst provi
 	return r, nil
 }
 
-// Inputs implements provider.Lifecycle (managed variant).
+// Inputs implements provider.Lifecycle (managed variant): the settings of
+// SetPackageSettings and the database password.
 func (p *Provider) Inputs(context.Context, provider.Env, provider.Instance) (provider.Inputs, error) {
-	return provider.Inputs{Settings: map[string]any{}}, nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.fault("inputs"); err != nil {
+		return provider.Inputs{}, err
+	}
+	settings := maps.Clone(p.packageSettings)
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	return provider.Inputs{Settings: settings, Secrets: []string{"db_password"}}, nil
 }
 
 // Setup implements provider.Lifecycle (managed variant).

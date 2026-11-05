@@ -40,10 +40,11 @@ test("an Admin sees Settings → Apps, maps a team and its members get access; a
   await expect(matrix.getByRole("columnheader", { name: /Test provider/ })).toBeVisible();
   await expect(matrix.getByRole("columnheader", { name: /Forgejo/ })).toBeVisible();
   await expect(matrix.getByRole("rowheader", { name: "Suspend accounts" })).toBeVisible();
-  // Both providers plan suspension for M5.
+  // Forgejo and both test providers (the managed one in the test build) plan
+  // suspension for M5.
   await expect(
     matrix.getByRole("row", { name: /Suspend accounts/ }).getByText("Planned (M5)"),
-  ).toHaveCount(2);
+  ).toHaveCount(3);
 
   await row.getByRole("link", { name: "Code" }).click();
   await expect(page.getByRole("heading", { name: "Code", level: 1 })).toBeVisible();

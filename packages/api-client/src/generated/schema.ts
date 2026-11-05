@@ -1264,6 +1264,31 @@ export interface paths {
         patch: operations["updateAppInstance"];
         trace?: never;
     };
+    "/api/v1/apps/instances/{instanceId}/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Operation history of a managed instance
+         * @description The agent operations of a managed instance, newest first: install,
+         *     configuration changes, re-pushes after the agent lost its state,
+         *     upgrades and rollbacks. An unfinished operation whose `errorCode`
+         *     is `agent_unavailable`, `agent_version_mismatch` or
+         *     `agent_untrusted` waits for the agent and is retried with backoff.
+         *     Connected instances have none.
+         */
+        get: operations["listAppInstanceOperations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/instances/{instanceId}/setup": {
         parameters: {
             query?: never;
@@ -2514,6 +2539,13 @@ export interface components {
             /** @description Where the provider delivers webhooks (providers that take webhooks). */
             webhookUrl?: string;
             dataRetained: boolean;
+            /**
+             * @description Set while a change of this managed instance waits for the agent,
+             *     with the reason: the agent is not running or not reachable, runs
+             *     another Orglane version, or does not prove the shared key.
+             * @enum {string}
+             */
+            waitingForAgent?: "agent_unavailable" | "agent_version_mismatch" | "agent_untrusted";
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
@@ -2531,9 +2563,21 @@ export interface components {
             generation?: number;
             /** @enum {string} */
             kind: "apply" | "upgrade" | "snapshot" | "restore" | "remove";
+            /**
+             * @description Why the desired state changed (operations that push one).
+             * @enum {string}
+             */
+            reason?: "install" | "configure" | "upgrade" | "retry" | "revert" | "remove" | "reinstall" | "resync";
             /** @enum {string} */
             state: "queued" | "running" | "awaiting_confirmation" | "succeeded" | "failed" | "rolled_back";
             phase?: string;
+            /**
+             * @description Why a finished operation failed: an agent code such as
+             *     `compose_failed`, or `superseded` when a newer generation
+             *     replaced it before it ran. While unfinished: why it waits for the
+             *     agent (`agent_unavailable`, `agent_version_mismatch`,
+             *     `agent_untrusted`).
+             */
             errorCode?: string;
             fromVersion?: string;
             toVersion?: string;
@@ -2541,6 +2585,11 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             finishedAt?: string;
+        };
+        AppOperationList: {
+            items: components["schemas"]["AppOperation"][];
+            /** @description More operations follow this page. */
+            hasMore: boolean;
         };
         /** @description A credential version, never its value. */
         AppCredentialVersion: {
@@ -4703,6 +4752,37 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listAppInstanceOperations: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of operations. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppOperationList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };

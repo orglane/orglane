@@ -1,4 +1,5 @@
 import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { me, renderApp } from "@/test/harness";
@@ -408,5 +409,94 @@ describe("Apps guidance", () => {
       },
     });
     expect(await screen.findByText(/ask an administrator/)).toBeInTheDocument();
+  });
+
+  it("shows a managed install waiting for the agent and its operation history", async () => {
+    const managed = {
+      ...instance,
+      key: "managed-test",
+      provider: "agenttest",
+      management: "managed",
+      displayName: "Managed",
+      state: "installing",
+      health: "unknown",
+      packageId: "agenttest",
+      waitingForAgent: "agent_unavailable",
+    };
+    const op = (o: Record<string, unknown>) => ({
+      kind: "apply",
+      createdAt: "2026-11-01T10:00:00Z",
+      toVersion: "1.0.0-1",
+      ...o,
+    });
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": {
+        status: 200,
+        body: { items: [{ ...provider, id: "agenttest", management: "managed" }] },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}`]: {
+        status: 200,
+        body: {
+          instance: managed,
+          bindings: [],
+          operations: [],
+          credentials: [],
+          rotationStuck: false,
+          unmanagedAccountCount: 0,
+          provisioning: { queued: 0, done: 0, pendingEmployeeAction: 0, failed: 0 },
+        },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}/operations`]: ({ query }) => ({
+        status: 200,
+        body:
+          query.get("offset") === "3"
+            ? {
+                items: [op({ id: "o0", reason: "reinstall", state: "succeeded" })],
+                hasMore: false,
+              }
+            : {
+                items: [
+                  op({
+                    id: "o3",
+                    generation: 3,
+                    reason: "resync",
+                    state: "queued",
+                    errorCode: "agent_unavailable",
+                  }),
+                  op({
+                    id: "o2",
+                    generation: 2,
+                    reason: "configure",
+                    state: "failed",
+                    errorCode: "superseded",
+                    finishedAt: "2026-11-01T10:01:00Z",
+                  }),
+                  op({
+                    id: "o1",
+                    generation: 1,
+                    reason: "install",
+                    state: "succeeded",
+                    finishedAt: "2026-11-01T10:02:00Z",
+                  }),
+                ],
+                hasMore: true,
+              },
+      }),
+    });
+    const alert = await screen.findByText(/^To start the agent/);
+    expect(alert.parentElement).toHaveTextContent("enable-managed");
+    const table = await screen.findByRole("table", { name: "Operations" });
+    const rows = within(table).getAllByRole("row");
+    expect(rows[1]).toHaveTextContent("Restore after agent data loss");
+    expect(rows[1]).toHaveTextContent("Waiting for the agent");
+    expect(rows[2]).toHaveTextContent("Replaced by a newer change before it ran.");
+    expect(rows[3]).toHaveTextContent("Install");
+    expect(rows[3]).toHaveTextContent("Succeeded");
+    // Older history pages in after the ones shown.
+    await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(await within(table).findByText("Reinstall")).toBeInTheDocument();
+    expect(within(table).getAllByRole("row")).toHaveLength(5);
+    expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
   });
 });

@@ -72,6 +72,8 @@ func TestAppsAPIPermissions(t *testing.T) {
 		{"GET", base, nil, authz.AppsManage, 200},
 		{"PATCH", base, map[string]any{"displayName": "Code"}, authz.AppsManage, 200},
 		{"POST", base + "/setup", nil, authz.AppsManage, 409}, // connected: not supported
+		{"GET", base + "/operations", nil, authz.AppsManage, 200},
+		{"GET", "/api/v1/apps/instances/" + uuid.NewString() + "/operations", nil, authz.AppsManage, 404},
 		{"POST", base + "/credentials/webhook_secret/rotate", nil, authz.AppsManage, 202},
 		{"POST", base + "/credentials/api_token/abandon", nil, authz.AppsManage, 409}, // no rotation
 		{"GET", "/api/v1/apps/bindings", nil, authz.AppsManage, 200},
@@ -129,6 +131,8 @@ func TestAppsAPIPermissions(t *testing.T) {
 	// Paging bounds are checked before narrowing (no wrap to a negative
 	// OFFSET and a 500).
 	expectStatusT(t, owner.req("GET", base+"/provisioning?offset=3000000000", nil), http.StatusBadRequest)
+	expectStatusT(t, owner.req("GET", base+"/operations?limit=101", nil), http.StatusBadRequest)
+	expectStatusT(t, owner.req("GET", base+"/operations?offset=3000000000", nil), http.StatusBadRequest)
 	// Problem details carry a stable code.
 	var problem struct {
 		Code string `json:"code"`

@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import { defineMessages, type IntlShape, type MessageDescriptor } from "react-intl";
 
 import { type Api, call, type Schema } from "./api";
@@ -62,6 +62,88 @@ export function appProvisioningQuery(api: Api, instanceId: string) {
       ),
   });
 }
+
+export type AppOperation = Schema<"AppOperation">;
+
+/** Operations per page of a managed instance's history. */
+export const OPERATIONS_PAGE = 20;
+
+/** A managed instance's agent operations, newest first, a page at a time. */
+export function appOperationsQuery(api: Api, instanceId: string) {
+  return infiniteQueryOptions({
+    queryKey: [...appsKey, "instances", instanceId, "operations"],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      call(
+        api.client.GET("/api/v1/apps/instances/{instanceId}/operations", {
+          params: { path: { instanceId }, query: { limit: OPERATIONS_PAGE, offset: pageParam } },
+        }),
+      ),
+    getNextPageParam: (last, pages) =>
+      last.hasMore ? pages.reduce((n, p) => n + p.items.length, 0) : undefined,
+  });
+}
+
+/** Codes of unfinished operations that wait for the agent. */
+export const waitingCodes = new Set([
+  "agent_unavailable",
+  "agent_version_mismatch",
+  "agent_untrusted",
+]);
+
+export function operationFinished(op: AppOperation): boolean {
+  return op.state === "succeeded" || op.state === "failed" || op.state === "rolled_back";
+}
+
+export const operationStateMessages = defineMessages({
+  queued: { id: "apps.operation.state.queued", defaultMessage: "Queued" },
+  running: { id: "apps.operation.state.running", defaultMessage: "Running" },
+  awaiting_confirmation: {
+    id: "apps.operation.state.awaitingConfirmation",
+    defaultMessage: "Checking the new version",
+  },
+  succeeded: { id: "apps.operation.state.succeeded", defaultMessage: "Succeeded" },
+  failed: { id: "apps.operation.state.failed", defaultMessage: "Failed" },
+  rolled_back: { id: "apps.operation.state.rolledBack", defaultMessage: "Rolled back" },
+}) satisfies Record<AppOperation["state"], MessageDescriptor>;
+
+export function operationStateVariant(op: AppOperation): "success" | "warning" | "neutral" {
+  if (op.state === "succeeded") return "success";
+  if (op.state === "failed" || op.state === "rolled_back") {
+    return op.errorCode === "superseded" ? "neutral" : "warning";
+  }
+  return op.errorCode && waitingCodes.has(op.errorCode) ? "warning" : "neutral";
+}
+
+/** What an operation did: by the reason of its desired state, else its kind. */
+export const operationMessages: Record<string, MessageDescriptor> = defineMessages({
+  install: { id: "apps.operation.install", defaultMessage: "Install" },
+  configure: { id: "apps.operation.configure", defaultMessage: "Configuration change" },
+  upgrade: { id: "apps.operation.upgrade", defaultMessage: "Upgrade" },
+  retry: { id: "apps.operation.retry", defaultMessage: "Upgrade retry" },
+  revert: { id: "apps.operation.revert", defaultMessage: "Return to the running version" },
+  remove: { id: "apps.operation.remove", defaultMessage: "Removal" },
+  reinstall: { id: "apps.operation.reinstall", defaultMessage: "Reinstall" },
+  resync: { id: "apps.operation.resync", defaultMessage: "Restore after agent data loss" },
+  apply: { id: "apps.operation.apply", defaultMessage: "Apply" },
+  snapshot: { id: "apps.operation.snapshot", defaultMessage: "Snapshot" },
+  restore: { id: "apps.operation.restore", defaultMessage: "Restore" },
+});
+
+export const waitingMessages: Record<string, MessageDescriptor> = defineMessages({
+  agent_unavailable: {
+    id: "apps.waiting.agentUnavailable",
+    defaultMessage: "Waiting for the agent",
+  },
+  agent_version_mismatch: {
+    id: "apps.waiting.agentVersionMismatch",
+    defaultMessage: "Waiting for the agent: other version",
+  },
+  agent_untrusted: {
+    id: "apps.waiting.agentUntrusted",
+    defaultMessage: "Waiting for the agent: not trusted",
+  },
+});
 
 export function myAppsQuery(api: Api) {
   return queryOptions({
@@ -211,9 +293,78 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
     defaultMessage:
       "Waiting for the agent that runs this app. Orglane keeps trying; check that the agent is running.",
   },
+  agent_version_mismatch: {
+    id: "apps.code.agentVersionMismatch",
+    defaultMessage:
+      "The agent runs another version of Orglane, so Orglane sends it no changes. Update Orglane and the agent together (docker compose pull, then up -d).",
+  },
+  agent_untrusted: {
+    id: "apps.code.agentUntrusted",
+    defaultMessage:
+      "The agent's answers are not signed with the shared secret. Check that Orglane and the agent use the same ORGLANE_AGENT_SECRET.",
+  },
+  agent_unhealthy: {
+    id: "apps.code.agentUnhealthy",
+    defaultMessage:
+      "A service of this app is not running or not healthy. The agent keeps it running; check its logs if this stays.",
+  },
+  agent_instance_missing: {
+    id: "apps.code.agentInstanceMissing",
+    defaultMessage: "The agent does not know this app yet. Orglane sends it again.",
+  },
+  health_check_failed: {
+    id: "apps.code.healthCheckFailed",
+    defaultMessage: "The app runs but does not answer as expected. Orglane keeps checking it.",
+  },
   install_failed: {
     id: "apps.code.installFailed",
     defaultMessage: "Installing this app failed. Check the server's resources, then retry.",
+  },
+  superseded: {
+    id: "apps.code.superseded",
+    defaultMessage: "Replaced by a newer change before it ran.",
+  },
+  generation_conflict: {
+    id: "apps.code.generationConflict",
+    defaultMessage: "The address settings changed while this ran. Orglane sends the change again.",
+  },
+  invalid_input: {
+    id: "apps.code.invalidInput",
+    defaultMessage: "The agent refused the app's settings.",
+  },
+  package_unavailable: {
+    id: "apps.code.packageUnavailable",
+    defaultMessage: "This version of the app is not part of this Orglane build. Update Orglane.",
+  },
+  credential_missing: {
+    id: "apps.code.credentialMissing",
+    defaultMessage:
+      "A credential this change was recorded with no longer exists. Make the change again.",
+  },
+  policy_violation: {
+    id: "apps.code.policyViolation",
+    defaultMessage: "The agent refused the app's configuration because it breaks a safety rule.",
+  },
+  pull_failed: {
+    id: "apps.code.pullFailed",
+    defaultMessage:
+      "The agent could not download the app's images. Check the server's internet access.",
+  },
+  compose_failed: {
+    id: "apps.code.composeFailed",
+    defaultMessage: "The agent could not start the app's services. Check the agent's logs.",
+  },
+  database_failed: {
+    id: "apps.code.databaseFailed",
+    defaultMessage: "The agent could not prepare the app's database. Check the agent's logs.",
+  },
+  hook_failed: {
+    id: "apps.code.hookFailed",
+    defaultMessage: "Configuring the app's services failed. Check the agent's logs.",
+  },
+  health_timeout: {
+    id: "apps.code.healthTimeout",
+    defaultMessage: "The app's services did not become healthy in time. Check the agent's logs.",
   },
   webhook_deleted: {
     id: "apps.code.webhookDeleted",

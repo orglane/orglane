@@ -102,8 +102,8 @@ type Options struct {
 	// client is attached to it as its queue.
 	Mail *mail.Service
 	// Apps, when set, runs the provider framework's jobs on their own
-	// queue (apps.QueueName) with the daily cleanup and drift check. The
-	// client is attached to it as its queue.
+	// queue (apps.QueueName) with the daily cleanup and drift check and the
+	// agent sync. The client is attached to it as its queue.
 	Apps *apps.Service
 }
 
@@ -127,7 +127,7 @@ func NewClient(pool *pgxpool.Pool, cfg config.Jobs, logger *slog.Logger, opts Op
 		if err := apps.Register(workers, opts.Apps); err != nil {
 			return nil, err
 		}
-		periodic = append(periodic, apps.PeriodicJobs()...)
+		periodic = append(periodic, opts.Apps.PeriodicJobs()...)
 		n := cfg.AppsMaxWorkers
 		if n < 1 {
 			n = apps.DefaultMaxWorkers
