@@ -2039,6 +2039,57 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/operations:
+    get:
+      operationId: listAppInstanceOperations
+      summary: Operation history of a managed instance
+      description: |
+        The agent operations of a managed instance, newest first: install,
+        configuration changes, re-pushes after the agent lost its state,
+        upgrades and rollbacks. An unfinished operation whose `errorCode`
+        is `agent_unavailable`, `agent_version_mismatch` or
+        `agent_untrusted` waits for the agent and is retried with backoff.
+        Connected instances have none.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 1000000
+            default: 0
+      responses:
+        "200":
+          description: A page of operations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppOperationList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /api/v1/apps/instances/{instanceId}/setup:
     post:
       operationId: retryAppInstanceSetup
@@ -4109,6 +4160,13 @@ components:
           description: Where the provider delivers webhooks (providers that take webhooks).
         dataRetained:
           type: boolean
+        waitingForAgent:
+          type: string
+          enum: [agent_unavailable, agent_version_mismatch, agent_untrusted]
+          description: |
+            Set while a change of this managed instance waits for the agent,
+            with the reason: the agent is not running or not reachable, runs
+            another Orglane version, or does not prove the shared key.
         createdAt:
           type: string
           format: date-time
@@ -4139,6 +4197,10 @@ components:
         kind:
           type: string
           enum: [apply, upgrade, snapshot, restore, remove]
+        reason:
+          type: string
+          enum: [install, configure, upgrade, retry, revert, remove, reinstall, resync]
+          description: Why the desired state changed (operations that push one).
         state:
           type: string
           enum: [queued, running, awaiting_confirmation, succeeded, failed, rolled_back]
@@ -4146,6 +4208,12 @@ components:
           type: string
         errorCode:
           type: string
+          description: |
+            Why a finished operation failed: an agent code such as
+            `compose_failed`, or `superseded` when a newer generation
+            replaced it before it ran. While unfinished: why it waits for the
+            agent (`agent_unavailable`, `agent_version_mismatch`,
+            `agent_untrusted`).
         fromVersion:
           type: string
         toVersion:
@@ -4156,6 +4224,17 @@ components:
         finishedAt:
           type: string
           format: date-time
+    AppOperationList:
+      type: object
+      required: [items, hasMore]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppOperation"
+        hasMore:
+          type: boolean
+          description: More operations follow this page.
     AppCredentialVersion:
       type: object
       description: A credential version, never its value.

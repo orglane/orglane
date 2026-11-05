@@ -138,6 +138,7 @@ func TestContractPermissions(t *testing.T) {
 		"GET /api/v1/apps/instances/{instanceId}":                                                 authz.AppsManage,
 		"PATCH /api/v1/apps/instances/{instanceId}":                                               authz.AppsManage,
 		"POST /api/v1/apps/instances/{instanceId}/setup":                                          authz.AppsManage,
+		"GET /api/v1/apps/instances/{instanceId}/operations":                                      authz.AppsManage,
 		"POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate":            authz.AppsManage,
 		"POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon":           authz.AppsManage,
 		"GET /api/v1/apps/bindings":                                                               authz.AppsManage,

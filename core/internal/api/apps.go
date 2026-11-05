@@ -154,6 +154,10 @@ func appInstance(svc *apps.Service, inst apps.Instance) apigen.AppInstance {
 		UpdatedAt:             inst.UpdatedAt,
 		RemovedAt:             inst.RemovedAt,
 	}
+	if inst.WaitingForAgent != "" {
+		w := apigen.AppInstanceWaitingForAgent(inst.WaitingForAgent)
+		out.WaitingForAgent = &w
+	}
 	if out.Settings == nil {
 		out.Settings = map[string]any{}
 	}
@@ -214,15 +218,50 @@ func (s *server) GetAppInstance(ctx context.Context, req apigen.GetAppInstanceRe
 		}{Capability: b.Capability, IsDefault: b.IsDefault})
 	}
 	for _, op := range d.Operations {
-		out.Operations = append(out.Operations, apigen.AppOperation{
-			Id: op.ID, Generation: op.Generation, Kind: apigen.AppOperationKind(op.Kind), State: apigen.AppOperationState(op.State),
-			Phase: op.Phase, ErrorCode: op.ErrorCode, FromVersion: op.FromVersion, ToVersion: op.ToVersion, CreatedAt: op.CreatedAt, FinishedAt: op.FinishedAt,
-		})
+		out.Operations = append(out.Operations, appOperation(op))
 	}
 	for _, c := range d.Credentials {
 		out.Credentials = append(out.Credentials, apigen.AppCredentialVersion{
 			Name: c.Name, Version: int(c.Version), State: apigen.AppCredentialVersionState(c.State), CreatedAt: c.CreatedAt, ActivatedAt: c.ActivatedAt, RetireAt: c.RetireAt,
 		})
+	}
+	return out, nil
+}
+
+func appOperation(op apps.Operation) apigen.AppOperation {
+	return apigen.AppOperation{
+		Id: op.ID, Generation: op.Generation, Kind: apigen.AppOperationKind(op.Kind), Reason: (*apigen.AppOperationReason)(op.Reason),
+		State: apigen.AppOperationState(op.State), Phase: op.Phase, ErrorCode: op.ErrorCode, FromVersion: op.FromVersion, ToVersion: op.ToVersion,
+		CreatedAt: op.CreatedAt, FinishedAt: op.FinishedAt,
+	}
+}
+
+func (s *server) ListAppInstanceOperations(ctx context.Context, req apigen.ListAppInstanceOperationsRequestObject) (apigen.ListAppInstanceOperationsResponseObject, error) {
+	svc, err := s.appsService()
+	if err != nil {
+		return nil, err
+	}
+	limit, offset := 20, 0
+	if req.Params.Limit != nil {
+		limit = *req.Params.Limit
+	}
+	if req.Params.Offset != nil {
+		offset = *req.Params.Offset
+	}
+	if limit < 1 || limit > 100 || offset < 0 || offset > 1_000_000 {
+		return nil, problemErr(http.StatusBadRequest, "limit must be 1-100 and offset 0-1000000.")
+	}
+	if _, err := svc.Instance(ctx, req.InstanceId); err != nil {
+		return nil, appsError(err)
+	}
+	// One more than the page tells whether more follow.
+	rows, err := svc.Operations(ctx, req.InstanceId, int32(limit+1), int32(offset)) //nolint:gosec // both bounded above
+	if err != nil {
+		return nil, err
+	}
+	out := apigen.ListAppInstanceOperations200JSONResponse{Items: []apigen.AppOperation{}, HasMore: len(rows) > limit}
+	for _, op := range rows[:min(len(rows), limit)] {
+		out.Items = append(out.Items, appOperation(op))
 	}
 	return out, nil
 }

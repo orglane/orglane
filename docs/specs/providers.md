@@ -1004,7 +1004,7 @@ All under `/api/v1`, contract-first in `core/api/openapi.yaml`. Errors are RFC 9
 | DELETE | `/apps/instances/{instanceId}` | `apps.manage` | Remove; data is retained and the key reserved. `?purge=true` also deletes data (requires `confirm` = instance key) | #59/#61 |
 | POST | `/apps/instances/{instanceId}/reinstall` | `apps.manage` | Bring back a removed instance whose data is retained | #59/#61 |
 | POST | `/apps/instances/{instanceId}/setup` | `apps.manage` | Retry `Lifecycle.Setup` of a `failed` (`setup_failed`) instance | #58/#61 |
-| GET | `/apps/instances/{instanceId}/operations` | `apps.manage` | Operation history (install, upgrades, rollbacks) | #60 |
+| GET | `/apps/instances/{instanceId}/operations` | `apps.manage` | Operation history (install, upgrades, rollbacks) | #75 |
 | POST | `/apps/instances/{instanceId}/upgrade` | `apps.manage` | Retry a rolled-back or failed upgrade (upgrades otherwise start automatically) | #60 |
 | GET | `/apps/instances/{instanceId}/logs` | `apps.manage` | Bounded service logs, redacted; audited | #59 |
 | POST | `/apps/instances/{instanceId}/credentials/{name}/rotate` | `apps.manage` | Rotate a rotatable credential | #58 |

@@ -1,6 +1,8 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { test as base, type CDPSession, type Page } from "@playwright/test";
 
@@ -63,10 +65,13 @@ export function authenticator(cdp: CDPSession): string {
 export const test = base.extend<{
   instance: Instance;
   demo: boolean;
+  /** Managed services on, with an agent that never answers (its socket does not exist). */
+  agent: boolean;
   webauthn: CDPSession;
   mailpit: { smtpPort: number; api: string };
 }>({
   demo: [false, { option: true }],
+  agent: [false, { option: true }],
   // Real SMTP, isolated per test; only starts for tests requesting it.
   // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture dependencies
   mailpit: async ({}, use) => {
@@ -100,7 +105,7 @@ export const test = base.extend<{
   },
   // A fresh database and `orglane server` for every test, reached on
   // localhost (the plain-HTTP development mode).
-  instance: async ({ demo }, use, testInfo) => {
+  instance: async ({ demo, agent }, use, testInfo) => {
     const state = loadState();
     const db = `e2e_${randomBytes(6).toString("hex")}`;
     run("docker", ["exec", state.container, "createdb", "-U", "orglane", db]);
@@ -117,6 +122,13 @@ export const test = base.extend<{
       ORGLANE_LOG_FORMAT: "text",
       ORGLANE_EMAIL_RETRY_DELAY: "1s",
       ORGLANE_EMAIL_MAX_ATTEMPTS: "2",
+      ...(agent
+        ? {
+            ORGLANE_AGENT_SOCKET: join(tmpdir(), `orglane-e2e-${db}`, "agent.sock"),
+            ORGLANE_AGENT_SECRET: randomBytes(32).toString("hex"),
+            ORGLANE_AGENT_SYNC_INTERVAL: "10s",
+          }
+        : {}),
     };
     let log = "";
     const server = spawn(state.binary, demo ? ["server", "--demo"] : ["server"], {

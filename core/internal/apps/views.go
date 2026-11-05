@@ -15,7 +15,7 @@ func providerID(s string) provider.ID { return provider.ID(s) }
 // InstanceDetail is what the instance page shows besides the instance.
 type InstanceDetail struct {
 	Bindings       []store.AppBinding
-	Operations     []store.AppOperation
+	Operations     []Operation
 	Credentials    []Credential
 	UnmanagedCount int64
 	StatusCounts   map[string]int64
@@ -30,8 +30,8 @@ func (s *Service) Detail(ctx context.Context, id uuid.UUID) (InstanceDetail, err
 	if d.Bindings, err = q.ListAppInstanceBindings(ctx, id); err != nil {
 		return d, fmt.Errorf("apps: list bindings: %w", err)
 	}
-	if d.Operations, err = q.ListAppOperations(ctx, store.ListAppOperationsParams{InstanceID: id, RowLimit: 10}); err != nil {
-		return d, fmt.Errorf("apps: list operations: %w", err)
+	if d.Operations, err = s.Operations(ctx, id, 10, 0); err != nil {
+		return d, err
 	}
 	if d.Credentials, err = q.ListAppCredentials(ctx, id); err != nil {
 		return d, fmt.Errorf("apps: list credentials: %w", err)
@@ -48,6 +48,19 @@ func (s *Service) Detail(ctx context.Context, id uuid.UUID) (InstanceDetail, err
 		d.StatusCounts[c.Status] = c.N
 	}
 	return d, nil
+}
+
+// Operation is an agent operation with the reason of its desired spec
+// generation, if it pushed one.
+type Operation = store.ListAppOperationHistoryRow
+
+// Operations returns a page of an instance's operations, newest first.
+func (s *Service) Operations(ctx context.Context, instanceID uuid.UUID, limit, offset int32) ([]Operation, error) {
+	rows, err := store.New(s.pool).ListAppOperationHistory(ctx, store.ListAppOperationHistoryParams{InstanceID: instanceID, RowLimit: limit, RowOffset: offset})
+	if err != nil {
+		return nil, fmt.Errorf("apps: list operations: %w", err)
+	}
+	return rows, nil
 }
 
 // Results returns a page of an instance's provisioning results.

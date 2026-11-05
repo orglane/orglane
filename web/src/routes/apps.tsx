@@ -1,7 +1,7 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, ExternalLink, LayoutGrid, Plus, RefreshCw } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { defineMessage, defineMessages, FormattedMessage, useIntl } from "react-intl";
 
 import { navMessages } from "@/components/app-shell";
@@ -22,6 +22,7 @@ import {
   appBindingsQuery,
   appInstanceQuery,
   appInstancesQuery,
+  appOperationsQuery,
   appProvidersQuery,
   appProvisioningQuery,
   appsKey,
@@ -33,13 +34,20 @@ import {
   label,
   managementMessages,
   myAppsQuery,
+  operationFinished,
+  operationMessages,
+  operationStateMessages,
+  operationStateVariant,
   outcomeMessages,
+  phaseMessages,
   policyMessages,
   stateMessages,
   stateVariant,
   statusMessages,
   statusVariant,
   supportMessages,
+  waitingCodes,
+  waitingMessages,
 } from "@/lib/apps";
 import { errorMessage } from "@/lib/errors";
 import { useMe } from "@/lib/session";
@@ -258,7 +266,42 @@ const messages = defineMessages({
     defaultMessage:
       "These accounts exist in the app but are not linked to anyone Orglane manages. They are never removed automatically.",
   },
+  enableManaged: {
+    id: "appInstance.enableManaged",
+    defaultMessage: "To start the agent, run this on the server where Orglane is installed:",
+  },
+  operations: { id: "appInstance.operations", defaultMessage: "Operations" },
+  operationsDescription: {
+    id: "appInstance.operationsDescription",
+    defaultMessage: "What the agent did for this app, newest first.",
+  },
+  noOperations: { id: "appInstance.noOperations", defaultMessage: "No operations yet." },
+  operation: { id: "appInstance.operation", defaultMessage: "Operation" },
+  generation: defineMessage<{ generation: number }>({
+    id: "appInstance.generation",
+    defaultMessage: "Change {generation}",
+  }),
+  started: { id: "appInstance.started", defaultMessage: "Started" },
+  finished: { id: "appInstance.finished", defaultMessage: "Finished" },
+  versionChange: defineMessage<{ from: string; to: string }>({
+    id: "appInstance.versionChange",
+    defaultMessage: "{from} → {to}",
+  }),
+  showMore: { id: "appInstance.showMore", defaultMessage: "Show more" },
+  retryMore: { id: "appInstance.retryMore", defaultMessage: "Try again to show more" },
+  moreFailed: {
+    id: "appInstance.moreFailed",
+    defaultMessage: "Older operations could not be loaded. The ones above are still current.",
+  },
+  moreLoaded: defineMessage<{ count: number }>({
+    id: "appInstance.moreLoaded",
+    defaultMessage: "{count, plural, one {# more operation} other {# more operations}} loaded.",
+  }),
+  phaseOther: { id: "appInstance.phaseOther", defaultMessage: "In progress:" },
 });
+
+/** The one-line command that turns on managed services (docs/specs/agent.md). */
+const enableManagedCommand = "curl -fsSL https://orglane.app/install.sh | sh -s -- enable-managed";
 
 /** How often the instance page refreshes while background work runs. */
 const POLL_MS = 2000;
@@ -565,6 +608,11 @@ export function AppsSettingsPage() {
                       <td className="px-5 py-3">
                         <div className="flex flex-wrap gap-1">
                           <StateBadge state={inst.state} />
+                          {inst.waitingForAgent && (
+                            <Badge variant="warning">
+                              {label(intl, waitingMessages, inst.waitingForAgent)}
+                            </Badge>
+                          )}
                           {inst.state !== "removed" && inst.health !== "unknown" && (
                             <Badge variant={inst.health === "healthy" ? "success" : "warning"}>
                               {intl.formatMessage(healthMessages[inst.health])}
@@ -1269,6 +1317,222 @@ function Provisioning({
 }
 
 /** Settings → Apps → one app instance. */
+/** Why a change waits for the agent, and for a missing agent how to start it. */
+function WaitingForAgent({ code }: { code: string }) {
+  const intl = useIntl();
+  return (
+    <Alert>
+      <p className="font-medium">{label(intl, waitingMessages, code)}</p>
+      <p>{explainCode(intl, code)}</p>
+      {code === "agent_unavailable" && (
+        <>
+          <p className="mt-2">
+            <FormattedMessage {...messages.enableManaged} />
+          </p>
+          <pre className="mt-1 overflow-x-auto rounded-md bg-muted p-2 font-mono text-xs">
+            <code>{enableManagedCommand}</code>
+          </pre>
+        </>
+      )}
+    </Alert>
+  );
+}
+
+/** The agent operations of a managed instance (install, changes, upgrades). */
+function Operations({ instanceId, working }: { instanceId: string; working: boolean }) {
+  const api = useApi();
+  const intl = useIntl();
+  const operations = useInfiniteQuery({
+    ...appOperationsQuery(api, instanceId),
+    refetchInterval: (q) =>
+      working || q.state.data?.pages[0]?.items.some((op) => !operationFinished(op))
+        ? POLL_MS
+        : false,
+  });
+  // Show more keeps keyboard focus: the button stays enabled (a second
+  // press while loading does nothing), and after an append focus moves to
+  // the first new row, which a live region announces.
+  const firstNew = useRef<HTMLTableCellElement>(null);
+  const [focusRow, setFocusRow] = useState<number | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  // Operations recorded while paging shift the offsets: show each once.
+  const items = [
+    ...new Map(
+      (operations.data?.pages ?? []).flatMap((p) => p.items).map((op) => [op.id, op]),
+    ).values(),
+  ];
+  useEffect(() => {
+    if (focusRow === null) return;
+    firstNew.current?.focus();
+    setFocusRow(null);
+  }, [focusRow]);
+  const showMore = async () => {
+    if (operations.isFetchingNextPage) return;
+    const before = items.length;
+    const result = await operations.fetchNextPage();
+    if (result.isFetchNextPageError) return;
+    const total = new Set((result.data?.pages ?? []).flatMap((p) => p.items).map((op) => op.id))
+      .size;
+    if (total > before) {
+      setAnnouncement(intl.formatMessage(messages.moreLoaded, { count: total - before }));
+      setFocusRow(before);
+    }
+  };
+  const when = (date: string | undefined) =>
+    date ? intl.formatDate(date, { dateStyle: "medium", timeStyle: "short" }) : "—";
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle id="app-operations">
+          <FormattedMessage {...messages.operations} />
+        </CardTitle>
+        <CardDescription>
+          <FormattedMessage {...messages.operationsDescription} />
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {operations.isPending ? (
+          <Loading />
+        ) : !operations.data ? (
+          // Only an initial load without data replaces the history; a failed
+          // next page or refresh keeps what was loaded (below).
+          <LoadError error={operations.error} retry={() => void operations.refetch()} />
+        ) : items.length === 0 ? (
+          <p className="text-muted-foreground text-sm">
+            <FormattedMessage {...messages.noOperations} />
+          </p>
+        ) : (
+          <>
+            <ScrollHint />
+            <div className="overflow-x-auto">
+              <table
+                className="w-full min-w-[40rem] text-left text-sm"
+                aria-labelledby="app-operations"
+              >
+                <thead>
+                  <tr className="border-b text-muted-foreground">
+                    <th scope="col" className="py-2 pr-4 font-medium">
+                      <FormattedMessage {...messages.operation} />
+                    </th>
+                    <th scope="col" className="py-2 pr-4 font-medium">
+                      <FormattedMessage {...messages.version} />
+                    </th>
+                    <th scope="col" className="py-2 pr-4 font-medium">
+                      <FormattedMessage {...messages.state} />
+                    </th>
+                    <th scope="col" className="py-2 pr-4 font-medium">
+                      <FormattedMessage {...messages.started} />
+                    </th>
+                    <th scope="col" className="py-2 font-medium">
+                      <FormattedMessage {...messages.finished} />
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((op, index) => {
+                    const waiting =
+                      !operationFinished(op) && op.errorCode && waitingCodes.has(op.errorCode)
+                        ? op.errorCode
+                        : undefined;
+                    const failure = operationFinished(op) ? op.errorCode : undefined;
+                    return (
+                      <tr key={op.id} className="border-b align-top last:border-0">
+                        <th
+                          scope="row"
+                          className="py-3 pr-4 font-normal"
+                          tabIndex={-1}
+                          ref={index === focusRow ? firstNew : undefined}
+                        >
+                          <span className="font-medium">
+                            {label(intl, operationMessages, op.reason ?? op.kind)}
+                          </span>
+                          {op.generation !== undefined && (
+                            <span className="block text-muted-foreground text-xs">
+                              {intl.formatMessage(messages.generation, {
+                                generation: op.generation,
+                              })}
+                            </span>
+                          )}
+                        </th>
+                        <td className="py-3 pr-4">
+                          {op.fromVersion && op.toVersion && op.fromVersion !== op.toVersion
+                            ? intl.formatMessage(messages.versionChange, {
+                                from: op.fromVersion,
+                                to: op.toVersion,
+                              })
+                            : (op.toVersion ?? "—")}
+                        </td>
+                        <td className="py-3 pr-4">
+                          <Badge variant={operationStateVariant(op)}>
+                            {waiting
+                              ? label(intl, waitingMessages, waiting)
+                              : intl.formatMessage(operationStateMessages[op.state])}
+                          </Badge>
+                          {op.phase && !operationFinished(op) && (
+                            <span className="block text-muted-foreground text-xs">
+                              {Object.hasOwn(phaseMessages, op.phase) ? (
+                                label(intl, phaseMessages, op.phase)
+                              ) : (
+                                <>
+                                  <FormattedMessage {...messages.phaseOther} />{" "}
+                                  <code className="font-mono">{op.phase}</code>
+                                </>
+                              )}
+                            </span>
+                          )}
+                          {failure && (
+                            <span className="mt-1 block text-muted-foreground text-xs">
+                              {explainCode(intl, failure)}{" "}
+                              <code className="font-mono">{failure}</code>
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 pr-4 whitespace-nowrap">{when(op.createdAt)}</td>
+                        <td className="py-3 whitespace-nowrap">{when(op.finishedAt)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {operations.isError && (
+              <Alert className="mt-3">
+                <p>
+                  {operations.isFetchNextPageError
+                    ? intl.formatMessage(messages.moreFailed)
+                    : errorMessage(intl, operations.error)}
+                </p>
+                {!operations.isFetchNextPageError && (
+                  <Button variant="link" onClick={() => void operations.refetch()}>
+                    <FormattedMessage {...messages.retry} />
+                  </Button>
+                )}
+              </Alert>
+            )}
+            {operations.hasNextPage && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                aria-busy={operations.isFetchingNextPage || undefined}
+                onClick={() => void showMore()}
+              >
+                {operations.isFetchingNextPage && <Spinner />}
+                <FormattedMessage
+                  {...(operations.isFetchNextPageError ? messages.retryMore : messages.showMore)}
+                />
+              </Button>
+            )}
+            <p role="status" className="sr-only">
+              {announcement}
+            </p>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function AppInstancePage({ instanceId }: { instanceId: string }) {
   const api = useApi();
   const intl = useIntl();
@@ -1284,6 +1548,7 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
         busy ||
         (d &&
           (transitional.has(d.instance.state) ||
+            d.instance.waitingForAgent ||
             d.provisioning.queued > 0 ||
             d.credentials.some(
               (c) => c.state === "pending" || c.state === "uncertain" || c.state === "abandoning",
@@ -1363,6 +1628,7 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
               </Alert>
             )}
             {setup.isError && <Alert>{errorMessage(intl, setup.error)}</Alert>}
+            {instance.waitingForAgent && <WaitingForAgent code={instance.waitingForAgent} />}
             {(instance.state === "degraded" ||
               instance.state === "disconnected" ||
               (instance.state === "failed" && instance.healthCode !== "setup_failed")) && (
@@ -1450,6 +1716,9 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
             </dl>
           </CardContent>
         </Card>
+        {instance.management === "managed" && (
+          <Operations instanceId={instanceId} working={transitional.has(instance.state)} />
+        )}
         {instance.state !== "removed" && provisioningEnabled && (
           <>
             <AccessSettings instance={instance} onChange={mark} />

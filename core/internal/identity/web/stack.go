@@ -12,6 +12,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/orglane/orglane/core/internal/agentclient"
 	"github.com/orglane/orglane/core/internal/apps"
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/crypto"
@@ -51,6 +52,9 @@ type StackOptions struct {
 	// Adapters replaces the compiled provider adapters (tests register the
 	// test provider).
 	Adapters []adapter.CapabilityManifest
+	// Version is the core's version; the agent client sends mutating
+	// requests only to an agent of the same version.
+	Version string
 }
 
 // NewStack builds the identity subsystem: the identity service with
@@ -143,7 +147,18 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	if err != nil {
 		return nil, err
 	}
-	appsSvc := apps.NewService(pool, registry, keyring, apps.Config{WorkspaceURL: u, IssuerURL: issuer, Logger: logger, Packages: pkgs})
+	appsCfg := apps.Config{
+		WorkspaceURL: u, IssuerURL: issuer, Logger: logger,
+		Packages: pkgs, IngressMode: cfg.Ingress.Mode, ServiceHost: cfg.ServiceHost, SyncInterval: cfg.Agent.SyncInterval,
+	}
+	agent, err := agentclient.FromConfig(cfg.Agent, opts.Version)
+	if err != nil {
+		return nil, fmt.Errorf("agent: %w", err)
+	}
+	if agent != nil { // a nil *Client must not become a non-nil interface
+		appsCfg.Agent = agent
+	}
+	appsSvc := apps.NewService(pool, registry, keyring, appsCfg)
 	svc.SetDirectoryObserver(appsSvc)
 	return &Stack{Identity: svc, Profile: profiles, Imports: peopleimport.NewService(pool, svc, profiles, keyring, peopleimport.WithLogger(logger)), Keys: keys, Provider: provider, Auth: auth, Mail: mailer, Apps: appsSvc}, nil
 }
