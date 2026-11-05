@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/packages"
@@ -129,23 +131,36 @@ func TestRestoreCannotReplaceClaimedUpgrade(t *testing.T) {
 
 func TestFenceOriginalAliasesEndingInSuffix(t *testing.T) {
 	original := []byte("services:\n  fenced:\n    networks:\n      edge:\n        aliases: [git-fenced, git-fenced-fenced]\n")
-	fenced, err := fenceCompose(original)
+	routed := []string{"git-fenced", "git-fenced-fenced"}
+	fenced, err := fenceCompose(original, routed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	aliases, err := composeAliases(fenced)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, alias := range aliases {
-		if alias == "git-fenced" || alias == "git-fenced-fenced" {
+	for _, alias := range yamlAliases(t, fenced, "fenced") {
+		if slices.Contains(routed, alias) {
 			t.Fatalf("original alias survived: %s", alias)
 		}
 	}
 	normalized := []byte(`{"services":{"fenced":{"networks":{"edge":{"aliases":["git-fenced"]}}}}}`)
-	if err := checkFenced(normalized, "git-fenced"); err == nil {
+	if err := checkFenced(normalized, "p-git", routed); err == nil {
 		t.Fatal("normalized validation accepts original routed alias")
 	}
+}
+
+// yamlAliases returns a service's edge aliases from a compose file.
+func yamlAliases(t *testing.T, data []byte, service string) []string {
+	t.Helper()
+	var p struct {
+		Services map[string]struct {
+			Networks map[string]struct {
+				Aliases []string `yaml:"aliases"`
+			} `yaml:"networks"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		t.Fatal(err)
+	}
+	return p.Services[service].Networks["edge"].Aliases
 }
 
 func TestSnapshotRenderedIntegrity(t *testing.T) {
@@ -178,16 +193,20 @@ func TestSnapshotRenderedIntegrity(t *testing.T) {
 				t.Fatal(err)
 			}
 			if name != "missing-hash" {
-				if _, _, err := a.snapshotRenderedProject("git", id, false); err != nil {
+				if _, _, err := a.snapshotRenderedProject("git", id); err != nil {
 					t.Fatalf("valid project: %v", err)
 				}
 				if err := os.WriteFile(filepath.Join(a.snapshotPath("git", id), snapshotRendered, name), []byte("corrupt"), 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
+			if _, _, err := a.snapshotRenderedProject("git", id); err == nil || !strings.Contains(err.Error(), "checksum") {
+				t.Fatalf("corrupt project accepted: %v", err)
+			}
+			// Both phases of a restore check it before anything else.
 			for _, fenced := range []bool{false, true} {
-				if _, _, err := a.snapshotRenderedProject("git", id, fenced); err == nil || !strings.Contains(err.Error(), "checksum") {
-					t.Fatalf("corrupt project accepted (fenced %v): %v", fenced, err)
+				if err := a.writeSnapshotRendered(t.Context(), "git", id, fenced, a.compose("git", nil), nil); err == nil || !strings.Contains(err.Error(), "checksum") {
+					t.Fatalf("corrupt project written (fenced %v): %v", fenced, err)
 				}
 			}
 		})
@@ -356,3 +375,4 @@ func TestRecoverJournalRecreatesLostOperation(t *testing.T) {
 		t.Fatalf("generation 2 not blocked: %+v %v", st, err)
 	}
 }
+

@@ -220,6 +220,10 @@ func (a *Agent) acceptRestore(in *instance, dir string, req agentapi.RestoreRequ
 		Operation: op.ID, Kind: agentapi.KindRestore, To: spec.Package, ToGeneration: req.Generation,
 		SnapshotID: snapID, Phase: agentapi.PhaseRollingBack, Spec: &restored,
 	}
+	if j != nil {
+		// A failed rollback: its routes may still be active.
+		nj.Routed = j.Routed
+	}
 	if err := writeJournal(dir, nj); err != nil {
 		return internal(err)
 	}

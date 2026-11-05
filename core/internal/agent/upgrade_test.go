@@ -40,7 +40,8 @@ func TestFenceCompose(t *testing.T) {
 	if !strings.Contains(string(r.Compose), "ports:") {
 		t.Fatal("the unfenced render publishes no port")
 	}
-	fenced, err := fenceCompose(r.Compose)
+	routed := []string{packages.ServiceAlias("git", "web", false), packages.ServiceAlias("git", "worker", false)}
+	fenced, err := fenceCompose(r.Compose, routed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func TestFenceCompose(t *testing.T) {
 	if a, b := mustJSON(t, got), mustJSON(t, orig); !bytes.Equal(a, b) {
 		t.Fatalf("fencing changed more than ports and aliases:\n%s\n%s", a, b)
 	}
-	twice, err := fenceCompose(fenced)
+	twice, err := fenceCompose(fenced, append(routed, packages.ServiceAlias("git", "web", true)))
 	if err != nil || !bytes.Contains(twice, []byte(packages.ServiceAlias("git", "web", true)+packages.FencedSuffix)) {
 		t.Fatalf("an original alias ending in the suffix was not fenced: %v\n%s", err, twice)
 	}
@@ -84,13 +85,14 @@ func TestFenceCompose(t *testing.T) {
 		t.Fatalf("fenced render and fenced transformation differ:\n%s\n%s", a, b)
 	}
 	for _, bad := range []string{"", "[]", "services: [a]", "services:\n  a:\n    networks:\n      e: {aliases: x}\n"} {
-		if _, err := fenceCompose([]byte(bad)); err == nil {
+		if _, err := fenceCompose([]byte(bad), nil); err == nil {
 			t.Errorf("fenceCompose(%q) accepted", bad)
 		}
 	}
 }
 
 func TestCheckFenced(t *testing.T) {
+	routed := []string{"k-web", "k-api"}
 	for _, c := range []struct {
 		json string
 		ok   bool
@@ -98,10 +100,54 @@ func TestCheckFenced(t *testing.T) {
 		{`{"services":{"web":{"networks":{"edge":{"aliases":["k-web-fenced"]},"default":null}}}}`, true},
 		{`{"services":{"web":{"ports":[{"target":80}]}}}`, false},
 		{`{"services":{"web":{"networks":{"edge":{"aliases":["k-web"]}}}}}`, false},
+		// Names Docker registers without an explicit alias.
+		{`{"services":{"k-web":{"networks":{"edge":{"aliases":["k-k-web-fenced"]}}}}}`, false},
+		{`{"services":{"web":{"hostname":"k-api"}}}`, false},
+		{`{"services":{"web":{"container_name":"k-web"}}}`, false},
+		{`{"services":{"web":{"hostname":"web"}}}`, true},
 	} {
-		if err := checkFenced([]byte(c.json)); (err == nil) != c.ok {
+		if err := checkFenced([]byte(c.json), "orglane-k", routed); (err == nil) != c.ok {
 			t.Errorf("checkFenced(%s) = %v", c.json, err)
 		}
+	}
+	// A generated container name <project>-<service>-<n> that is routed.
+	if err := checkFenced([]byte(`{"services":{"web":{}}}`), "k", []string{"k-web-1"}); err == nil {
+		t.Error("a routed container name was accepted")
+	}
+}
+
+func TestRoutedNames(t *testing.T) {
+	got, err := routedNames("k", []byte(`{"services":{"web":{"networks":{"edge":{"aliases":["k-web","extra"]}}},"worker":{}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"extra", "k-web", "k-worker"}; !slices.Equal(got, want) {
+		t.Fatalf("routedNames = %v, want %v", got, want)
+	}
+}
+
+// YAML anchors, aliases and merge keys are resolved before fencing: an
+// alias spelled through them is fenced like any other, also when the
+// original name ends in the suffix (a version before the reservation).
+func TestFenceComposeResolvesYAMLAliases(t *testing.T) {
+	for _, service := range []string{"web", "web-fenced"} {
+		t.Run(service, func(t *testing.T) {
+			routedAlias := "git-" + service
+			original := []byte("x-edge: &edge\n  aliases: [" + routedAlias + "]\nx-base: &base\n  image: busybox\n  networks:\n    edge: *edge\nservices:\n  " + service + ":\n    <<: *base\n    ports: ['80:80']\n  other:\n    image: busybox\n    networks:\n      edge: *edge\n")
+			fenced, err := fenceCompose(original, []string{routedAlias})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range []string{service, "other"} {
+				aliases := yamlAliases(t, fenced, s)
+				if len(aliases) != 1 || aliases[0] == routedAlias || !strings.HasSuffix(aliases[0], packages.FencedSuffix) {
+					t.Fatalf("%s: aliases %v in\n%s", s, aliases, fenced)
+				}
+			}
+			if bytes.Contains(fenced, []byte("80:80")) {
+				t.Fatalf("ports survived a merge key:\n%s", fenced)
+			}
+		})
 	}
 }
 

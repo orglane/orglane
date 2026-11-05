@@ -593,8 +593,9 @@ REVOKE ALL ON DATABASE %[1]s FROM PUBLIC;
 }
 
 // snapshotRenderedProject reads a snapshot's rendered files as a project to
-// write with writeRendered, fenced if asked.
-func (a *Agent) snapshotRenderedProject(key string, id uuid.UUID, fenced bool) (*packages.Rendered, []byte, error) {
+// write with writeRendered, after checking them against the snapshot's
+// checksum.
+func (a *Agent) snapshotRenderedProject(key string, id uuid.UUID) (*packages.Rendered, []byte, error) {
 	snap, _, err := a.loadSnapshot(key, id)
 	if err != nil {
 		return nil, nil, err
@@ -606,11 +607,6 @@ func (a *Agent) snapshotRenderedProject(key string, id uuid.UUID, fenced bool) (
 	// Pre-alpha snapshots without a digest cannot establish integrity either.
 	if snap.RenderedSHA256 == "" || renderedDigest(r, configured) != snap.RenderedSHA256 {
 		return nil, nil, fmt.Errorf("snapshot %s: rendered project does not match its checksum", id)
-	}
-	if fenced {
-		if r.Compose, err = fenceCompose(r.Compose); err != nil {
-			return nil, nil, err
-		}
 	}
 	return r, configured, nil
 }
@@ -637,31 +633,41 @@ func readRenderedProject(dir string) (*packages.Rendered, []byte, error) {
 
 // writeSnapshotRendered writes a snapshot's rendered files into the
 // instance directory, fenced or as they were, and its configure record.
-// A fenced project is normalized and checked first: no published ports,
-// only fenced aliases.
-func (a *Agent) writeSnapshotRendered(ctx context.Context, key string, id uuid.UUID, fenced bool, c compose) error {
-	r, configured, err := a.snapshotRenderedProject(key, id, fenced)
+// A fenced project avoids routed (the operation's routed names) and the
+// names a route of the snapshot's own version targets; it is normalized and
+// checked (checkFenced) before it is written.
+func (a *Agent) writeSnapshotRendered(ctx context.Context, key string, id uuid.UUID, fenced bool, c compose, routed []string) error {
+	r, configured, err := a.snapshotRenderedProject(key, id)
 	if err != nil {
 		return err
 	}
 	if fenced {
-		original, _, err := a.snapshotRenderedProject(key, id, false)
-		if err != nil {
-			return err
-		}
-		aliases, err := composeAliases(original.Compose)
-		if err != nil {
-			return err
-		}
+		var originalJSON []byte
 		if err := a.stage(c, r, func(file, env string) error {
+			originalJSON, err = c.config(ctx, file, env)
+			return err
+		}); err != nil {
+			return err
+		}
+		own, err := routedNames(key, originalJSON)
+		if err != nil {
+			return err
+		}
+		routed = mergeNames(routed, own)
+		fencedR := *r
+		if fencedR.Compose, err = fenceCompose(r.Compose, routed); err != nil {
+			return err
+		}
+		if err := a.stage(c, &fencedR, func(file, env string) error {
 			normalized, err := c.config(ctx, file, env)
 			if err != nil {
 				return err
 			}
-			return checkFenced(normalized, aliases...)
+			return checkFenced(normalized, c.project, routed)
 		}); err != nil {
 			return err
 		}
+		r = &fencedR
 	}
 	rc := a.renderContext(key)
 	if err := writeRendered(rc, r); err != nil {

@@ -319,7 +319,7 @@ func (a *Agent) converge(ctx context.Context, in *instance, target, prev *agenta
 	}
 
 	setPhase(agentapi.PhasePolicyCheck)
-	if err := a.checkPolicy(ctx, pkg, rendered, inputs, rc, c); err != nil {
+	if _, err := a.checkPolicy(ctx, pkg, rendered, inputs, rc, c); err != nil {
 		return err
 	}
 
@@ -392,40 +392,26 @@ func writeConfigured(dir, hash string) error {
 
 // checkPolicy writes the rendered project to the staging directory,
 // normalizes it with `docker compose config` and checks it against the
-// package policy. Nothing is started from staging.
-func (a *Agent) checkPolicy(ctx context.Context, pkg *packages.Package, r *packages.Rendered, in packages.Inputs, rc packages.RenderContext, c compose, originalAliases ...string) error {
-	staging := filepath.Join(rc.InstanceDir, stagingDir)
-	if err := os.RemoveAll(staging); err != nil {
-		return failed(agentapi.CodeComposeFailed, err)
-	}
-	if err := os.MkdirAll(staging, 0o700); err != nil {
-		return failed(agentapi.CodeComposeFailed, err)
-	}
-	defer func() { _ = os.RemoveAll(staging) }()
-	file, env := filepath.Join(staging, composeFile), filepath.Join(staging, envFile)
-	if err := os.WriteFile(file, r.Compose, 0o600); err != nil {
-		return failed(agentapi.CodeComposeFailed, err)
-	}
-	if err := os.WriteFile(env, r.Env, 0o600); err != nil {
-		return failed(agentapi.CodeComposeFailed, err)
-	}
-	normalized, err := c.config(ctx, file, env)
+// package policy, returning the normalized project. Nothing is started from
+// staging.
+func (a *Agent) checkPolicy(ctx context.Context, pkg *packages.Package, r *packages.Rendered, in packages.Inputs, rc packages.RenderContext, c compose) ([]byte, error) {
+	var normalized []byte
+	err := a.stage(c, r, func(file, env string) error {
+		var err error
+		normalized, err = c.config(ctx, file, env)
+		return err
+	})
 	if err != nil {
-		return failed(agentapi.CodeComposeFailed, err)
+		return nil, failed(agentapi.CodeComposeFailed, err)
 	}
 	if err := pkg.CheckPolicy(normalized, in, rc); err != nil {
 		var pe *packages.PolicyError
 		if errors.As(err, &pe) {
-			return &opError{code: agentapi.CodePolicyViolation, rule: pe.Rule, err: err}
+			return nil, &opError{code: agentapi.CodePolicyViolation, rule: pe.Rule, err: err}
 		}
-		return failed(agentapi.CodePolicyViolation, err)
+		return nil, failed(agentapi.CodePolicyViolation, err)
 	}
-	if rc.Fenced {
-		if err := checkFenced(normalized, originalAliases...); err != nil {
-			return &opError{code: agentapi.CodePolicyViolation, rule: packages.RuleAlias, err: err}
-		}
-	}
-	return nil
+	return normalized, nil
 }
 
 // writeRendered writes the rendered files, .env and compose.yaml (last), each

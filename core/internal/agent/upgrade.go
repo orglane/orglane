@@ -304,33 +304,50 @@ func (a *Agent) forward(ctx context.Context, in *instance, j *journal, from *age
 	if err != nil {
 		return failed(agentapi.CodeInvalidInput, err)
 	}
-	// No routed alias may reach the unconfirmed candidate. The package
-	// rules keep routed and fenced aliases disjoint (packages.FencedName);
-	// a deployment this release did not render (a restored older version)
-	// is checked here as well: the normalized candidate may share no alias
-	// with the running deployment or the target's unfenced render. This
-	// happens before anything is pulled, stopped or switched.
-	var aliases []string
-	original, err := os.ReadFile(filepath.Join(c.dir, composeFile)) //nolint:gosec // agent-owned current deployment
-	switch {
-	case err == nil:
-		if aliases, err = composeAliases(original); err != nil {
-			return failed(agentapi.CodeComposeFailed, err)
-		}
-	case !errors.Is(err, fs.ErrNotExist): // no deployment: nothing is routed to it
-		return failed(agentapi.CodeComposeFailed, err)
+	// No route may reach the unconfirmed candidate, nor the running version
+	// once a rollback restores it fenced (fence.go). The routed names are
+	// those of the running deployment and of the target's unfenced render;
+	// the journal keeps them for the rollback, because a route of either
+	// version may be active until the operation ends. All of this is
+	// checked before anything is pulled, stopped or switched.
+	candidateJSON, err := a.checkPolicy(ctx, pkg, candidate, inputs, fencedRC, c)
+	if err != nil {
+		return err
 	}
-	finalAliases, err := composeAliases(final.Compose)
+	finalJSON, err := a.checkPolicy(ctx, pkg, final, inputs, rc, c)
+	if err != nil {
+		return err
+	}
+	routed, err := routedNames(key, finalJSON)
 	if err != nil {
 		return failed(agentapi.CodeInvalidInput, err)
 	}
-	aliases = append(aliases, finalAliases...)
-	if err := a.checkPolicy(ctx, pkg, candidate, inputs, fencedRC, c, aliases...); err != nil {
-		return err
+	var running *dnsProject
+	if _, err := os.Stat(filepath.Join(c.dir, composeFile)); err == nil {
+		runningJSON, err := c.config(ctx, filepath.Join(c.dir, composeFile), filepath.Join(c.dir, envFile))
+		if err != nil {
+			return failed(agentapi.CodeComposeFailed, err)
+		}
+		names, err := routedNames(key, runningJSON)
+		if err != nil {
+			return failed(agentapi.CodeComposeFailed, err)
+		}
+		routed = mergeNames(routed, names)
+		if running, err = parseDNSProject(runningJSON); err != nil {
+			return failed(agentapi.CodeComposeFailed, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) { // no deployment: nothing is routed to it
+		return failed(agentapi.CodeComposeFailed, err)
 	}
-	if err := a.checkPolicy(ctx, pkg, final, inputs, rc, c); err != nil {
-		return err
+	if err := checkFenced(candidateJSON, c.project, routed); err != nil {
+		return &opError{code: agentapi.CodePolicyViolation, rule: packages.RuleAlias, err: err}
 	}
+	if running != nil {
+		if err := checkImplicitNames(running, c.project, routed); err != nil {
+			return &opError{code: agentapi.CodePolicyViolation, rule: packages.RuleAlias, err: fmt.Errorf("the running version could not be restored fenced: %w", err)}
+		}
+	}
+	j.Routed, j.RoutedKnown = routed, true
 	if err := a.enter(in, j, agentapi.PhasePulling); err != nil {
 		return err
 	}
@@ -591,7 +608,7 @@ func (a *Agent) commitWork(ctx context.Context, in *instance, j *journal) error 
 		return failed(agentapi.CodeInvalidInput, err)
 	}
 	c := a.compose(in.key, secretsOf(j.Spec))
-	if err := a.checkPolicy(ctx, pkg, rendered, inputs, rc, c); err != nil {
+	if _, err := a.checkPolicy(ctx, pkg, rendered, inputs, rc, c); err != nil {
 		return err
 	}
 	if err := writeRendered(rc, rendered); err != nil {
@@ -671,7 +688,36 @@ func (a *Agent) restoreFenced(ctx context.Context, in *instance, j *journal) err
 		return err
 	}
 	c := a.compose(in.key, secretsOf(spec, j.Spec))
+	deployed := false
 	if _, err := os.Stat(filepath.Join(c.dir, composeFile)); err == nil {
+		deployed = true
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if !j.RoutedKnown {
+		// A restore: what runs now is routed until the restore ends. Its
+		// names go into the journal before anything changes, so a repeated
+		// run (the deployment is fenced by then) still knows them.
+		if deployed {
+			current, err := c.config(ctx, filepath.Join(c.dir, composeFile), filepath.Join(c.dir, envFile))
+			if err != nil {
+				return err
+			}
+			names, err := routedNames(in.key, current)
+			if err != nil {
+				return err
+			}
+			j.Routed = mergeNames(j.Routed, names)
+		}
+		j.RoutedKnown = true
+		in.files.Lock()
+		err := writeJournal(a.instanceDir(in.key), j)
+		in.files.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+	if deployed {
 		if err := c.down(ctx); err != nil {
 			return err
 		}
@@ -684,7 +730,7 @@ func (a *Agent) restoreFenced(ctx context.Context, in *instance, j *journal) err
 			return err
 		}
 	}
-	if err := a.writeSnapshotRendered(ctx, in.key, snap.ID, true, c); err != nil {
+	if err := a.writeSnapshotRendered(ctx, in.key, snap.ID, true, c, j.Routed); err != nil {
 		return err
 	}
 	if spec.State == agentapi.StateRunning {
@@ -701,7 +747,7 @@ func (a *Agent) expose(ctx context.Context, in *instance, j *journal) string {
 	_, spec, err := a.loadSnapshot(in.key, j.SnapshotID)
 	if err == nil {
 		c := a.compose(in.key, secretsOf(spec, j.Spec))
-		if err = a.writeSnapshotRendered(ctx, in.key, j.SnapshotID, false, c); err == nil {
+		if err = a.writeSnapshotRendered(ctx, in.key, j.SnapshotID, false, c, nil); err == nil {
 			switch spec.State {
 			case agentapi.StateRunning:
 				err = a.upWait(ctx, c, a.startTimeout(spec))

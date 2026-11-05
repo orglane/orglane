@@ -44,6 +44,13 @@ type journal struct {
 	// Decision is decisionAbort once an abort or the confirmation timeout
 	// decided to roll back; a confirmation moves the phase to committing.
 	Decision string `json:"decision,omitempty"`
+	// Routed are the names a route of the instance may target during the
+	// operation (fence.go): those of the version that ran when it started
+	// and of the upgrade's target. RoutedKnown is set once the running
+	// deployment's names are in it (preflight of an upgrade, the first run
+	// of a restore).
+	Routed      []string `json:"routed,omitempty"`
+	RoutedKnown bool     `json:"routed_known,omitempty"`
 	// RollbackFailed: the fenced restore failed. Nothing is retried until a
 	// restore request (POST /v1/instances/{key}/restore).
 	RollbackFailed bool `json:"rollback_failed,omitempty"`

@@ -196,6 +196,11 @@ func (c *policyCheck) topNetworks(v any) error {
 }
 
 func (c *policyCheck) service(name string, svc map[string]any) error {
+	// Docker's DNS answers a container's service name on its networks: a
+	// name <key>-<other> would be the routed alias of another service.
+	if strings.HasPrefix(name, c.rc.Key+"-") {
+		return violation(RuleAlias, name, "service names may not start with the instance key %q (routed aliases do)", c.rc.Key+"-")
+	}
 	declared := c.m.HasService(name)
 	restart, _ := svc["restart"].(string)
 	if !declared {

@@ -28,7 +28,7 @@ type restoredProject struct {
 }
 
 func (a *Agent) saveRestoredProject(key string, id uuid.UUID, spec *agentapi.Spec) error {
-	r, configured, err := a.snapshotRenderedProject(key, id, false)
+	r, configured, err := a.snapshotRenderedProject(key, id)
 	if err != nil {
 		return err
 	}
