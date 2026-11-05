@@ -2,12 +2,15 @@ package ingress
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/orglane/orglane/core/internal/config"
@@ -53,7 +56,7 @@ func TestBuildDomainMode(t *testing.T) {
 		"ORGLANE_DOMAIN_BASE":           "acme.com",
 		"ORGLANE_DOMAIN_WORKSPACE_HOST": "Work.Acme.com.",
 	})
-	assertJSON(t, Build(cfg), `{
+	assertJSON(t, Build(cfg, nil), `{
   "http": {
     "routers": {
       "orglane-workspace": {
@@ -93,7 +96,7 @@ func TestBuildDomainModeCustomResolverAndHSTS(t *testing.T) {
 		"ORGLANE_INGRESS_CERT_RESOLVER": "pebble",
 		"ORGLANE_INGRESS_HSTS_MAX_AGE":  "0s",
 	})
-	d := Build(cfg)
+	d := Build(cfg, nil)
 	r := d.HTTP.Routers[RouterWorkspace]
 	if r.Rule != "Host(`acme.com`)" || r.TLS == nil || r.TLS.CertResolver != "pebble" {
 		t.Errorf("workspace router = %+v", r)
@@ -113,7 +116,7 @@ func TestBuildLocalMode(t *testing.T) {
 	})
 	// No TLS, no redirect and no HSTS: the browser would pin HTTPS for
 	// localhost otherwise.
-	assertJSON(t, Build(cfg), `{
+	assertJSON(t, Build(cfg, nil), `{
   "http": {
     "routers": {
       "orglane-workspace": {
@@ -140,7 +143,7 @@ func TestBuildLocalMode(t *testing.T) {
 
 func TestHandler(t *testing.T) {
 	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
-	h, err := NewHandler(cfg, slog.New(slog.DiscardHandler))
+	h, err := NewHandler(cfg, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +208,7 @@ func TestHandlerAllowedPeers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS": tc.allowed})
-			h, err := NewHandler(cfg, slog.New(slog.DiscardHandler))
+			h, err := NewHandler(cfg, nil, slog.New(slog.DiscardHandler))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -222,5 +225,163 @@ func TestHandlerAllowedPeers(t *testing.T) {
 				t.Errorf("refused answer carries the configuration: %s", rec.Body)
 			}
 		})
+	}
+}
+
+func TestBuildAppRoutesDomainMode(t *testing.T) {
+	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
+	routes := []AppRoute{
+		{Key: "git", Route: "web", Host: "git.acme.com", Upstream: "http://git-forgejo:3000"},
+		{Key: "files", Route: "web", Host: "files.acme.com", Maintenance: true},
+	}
+	d := Build(cfg, routes)
+	gotJSON, _ := json.Marshal(d.HTTP.Routers[AppRouter("git", "web")])
+	assertRaw(t, gotJSON, `{"entryPoints":["websecure"],"rule":"Host(`+"`git.acme.com`"+`)","service":"orglane-app-git-web",
+		"middlewares":["orglane-security-headers"],"tls":{"certResolver":"letsencrypt"}}`)
+	gotJSON, _ = json.Marshal(d.HTTP.Routers[AppRouter("git", "web")+"-redirect"])
+	assertRaw(t, gotJSON, `{"entryPoints":["web"],"rule":"Host(`+"`git.acme.com`"+`)","service":"noop@internal",
+		"middlewares":["orglane-https-redirect"]}`)
+	gotJSON, _ = json.Marshal(d.HTTP.Services[AppRouter("git", "web")])
+	assertRaw(t, gotJSON, `{"loadBalancer":{"servers":[{"url":"http://git-forgejo:3000"}],"passHostHeader":true}}`)
+
+	// Maintenance: the host goes to the core, marked by the header.
+	m := d.HTTP.Routers[AppRouter("files", "web")]
+	if m.Service != ServiceCore || !slices.Equal(m.Middlewares, []string{MiddlewareHeaders, MiddlewareMaintenance}) || m.TLS == nil {
+		t.Errorf("maintenance router = %+v", m)
+	}
+	if _, ok := d.HTTP.Services[AppRouter("files", "web")]; ok {
+		t.Error("a maintenance route has its own service")
+	}
+	if h := d.HTTP.Middlewares[MiddlewareMaintenance].Headers; h == nil || h.CustomRequestHeaders[HeaderMaintenance] != "1" {
+		t.Errorf("maintenance middleware = %+v", d.HTTP.Middlewares[MiddlewareMaintenance])
+	}
+	if len(d.HTTP.Routers) != 6 || len(d.HTTP.Services) != 2 {
+		t.Errorf("routers %d, services %d", len(d.HTTP.Routers), len(d.HTTP.Services))
+	}
+}
+
+func assertRaw(t *testing.T, got []byte, want string) {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(want)); err != nil {
+		t.Fatalf("invalid expected JSON: %v", err)
+	}
+	if !bytes.Equal(got, buf.Bytes()) {
+		t.Errorf("got %s\nwant %s", got, buf.Bytes())
+	}
+}
+
+func TestBuildAppRoutesLocalMode(t *testing.T) {
+	cfg := load(t, map[string]string{
+		"ORGLANE_DOMAIN_BASE":   "orglane.localhost",
+		"ORGLANE_INGRESS_MODE":  "local",
+		"ORGLANE_ENVIRONMENT":   "development",
+		"ORGLANE_DOMAIN_SCHEME": "http",
+	})
+	d := Build(cfg, []AppRoute{{Key: "git", Route: "web", Host: "git.orglane.localhost", Upstream: "http://git-forgejo:3000"}})
+	r := d.HTTP.Routers[AppRouter("git", "web")]
+	if !slices.Equal(r.EntryPoints, []string{EntryPointHTTP}) || r.TLS != nil || r.Rule != "Host(`git.orglane.localhost`)" {
+		t.Errorf("router = %+v", r)
+	}
+	if _, ok := d.HTTP.Routers[AppRouter("git", "web")+"-redirect"]; ok {
+		t.Error("a redirect router in local mode")
+	}
+}
+
+// Bad rows never take over a host or inject into a rule.
+func TestBuildAppRoutesRejectsBadRoutes(t *testing.T) {
+	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
+	ok := AppRoute{Key: "git", Route: "web", Host: "git.acme.com", Upstream: "http://git-forgejo:3000"}
+	for name, bad := range map[string]AppRoute{
+		"workspace host":  {Key: "evil", Route: "web", Host: "acme.com", Upstream: "http://evil:80"},
+		"duplicate host":  {Key: "zzz", Route: "web", Host: "git.acme.com", Upstream: "http://zzz-x:80"},
+		"rule injection":  {Key: "inj", Route: "web", Host: "x.acme.com`) || Host(`acme.com", Upstream: "http://inj:80"},
+		"upper case host": {Key: "up", Route: "web", Host: "Up.acme.com", Upstream: "http://up:80"},
+		"bad key":         {Key: "Bad_Key", Route: "web", Host: "bad.acme.com", Upstream: "http://bad:80"},
+		"https upstream":  {Key: "tls", Route: "web", Host: "tls.acme.com", Upstream: "https://tls:443"},
+		"upstream path":   {Key: "path", Route: "web", Host: "path.acme.com", Upstream: "http://path:80/x"},
+		"no port":         {Key: "noport", Route: "web", Host: "noport.acme.com", Upstream: "http://noport"},
+		"user info":       {Key: "user", Route: "web", Host: "user.acme.com", Upstream: "http://u:p@user:80"}, //nolint:gosec // a test URL
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := Build(cfg, []AppRoute{ok, bad})
+			if r := d.HTTP.Routers[RouterWorkspace]; r.Service != ServiceCore {
+				t.Fatalf("workspace router changed: %+v", r)
+			}
+			if r := d.HTTP.Routers[AppRouter("git", "web")]; r.Service != AppRouter("git", "web") {
+				t.Fatalf("good route lost: %+v", r)
+			}
+			if _, found := d.HTTP.Routers[AppRouter(bad.Key, bad.Route)]; found {
+				t.Fatalf("bad route kept: %+v", d.HTTP.Routers[AppRouter(bad.Key, bad.Route)])
+			}
+			if len(d.HTTP.Services) != 2 {
+				t.Fatalf("services = %v", d.HTTP.Services)
+			}
+		})
+	}
+}
+
+func TestHandlerAppRoutes(t *testing.T) {
+	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
+	var routes []AppRoute
+	var fail error
+	h, err := NewHandler(cfg, func(context.Context) ([]AppRoute, error) { return routes, fail }, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	poll := func() (int, Dynamic) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, ConfigPath, http.NoBody))
+		var d Dynamic
+		if rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &d); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return rec.Code, d
+	}
+	if code, d := poll(); code != http.StatusOK || len(d.HTTP.Routers) != 2 {
+		t.Fatalf("no apps: %d %v", code, d.HTTP.Routers)
+	}
+	// Every poll reads the routes again.
+	routes = []AppRoute{{Key: "git", Route: "web", Host: "git.acme.com", Upstream: "http://git-forgejo:3000"}}
+	if code, d := poll(); code != http.StatusOK || d.HTTP.Routers[AppRouter("git", "web")].Service == "" {
+		t.Fatalf("with an app: %d %v", code, d.HTTP.Routers)
+	}
+	// A failing source is a 503, never a configuration without the apps.
+	fail = errors.New("database down")
+	if code, _ := poll(); code != http.StatusServiceUnavailable {
+		t.Fatalf("failing source = %d, want 503", code)
+	}
+}
+
+func TestMaintenance(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	h := Maintenance("work.acme.com", next)
+	for _, tc := range []struct {
+		host   string
+		header bool
+		want   int
+	}{
+		{"git.acme.com", true, http.StatusServiceUnavailable},
+		{"git.acme.com:443", true, http.StatusServiceUnavailable},
+		{"git.acme.com", false, http.StatusTeapot},
+		// A client sending the header to the workspace changes nothing.
+		{"work.acme.com", true, http.StatusTeapot},
+		{"Work.Acme.com:443", true, http.StatusTeapot},
+	} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
+		req.Host = tc.host
+		if tc.header {
+			req.Header.Set(HeaderMaintenance, "1")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("%s (header %v) = %d, want %d", tc.host, tc.header, rec.Code, tc.want)
+		}
+		if tc.want == http.StatusServiceUnavailable && rec.Header().Get("Retry-After") != MaintenanceRetryAfter {
+			t.Errorf("no Retry-After: %v", rec.Header())
+		}
 	}
 }

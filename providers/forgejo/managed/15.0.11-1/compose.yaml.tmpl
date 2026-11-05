@@ -1,0 +1,98 @@
+# Rendered by the Orglane agent from the forgejo package {{.Package.Version}}.
+# Local edits are overwritten on the next reconcile.
+#
+# Forgejo reads FORGEJO__<section>__<KEY> variables into its app.ini (kept in
+# the data directory) on every start, so a changed setting applies with the
+# next render.
+name: {{quote .Instance.Project}}
+services:
+  forgejo:
+    image: {{image "forgejo" | quote}}
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs: ["/tmp:mode=1777"]
+    environment:
+      FORGEJO__database__DB_TYPE: "postgres"
+      FORGEJO__database__HOST: {{quote .Database.Address}}
+      FORGEJO__database__NAME: {{quote .Database.Name}}
+      FORGEJO__database__USER: {{quote .Database.User}}
+      FORGEJO__database__PASSWD: {{secret "db_password"}}
+      FORGEJO__database__SSL_MODE: "disable"
+      # The role has CONNECTION LIMIT 20 (agent.md "Per-service database").
+      FORGEJO__database__MAX_OPEN_CONNS: "10"
+      FORGEJO__database__MAX_IDLE_CONNS: "2"
+      FORGEJO__server__DOMAIN: {{index .Hosts "web" | quote}}
+      FORGEJO__server__ROOT_URL: {{printf "%s/" .URLs.Instance | quote}}
+      FORGEJO__server__HTTP_PORT: "3000"
+      FORGEJO__server__SSH_DOMAIN: {{index .Hosts "web" | quote}}
+      # Clone URLs name the published host port; the server listens on 2222.
+      FORGEJO__server__SSH_PORT: {{index .Settings "ssh_port" | quote}}
+      FORGEJO__server__SSH_LISTEN_PORT: "2222"
+      FORGEJO__server__START_SSH_SERVER: "true"
+      FORGEJO__server__OFFLINE_MODE: "true"
+      FORGEJO__server__LANDING_PAGE: "login"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__security__SECRET_KEY: {{secret "secret_key"}}
+      # Accounts come from Orglane; nobody registers or browses anonymously.
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
+      FORGEJO__service__DEFAULT_KEEP_EMAIL_PRIVATE: "true"
+      FORGEJO__openid__ENABLE_OPENID_SIGNIN: "false"
+      FORGEJO__openid__ENABLE_OPENID_SIGNUP: "false"
+      FORGEJO__repository__DEFAULT_PRIVATE: "private"
+      FORGEJO__session__COOKIE_SECURE: {{if eq .Ingress.Mode "domain"}}"true"{{else}}"false"{{end}}
+      # No mail server is configured for managed services yet.
+      FORGEJO__mailer__ENABLED: "false"
+      # No runners are managed by Orglane.
+      FORGEJO__actions__ENABLED: "false"
+      FORGEJO__log__MODE: "console"
+      FORGEJO__log__LEVEL: "Info"
+{{- if .Fenced}}
+      # Upgrade candidate (agent.md "Upgrade"): no outbound side effects
+      # until the upgrade is committed.
+      FORGEJO__cron__ENABLED: "false"
+      FORGEJO__webhook__ALLOWED_HOST_LIST: "orglane-fenced.invalid"
+{{- else}}
+      # Webhooks reach Orglane by its public name through Traefik's alias.
+      FORGEJO__webhook__ALLOWED_HOST_LIST: {{index .Hosts "workspace" | quote}}
+{{- end}}
+      ORGLANE_ADMIN_USERNAME: "orglane-admin"
+      ORGLANE_ADMIN_EMAIL: {{printf "orglane-admin@%s" (index .Hosts "web") | quote}}
+      ORGLANE_ADMIN_PASSWORD: {{secret "admin_password"}}
+    volumes:
+      - type: bind
+        source: {{dir "forgejo" | quote}}
+        target: /var/lib/gitea
+      - type: bind
+        source: {{file "." | quote}}
+        target: /orglane/files
+        read_only: true
+{{- with port "ssh"}}
+    ports: [{{quote .}}]
+{{- end}}
+    networks:
+      default: {}
+      edge:
+        aliases: [{{alias "forgejo" | quote}}]
+      services: {}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:3000/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5m
+      start_interval: 2s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+networks:
+  edge:
+    external: true
+    name: {{quote .Networks.Edge}}
+  services:
+    external: true
+    name: {{quote .Networks.Services}}

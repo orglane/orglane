@@ -67,6 +67,15 @@ Every install gets `ORGLANE_AGENT_SECRET` (64 hex characters) in `.env`, the sec
 
 **Local and demo mode use `orglane.localhost` with managed services.** Inside a container the bare name `localhost` is the container itself (`/etc/hosts` comes before Docker's DNS), so a service could never reach a workspace at `http://localhost`. With managed services the base domain is `orglane.localhost`: the workspace is `http://orglane.localhost` and services get names such as `http://git.orglane.localhost`. Enabling them on an existing local install therefore **moves the workspace** from `http://localhost` (the installer says so and asks, unless `--yes`); people sign in again at the new address. Chrome, Firefox and Playwright resolve every `*.localhost` name to this machine without configuration. Safari on macOS doesn't resolve subdomains of `localhost`: use another browser, or add `/etc/hosts` entries such as `127.0.0.1 orglane.localhost git.orglane.localhost`. Inside Docker, services reach the workspace on port 80 only, so keep the default `--http-port` when services sign in with Orglane (the installer warns otherwise).
 
+#### Forgejo
+
+Forgejo is the first managed service (code, from M2). Orglane ships it as a tested package: Forgejo 15, Forgejo's long-term support line, pinned by version and digest and upgraded with Orglane releases. It runs as `instances/git/` (project `<COMPOSE_PROJECT_NAME>-git`) with its own database and role (`svc_git`) on the bundle's PostgreSQL, and Traefik serves it on its own host, `git.<base domain>` by default (`domain.service_host_template`).
+
+- **DNS (domain mode):** `git.<base domain>` must resolve to this server, like the workspace host (an `A`/`AAAA` record or the wildcard `*.<base domain>`); Orglane checks this before it installs Forgejo, because Let's Encrypt validates the new host.
+- **Git over SSH** uses a direct host port, **2222** by default (22 is the host's own SSH daemon; SSH has no host name Traefik could route by). In domain mode open it in the host's and the cloud provider's firewall; clone URLs look like `ssh://git@git.acme.com:2222/acme/robot.git`. In local and demo mode it listens on `127.0.0.1` only. While an upgrade is being verified the port is closed and the web routes answer `503`.
+- **Memory:** about 100 MiB when idle; the package asks for at least 256 MiB free (512 MiB recommended) and 2 GiB of disk.
+- **Demo mode** has no services preinstalled. With `install.sh demo --managed` (workspace `http://orglane.localhost`) an admin can install Forgejo from Settings → Apps and open it at `http://git.orglane.localhost`; `make demo` runs without the agent.
+
 ### Domain mode: DNS and reachability first
 
 Let's Encrypt limits failed validations, so the installer requests no certificate until DNS is right. It shows the records to create for this server's public address (asked from `ipv4.icanhazip.com` and `ipv6.icanhazip.com`, or `--public-ip`):

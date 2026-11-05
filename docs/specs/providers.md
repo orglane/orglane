@@ -1197,3 +1197,17 @@ Details the first draft left open, decided while implementing the framework (#58
 | Problem details code | `Problem` has an optional `code` (stable, lower_snake_case) | API |
 | The apps queue size | `jobs.apps_max_workers` (`ORGLANE_JOBS_APPS_MAX_WORKERS`), default 2 | Provisioning |
 | The test provider outside Go tests | Build tag `appstest` registers `providers/testprovider` in the web acceptance binary only, like `githubimporttest`; production binaries never contain it | Code layout and registry |
+
+## Spec gaps decided in #61
+
+| Gap | Decision | Where |
+|---|---|---|
+| Who mints the Forgejo `admin_token`: `Env` cannot store a credential | `Setup` checks the service admin (basic auth with `admin_password`) and creates the organization; the token is minted by the staged rotation (`CredentialRotator.ApplyCredential` with a nil value), whose read-back is the admin's token list (`orglane-<version>`): a token of the version found there was minted by an attempt whose answer was lost, so it is deleted and minted again. Scopes: `write:admin`, `write:organization`, `read:user`. Retired tokens are not yet deleted in Forgejo (follow-up: a retire hook) | `providers/forgejo` |
+| The capability matrix of Forgejo before #62 and #63 | Honest: SSO, deep links, accounts, teams, team removal and webhooks are `planned` for M2 until #62/#63 implement them; `lifecycle.install`, `upgrade` and `snapshot` are supported | `providers/forgejo` |
+| When an installing instance gets its routes | When the agent has applied its current generation (`observed_generation >= desired_generation > 0`), so a reinstall gets no route before its containers exist | `core/internal/apps/ingress.go` |
+| Hosts of packages with several routes | M2 packages have one route; its host is the instance's base URL host. Further routes are left out until hosts per route exist | `core/internal/apps/ingress.go` |
+| How the core knows a request is for an instance under maintenance | Maintenance routers forward to the core with the request header `X-Orglane-Maintenance: 1` (Traefik overwrites any client value); the core answers `503` with `Retry-After: 30` only for that header on a host other than the workspace host | `core/internal/ingress` |
+| The configuration when the database is unavailable | `GET /traefik/config` answers `503`, so Traefik keeps its last configuration instead of dropping the app routes | `core/internal/ingress` |
+| The DNS check of a service host | Domain mode only: the host must resolve (A and AAAA) to exactly the workspace host's addresses; codes `dns_unresolved`, `dns_mismatch`, `dns_lookup_failed` with both address sets | `core/internal/apps/dnscheck.go` |
+| Demo mode | Like local mode: the demo dataset has no app instances. With the agent (`install.sh demo --managed`, workspace `http://orglane.localhost`) an admin installs Forgejo from Settings → Apps; without it Settings → Apps shows the `enable-managed` command. `make demo` runs no agent | deploy/README.md |
+
