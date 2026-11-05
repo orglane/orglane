@@ -153,7 +153,7 @@
   "apps.code.hookFailed": "Configuring the app's services failed. Check the agent's logs.",
   "apps.code.hostNotLocal": "On this local installation, the address must end in .localhost.",
   "apps.code.hostTaken": "Another app uses this address. Choose another one.",
-  "apps.code.installFailed": "Installing this app failed. Check the server's resources, then retry.",
+  "apps.code.installFailed": "Installing this app failed; the operations below say why. Once the cause is fixed, remove the app and reinstall it, or delete it permanently and install it again.",
   "apps.code.insufficientDisk": "This server does not have enough free disk space for this app.",
   "apps.code.insufficientMemory": "This server does not have enough memory for this app next to the ones already installed.",
   "apps.code.invalidInput": "The agent refused the app's settings.",

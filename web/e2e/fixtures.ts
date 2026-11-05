@@ -154,6 +154,9 @@ export const test = base.extend<{
         ? {
             ORGLANE_AGENT_SOCKET: join(agentDir, "run", "agent.sock"),
             ORGLANE_AGENT_SECRET: agentSecret,
+            // Local mode, as install.sh --mode demo --managed runs it: no
+            // DNS check of *.localhost service hosts.
+            ORGLANE_INGRESS_MODE: "local",
           }
         : {}),
     };

@@ -420,7 +420,8 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
   },
   install_failed: {
     id: "apps.code.installFailed",
-    defaultMessage: "Installing this app failed. Check the server's resources, then retry.",
+    defaultMessage:
+      "Installing this app failed; the operations below say why. Once the cause is fixed, remove the app and reinstall it, or delete it permanently and install it again.",
   },
   remove_failed: {
     id: "apps.code.removeFailed",
