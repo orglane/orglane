@@ -224,8 +224,8 @@ test-go:
 # no *AsRoot test ran. make test runs this in CI on Linux.
 test-root: ## Run the root-only agent tests as root (needs sudo)
 	go test -c -o .bin/agent-root.test ./core/internal/agent/
-	sudo -n env ORGLANE_TEST_REQUIRE_ROOT=1 .bin/agent-root.test -test.run 'AsRoot$$' -test.count=1 -test.v > .bin/agent-root.log 2>&1; \
-		status=$$?; cat .bin/agent-root.log; \
+	status=0; sudo -n env ORGLANE_TEST_REQUIRE_ROOT=1 .bin/agent-root.test -test.run 'AsRoot$$' -test.count=1 -test.v > .bin/agent-root.log 2>&1 || status=$$?; \
+		cat .bin/agent-root.log; \
 		if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
 		if ! grep -q '^--- PASS: Test.*AsRoot' .bin/agent-root.log; then echo "error: no *AsRoot test ran"; exit 1; fi
 
