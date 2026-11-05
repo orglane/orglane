@@ -218,6 +218,16 @@ func TestForgejoOrganizationSetting(t *testing.T) {
 			t.Errorf("%q: %v, want invalid settings.organization", bad, err)
 		}
 	}
+	// Omitted or null: refused too. Stored, the instance could never get
+	// its organization (immutable) and Setup would fail on every retry.
+	for name, settings := range map[string]map[string]any{"omitted": nil, "null": {forgejo.SettingOrganization: nil}} {
+		_, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+			Provider: forgejo.ID, Key: "git", BaseURL: "https://git.acme.test", Settings: settings,
+		})
+		if apps.Code(err) != "invalid_input" || !strings.Contains(err.Error(), "settings.organization") {
+			t.Errorf("organization %s: %v, want invalid settings.organization", name, err)
+		}
+	}
 	var n int
 	if err := h.pool.QueryRow(h.ctx, `SELECT count(*) FROM app_instances`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("instances stored: %d, %v", n, err)
@@ -228,6 +238,12 @@ func TestForgejoOrganizationSetting(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// It can never be removed or changed afterwards.
+	for _, v := range []any{nil, "Other"} {
+		if _, err := h.svc.UpdateInstance(h.ctx, audit.System, inst.ID, apps.InstanceUpdate{Settings: map[string]any{forgejo.SettingOrganization: v}}); apps.Code(err) != "invalid_input" {
+			t.Errorf("update organization to %v: %v", v, err)
+		}
 	}
 	// Mutable settings still validate the whole set on update.
 	if _, err := h.svc.UpdateInstance(h.ctx, audit.System, inst.ID, apps.InstanceUpdate{Settings: map[string]any{forgejo.SettingSSHPort: 2422}}); err != nil {

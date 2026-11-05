@@ -44,7 +44,14 @@ func TestCompiledAdaptersMatchPackages(t *testing.T) {
 			t.Errorf("%s: package %q is not embedded", a.Manifest.ID, a.Manifest.Package)
 			continue
 		}
-		settings, err := mergeSettings(a.Manifest.Settings, nil, nil, true)
+		// Required settings without a default get a sample value.
+		sample := map[string]any{}
+		for _, s := range a.Manifest.Settings {
+			if s.Required && s.Default == nil && s.Type == provider.SettingString {
+				sample[s.Name] = "acme"
+			}
+		}
+		settings, err := mergeSettings(a.Manifest.Settings, nil, sample, true)
 		if err != nil {
 			t.Fatal(err)
 		}

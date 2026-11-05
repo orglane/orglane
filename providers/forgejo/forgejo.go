@@ -123,7 +123,10 @@ func (*Adapter) Manifest() provider.Manifest {
 		},
 		Settings: []provider.SettingSpec{
 			{Name: SettingSSHPort, Type: provider.SettingInt, Min: 1024, Max: 65535, Default: DefaultSSHPort, Mutable: true},
-			{Name: SettingOrganization, Type: provider.SettingString, Pattern: organizationPattern},
+			// Required and immutable. Its default depends on the
+			// configuration (the first label of domain.base), so the
+			// install API fills it in, not the manifest.
+			{Name: SettingOrganization, Type: provider.SettingString, Pattern: organizationPattern, Required: true},
 		},
 		DefaultKey:    "git",
 		DefaultPolicy: provider.AllPeople,
@@ -131,19 +134,18 @@ func (*Adapter) Manifest() provider.Manifest {
 }
 
 // ValidateSettings implements provider.SettingsValidator: the organization
-// must be a name Forgejo accepts, because it is fixed once the instance
-// exists and Setup would fail on every retry otherwise.
+// must be present and a name Forgejo accepts, because it is fixed once the
+// instance exists and Setup would fail on every retry otherwise.
 func (*Adapter) ValidateSettings(settings map[string]any) error {
-	v, ok := settings[SettingOrganization]
-	if !ok {
-		return nil
-	}
-	org, _ := v.(string)
+	org, _ := settings[SettingOrganization].(string) // missing or null: ""
 	return validOrganization(org)
 }
 
 func validOrganization(org string) error {
 	fail := func(reason string) error { return &provider.SettingError{Setting: SettingOrganization, Reason: reason} }
+	if org == "" {
+		return fail("is required")
+	}
 	if !organizationRE.MatchString(org) {
 		return fail("must be letters and digits, separated by single '-', '.' or '_'")
 	}

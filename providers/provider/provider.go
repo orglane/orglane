@@ -161,6 +161,11 @@ type SettingSpec struct {
 	Min, Max int64 // ints
 	Default  any
 	Mutable  bool // false: fixed after the instance is created (e.g. organization)
+	// Required: the instance cannot work without it. The core refuses to
+	// create an instance without it (unless Default fills it) and never
+	// removes it. An immutable setting the adapter needs must be required,
+	// or an instance created without it could never be repaired.
+	Required bool
 }
 
 // Team mapping modes.

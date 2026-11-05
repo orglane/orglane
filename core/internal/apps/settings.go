@@ -99,7 +99,9 @@ func settingValue(s provider.SettingSpec, v any) (any, error) {
 // mergeSettings validates changes against the manifest's settings and
 // returns the merged settings. Unknown names are refused; immutable
 // settings can only be set when the instance is created. Defaults fill in
-// unset settings on creation.
+// unset settings on creation. Required settings must be set (or have a
+// default) on creation, and can never be removed (set to null): an
+// instance without one could not be repaired if it is also immutable.
 func mergeSettings(specs []provider.SettingSpec, current, changes map[string]any, creating bool) (map[string]any, error) {
 	out := make(map[string]any, len(specs))
 	for k, v := range current {
@@ -117,6 +119,9 @@ func mergeSettings(specs []provider.SettingSpec, current, changes map[string]any
 			}
 		}
 		if v == nil {
+			if spec.Required {
+				return nil, invalid("settings."+name, "is required")
+			}
 			delete(out, name)
 			continue
 		}
@@ -131,6 +136,9 @@ func mergeSettings(specs []provider.SettingSpec, current, changes map[string]any
 			if _, ok := out[s.Name]; !ok && s.Default != nil {
 				v, _ := settingValue(s, s.Default)
 				out[s.Name] = v
+			}
+			if _, ok := out[s.Name]; !ok && s.Required {
+				return nil, invalid("settings."+s.Name, "is required")
 			}
 		}
 	}

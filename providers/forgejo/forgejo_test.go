@@ -543,7 +543,16 @@ func TestValidateSettings(t *testing.T) {
 			t.Errorf("%q accepted: %v", bad, err)
 		}
 	}
-	if err := a.ValidateSettings(map[string]any{SettingSSHPort: int64(2222)}); err != nil {
-		t.Errorf("without an organization: %v", err)
+	// Missing or null: the organization is required (it is immutable).
+	for _, s := range []map[string]any{{SettingSSHPort: int64(2222)}, {SettingOrganization: nil}} {
+		var se *provider.SettingError
+		if err := a.ValidateSettings(s); !errors.As(err, &se) || se.Setting != SettingOrganization {
+			t.Errorf("without an organization (%v): %v", s, err)
+		}
+	}
+	for _, spec := range New().Manifest().Settings {
+		if spec.Name == SettingOrganization && (!spec.Required || spec.Mutable) {
+			t.Errorf("organization spec = %+v, want required and immutable", spec)
+		}
 	}
 }
