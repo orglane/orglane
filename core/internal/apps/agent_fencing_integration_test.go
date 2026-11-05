@@ -5,7 +5,9 @@ package apps_test
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -194,4 +196,110 @@ func TestLostAgentOperationReplaysCurrentGeneration(t *testing.T) {
 	if got := h.reload(inst.ID); got.DesiredGeneration != 1 || got.ObservedGeneration != 1 {
 		t.Fatalf("replayed generation desired=%d observed=%d", got.DesiredGeneration, got.ObservedGeneration)
 	}
+}
+
+// resyncedTo applies the generation the sync recorded after the agent lost
+// what it had, and checks that the agent and the core agree on it again.
+func resyncedTo(t *testing.T, h *harness, host *agentHost, inst apps.Instance, before int64) {
+	t.Helper()
+	for range 2 { // a second sync must not record yet another generation
+		if err := h.svc.RunAgentSync(h.ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := h.reload(inst.ID)
+	if got.DesiredGeneration != before+1 {
+		t.Fatalf("the sync did not push the lost state again: desired=%d observed=%d state=%s", got.DesiredGeneration, got.ObservedGeneration, got.State)
+	}
+	if op := h.operation(inst.ID, got.DesiredGeneration); op.Kind != agentapi.KindApply {
+		t.Fatalf("resync operation %+v", op)
+	}
+	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: got.DesiredGeneration})
+	status, err := host.client().Instance(h.ctx, inst.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = h.reload(inst.ID)
+	if status.AcceptedGeneration != got.DesiredGeneration || status.ObservedGeneration != got.DesiredGeneration || got.ObservedGeneration != got.DesiredGeneration {
+		t.Fatalf("after the resync: agent accepted=%d observed=%d, core desired=%d observed=%d", status.AcceptedGeneration, status.ObservedGeneration, got.DesiredGeneration, got.ObservedGeneration)
+	}
+	if err := h.svc.RunAgentSync(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if again := h.reload(inst.ID); again.DesiredGeneration != got.DesiredGeneration || again.State != apps.StateActive || again.Health != apps.HealthHealthy {
+		t.Fatalf("after a sync of the resynced instance: %+v", again.AppInstance)
+	}
+}
+
+// TestAgentRetainingAnOlderGenerationIsResynced: the agent comes back with
+// an older generation's state (its files restored from before generation
+// 2). Its status is fresh but lower than what the core recorded, so the
+// observation is not written; the lost generation is still pushed again.
+func TestAgentRetainingAnOlderGenerationIsResynced(t *testing.T) {
+	host := newAgentHost(t)
+	host.start()
+	h := newHarness(t, host.agentConfig)
+	port := freePort(t)
+	h.agentProv.SetPackageSettings(map[string]any{"http_port": port, "message": "generation-one"})
+	inst, err := h.svc.Install(h.ctx, audit.System, apps.NewInstance{Provider: "agenttest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
+	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(host.dataDir, "instances", inst.Key)
+	old := map[string][]byte{}
+	for _, name := range []string{"desired.json", "current.json"} {
+		if old[name], err = os.ReadFile(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.agentProv.SetPackageSettings(map[string]any{"http_port": port, "message": "generation-two"})
+	gen, err := h.svc.ResyncForTest(h.ctx, inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: gen})
+	host.stop()
+	for name, data := range old {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	host.start()
+	if st, err := host.client().Instance(h.ctx, inst.Key); err != nil || st.AcceptedGeneration != 1 || st.ObservedGeneration != 1 {
+		t.Fatalf("restored agent: %+v, %v", st, err)
+	}
+	resyncedTo(t, h, host, inst, 2)
+}
+
+// TestAgentWithIdentityButLostSpecsIsResynced: the agent keeps the
+// instance's directory and identity but lost its specs, so it reports the
+// instance with generation 0; the lost generation is pushed again.
+func TestAgentWithIdentityButLostSpecsIsResynced(t *testing.T) {
+	host := newAgentHost(t)
+	host.start()
+	h := newHarness(t, host.agentConfig)
+	h.agentProv.SetPackageSettings(map[string]any{"http_port": freePort(t)})
+	inst, err := h.svc.Install(h.ctx, audit.System, apps.NewInstance{Provider: "agenttest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
+	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	host.stop()
+	for _, name := range []string{"desired.json", "current.json"} {
+		if err := os.Remove(filepath.Join(host.dataDir, "instances", inst.Key, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	host.start()
+	if st, err := host.client().Instance(h.ctx, inst.Key); err != nil || st.InstanceID != inst.ID || st.AcceptedGeneration != 0 || st.ObservedGeneration != 0 {
+		t.Fatalf("agent without specs: %+v, %v", st, err)
+	}
+	resyncedTo(t, h, host, inst, 1)
 }

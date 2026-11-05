@@ -101,9 +101,11 @@ func (s *Service) syncInstance(ctx context.Context, row store.AppInstance, st *a
 		return nil
 	}
 	q := store.New(s.pool)
-	// observed is the generation every consequence below is derived from;
-	// each write is conditional on it (and on the state it expects).
+	// observed is the generation the state consequences below (recovery,
+	// health) are derived from; each of their writes is conditional on it
+	// and on the state it expects.
 	observed := row.ObservedGeneration
+	stale := false
 	if st != nil {
 		var version *string
 		if st.Package != nil {
@@ -112,15 +114,19 @@ func (s *Service) syncInstance(ctx context.Context, row store.AppInstance, st *a
 		n, err := q.SetAppInstanceObservation(ctx, store.SetAppInstanceObservationParams{ID: row.ID, ObservedGeneration: st.ObservedGeneration, PackageVersion: version})
 		if err != nil {
 			return fmt.Errorf("record observation: %w", err)
-		} else if n == 0 {
-			// A newer generation was recorded as applied after this status
-			// was read: it is stale, so nothing may follow from it. The
-			// next sync reads a current one.
-			s.cfg.Logger.DebugContext(ctx, "agent sync: stale status ignored", "key", row.Key, "observed_generation", st.ObservedGeneration)
-			return nil
 		}
+		// Zero rows: the core recorded a newer generation as applied than
+		// this status reports, either because a newer generation finished
+		// after the status was read, or because the agent fell back to an
+		// older state. Either way no state may be derived from it.
+		stale = n == 0
 		observed = st.ObservedGeneration
 	}
+	// The resync is decided on its own, from what the agent accepted, so a
+	// stale observation does not hide a real loss: the status was read after
+	// the database snapshot, and resyncLost re-checks under the instance lock
+	// that the desired generation is unchanged and its operation succeeded,
+	// so a delayed status cannot cause a spurious push either.
 	var accepted int64
 	if st != nil {
 		accepted = st.AcceptedGeneration
@@ -129,6 +135,10 @@ func (s *Service) syncInstance(ctx context.Context, row store.AppInstance, st *a
 		if err := s.resyncLost(ctx, row.ID, row.DesiredGeneration); err != nil {
 			return err
 		}
+	}
+	if stale {
+		s.cfg.Logger.DebugContext(ctx, "agent sync: status older than the recorded generation; no state derived", "key", row.Key, "observed_generation", st.ObservedGeneration)
+		return nil
 	}
 	if row.State == StateFailed && derefString(row.HealthCode) == CodeInstallFailed && st != nil &&
 		st.Phase == agentapi.PhaseRunning && st.ObservedGeneration >= row.DesiredGeneration {
