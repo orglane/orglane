@@ -92,6 +92,15 @@ func (a *Adapter) DeepLinker() (provider.DeepLinker, bool) {
 	return p, ok
 }
 
+// settingDefaults returns the adapter's installation-dependent setting
+// defaults (provider.SettingDefaulter), or none.
+func (a *Adapter) settingDefaults(domainBase string) map[string]any {
+	if d, ok := a.impl.(provider.SettingDefaulter); ok && domainBase != "" {
+		return d.SettingDefaults(domainBase)
+	}
+	return map[string]any{}
+}
+
 // validateSettings runs the adapter's SettingsValidator, if it has one, on
 // merged settings. A refusal is an invalid input of the named setting.
 func (a *Adapter) validateSettings(settings map[string]any) error {

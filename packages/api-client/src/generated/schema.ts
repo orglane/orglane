@@ -1227,6 +1227,50 @@ export interface paths {
          */
         get: operations["listAppInstances"];
         put?: never;
+        /**
+         * Install a managed provider
+         * @description Installs a managed provider (Forgejo) through the agent: creates the
+         *     instance (`installing`) with its credentials and desired state, and
+         *     queues the push. The agent's operation shows in the instance's
+         *     operations; when it succeeds, Setup runs and activates the instance.
+         *
+         *     Before anything is stored the install is checked: the key (pattern;
+         *     `key_reserved` while another instance or retained data holds it), the
+         *     host (a host name other than the workspace host, not used by another
+         *     instance: `host_taken`; in local mode under `.localhost`:
+         *     `host_not_local`, with a workspace under `.localhost`:
+         *     `localhost_workspace`), the agent (connected, same version:
+         *     `agent_unavailable`, `agent_version_mismatch`, `agent_untrusted`),
+         *     the host's resources against the package's minimums
+         *     (`insufficient_memory`, `insufficient_disk`) and, in domain mode, the
+         *     host's DNS records (`dns_unresolved`, `dns_mismatch`,
+         *     `dns_lookup_failed`). Refusals are 409 with that code; invalid input is
+         *     400 with the field. Settings the request leaves out get the
+         *     provider's defaults (`AppProvider.install.settings`).
+         */
+        post: operations["installAppInstance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The agent of managed services
+         * @description Whether managed services are configured and the agent is connected
+         *     with this server's version, and the host's resources it reports, so
+         *     Settings → Apps can offer installs or show how to enable managed
+         *     services.
+         */
+        get: operations["getAppAgent"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1250,7 +1294,19 @@ export interface paths {
         get: operations["getAppInstance"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Remove a managed instance
+         * @description Stops and removes the services of an active, degraded or failed
+         *     managed instance (`removing`, then `removed`). Without `purge` its
+         *     data, database and credentials are retained and the key stays
+         *     reserved, so it can be reinstalled. With `purge=true` they are deleted
+         *     and the key is freed; this needs `confirm` set to the instance key
+         *     (400 otherwise) and is also allowed on a removed instance whose data
+         *     is retained. Other states are refused (409, `invalid_state`); a
+         *     failed removal leaves the instance `failed` with `remove_failed`.
+         *     Connected instances are not removed here (409, `not_supported`).
+         */
+        delete: operations["removeAppInstance"];
         options?: never;
         head?: never;
         /**
@@ -1262,6 +1318,28 @@ export interface paths {
          *     change (409). Changes that affect access queue provisioning.
          */
         patch: operations["updateAppInstance"];
+        trace?: never;
+    };
+    "/api/v1/apps/instances/{instanceId}/reinstall": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reinstall a removed managed instance
+         * @description Brings back a removed managed instance whose data is retained: the
+         *     same ID, key, credentials and data, installed again with the version
+         *     it ran. Other states are refused (409, `invalid_state`).
+         */
+        post: operations["reinstallAppInstance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/apps/instances/{instanceId}/operations": {
@@ -2756,6 +2834,70 @@ export interface components {
             webhooks: boolean;
             /** @description The adapter has a managed lifecycle (setup, health). */
             lifecycle: boolean;
+            install?: components["schemas"]["AppInstallDefaults"];
+        };
+        /**
+         * @description What an install of a managed provider uses when the request leaves
+         *     it out, and the package's resource hints. Present only for managed
+         *     providers whose package is embedded in this server.
+         */
+        AppInstallDefaults: {
+            key: string;
+            /** @example git.acme.com */
+            host: string;
+            /** @description Defaults that depend on this installation (e.g. Forgejo's organization). */
+            settings: {
+                [key: string]: unknown;
+            };
+            /** @example 15.0.11-1 */
+            packageVersion: string;
+            /**
+             * Format: int64
+             * @description Bytes the package needs at least (hint, not a limit).
+             */
+            memoryMin: number;
+            /** Format: int64 */
+            memoryRecommended: number;
+            /** Format: int64 */
+            diskMin: number;
+        };
+        InstallAppInstanceRequest: {
+            /** @example forgejo */
+            provider: string;
+            /** @description Defaults to the provider's default key. */
+            key?: string;
+            displayName?: string;
+            /** @description The public host; defaults to `AppProvider.install.host`. */
+            host?: string;
+            settings?: {
+                [key: string]: unknown;
+            };
+        };
+        AppAgentStatus: {
+            /** @description Managed services are configured (agent socket and secret). */
+            enabled: boolean;
+            /** @description The agent answers with this server's version. */
+            connected: boolean;
+            /**
+             * @description Why it is not connected.
+             * @enum {string}
+             */
+            code?: "agent_unavailable" | "agent_version_mismatch" | "agent_untrusted";
+            version?: string;
+            /** Format: int64 */
+            memTotal: number;
+            /** Format: int64 */
+            memAvailable: number;
+            /**
+             * Format: int64
+             * @description Free bytes where the instances' data lives.
+             */
+            diskFree: number;
+            /**
+             * Format: int64
+             * @description The bundle's share plus the minimum memory of every installed managed app.
+             */
+            memoryReserved: number;
         };
         AppProviderList: {
             items: components["schemas"]["AppProvider"][];
@@ -4987,6 +5129,59 @@ export interface operations {
             500: components["responses"]["InternalError"];
         };
     };
+    installAppInstance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InstallAppInstanceRequest"];
+            };
+        };
+        responses: {
+            /** @description The instance, installing. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppInstance"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getAppAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The agent's status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppAgentStatus"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+        };
+    };
     getAppInstance: {
         parameters: {
             query?: never;
@@ -5011,6 +5206,39 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    removeAppInstance: {
+        parameters: {
+            query?: {
+                purge?: boolean;
+                /** @description The instance key, required with `purge=true`. */
+                confirm?: string;
+            };
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The instance, removing. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppInstance"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -5040,6 +5268,34 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    reinstallAppInstance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The instance, installing. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppInstance"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];

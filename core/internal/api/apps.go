@@ -67,7 +67,9 @@ func (s *server) ListAppProviders(context.Context, apigen.ListAppProvidersReques
 	}
 	items := []apigen.AppProvider{}
 	for _, a := range svc.Registry().Adapters() {
-		items = append(items, appProvider(a))
+		p := appProvider(a)
+		p.Install = installDefaults(svc, a)
+		items = append(items, p)
 	}
 	return apigen.ListAppProviders200JSONResponse{Items: items}, nil
 }

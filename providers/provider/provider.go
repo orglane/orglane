@@ -551,6 +551,16 @@ type SettingsValidator interface {
 	ValidateSettings(settings map[string]any) error
 }
 
+// SettingDefaulter gives defaults of settings that depend on the
+// installation (e.g. an organization named after the company's domain).
+// The core applies them when an instance is created without the setting
+// and shows them in the install form. domainBase is the company's base
+// domain (config domain.base, e.g. acme.com or orglane.localhost). It must
+// be a pure function of its input; a default it cannot derive is left out.
+type SettingDefaulter interface {
+	SettingDefaults(domainBase string) map[string]any
+}
+
 // SettingError is a refused setting: Setting names it, Reason says why in
 // English (no secrets: settings are not secret).
 type SettingError struct {

@@ -96,8 +96,10 @@ func newHarnessWith(t *testing.T, cfg apps.Config, adapters ...provider.Capabili
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws, _ := url.Parse("https://work.acme.test")
-	cfg.WorkspaceURL, cfg.Logger = ws, logger
+	if cfg.WorkspaceURL == nil {
+		cfg.WorkspaceURL, _ = url.Parse("https://work.acme.test")
+	}
+	cfg.Logger = logger
 	// Local mode for managed services (http://*.orglane.localhost).
 	ids := identity.NewService(pool, identity.WithPasswordHasher(fastHasher), identity.WithLocalServiceDomain("orglane.localhost"))
 	if cfg.OIDC == nil {

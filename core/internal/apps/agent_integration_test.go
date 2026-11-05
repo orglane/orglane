@@ -343,7 +343,7 @@ func TestAgentWiring(t *testing.T) {
 	// A spec the agent refuses (a port below the package's minimum) fails
 	// the install; the agent never started anything for it.
 	h.agentProv.SetPackageSettings(map[string]any{"http_port": 80})
-	bad, err := h.svc.Install(ctx, audit.System, apps.NewInstance{Provider: "agenttest", Key: "refused"})
+	bad, err := h.svc.Install(ctx, audit.System, apps.NewInstance{Provider: "agenttest", Key: "refused", BaseURL: "https://refused.work.acme.test"})
 	if err != nil {
 		t.Fatal(err)
 	}

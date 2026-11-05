@@ -183,8 +183,8 @@ func (s *Service) finishOp(ctx context.Context, ds store.AppDesiredSpec, op stor
 //
 // Extension points: part 2 of #75 handles upgrades here (a rolled_back
 // operation records the revert spec and re-runs Setup; a succeeded upgrade is
-// audited as app_instance.upgraded), and the removal flow (#61) moves a
-// removing instance to removed when its absent generation succeeded.
+// audited as app_instance.upgraded). A removal (an absent generation) ends
+// in removalFinished (install.go).
 func (s *Service) operationFinished(ctx context.Context, tx pgx.Tx, q *store.Queries, inst Instance, ds store.AppDesiredSpec, state, code string) error {
 	current := ds.Generation == inst.DesiredGeneration
 	switch state {
@@ -196,11 +196,17 @@ func (s *Service) operationFinished(ctx context.Context, tx pgx.Tx, q *store.Que
 		if err := q.SetAppInstanceApplied(ctx, store.SetAppInstanceAppliedParams{ID: inst.ID, Generation: ds.Generation, PackageVersion: version}); err != nil {
 			return fmt.Errorf("apps: record applied generation: %w", err)
 		}
+		if ds.RunState == agentapi.StateAbsent {
+			return s.removalFinished(ctx, tx, q, inst, ds, state)
+		}
 		if current && inst.State == StateInstalling && ds.RunState == agentapi.StateRunning {
 			// Installed: Setup runs and activates the instance (step 4).
 			return s.enqueueSetup(ctx, tx, inst.ID)
 		}
 	case agentapi.OpFailed:
+		if ds.RunState == agentapi.StateAbsent && code != agentapi.CodeSuperseded {
+			return s.removalFinished(ctx, tx, q, inst, ds, state)
+		}
 		if current && inst.State == StateInstalling && code != agentapi.CodeSuperseded {
 			_, err := s.transition(ctx, tx, q, audit.System, inst.ID, StateFailed, CodeInstallFailed)
 			return err

@@ -78,8 +78,10 @@ var transitions = map[string][]string{
 	StateUpgrading:    {StateActive, StateDegraded, StateFailed},
 	StateFailed:       {StateInstalling, StateRemoving},
 	StateDisconnected: {StateActive, StateRemoving, StateRemoved},
-	StateRemoving:     {StateRemoved},
-	StateRemoved:      {StateInstalling},
+	// A failed removal (remove_failed) can be removed again from failed.
+	StateRemoving: {StateRemoved, StateFailed},
+	// removed -> removing: purging a retained instance.
+	StateRemoved: {StateInstalling, StateRemoving},
 }
 
 // Queue inserts jobs; *river.Client is one.
@@ -129,6 +131,14 @@ type Config struct {
 	// AgentWatchInterval is how often WatchAgent asks the agent for its boot
 	// ID. Defaults to 30s.
 	AgentWatchInterval time.Duration
+	// DomainBase is config domain.base, for installation-dependent setting
+	// defaults (provider.SettingDefaulter).
+	DomainBase string
+	// CoreVersion is the core's version: the agent must run the same one.
+	CoreVersion string
+	// Resolver looks up hosts for the DNS check of an install in domain
+	// mode. Defaults to NewDNSResolver().
+	Resolver Resolver
 	// InstallPreflight, if set, checks an install before anything is
 	// recorded (#61: host, DNS, agent health, resource hints); its error is
 	// returned by Install.
@@ -186,6 +196,9 @@ func NewService(pool *pgxpool.Pool, reg *Registry, keyring *crypto.Keyring, cfg 
 	cfg.AgentPollInterval = cmp.Or(cfg.AgentPollInterval, defaultAgentPollInterval)
 	cfg.AgentRetryMax = cmp.Or(cfg.AgentRetryMax, defaultAgentRetryMax)
 	cfg.AgentWatchInterval = cmp.Or(cfg.AgentWatchInterval, defaultAgentWatchInterval)
+	if cfg.Resolver == nil {
+		cfg.Resolver = NewDNSResolver()
+	}
 	return &Service{
 		pool:          pool,
 		reg:           reg,

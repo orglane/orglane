@@ -48,3 +48,18 @@ func CredentialLockIDForTest(instanceID [16]byte, name string) int64 {
 
 // LockIDForTest is the advisory lock ID of parts.
 func LockIDForTest(parts ...string) int64 { return lockID(parts...) }
+
+// FinishForTest ends the operation of a generation as the agent_apply job
+// does when the agent reports it terminal.
+func (s *Service) FinishForTest(ctx context.Context, id uuid.UUID, gen int64, state, code string) error {
+	q := store.New(s.pool)
+	op, err := q.GetAppPushOperation(ctx, store.GetAppPushOperationParams{InstanceID: id, Generation: &gen})
+	if err != nil {
+		return err
+	}
+	ds, err := q.GetAppDesiredSpec(ctx, store.GetAppDesiredSpecParams{InstanceID: id, Generation: gen})
+	if err != nil {
+		return err
+	}
+	return s.finishOp(ctx, ds, op, nil, state, code)
+}
