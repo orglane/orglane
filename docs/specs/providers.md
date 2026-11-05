@@ -1175,6 +1175,11 @@ Behavior:
 - A workflow `github-live.yml` runs them on pushes to `main`, nightly and by `gh workflow run github-live.yml --ref <branch>` (how a maintainer checks a GitHub PR before merging, like `conformance.yml`). It sets `ORGLANE_REQUIRE_GITHUB_LIVE=1`, which turns a missing value into a failure.
 - Runs are serialized (`concurrency: github-live`). Every test names its teams and repositories `orglane-test-<run id>-...` and deletes them; a janitor step removes leftovers older than a day.
 
+The [live test operations guide](../github-live.md) records environment setup,
+the reviewed manual-branch procedure, and the workflow/janitor interface owned
+by #71 and #64 respectively. Missing setup or an unavailable janitor is a
+required-run failure, not evidence of completed live acceptance.
+
 **Webhooks in live tests.** Webhooks cannot reach CI runners, and the App's delivery log (`GET /app/hook/deliveries/{id}`) returns the payload as a parsed JSON object, not the raw request bytes, so a re-serialized payload is not guaranteed to match GitHub's signature. Two separate checks therefore cover webhooks:
 
 1. **App payload semantics (always automated):** a test triggers a real event in the test organization, reads the delivery from the App's delivery log, serializes `request.payload`, signs it with the test-only fixture secret, and posts it with the recorded event and delivery headers to the local endpoint of a test instance whose webhook secret is that fixture secret. This covers real App payloads (including `installation`) end to end; it does not cover GitHub's signature.
