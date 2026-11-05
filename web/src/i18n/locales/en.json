@@ -137,6 +137,7 @@
   "apps.action.removeFromTeam": "Remove from team",
   "apps.action.updateAccount": "Update account",
   "apps.code.agentInstanceMissing": "The agent does not know this app yet. Orglane sends it again.",
+  "apps.code.agentStalled": "The agent did not start this operation within an hour, so Orglane stopped waiting. Check the agent, then try again.",
   "apps.code.agentUnavailable": "Waiting for the agent that runs this app. Orglane keeps trying; check that the agent is running.",
   "apps.code.agentUnhealthy": "A service of this app is not running or not healthy. The agent keeps it running; check its logs if this stays.",
   "apps.code.agentUntrusted": "The agent's answers are not signed with the shared secret. Check that Orglane and the agent use the same ORGLANE_AGENT_SECRET.",
