@@ -119,7 +119,9 @@ func mergeSettings(specs []provider.SettingSpec, current, changes map[string]any
 			}
 		}
 		if v == nil {
-			if spec.Required {
+			// On creation null means unset: a default may still fill it,
+			// and the required check below runs after the defaults.
+			if spec.Required && !creating {
 				return nil, invalid("settings."+name, "is required")
 			}
 			delete(out, name)

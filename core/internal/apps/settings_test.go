@@ -39,6 +39,10 @@ func TestMergeSettingsRequired(t *testing.T) {
 	if err != nil || got["port"] != int64(2) {
 		t.Fatalf("create = %v, %v (the default fills a required setting)", got, err)
 	}
+	// On creation null is unset: the default fills it too.
+	if withNull, err := mergeSettings(specs, nil, map[string]any{"org": "acme", "team": "a", "port": nil}, true); err != nil || withNull["port"] != int64(2) {
+		t.Fatalf("create with a null defaulted setting = %v, %v", withNull, err)
+	}
 	// Update: a required setting cannot be removed; others can.
 	_, err = mergeSettings(specs, got, map[string]any{"team": nil}, false)
 	refused(t, err, "team")
