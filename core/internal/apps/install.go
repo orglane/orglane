@@ -43,6 +43,10 @@ const (
 	CodeInsufficientDisk = "insufficient_disk"
 	// CodeRemoveFailed: the removal's operation failed.
 	CodeRemoveFailed = "remove_failed"
+	// CodePurgeFailed: a purge's operation failed. It may have deleted part
+	// of the data already, so the instance can only be purged again: never
+	// removed with its data retained, never reinstalled.
+	CodePurgeFailed = "purge_failed"
 )
 
 // BundleMemory is the memory the Compose bundle itself (core, PostgreSQL,
@@ -308,6 +312,8 @@ func (s *Service) Remove(ctx context.Context, actor audit.Actor, id uuid.UUID, p
 			return invalid("confirm", "must be the instance key to purge its data")
 		}
 		switch {
+		case cur.State == StateFailed && derefString(cur.HealthCode) == CodePurgeFailed && !purge:
+			return fmt.Errorf("%w: deleting this app's data failed and may have deleted part of it: it can only be purged again", ErrInvalidState)
 		case cur.State == StateRemoved && cur.DataRetained && purge:
 		case cur.State == StateActive, cur.State == StateDegraded, cur.State == StateFailed:
 		default:
@@ -388,7 +394,11 @@ func (s *Service) removalFinished(ctx context.Context, tx pgx.Tx, q *store.Queri
 		return nil
 	}
 	if state != agentapi.OpSucceeded {
-		_, err := s.transition(ctx, tx, q, audit.System, inst.ID, StateFailed, CodeRemoveFailed)
+		code := CodeRemoveFailed
+		if ds.Purge {
+			code = CodePurgeFailed
+		}
+		_, err := s.transition(ctx, tx, q, audit.System, inst.ID, StateFailed, code)
 		return err
 	}
 	n, err := q.SetAppInstanceRemoved(ctx, store.SetAppInstanceRemovedParams{ID: inst.ID, DataRetained: !ds.Purge, Generation: ds.Generation})
