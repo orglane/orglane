@@ -25,6 +25,9 @@ var (
 	// ErrRotationInProgress: a credential already has a pending or
 	// uncertain version.
 	ErrRotationInProgress = errors.New("apps: a rotation of this credential is in progress")
+	// ErrCandidateValueUnknown: the candidate has no value to activate (the
+	// provider minted it and the answer carrying it was lost).
+	ErrCandidateValueUnknown = errors.New("apps: the candidate's value is unknown")
 	// ErrNoRotation: there is no pending or uncertain version to abandon.
 	ErrNoRotation = errors.New("apps: no rotation of this credential is in progress")
 	// ErrBatchChanged: the removal batch is no longer held or differs from
@@ -48,6 +51,7 @@ func Code(err error) string {
 		{ErrProviderUnavailable, "provider_unavailable"},
 		{ErrRotationInProgress, "rotation_in_progress"},
 		{ErrNoRotation, "no_rotation"},
+		{ErrCandidateValueUnknown, "candidate_value_unknown"},
 		{ErrBatchChanged, "batch_changed"},
 	} {
 		if errors.Is(err, c.err) {

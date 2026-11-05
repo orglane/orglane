@@ -320,7 +320,9 @@ func TestRotationRateLimitSnoozes(t *testing.T) {
 	if s := h.credState(inst, version); s != "uncertain" {
 		t.Fatalf("candidate = %s, want uncertain", s)
 	}
-	if err := h.rotate(inst, version); err != nil {
+	// The snoozed retry runs once the attempt's execution lease has ended
+	// (at most one execution per credential).
+	if err := h.retry(inst, version); err != nil {
 		t.Fatal(err)
 	}
 	if s := h.credState(inst, version); s != "active" {
@@ -341,6 +343,7 @@ func TestRotationRateLimitSnoozes(t *testing.T) {
 	if s := h.credState(inst, next); s != "abandoning" {
 		t.Fatalf("candidate = %s, want abandoning", s)
 	}
+	expireLeases(h, inst)
 	if err := h.svc.RunRotateCredential(h.ctx, abandon); err != nil {
 		t.Fatal(err)
 	}

@@ -32,6 +32,7 @@ import (
 	"github.com/orglane/orglane/core/internal/identity/web"
 	"github.com/orglane/orglane/core/internal/jobs"
 	"github.com/orglane/orglane/core/internal/store"
+	githubprovider "github.com/orglane/orglane/providers/github"
 	"github.com/orglane/orglane/providers/provider"
 	"github.com/orglane/orglane/providers/testprovider"
 	"github.com/orglane/orglane/tests/pgtest"
@@ -108,7 +109,7 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 
 	clk := &clock{t: time.Now()}
 	tp := testprovider.New()
-	stack, err := web.NewStack(pool, &cfg, logger, web.StackOptions{Hasher: fastHasher, Now: clk.Now, Adapters: []provider.CapabilityManifest{tp}})
+	stack, err := web.NewStack(pool, &cfg, logger, web.StackOptions{Hasher: fastHasher, Now: clk.Now, Adapters: []provider.CapabilityManifest{tp, githubprovider.New()}})
 	if err != nil {
 		t.Fatal(err)
 	}

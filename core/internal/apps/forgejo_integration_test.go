@@ -186,6 +186,7 @@ func TestForgejoAdminTokenRotation(t *testing.T) {
 	if err := h.svc.AbandonRotation(h.ctx, audit.System, inst.ID, forgejo.CredentialAdminToken); err != nil {
 		t.Fatal(err)
 	}
+	expireLeases(h, inst) // the lost mint can no longer be acted on
 	if err := run(v2, true); err != nil {
 		t.Fatalf("abandon: %v", err)
 	}

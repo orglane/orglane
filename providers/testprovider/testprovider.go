@@ -603,8 +603,15 @@ func (p *Provider) RotationOutcomes(name string, outcomes ...provider.RotationOu
 }
 
 // ApplyCredential implements provider.CredentialRotator. Setting the same
-// value again is idempotent. api_token is minted by the "provider".
-func (p *Provider) ApplyCredential(_ context.Context, _ provider.Env, inst provider.Instance, name string, version int, value []byte) (provider.Rotation, error) {
+// value again is idempotent. api_token is minted by the "provider". Like a
+// real adapter authenticating its call, it first reads the active value
+// through Env.
+func (p *Provider) ApplyCredential(ctx context.Context, env provider.Env, inst provider.Instance, name string, version int, value []byte) (provider.Rotation, error) {
+	current, err := env.Credential(ctx, name)
+	if err != nil && !errors.Is(err, provider.ErrNotFound) {
+		return provider.Rotation{Outcome: provider.RotationUnknown}, err
+	}
+	clear(current)
 	p.wait("rotate:" + name)
 	p.mu.Lock()
 	defer p.mu.Unlock()

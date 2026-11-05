@@ -39,3 +39,9 @@ func (s *Service) ResyncForTest(ctx context.Context, id uuid.UUID) (int64, error
 
 // CheckBootForTest runs one WatchAgent tick.
 func (s *Service) CheckBootForTest(ctx context.Context) { s.checkBoot(ctx) }
+
+// CredentialLockIDForTest is the session lock a rotation worker holds, so
+// tests can find (and terminate) the worker's database backend.
+func CredentialLockIDForTest(instanceID [16]byte, name string) int64 {
+	return credentialLockID(instanceID, name)
+}

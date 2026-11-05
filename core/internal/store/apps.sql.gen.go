@@ -12,20 +12,38 @@ import (
 	"github.com/google/uuid"
 )
 
-const activateAppCredential = `-- name: ActivateAppCredential :exec
+const activateAppCredential = `-- name: ActivateAppCredential :execrows
 UPDATE app_credentials SET state = 'active', activated_at = now(), retire_at = NULL
-WHERE instance_id = $1 AND name = $2 AND version = $3
+WHERE id = $1 AND state IN ('pending', 'uncertain', 'abandoning')
 `
 
-type ActivateAppCredentialParams struct {
-	InstanceID uuid.UUID
-	Name       string
-	Version    int32
+func (q *Queries) ActivateAppCredential(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, activateAppCredential, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-func (q *Queries) ActivateAppCredential(ctx context.Context, arg ActivateAppCredentialParams) error {
-	_, err := q.db.Exec(ctx, activateAppCredential, arg.InstanceID, arg.Name, arg.Version)
-	return err
+const appCredentialCallInFlight = `-- name: AppCredentialCallInFlight :one
+SELECT EXISTS (
+    SELECT 1 FROM app_credential_calls k JOIN app_credentials c ON c.id = k.credential_id
+    WHERE c.instance_id = $1 AND c.name = $2 AND k.deadline > now()
+)
+`
+
+type AppCredentialCallInFlightParams struct {
+	InstanceID uuid.UUID
+	Name       string
+}
+
+// Whether an execution of this credential (any row) may still be acted on
+// by Orglane: its lease has not expired, by database time.
+func (q *Queries) AppCredentialCallInFlight(ctx context.Context, arg AppCredentialCallInFlightParams) (bool, error) {
+	row := q.db.QueryRow(ctx, appCredentialCallInFlight, arg.InstanceID, arg.Name)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const clearDefaultAppBinding = `-- name: ClearDefaultAppBinding :exec
@@ -242,12 +260,27 @@ func (q *Queries) DeleteAppTeamMapping(ctx context.Context, arg DeleteAppTeamMap
 	return result.RowsAffected(), nil
 }
 
-const deleteExpiredAppCredentials = `-- name: DeleteExpiredAppCredentials :execrows
-DELETE FROM app_credentials
-WHERE (state = 'retiring' AND retire_at <= now())
-   OR (state = 'discarded' AND created_at < now() - interval '7 days')
+const deleteExpiredAppCredentialCalls = `-- name: DeleteExpiredAppCredentialCalls :execrows
+DELETE FROM app_credential_calls WHERE deadline < now() - interval '1 day'
 `
 
+func (q *Queries) DeleteExpiredAppCredentialCalls(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredAppCredentialCalls)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredAppCredentials = `-- name: DeleteExpiredAppCredentials :execrows
+DELETE FROM app_credentials
+WHERE (state = 'retiring' AND retire_at <= now() - interval '7 days')
+   OR (state = 'discarded' AND ended_at < now() - interval '7 days')
+`
+
+// Older versions are kept 7 days after they stopped being accepted (retired:
+// past their overlap; discarded: from the discard) to detect drift; they are
+// never accepted meanwhile.
 func (q *Queries) DeleteExpiredAppCredentials(ctx context.Context) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteExpiredAppCredentials)
 	if err != nil {
@@ -328,6 +361,20 @@ func (q *Queries) DropPendingRemovals(ctx context.Context, arg DropPendingRemova
 	return result.RowsAffected(), nil
 }
 
+const endAppCredentialCall = `-- name: EndAppCredentialCall :execrows
+DELETE FROM app_credential_calls WHERE id = $1 AND deadline > now()
+`
+
+// Ends an execution after a definite answer, only while its own lease holds:
+// zero rows means it may no longer record its result.
+func (q *Queries) EndAppCredentialCall(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, endAppCredentialCall, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failProvisioningResult = `-- name: FailProvisioningResult :exec
 UPDATE provisioning_results
 SET status = 'failed', employee_step = NULL, error_code = $1, actions = $2,
@@ -379,7 +426,7 @@ func (q *Queries) FinishWebhookDelivery(ctx context.Context, arg FinishWebhookDe
 }
 
 const getActiveAppCredential = `-- name: GetActiveAppCredential :one
-SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND state = 'active'
+SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND state = 'active'
 `
 
 type GetActiveAppCredentialParams struct {
@@ -399,12 +446,37 @@ func (q *Queries) GetActiveAppCredential(ctx context.Context, arg GetActiveAppCr
 		&i.CreatedAt,
 		&i.ActivatedAt,
 		&i.RetireAt,
+		&i.ID,
+		&i.StuckReportedAt,
+		&i.EndedAt,
+		&i.DriftDetectedAt,
 	)
 	return i, err
 }
 
+const getAppConnectStateInstance = `-- name: GetAppConnectStateInstance :one
+SELECT instance_id FROM app_oauth_states
+WHERE state_hash = $1 AND kind = 'connect' AND person_id = $2
+  AND session_id = $3 AND consumed_at IS NULL AND expires_at > now()
+`
+
+type GetAppConnectStateInstanceParams struct {
+	StateHash []byte
+	PersonID  uuid.UUID
+	SessionID uuid.UUID
+}
+
+// Lookup before taking the per-instance connect lock; consumption must still
+// recheck all predicates under that lock, so a resume cannot revive stale state.
+func (q *Queries) GetAppConnectStateInstance(ctx context.Context, arg GetAppConnectStateInstanceParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getAppConnectStateInstance, arg.StateHash, arg.PersonID, arg.SessionID)
+	var instance_id uuid.UUID
+	err := row.Scan(&instance_id)
+	return instance_id, err
+}
+
 const getAppCredential = `-- name: GetAppCredential :one
-SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND version = $3
+SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND version = $3
 `
 
 type GetAppCredentialParams struct {
@@ -425,12 +497,16 @@ func (q *Queries) GetAppCredential(ctx context.Context, arg GetAppCredentialPara
 		&i.CreatedAt,
 		&i.ActivatedAt,
 		&i.RetireAt,
+		&i.ID,
+		&i.StuckReportedAt,
+		&i.EndedAt,
+		&i.DriftDetectedAt,
 	)
 	return i, err
 }
 
 const getAppCredentialCandidate = `-- name: GetAppCredentialCandidate :one
-SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND state IN ('pending', 'uncertain', 'abandoning')
+SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND state IN ('pending', 'uncertain', 'abandoning')
 `
 
 type GetAppCredentialCandidateParams struct {
@@ -451,12 +527,47 @@ func (q *Queries) GetAppCredentialCandidate(ctx context.Context, arg GetAppCrede
 		&i.CreatedAt,
 		&i.ActivatedAt,
 		&i.RetireAt,
+		&i.ID,
+		&i.StuckReportedAt,
+		&i.EndedAt,
+		&i.DriftDetectedAt,
+	)
+	return i, err
+}
+
+const getAppCredentialCandidateForUpdate = `-- name: GetAppCredentialCandidateForUpdate :one
+SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials
+WHERE instance_id = $1 AND name = $2 AND state IN ('pending', 'uncertain', 'abandoning')
+FOR UPDATE
+`
+
+type GetAppCredentialCandidateForUpdateParams struct {
+	InstanceID uuid.UUID
+	Name       string
+}
+
+func (q *Queries) GetAppCredentialCandidateForUpdate(ctx context.Context, arg GetAppCredentialCandidateForUpdateParams) (AppCredential, error) {
+	row := q.db.QueryRow(ctx, getAppCredentialCandidateForUpdate, arg.InstanceID, arg.Name)
+	var i AppCredential
+	err := row.Scan(
+		&i.InstanceID,
+		&i.Name,
+		&i.Version,
+		&i.Ciphertext,
+		&i.State,
+		&i.CreatedAt,
+		&i.ActivatedAt,
+		&i.RetireAt,
+		&i.ID,
+		&i.StuckReportedAt,
+		&i.EndedAt,
+		&i.DriftDetectedAt,
 	)
 	return i, err
 }
 
 const getAppCredentialForUpdate = `-- name: GetAppCredentialForUpdate :one
-SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND version = $3 FOR UPDATE
+SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials WHERE instance_id = $1 AND name = $2 AND version = $3 FOR UPDATE
 `
 
 type GetAppCredentialForUpdateParams struct {
@@ -477,6 +588,10 @@ func (q *Queries) GetAppCredentialForUpdate(ctx context.Context, arg GetAppCrede
 		&i.CreatedAt,
 		&i.ActivatedAt,
 		&i.RetireAt,
+		&i.ID,
+		&i.StuckReportedAt,
+		&i.EndedAt,
+		&i.DriftDetectedAt,
 	)
 	return i, err
 }
@@ -541,9 +656,12 @@ func (q *Queries) GetAppInstance(ctx context.Context, id uuid.UUID) (AppInstance
 }
 
 const getAppInstanceForUpdate = `-- name: GetAppInstanceForUpdate :one
-SELECT id, key, provider, management, display_name, state, base_url, settings, access_policy, manage_existing_members, package_id, package_version, desired_generation, observed_generation, health, health_code, health_checked_at, created_at, updated_at, removed_at, data_retained FROM app_instances WHERE id = $1 FOR UPDATE
+SELECT id, key, provider, management, display_name, state, base_url, settings, access_policy, manage_existing_members, package_id, package_version, desired_generation, observed_generation, health, health_code, health_checked_at, created_at, updated_at, removed_at, data_retained FROM app_instances WHERE id = $1 FOR NO KEY UPDATE
 `
 
+// NO KEY UPDATE: instance IDs never change, so foreign-key checks of child
+// inserts (credentials, webhook deliveries) never wait on this lock
+// (docs/specs/providers.md "Credentials", lock order).
 func (q *Queries) GetAppInstanceForUpdate(ctx context.Context, id uuid.UUID) (AppInstance, error) {
 	row := q.db.QueryRow(ctx, getAppInstanceForUpdate, id)
 	var i AppInstance
@@ -932,7 +1050,7 @@ INSERT INTO app_credentials (instance_id, name, version, ciphertext, state, acti
 VALUES ($1, $2,
         (SELECT coalesce(max(c.version), 0) + 1 FROM app_credentials c WHERE c.instance_id = $1 AND c.name = $2),
         $3, $4, CASE WHEN $4::text = 'active' THEN now() END)
-RETURNING instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at
+RETURNING instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at
 `
 
 type InsertAppCredentialParams struct {
@@ -960,14 +1078,35 @@ func (q *Queries) InsertAppCredential(ctx context.Context, arg InsertAppCredenti
 		&i.CreatedAt,
 		&i.ActivatedAt,
 		&i.RetireAt,
+		&i.ID,
+		&i.StuckReportedAt,
+		&i.EndedAt,
+		&i.DriftDetectedAt,
 	)
 	return i, err
+}
+
+const insertAppCredentialCall = `-- name: InsertAppCredentialCall :exec
+INSERT INTO app_credential_calls (id, credential_id, deadline)
+VALUES ($1, $2, now() + make_interval(secs => $3::double precision))
+`
+
+type InsertAppCredentialCallParams struct {
+	ID           uuid.UUID
+	CredentialID uuid.UUID
+	LeaseSeconds float64
+}
+
+// Starts an execution writing the row's value; its lease never shrinks.
+func (q *Queries) InsertAppCredentialCall(ctx context.Context, arg InsertAppCredentialCallParams) error {
+	_, err := q.db.Exec(ctx, insertAppCredentialCall, arg.ID, arg.CredentialID, arg.LeaseSeconds)
+	return err
 }
 
 const insertAppCredentialVersion = `-- name: InsertAppCredentialVersion :one
 INSERT INTO app_credentials (instance_id, name, version, ciphertext, state, activated_at)
 VALUES ($1, $2, $3, $4, $5, CASE WHEN $5::text = 'active' THEN now() END)
-RETURNING instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at
+RETURNING instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at
 `
 
 type InsertAppCredentialVersionParams struct {
@@ -996,6 +1135,10 @@ func (q *Queries) InsertAppCredentialVersion(ctx context.Context, arg InsertAppC
 		&i.CreatedAt,
 		&i.ActivatedAt,
 		&i.RetireAt,
+		&i.ID,
+		&i.StuckReportedAt,
+		&i.EndedAt,
+		&i.DriftDetectedAt,
 	)
 	return i, err
 }
@@ -1326,6 +1469,16 @@ func (q *Queries) InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDe
 	return result.RowsAffected(), nil
 }
 
+const invalidateAppConnectStates = `-- name: InvalidateAppConnectStates :exec
+UPDATE app_oauth_states SET consumed_at = now()
+WHERE instance_id = $1 AND kind = 'connect' AND consumed_at IS NULL
+`
+
+func (q *Queries) InvalidateAppConnectStates(ctx context.Context, instanceID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, invalidateAppConnectStates, instanceID)
+	return err
+}
+
 const listAppBindings = `-- name: ListAppBindings :many
 
 SELECT b.capability, b.instance_id, b.is_default, b.created_at, i.key AS instance_key, i.display_name AS instance_display_name, i.provider AS instance_provider, i.state AS instance_state
@@ -1374,9 +1527,115 @@ func (q *Queries) ListAppBindings(ctx context.Context) ([]ListAppBindingsRow, er
 	return items, nil
 }
 
+const listAppCredentialDrift = `-- name: ListAppCredentialDrift :many
+SELECT c.name, c.version, c.drift_detected_at::timestamptz AS detected_at
+FROM app_credentials c
+JOIN app_credentials a ON a.instance_id = c.instance_id AND a.name = c.name AND a.state = 'active'
+WHERE c.instance_id = $1 AND c.drift_detected_at IS NOT NULL AND c.drift_detected_at > a.activated_at
+ORDER BY c.name, c.version DESC
+`
+
+type ListAppCredentialDriftRow struct {
+	Name       string
+	Version    int32
+	DetectedAt time.Time
+}
+
+// Older versions a delivery was signed with since the current active version
+// became active.
+func (q *Queries) ListAppCredentialDrift(ctx context.Context, instanceID uuid.UUID) ([]ListAppCredentialDriftRow, error) {
+	rows, err := q.db.Query(ctx, listAppCredentialDrift, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAppCredentialDriftRow{}
+	for rows.Next() {
+		var i ListAppCredentialDriftRow
+		if err := rows.Scan(&i.Name, &i.Version, &i.DetectedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAppCredentialRotations = `-- name: ListAppCredentialRotations :many
+WITH candidates AS (
+    SELECT name, version,
+        (CASE state WHEN 'pending' THEN 'accepted' WHEN 'uncertain' THEN 'verifying'
+                    ELSE 'cancelling' END)::text AS state
+    FROM app_credentials
+    WHERE instance_id = $1 AND state IN ('pending', 'uncertain', 'abandoning')
+), latest AS (
+    SELECT DISTINCT ON (metadata->>'name') metadata->>'name' AS name,
+        (metadata->>'version')::integer AS version, action, metadata->>'stage' AS stage,
+        metadata->>'resolution' AS resolution
+    FROM audit_entries
+    WHERE target_kind = 'app_instance' AND target_id = $2
+      AND action IN ('app_credential.rotation_started', 'app_credential.rotation_failed',
+          'app_credential.rotated', 'app_credential.rotation_abandoned',
+          'app_credential.rotation_resolved')
+    ORDER BY metadata->>'name', id DESC
+)
+SELECT name, version, state FROM candidates
+UNION ALL
+SELECT latest.name::text AS name, latest.version,
+    (CASE WHEN latest.action = 'app_credential.rotation_failed' THEN 'failed'
+          WHEN latest.action = 'app_credential.rotated' THEN 'verified'
+          WHEN latest.action = 'app_credential.rotation_abandoned' THEN
+              CASE WHEN latest.stage = 'discarded' THEN 'cancelled' ELSE 'cancelling' END
+          WHEN latest.action = 'app_credential.rotation_resolved' THEN
+              CASE WHEN latest.resolution = 'active' THEN 'activated_by_admin' ELSE 'discarded_by_admin' END
+          ELSE 'accepted' END)::text AS state
+FROM latest
+WHERE NOT EXISTS (SELECT 1 FROM candidates WHERE candidates.name = latest.name)
+ORDER BY name
+`
+
+type ListAppCredentialRotationsParams struct {
+	InstanceID uuid.UUID
+	TargetID   *string
+}
+
+type ListAppCredentialRotationsRow struct {
+	Name    string
+	Version int32
+	State   string
+}
+
+// Live candidates are authoritative, even while an earlier outcome is retained.
+// History survives ciphertext cleanup and version reuse. UUIDv7 IDs are generated
+// on INSERT, after the credential mutation/row locks; occurred_at is transaction
+// start time and can invert a waiting acceptance and the preceding completion.
+// Read only safe metadata, never ciphertext.
+func (q *Queries) ListAppCredentialRotations(ctx context.Context, arg ListAppCredentialRotationsParams) ([]ListAppCredentialRotationsRow, error) {
+	rows, err := q.db.Query(ctx, listAppCredentialRotations, arg.InstanceID, arg.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAppCredentialRotationsRow{}
+	for rows.Next() {
+		var i ListAppCredentialRotationsRow
+		if err := rows.Scan(&i.Name, &i.Version, &i.State); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAppCredentials = `-- name: ListAppCredentials :many
 SELECT instance_id, name, version, state, created_at, activated_at, retire_at
 FROM app_credentials WHERE instance_id = $1 AND state <> 'discarded'
+  AND NOT (state = 'retiring' AND retire_at <= now())
 ORDER BY name, version DESC
 `
 
@@ -1749,6 +2008,52 @@ func (q *Queries) ListConfirmedRemovalBatches(ctx context.Context, instanceID uu
 			&i.CreatedAt,
 			&i.ConfirmedBy,
 			&i.ConfirmedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDriftAppCredentials = `-- name: ListDriftAppCredentials :many
+SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials
+WHERE instance_id = $1 AND name = $2 AND state = 'retiring' AND retire_at > now()
+ORDER BY version DESC
+`
+
+type ListDriftAppCredentialsParams struct {
+	InstanceID uuid.UUID
+	Name       string
+}
+
+// Usable versions that are neither active nor a candidate (retiring within
+// their overlap), newest first.
+func (q *Queries) ListDriftAppCredentials(ctx context.Context, arg ListDriftAppCredentialsParams) ([]AppCredential, error) {
+	rows, err := q.db.Query(ctx, listDriftAppCredentials, arg.InstanceID, arg.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AppCredential{}
+	for rows.Next() {
+		var i AppCredential
+		if err := rows.Scan(
+			&i.InstanceID,
+			&i.Name,
+			&i.Version,
+			&i.Ciphertext,
+			&i.State,
+			&i.CreatedAt,
+			&i.ActivatedAt,
+			&i.RetireAt,
+			&i.ID,
+			&i.StuckReportedAt,
+			&i.EndedAt,
+			&i.DriftDetectedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2301,32 +2606,80 @@ func (q *Queries) ListRealmAccountLinks(ctx context.Context, arg ListRealmAccoun
 	return items, nil
 }
 
-const listStuckAppCredentials = `-- name: ListStuckAppCredentials :many
-SELECT instance_id, name, version, created_at FROM app_credentials
-WHERE state IN ('uncertain', 'abandoning') AND created_at < $1
+const listRetainedAppCredentials = `-- name: ListRetainedAppCredentials :many
+SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials
+WHERE instance_id = $1 AND name = $2
+  AND (state = 'discarded' OR (state = 'retiring' AND retire_at <= now()))
+ORDER BY version DESC
 `
 
-type ListStuckAppCredentialsRow struct {
+type ListRetainedAppCredentialsParams struct {
 	InstanceID uuid.UUID
 	Name       string
-	Version    int32
-	CreatedAt  time.Time
 }
 
-func (q *Queries) ListStuckAppCredentials(ctx context.Context, before time.Time) ([]ListStuckAppCredentialsRow, error) {
+// Retired and discarded versions still retained: incoming signatures are
+// checked against them to detect drift, never accepted with them.
+func (q *Queries) ListRetainedAppCredentials(ctx context.Context, arg ListRetainedAppCredentialsParams) ([]AppCredential, error) {
+	rows, err := q.db.Query(ctx, listRetainedAppCredentials, arg.InstanceID, arg.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AppCredential{}
+	for rows.Next() {
+		var i AppCredential
+		if err := rows.Scan(
+			&i.InstanceID,
+			&i.Name,
+			&i.Version,
+			&i.Ciphertext,
+			&i.State,
+			&i.CreatedAt,
+			&i.ActivatedAt,
+			&i.RetireAt,
+			&i.ID,
+			&i.StuckReportedAt,
+			&i.EndedAt,
+			&i.DriftDetectedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStuckAppCredentials = `-- name: ListStuckAppCredentials :many
+SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials
+WHERE state IN ('uncertain', 'abandoning') AND created_at < $1 AND stuck_reported_at IS NULL
+`
+
+func (q *Queries) ListStuckAppCredentials(ctx context.Context, before time.Time) ([]AppCredential, error) {
 	rows, err := q.db.Query(ctx, listStuckAppCredentials, before)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListStuckAppCredentialsRow{}
+	items := []AppCredential{}
 	for rows.Next() {
-		var i ListStuckAppCredentialsRow
+		var i AppCredential
 		if err := rows.Scan(
 			&i.InstanceID,
 			&i.Name,
 			&i.Version,
+			&i.Ciphertext,
+			&i.State,
 			&i.CreatedAt,
+			&i.ActivatedAt,
+			&i.RetireAt,
+			&i.ID,
+			&i.StuckReportedAt,
+			&i.EndedAt,
+			&i.DriftDetectedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2423,7 +2776,7 @@ func (q *Queries) ListUnmanagedAccounts(ctx context.Context, instanceID uuid.UUI
 }
 
 const listUsableAppCredentials = `-- name: ListUsableAppCredentials :many
-SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at FROM app_credentials
+SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials
 WHERE instance_id = $1 AND name = $2
   AND (state IN ('pending', 'uncertain', 'abandoning', 'active') OR (state = 'retiring' AND retire_at > now()))
 ORDER BY version DESC
@@ -2454,6 +2807,10 @@ func (q *Queries) ListUsableAppCredentials(ctx context.Context, arg ListUsableAp
 			&i.CreatedAt,
 			&i.ActivatedAt,
 			&i.RetireAt,
+			&i.ID,
+			&i.StuckReportedAt,
+			&i.EndedAt,
+			&i.DriftDetectedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2463,6 +2820,36 @@ func (q *Queries) ListUsableAppCredentials(ctx context.Context, arg ListUsableAp
 		return nil, err
 	}
 	return items, nil
+}
+
+const markAppCredentialDrift = `-- name: MarkAppCredentialDrift :execrows
+UPDATE app_credentials SET drift_detected_at = now()
+WHERE id = $1 AND state IN ('retiring', 'discarded') AND drift_detected_at IS NULL
+  AND ended_at < now() - interval '5 minutes'
+`
+
+// One drift report per version, and only once the version ended longer ago
+// than the grace period (deliveries signed just before a change).
+func (q *Queries) MarkAppCredentialDrift(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markAppCredentialDrift, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markAppCredentialStuckReported = `-- name: MarkAppCredentialStuckReported :execrows
+UPDATE app_credentials SET stuck_reported_at = now()
+WHERE id = $1 AND state IN ('uncertain', 'abandoning') AND stuck_reported_at IS NULL
+`
+
+// One rotation_stuck report per credential row.
+func (q *Queries) MarkAppCredentialStuckReported(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markAppCredentialStuckReported, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markProvisioningGranted = `-- name: MarkProvisioningGranted :exec
@@ -2574,7 +2961,7 @@ func (q *Queries) NextAppCredentialVersion(ctx context.Context, arg NextAppCrede
 }
 
 const retireActiveAppCredential = `-- name: RetireActiveAppCredential :exec
-UPDATE app_credentials SET state = 'retiring', retire_at = $1
+UPDATE app_credentials SET state = 'retiring', retire_at = $1, ended_at = now()
 WHERE instance_id = $2 AND name = $3 AND state = 'active'
 `
 
@@ -2618,68 +3005,34 @@ func (q *Queries) RevokeAccountLink(ctx context.Context, id uuid.UUID) (AccountL
 }
 
 const setAppCredentialCiphertext = `-- name: SetAppCredentialCiphertext :exec
-UPDATE app_credentials SET ciphertext = $1 WHERE instance_id = $2 AND name = $3 AND version = $4
+UPDATE app_credentials SET ciphertext = $1 WHERE id = $2
 `
 
 type SetAppCredentialCiphertextParams struct {
 	Ciphertext []byte
-	InstanceID uuid.UUID
-	Name       string
-	Version    int32
+	ID         uuid.UUID
 }
 
 func (q *Queries) SetAppCredentialCiphertext(ctx context.Context, arg SetAppCredentialCiphertextParams) error {
-	_, err := q.db.Exec(ctx, setAppCredentialCiphertext,
-		arg.Ciphertext,
-		arg.InstanceID,
-		arg.Name,
-		arg.Version,
-	)
-	return err
-}
-
-const setAppCredentialState = `-- name: SetAppCredentialState :exec
-UPDATE app_credentials SET state = $1 WHERE instance_id = $2 AND name = $3 AND version = $4
-`
-
-type SetAppCredentialStateParams struct {
-	State      string
-	InstanceID uuid.UUID
-	Name       string
-	Version    int32
-}
-
-func (q *Queries) SetAppCredentialState(ctx context.Context, arg SetAppCredentialStateParams) error {
-	_, err := q.db.Exec(ctx, setAppCredentialState,
-		arg.State,
-		arg.InstanceID,
-		arg.Name,
-		arg.Version,
-	)
+	_, err := q.db.Exec(ctx, setAppCredentialCiphertext, arg.Ciphertext, arg.ID)
 	return err
 }
 
 const setAppCredentialStateFrom = `-- name: SetAppCredentialStateFrom :execrows
-UPDATE app_credentials SET state = $1
-WHERE instance_id = $2 AND name = $3 AND version = $4 AND state = ANY($5::text[])
+UPDATE app_credentials
+SET state = $1, ended_at = CASE WHEN $1::text = 'discarded' THEN now() ELSE ended_at END
+WHERE id = $2 AND state = ANY($3::text[])
 `
 
 type SetAppCredentialStateFromParams struct {
 	State      string
-	InstanceID uuid.UUID
-	Name       string
-	Version    int32
+	ID         uuid.UUID
 	FromStates []string
 }
 
+// A discarded version ends now (retention counts from then).
 func (q *Queries) SetAppCredentialStateFrom(ctx context.Context, arg SetAppCredentialStateFromParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setAppCredentialStateFrom,
-		arg.State,
-		arg.InstanceID,
-		arg.Name,
-		arg.Version,
-		arg.FromStates,
-	)
+	result, err := q.db.Exec(ctx, setAppCredentialStateFrom, arg.State, arg.ID, arg.FromStates)
 	if err != nil {
 		return 0, err
 	}
@@ -2872,6 +3225,21 @@ func (q *Queries) SetAppTeamMappingExternal(ctx context.Context, arg SetAppTeamM
 		arg.InstanceID,
 		arg.TeamID,
 	)
+	return err
+}
+
+const setConnectedAppBaseURL = `-- name: SetConnectedAppBaseURL :exec
+UPDATE app_instances SET base_url = $1, updated_at = now()
+WHERE id = $2 AND state = 'connecting' AND management = 'connected'
+`
+
+type SetConnectedAppBaseURLParams struct {
+	BaseUrl *string
+	ID      uuid.UUID
+}
+
+func (q *Queries) SetConnectedAppBaseURL(ctx context.Context, arg SetConnectedAppBaseURLParams) error {
+	_, err := q.db.Exec(ctx, setConnectedAppBaseURL, arg.BaseUrl, arg.ID)
 	return err
 }
 

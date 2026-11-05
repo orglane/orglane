@@ -80,6 +80,9 @@ func (s *Service) ReceiveWebhook(ctx context.Context, instanceID uuid.UUID, h ht
 			// Loading the secrets failed, not the signature: a server error.
 			return WebhookReceipt{}, fmt.Errorf("apps: verify webhook: %w", err)
 		}
+		if derr := s.detectRetainedDrift(ctx, inst, src, h, body); derr != nil {
+			s.cfg.Logger.ErrorContext(ctx, "webhook drift check failed", "provider", inst.Provider, "app_instance", inst.ID, "error", derr)
+		}
 		if s.badSignatures.allow(s.cfg.Now()) {
 			// Never the body or headers: they are untrusted and may carry
 			// personal data.
@@ -126,7 +129,7 @@ func (s *Service) ReceiveWebhook(ctx context.Context, instanceID uuid.UUID, h ht
 	}
 	var receipt WebhookReceipt
 	err = s.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
-		if err := s.proveByUse(ctx, q, inst, src, h, body); err != nil {
+		if err := s.classifyDelivery(ctx, tx, q, inst, src, h, body); err != nil {
 			return err
 		}
 		n, err := q.InsertWebhookDelivery(ctx, store.InsertWebhookDeliveryParams{
@@ -330,11 +333,12 @@ func eventParams(inst Instance, row store.WebhookDelivery, e provider.Event, cap
 
 // CleanupResult counts what Cleanup removed.
 type CleanupResult struct {
-	Credentials, OAuthStates, Bodies, Deliveries int64
+	Credentials, Calls, OAuthStates, Bodies, Deliveries int64
 }
 
 // Cleanup is the daily retention job: retired and discarded credential
-// versions, expired OAuth state, delivery bodies 7 days after processing
+// versions, provider call records a day after their lease, expired OAuth
+// state, delivery bodies 7 days after processing
 // (30 for failed ones) and deliveries after 30 days. Events are never
 // touched. It also reports rotations uncertain for a day.
 func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
@@ -343,6 +347,9 @@ func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
 	var err error
 	if r.Credentials, err = q.DeleteExpiredAppCredentials(ctx); err != nil {
 		return r, fmt.Errorf("apps: delete credentials: %w", err)
+	}
+	if r.Calls, err = q.DeleteExpiredAppCredentialCalls(ctx); err != nil {
+		return r, fmt.Errorf("apps: delete provider call records: %w", err)
 	}
 	if r.OAuthStates, err = q.DeleteExpiredAppOAuthStates(ctx); err != nil {
 		return r, fmt.Errorf("apps: delete oauth states: %w", err)
@@ -362,7 +369,7 @@ func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
 		if err != nil {
 			return r, err
 		}
-		if err := s.reportStuck(ctx, inst, store.AppCredential{InstanceID: c.InstanceID, Name: c.Name, Version: c.Version, CreatedAt: c.CreatedAt}); err != nil {
+		if err := s.reportStuck(ctx, s.pool, inst, c); err != nil {
 			return r, err
 		}
 	}

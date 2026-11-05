@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
-import { call, type Schema } from "@/lib/api";
+import { ApiError, call, type Schema } from "@/lib/api";
 import { useApi } from "@/lib/api-context";
 import {
   type AppInstance,
@@ -54,7 +54,10 @@ import { useMe } from "@/lib/session";
 import { teamsQuery } from "@/lib/teams";
 import { cn } from "@/lib/utils";
 
+import { GitHubConnectForm, GitHubPrivateKeyUpload } from "./github-connect";
+
 const messages = defineMessages({
+  connectGitHub: { id: "apps.connectGitHub", defaultMessage: "Connect GitHub" },
   description: {
     id: "apps.description",
     defaultMessage: "The services your company uses, with one sign-in.",
@@ -142,6 +145,58 @@ const messages = defineMessages({
     id: "appInstance.abandoning",
     defaultMessage:
       "Cancelling: Orglane is re-applying the current value. The new value is discarded once the provider confirms.",
+  },
+  resolveSummary: {
+    id: "appInstance.resolveSummary",
+    defaultMessage: "The provider's answer cannot be established",
+  },
+  resolveExplain: {
+    id: "appInstance.resolveExplain",
+    defaultMessage:
+      "Only if retrying and cancelling cannot finish: check at the provider which value it uses, then record it. Orglane does not verify your choice. If it is wrong, the provider's calls and deliveries fail until the credential is rotated again.",
+  },
+  resolveActive: defineMessage<{ name: string }>({
+    id: "appInstance.resolveActive",
+    defaultMessage: "Record that the provider uses the new value of {name}",
+  }),
+  resolveConfirmActive: defineMessage<{ name: string; version: number }>({
+    id: "appInstance.resolveConfirmActive",
+    defaultMessage:
+      "Make version {version} of {name} the active value without verification? The current value retires. If the provider does not use version {version}, its calls and deliveries fail until you rotate again.",
+  }),
+  resolveConfirmDiscarded: defineMessage<{ name: string; version: number }>({
+    id: "appInstance.resolveConfirmDiscarded",
+    defaultMessage:
+      "Discard version {version} of {name} and keep the current value without verification? If the provider uses version {version}, its calls and deliveries fail until you rotate again.",
+  }),
+  resolveConfirm: { id: "appInstance.resolveConfirm", defaultMessage: "Record my choice" },
+  resolveCancel: { id: "appInstance.resolveCancel", defaultMessage: "Cancel" },
+  resolveValueUnknown: {
+    id: "appInstance.resolveValueUnknown",
+    defaultMessage:
+      "The provider created the new value and its answer was lost, so Orglane does not have it. It cannot become active; record that the provider uses the current value, or cancel the rotation.",
+  },
+  credentialDrift: defineMessage<{ name: string; version: number }>({
+    id: "appInstance.credentialDrift",
+    defaultMessage:
+      "A delivery was signed with an older value of {name} (version {version}). The provider may not use the current value. Rotate {name} to recover.",
+  }),
+  resolveActiveShort: {
+    id: "appInstance.resolveActiveShort",
+    defaultMessage: "Provider uses the new value",
+  },
+  resolveDiscarded: defineMessage<{ name: string }>({
+    id: "appInstance.resolveDiscarded",
+    defaultMessage: "Record that the provider uses the current value of {name}",
+  }),
+  resolveDiscardedShort: {
+    id: "appInstance.resolveDiscardedShort",
+    defaultMessage: "Provider uses the current value",
+  },
+  resolveBusy: {
+    id: "appInstance.resolveBusy",
+    defaultMessage:
+      "The rotation changed meanwhile, or a call to the provider may still be running. Wait a few minutes, then check the rotation again.",
   },
   details: { id: "appInstance.details", defaultMessage: "Details" },
   back: { id: "appInstance.back", defaultMessage: "All apps" },
@@ -405,7 +460,7 @@ export function AppsPage() {
               <Card className="flex h-full flex-col gap-4 p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h2 className="break-words font-semibold">{app.displayName}</h2>
+                    <h2 className="font-semibold [overflow-wrap:anywhere]">{app.displayName}</h2>
                     <p className="break-all text-muted-foreground text-sm">
                       {app.homeUrl ? new URL(app.homeUrl).host : app.key}
                     </p>
@@ -539,7 +594,18 @@ export function AppsSettingsPage() {
   const defaults = (instanceId: string) =>
     bindings.data?.items.filter((b) => b.instanceId === instanceId && b.isDefault) ?? [];
   return (
-    <Page title={title} description={<FormattedMessage {...messages.settingsDescription} />}>
+    <Page
+      title={title}
+      description={<FormattedMessage {...messages.settingsDescription} />}
+      actions={
+        <Button asChild>
+          <Link to="/settings/apps/github/connect">
+            <Plus aria-hidden="true" />
+            <FormattedMessage {...messages.connectGitHub} />
+          </Link>
+        </Button>
+      }
+    >
       <section aria-labelledby="apps-instances" className="mb-8">
         <h2 id="apps-instances" className="mb-3 font-semibold text-lg">
           <FormattedMessage {...messages.instances} />
@@ -583,7 +649,7 @@ export function AppsSettingsPage() {
                         <Link
                           to="/settings/apps/$instanceId"
                           params={{ instanceId: inst.id }}
-                          className="font-medium text-primary hover:underline"
+                          className="inline-block max-w-64 font-medium text-primary [overflow-wrap:anywhere] hover:underline"
                         >
                           {inst.displayName}
                         </Link>
@@ -822,10 +888,30 @@ function Credentials({
           <Alert>{errorMessage(intl, rotate.error, { 409: messages.rotationConflict })}</Alert>
         )}
         {abandon.isError && <Alert>{errorMessage(intl, abandon.error)}</Alert>}
+        {(detail.credentialDrift ?? []).map((d) => (
+          <Alert key={`${d.name}-${d.version}`} variant="error">
+            {intl.formatMessage(messages.credentialDrift, { name: d.name, version: d.version })}
+          </Alert>
+        ))}
         {rotate.isSuccess && (
           <Alert variant="success">
             <FormattedMessage {...messages.rotating} />
           </Alert>
+        )}
+        {provider?.id === "github" && ["active", "degraded"].includes(detail.instance.state) && (
+          <GitHubPrivateKeyUpload
+            instanceId={instanceId}
+            rotation={detail.credentialRotations?.find((r) => r.name === "app_private_key")}
+            disabled={detail.credentials.some(
+              (c) =>
+                c.name === "app_private_key" &&
+                ["pending", "uncertain", "abandoning"].includes(c.state),
+            )}
+            onChange={() => {
+              onChange();
+              return queryClient.invalidateQueries({ queryKey: appsKey });
+            }}
+          />
         )}
         <ul className="divide-y">
           {active.map((c) => {
@@ -861,6 +947,17 @@ function Credentials({
                     <FormattedMessage {...messages.abandoning} />
                   </p>
                 )}
+                {candidate && candidate.state !== "pending" && (
+                  <ForceResolution
+                    instanceId={instanceId}
+                    name={c.name}
+                    version={candidate.version}
+                    onChange={() => {
+                      onChange();
+                      return queryClient.invalidateQueries({ queryKey: appsKey });
+                    }}
+                  />
+                )}
                 {candidate && candidate.state !== "abandoning" && (
                   <div className="space-y-2 rounded-lg border p-3">
                     <p role="status">
@@ -886,6 +983,144 @@ function Credentials({
         </ul>
       </CardContent>
     </Card>
+  );
+}
+
+// ForceResolution is the last resort for a rotation whose outcome cannot be
+// established: the admin records which value the provider uses, after a
+// confirmation that names the credential, the version and the consequence.
+function ForceResolution({
+  instanceId,
+  name,
+  version,
+  onChange,
+}: {
+  instanceId: string;
+  name: string;
+  version: number;
+  onChange: () => Promise<void>;
+}) {
+  const api = useApi();
+  const intl = useIntl();
+  const [choice, setChoice] = useState<"active" | "discarded" | null>(null);
+  const questionId = useId();
+  // Dismissing the confirmation returns focus to the choice that opened it.
+  const activeChoice = useRef<HTMLButtonElement>(null);
+  const discardedChoice = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef<"active" | "discarded" | null>(null);
+  useEffect(() => {
+    if (choice !== null || returnFocus.current === null) return;
+    (returnFocus.current === "active" ? activeChoice : discardedChoice).current?.focus();
+    returnFocus.current = null;
+  }, [choice]);
+  const dismiss = () => {
+    returnFocus.current = choice;
+    setChoice(null);
+  };
+  const resolve = useMutation({
+    mutationFn: (resolution: "active" | "discarded") =>
+      call(
+        api.client.POST(
+          "/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/resolve",
+          {
+            params: { path: { instanceId, credentialName: name } },
+            body: { resolution },
+          },
+        ),
+      ),
+    onSuccess: () => {
+      setChoice(null);
+      return onChange();
+    },
+  });
+  const valueUnknown =
+    resolve.error instanceof ApiError && resolve.error.problem.code === "candidate_value_unknown";
+  return (
+    <details className="rounded-lg border p-3">
+      <summary className="cursor-pointer">
+        <FormattedMessage {...messages.resolveSummary} />
+      </summary>
+      <div className="mt-2 space-y-2">
+        <p className="text-muted-foreground">
+          <FormattedMessage {...messages.resolveExplain} />
+        </p>
+        {resolve.isError && (
+          <Alert>
+            {valueUnknown ? (
+              <FormattedMessage {...messages.resolveValueUnknown} />
+            ) : (
+              errorMessage(intl, resolve.error, { 409: messages.resolveBusy })
+            )}
+          </Alert>
+        )}
+        {choice ? (
+          // biome-ignore lint/a11y/useSemanticElements: an inline confirmation, not a fieldset
+          <div
+            role="group"
+            aria-labelledby={questionId}
+            className="space-y-2 rounded-md border border-destructive/40 p-3"
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && !resolve.isPending) dismiss();
+            }}
+          >
+            <p id={questionId} className="font-medium">
+              {intl.formatMessage(
+                choice === "active"
+                  ? messages.resolveConfirmActive
+                  : messages.resolveConfirmDiscarded,
+                { name, version },
+              )}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                autoFocus
+                disabled={resolve.isPending}
+                onClick={dismiss}
+              >
+                <FormattedMessage {...messages.resolveCancel} />
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                loading={resolve.isPending}
+                onClick={() => resolve.mutate(choice)}
+              >
+                <FormattedMessage {...messages.resolveConfirm} />
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              ref={activeChoice}
+              size="sm"
+              variant="outline"
+              aria-label={intl.formatMessage(messages.resolveActive, { name })}
+              onClick={() => {
+                resolve.reset();
+                setChoice("active");
+              }}
+            >
+              <FormattedMessage {...messages.resolveActiveShort} />
+            </Button>
+            <Button
+              ref={discardedChoice}
+              size="sm"
+              variant="outline"
+              aria-label={intl.formatMessage(messages.resolveDiscarded, { name })}
+              onClick={() => {
+                resolve.reset();
+                setChoice("discarded");
+              }}
+            >
+              <FormattedMessage {...messages.resolveDiscardedShort} />
+            </Button>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -1725,6 +1960,9 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
             <TeamMappings instanceId={instanceId} busy={busy} onChange={mark} />
             <Provisioning instanceId={instanceId} busy={busy} onChange={mark} />
           </>
+        )}
+        {instance.provider === "github" && instance.state === "connecting" && (
+          <GitHubConnectForm instance={instance} />
         )}
         <Credentials
           instanceId={instanceId}

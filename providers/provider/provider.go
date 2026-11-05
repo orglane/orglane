@@ -118,7 +118,9 @@ const (
 	SourceGenerated = "generated"
 	// SourceProvider: from Connect, Setup or the provider itself.
 	SourceProvider = "provider"
-	// SourceUpload: uploaded by an admin.
+	// SourceUpload: uploaded by an admin, who installed it at the provider.
+	// CredentialRotator.ApplyCredential only verifies an upload and never
+	// changes provider state, so its rejection is always definitive.
 	SourceUpload = "upload"
 )
 
@@ -127,6 +129,16 @@ type CredentialSpec struct {
 	Name      string // ^[a-z][a-z0-9_]{0,40}$, unique per provider
 	Source    string // SourceGenerated | SourceProvider | SourceUpload
 	Rotatable bool
+	// GenerateRotation makes the core generate replacement values even when
+	// the initial value came from the provider (GitHub webhook secrets).
+	GenerateRotation bool
+	// ReadBack: for a value the provider mints, ApplyCredential first reads
+	// back what an earlier attempt for the same version did (Forgejo tokens
+	// named after the version) and reconciles it. Without it, an attempt
+	// after an unknown outcome is not made: another mint could invalidate
+	// the one the earlier attempt published, so the candidate stays
+	// uncertain until evidence, abandon or an admin's resolution.
+	ReadBack bool
 	// Overlap is how long the previous version stays valid after the new
 	// one is acknowledged.
 	Overlap time.Duration
@@ -425,7 +437,10 @@ const (
 	// RotationAcknowledged: the provider answered success, or a read-back
 	// proves the new value is in use.
 	RotationAcknowledged RotationOutcome = "acknowledged"
-	// RotationRejected: a definite answer that the change was not made.
+	// RotationRejected: a definite answer that this attempt did not make
+	// the change. It says nothing about an earlier attempt whose outcome was
+	// unknown, so the core discards only a candidate whose first handover
+	// was rejected, or an upload (SourceUpload).
 	RotationRejected RotationOutcome = "rejected"
 	// RotationUnknown: the provider may or may not have committed the
 	// change (timeout, connection reset, 5xx).

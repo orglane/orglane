@@ -202,6 +202,20 @@ const invitationsRoute = createRoute({
   path: "/people/invitations",
   component: InvitationsPage,
 });
+
+import { GitHubConnectCallbackPage, GitHubConnectPage } from "./routes/github-connect";
+
+const githubConnectRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings/apps/github/connect",
+  component: GitHubConnectPage,
+});
+const githubCallbackRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings/apps/github/callback",
+  component: GitHubConnectCallbackPage,
+});
+
 const appsSettingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings/apps",
@@ -260,6 +274,8 @@ export const routeTree = rootRoute.addChildren([
       peopleImportRoute,
       emailSettingsRoute,
       appsSettingsRoute,
+      githubConnectRoute,
+      githubCallbackRoute,
       appInstanceRoute,
     ]),
   ]),

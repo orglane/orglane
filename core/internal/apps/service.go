@@ -216,9 +216,7 @@ func (s *Service) WebhookURL(instanceID uuid.UUID) *url.URL {
 }
 
 func (s *Service) inTx(ctx context.Context, fn func(tx pgx.Tx, q *store.Queries) error) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		return fn(tx, store.New(tx))
-	})
+	return inTxOn(ctx, s.pool, fn)
 }
 
 // Instance is an app instance with its decoded settings and adapter.

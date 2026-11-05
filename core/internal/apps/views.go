@@ -14,11 +14,13 @@ func providerID(s string) provider.ID { return provider.ID(s) }
 
 // InstanceDetail is what the instance page shows besides the instance.
 type InstanceDetail struct {
-	Bindings       []store.AppBinding
-	Operations     []Operation
-	Credentials    []Credential
-	UnmanagedCount int64
-	StatusCounts   map[string]int64
+	Bindings            []store.AppBinding
+	Operations          []Operation
+	Credentials         []Credential
+	CredentialRotations []store.ListAppCredentialRotationsRow
+	CredentialDrift     []store.ListAppCredentialDriftRow
+	UnmanagedCount      int64
+	StatusCounts        map[string]int64
 }
 
 // Detail returns an instance's bindings, last operations, credential
@@ -35,6 +37,12 @@ func (s *Service) Detail(ctx context.Context, id uuid.UUID) (InstanceDetail, err
 	}
 	if d.Credentials, err = q.ListAppCredentials(ctx, id); err != nil {
 		return d, fmt.Errorf("apps: list credentials: %w", err)
+	}
+	if d.CredentialRotations, err = q.ListAppCredentialRotations(ctx, store.ListAppCredentialRotationsParams{InstanceID: id, TargetID: ptr(id.String())}); err != nil {
+		return d, fmt.Errorf("apps: list rotation outcomes: %w", err)
+	}
+	if d.CredentialDrift, err = q.ListAppCredentialDrift(ctx, id); err != nil {
+		return d, fmt.Errorf("apps: list credential drift: %w", err)
 	}
 	if d.UnmanagedCount, err = q.CountUnmanagedAccounts(ctx, id); err != nil {
 		return d, fmt.Errorf("apps: count unmanaged accounts: %w", err)
