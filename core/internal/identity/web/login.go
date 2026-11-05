@@ -195,8 +195,23 @@ func sessionSatisfies(s store.Session, req *oidcop.AuthRequest) bool {
 	return true
 }
 
-// complete records the person for the request and continues the flow.
+// complete records the person for the request and continues the flow. It
+// is the only place an authorization request completes, so the client
+// access check here covers every sign-in to a client: a person it refuses
+// goes back to the client with access_denied and no code.
 func (a *Auth) complete(w http.ResponseWriter, r *http.Request, req *oidcop.AuthRequest, session store.Session) {
+	if check := a.clientAccess.Load(); check != nil {
+		ok, err := (*check)(r.Context(), req.GetClientID(), session.PersonID)
+		if err != nil {
+			a.logger.ErrorContext(r.Context(), "client access check", "client", req.GetClientID(), "error", err)
+			a.renderError(w, http.StatusInternalServerError, "Something went wrong. Try again later.")
+			return
+		}
+		if !ok {
+			a.provider.AuthRequestError(w, r, req, oidcop.ErrAccessDenied())
+			return
+		}
+	}
 	if err := a.provider.CompleteAuthRequest(r.Context(), req.GetID(), session); err != nil {
 		a.renderError(w, http.StatusBadRequest, "This sign-in link has expired. Go back to the application and try again.")
 		return

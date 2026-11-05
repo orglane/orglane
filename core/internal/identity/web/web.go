@@ -29,6 +29,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,7 +81,19 @@ type Auth struct {
 	csrfKey  [32]byte
 	limiter  *Limiter
 	logger   *slog.Logger
+	// clientAccess, if set, decides whether a person may be signed in to
+	// a client (SetClientAccess).
+	clientAccess atomic.Pointer[ClientAccess]
 }
+
+// ClientAccess decides whether a person may be signed in to an OIDC
+// client. It runs where every authorization request completes, after the
+// person is known and before a code is issued.
+type ClientAccess func(ctx context.Context, clientID string, personID uuid.UUID) (bool, error)
+
+// SetClientAccess installs the client access check. Without one every
+// person may sign in to every client.
+func (a *Auth) SetClientAccess(f ClientAccess) { a.clientAccess.Store(&f) }
 
 // New returns Auth. provider may be nil when OIDC is not served (tests).
 func New(cfg Config, svc *identity.Service, provider *oidcop.Provider, keyring *crypto.Keyring, logger *slog.Logger) (*Auth, error) {
