@@ -400,6 +400,11 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 		// after a restore also brings back the hook and its active secret).
 		setupErr = s.ensureWebhooks(ctx, inst, StateInstalling)
 	}
+	if errors.Is(setupErr, errWebhooksDeferred) {
+		// A rotation of the webhook secret is in progress; its job sets the
+		// hook with the value that wins.
+		setupErr = nil
+	}
 	if errors.Is(setupErr, errStateChanged) {
 		// No longer installing (an agent operation failed it, it is being
 		// removed): neither activated nor failed with setup_failed here.
