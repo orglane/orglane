@@ -303,6 +303,36 @@ func (e *forgejoEnv) teamID(name string) int64 {
 	return 0
 }
 
+// teamIDAny returns the ID of any organization team (marked or not).
+func (e *forgejoEnv) teamIDAny(name string) int64 {
+	e.t.Helper()
+	code, body := managedtest.Request(e.t, e.b.Client(), http.MethodGet, managedtest.ForgejoHost, "/api/v1/orgs/acme/teams?limit=50", e.admin, nil)
+	if code != http.StatusOK {
+		e.t.Fatalf("list teams: %d", code)
+	}
+	var teams []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &teams); err != nil {
+		e.t.Fatal(err)
+	}
+	for _, t := range teams {
+		if t.Name == name {
+			return t.ID
+		}
+	}
+	e.t.Fatalf("no team %s", name)
+	return 0
+}
+
+// orgMember reports whether the login is a member of the organization.
+func (e *forgejoEnv) orgMember(login string) bool {
+	e.t.Helper()
+	code, _ := managedtest.Request(e.t, e.b.Client(), http.MethodGet, managedtest.ForgejoHost, "/api/v1/orgs/acme/members/"+login, e.admin, nil)
+	return code == http.StatusNoContent
+}
+
 // inTeam reports whether the login is in the Forgejo team.
 func (e *forgejoEnv) inTeam(team int64, login string) bool {
 	e.t.Helper()
@@ -432,6 +462,15 @@ func TestForgejoProvisioningAndSignOn(t *testing.T) {
 		t.Fatal("a team removal deleted the account")
 	}
 
+	// Forgejo teams are Orglane's only: a mapping to an existing team (here
+	// Owners) is refused, so no mapping can make anyone an owner.
+	owners := e.teamIDAny("Owners")
+	if _, err := e.stack.Apps.SetTeamMapping(e.ctx, audit.System, e.inst.ID, e.orglaneTeam("leadership").ID, apps.TeamMappingInput{
+		Mode: provider.MappingExisting, ExternalRef: strconv.FormatInt(owners, 10),
+	}); apps.Code(err) != "invalid_input" {
+		t.Fatalf("an existing mapping to Owners: %v", err)
+	}
+
 	// A mass removal: unmapping platform takes five people out of the team,
 	// above the limit: held for an admin, nobody removed until confirmed.
 	if err := e.stack.Apps.RemoveTeamMapping(e.ctx, audit.System, e.inst.ID, platform.ID); err != nil {
@@ -453,6 +492,47 @@ func TestForgejoProvisioningAndSignOn(t *testing.T) {
 	})
 	if !e.inTeam(productTeam, "sofia.petrova") {
 		t.Fatal("unmapping platform took sofia out of product")
+	}
+	// Platform was the last mapped team of lucas and jonas. In Forgejo,
+	// leaving the last team of an organization also leaves the
+	// organization; the base team keeps them members (no organization
+	// removal), and their accounts stay.
+	baseTeam := e.teamID("orglane-members")
+	for _, login := range []string{"lucas.ferreira", "jonas.lindqvist"} {
+		if !e.inTeam(baseTeam, login) || !e.orgMember(login) {
+			t.Fatalf("%s left the organization (base team %v)", login, e.inTeam(baseTeam, login))
+		}
+	}
+	if e.inTeam(owners, "olivia.kowalski") || e.inTeam(owners, "nora.berg") {
+		t.Fatal("somebody became an owner")
+	}
+
+	// Renames: a new username renames the Forgejo account and refreshes
+	// the verified link's login. And when the rename committed but its
+	// answer was lost (emulated: Forgejo already has the new login), the
+	// next run still refreshes the link.
+	sofia, fatima := e.person("sofia.petrova"), e.person("fatima.alsayed")
+	for _, rename := range []struct {
+		p       store.Person
+		to      string
+		already bool
+	}{{sofia, "sofia.p", false}, {fatima, "fatima.a", true}} {
+		if rename.already {
+			acct := e.account(rename.p.ID.String())
+			if code, body := managedtest.Request(t, e.b.Client(), http.MethodPost, managedtest.ForgejoHost, "/api/v1/admin/users/"+acct.Login+"/rename", e.admin,
+				map[string]any{"new_username": rename.to}); code != http.StatusNoContent {
+				t.Fatalf("rename in Forgejo: %d %s", code, body)
+			}
+		}
+		to := rename.to
+		if _, err := e.stack.Identity.UpdatePerson(e.ctx, audit.System, rename.p.ID, identity.PersonUpdate{Username: &to}); err != nil {
+			t.Fatal(err)
+		}
+		managedtest.Eventually(t, 2*time.Minute, rename.to+": account and link follow the rename", func() bool {
+			acct := e.account(rename.p.ID.String())
+			links, err := store.New(e.pool).ListPersonAccountLinks(e.ctx, rename.p.ID)
+			return acct != nil && acct.Login == rename.to && err == nil && len(links) == 1 && links[0].Login == rename.to
+		})
 	}
 
 	// The deep link lands signed in for a provisioned person: Forgejo's
