@@ -187,6 +187,27 @@ func (e AppHealth) Valid() bool {
 	}
 }
 
+// Defines values for AppInstanceWaitingForAgent.
+const (
+	AgentUnavailable     AppInstanceWaitingForAgent = "agent_unavailable"
+	AgentUntrusted       AppInstanceWaitingForAgent = "agent_untrusted"
+	AgentVersionMismatch AppInstanceWaitingForAgent = "agent_version_mismatch"
+)
+
+// Valid indicates whether the value is a known member of the AppInstanceWaitingForAgent enum.
+func (e AppInstanceWaitingForAgent) Valid() bool {
+	switch e {
+	case AgentUnavailable:
+		return true
+	case AgentUntrusted:
+		return true
+	case AgentVersionMismatch:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AppInstanceState.
 const (
 	AppInstanceStateActive       AppInstanceState = "active"
@@ -246,25 +267,61 @@ func (e AppManagement) Valid() bool {
 
 // Defines values for AppOperationKind.
 const (
-	Apply    AppOperationKind = "apply"
-	Remove   AppOperationKind = "remove"
-	Restore  AppOperationKind = "restore"
-	Snapshot AppOperationKind = "snapshot"
-	Upgrade  AppOperationKind = "upgrade"
+	AppOperationKindApply    AppOperationKind = "apply"
+	AppOperationKindRemove   AppOperationKind = "remove"
+	AppOperationKindRestore  AppOperationKind = "restore"
+	AppOperationKindSnapshot AppOperationKind = "snapshot"
+	AppOperationKindUpgrade  AppOperationKind = "upgrade"
 )
 
 // Valid indicates whether the value is a known member of the AppOperationKind enum.
 func (e AppOperationKind) Valid() bool {
 	switch e {
-	case Apply:
+	case AppOperationKindApply:
 		return true
-	case Remove:
+	case AppOperationKindRemove:
 		return true
-	case Restore:
+	case AppOperationKindRestore:
 		return true
-	case Snapshot:
+	case AppOperationKindSnapshot:
 		return true
-	case Upgrade:
+	case AppOperationKindUpgrade:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AppOperationReason.
+const (
+	AppOperationReasonConfigure AppOperationReason = "configure"
+	AppOperationReasonInstall   AppOperationReason = "install"
+	AppOperationReasonReinstall AppOperationReason = "reinstall"
+	AppOperationReasonRemove    AppOperationReason = "remove"
+	AppOperationReasonResync    AppOperationReason = "resync"
+	AppOperationReasonRetry     AppOperationReason = "retry"
+	AppOperationReasonRevert    AppOperationReason = "revert"
+	AppOperationReasonUpgrade   AppOperationReason = "upgrade"
+)
+
+// Valid indicates whether the value is a known member of the AppOperationReason enum.
+func (e AppOperationReason) Valid() bool {
+	switch e {
+	case AppOperationReasonConfigure:
+		return true
+	case AppOperationReasonInstall:
+		return true
+	case AppOperationReasonReinstall:
+		return true
+	case AppOperationReasonRemove:
+		return true
+	case AppOperationReasonResync:
+		return true
+	case AppOperationReasonRetry:
+		return true
+	case AppOperationReasonRevert:
+		return true
+	case AppOperationReasonUpgrade:
 		return true
 	default:
 		return false
@@ -991,9 +1048,19 @@ type AppInstance struct {
 	State     AppInstanceState       `json:"state"`
 	UpdatedAt time.Time              `json:"updatedAt"`
 
+	// WaitingForAgent Set while a change of this managed instance waits for the agent,
+	// with the reason: the agent is not running or not reachable, runs
+	// another Orglane version, or does not prove the shared key.
+	WaitingForAgent *AppInstanceWaitingForAgent `json:"waitingForAgent,omitempty"`
+
 	// WebhookUrl Where the provider delivers webhooks (providers that take webhooks).
 	WebhookUrl *string `json:"webhookUrl,omitempty"`
 }
+
+// AppInstanceWaitingForAgent Set while a change of this managed instance waits for the agent,
+// with the reason: the agent is not running or not reachable, runs
+// another Orglane version, or does not prove the shared key.
+type AppInstanceWaitingForAgent string
 
 // AppInstanceDetail defines model for AppInstanceDetail.
 type AppInstanceDetail struct {
@@ -1026,7 +1093,13 @@ type AppManagement string
 
 // AppOperation defines model for AppOperation.
 type AppOperation struct {
-	CreatedAt   time.Time          `json:"createdAt"`
+	CreatedAt time.Time `json:"createdAt"`
+
+	// ErrorCode Why a finished operation failed: an agent code such as
+	// `compose_failed`, or `superseded` when a newer generation
+	// replaced it before it ran. While unfinished: why it waits for the
+	// agent (`agent_unavailable`, `agent_version_mismatch`,
+	// `agent_untrusted`).
 	ErrorCode   *string            `json:"errorCode,omitempty"`
 	FinishedAt  *time.Time         `json:"finishedAt,omitempty"`
 	FromVersion *string            `json:"fromVersion,omitempty"`
@@ -1034,15 +1107,28 @@ type AppOperation struct {
 	Id          openapi_types.UUID `json:"id"`
 	Kind        AppOperationKind   `json:"kind"`
 	Phase       *string            `json:"phase,omitempty"`
-	State       AppOperationState  `json:"state"`
-	ToVersion   *string            `json:"toVersion,omitempty"`
+
+	// Reason Why the desired state changed (operations that push one).
+	Reason    *AppOperationReason `json:"reason,omitempty"`
+	State     AppOperationState   `json:"state"`
+	ToVersion *string             `json:"toVersion,omitempty"`
 }
 
 // AppOperationKind defines model for AppOperation.Kind.
 type AppOperationKind string
 
+// AppOperationReason Why the desired state changed (operations that push one).
+type AppOperationReason string
+
 // AppOperationState defines model for AppOperation.State.
 type AppOperationState string
+
+// AppOperationList defines model for AppOperationList.
+type AppOperationList struct {
+	// HasMore More operations follow this page.
+	HasMore bool           `json:"hasMore"`
+	Items   []AppOperation `json:"items"`
+}
 
 // AppProvider defines model for AppProvider.
 type AppProvider struct {
@@ -2368,6 +2454,12 @@ type TooManyRequests = Problem
 // Unauthorized RFC 9457 problem details.
 type Unauthorized = Problem
 
+// ListAppInstanceOperationsParams defines parameters for ListAppInstanceOperations.
+type ListAppInstanceOperationsParams struct {
+	Limit  *int `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
 // GetAppProvisioningParams defines parameters for GetAppProvisioning.
 type GetAppProvisioningParams struct {
 	Limit  *int `form:"limit,omitempty" json:"limit,omitempty"`
@@ -2509,6 +2601,9 @@ type ServerInterface interface {
 	// RotateAppCredential Rotate a credential
 	// (POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate)
 	RotateAppCredential(w http.ResponseWriter, r *http.Request, instanceId InstanceId, credentialName CredentialName)
+	// ListAppInstanceOperations Operation history of a managed instance
+	// (GET /api/v1/apps/instances/{instanceId}/operations)
+	ListAppInstanceOperations(w http.ResponseWriter, r *http.Request, instanceId InstanceId, params ListAppInstanceOperationsParams)
 	// GetAppProvisioning Provisioning status
 	// (GET /api/v1/apps/instances/{instanceId}/provisioning)
 	GetAppProvisioning(w http.ResponseWriter, r *http.Request, instanceId InstanceId, params GetAppProvisioningParams)
@@ -2926,6 +3021,61 @@ func (siw *ServerInterfaceWrapper) RotateAppCredential(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RotateAppCredential(w, r, instanceId, credentialName)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListAppInstanceOperations operation middleware
+func (siw *ServerInterfaceWrapper) ListAppInstanceOperations(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "instanceId" -------------
+	var instanceId InstanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "instanceId", r.PathValue("instanceId"), &instanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "instanceId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListAppInstanceOperationsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "offset" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "offset", r.URL.Query(), &params.Offset, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "offset"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "offset", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAppInstanceOperations(w, r, instanceId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4810,6 +4960,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances", wrapper.ListAppInstances)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}", wrapper.GetAppInstance)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}", wrapper.UpdateAppInstance)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/operations", wrapper.ListAppInstanceOperations)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/setup", wrapper.RetryAppInstanceSetup)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate", wrapper.RotateAppCredential)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/abandon", wrapper.AbandonAppCredentialRotation)
@@ -5510,6 +5661,109 @@ type RotateAppCredential500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response RotateAppCredential500ApplicationProblemPlusJSONResponse) VisitRotateAppCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppInstanceOperationsRequestObject struct {
+	InstanceId InstanceId `json:"instanceId"`
+	Params     ListAppInstanceOperationsParams
+}
+
+type ListAppInstanceOperationsResponseObject interface {
+	VisitListAppInstanceOperationsResponse(w http.ResponseWriter) error
+}
+
+type ListAppInstanceOperations200JSONResponse AppOperationList
+
+func (response ListAppInstanceOperations200JSONResponse) VisitListAppInstanceOperationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppInstanceOperations400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppInstanceOperations400ApplicationProblemPlusJSONResponse) VisitListAppInstanceOperationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppInstanceOperations401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppInstanceOperations401ApplicationProblemPlusJSONResponse) VisitListAppInstanceOperationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppInstanceOperations403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppInstanceOperations403ApplicationProblemPlusJSONResponse) VisitListAppInstanceOperationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppInstanceOperations404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppInstanceOperations404ApplicationProblemPlusJSONResponse) VisitListAppInstanceOperationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppInstanceOperations500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppInstanceOperations500ApplicationProblemPlusJSONResponse) VisitListAppInstanceOperationsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -11980,6 +12234,9 @@ type StrictServerInterface interface {
 	// RotateAppCredential Rotate a credential
 	// (POST /api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate)
 	RotateAppCredential(ctx context.Context, request RotateAppCredentialRequestObject) (RotateAppCredentialResponseObject, error)
+	// ListAppInstanceOperations Operation history of a managed instance
+	// (GET /api/v1/apps/instances/{instanceId}/operations)
+	ListAppInstanceOperations(ctx context.Context, request ListAppInstanceOperationsRequestObject) (ListAppInstanceOperationsResponseObject, error)
 	// GetAppProvisioning Provisioning status
 	// (GET /api/v1/apps/instances/{instanceId}/provisioning)
 	GetAppProvisioning(ctx context.Context, request GetAppProvisioningRequestObject) (GetAppProvisioningResponseObject, error)
@@ -12457,6 +12714,33 @@ func (sh *strictHandler) RotateAppCredential(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RotateAppCredentialResponseObject); ok {
 		if err := validResponse.VisitRotateAppCredentialResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListAppInstanceOperations operation middleware
+func (sh *strictHandler) ListAppInstanceOperations(w http.ResponseWriter, r *http.Request, instanceId InstanceId, params ListAppInstanceOperationsParams) {
+	var request ListAppInstanceOperationsRequestObject
+
+	request.InstanceId = instanceId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListAppInstanceOperations(ctx, request.(ListAppInstanceOperationsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListAppInstanceOperations")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListAppInstanceOperationsResponseObject); ok {
+		if err := validResponse.VisitListAppInstanceOperationsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

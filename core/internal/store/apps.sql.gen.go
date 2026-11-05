@@ -481,6 +481,32 @@ func (q *Queries) GetAppCredentialForUpdate(ctx context.Context, arg GetAppCrede
 	return i, err
 }
 
+const getAppDesiredSpec = `-- name: GetAppDesiredSpec :one
+SELECT instance_id, generation, package_version, run_state, purge, settings, credential_versions, reason, created_at FROM app_desired_specs WHERE instance_id = $1 AND generation = $2
+`
+
+type GetAppDesiredSpecParams struct {
+	InstanceID uuid.UUID
+	Generation int64
+}
+
+func (q *Queries) GetAppDesiredSpec(ctx context.Context, arg GetAppDesiredSpecParams) (AppDesiredSpec, error) {
+	row := q.db.QueryRow(ctx, getAppDesiredSpec, arg.InstanceID, arg.Generation)
+	var i AppDesiredSpec
+	err := row.Scan(
+		&i.InstanceID,
+		&i.Generation,
+		&i.PackageVersion,
+		&i.RunState,
+		&i.Purge,
+		&i.Settings,
+		&i.CredentialVersions,
+		&i.Reason,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getAppInstance = `-- name: GetAppInstance :one
 SELECT id, key, provider, management, display_name, state, base_url, settings, access_policy, manage_existing_members, package_id, package_version, desired_generation, observed_generation, health, health_code, health_checked_at, created_at, updated_at, removed_at, data_retained FROM app_instances WHERE id = $1
 `
@@ -543,6 +569,38 @@ func (q *Queries) GetAppInstanceForUpdate(ctx context.Context, id uuid.UUID) (Ap
 		&i.UpdatedAt,
 		&i.RemovedAt,
 		&i.DataRetained,
+	)
+	return i, err
+}
+
+const getAppPushOperation = `-- name: GetAppPushOperation :one
+SELECT id, instance_id, generation, kind, state, phase, agent_operation_id, error_code, from_version, to_version, started_by, created_at, finished_at FROM app_operations
+WHERE instance_id = $1 AND generation = $2 AND kind IN ('apply', 'upgrade', 'remove')
+`
+
+type GetAppPushOperationParams struct {
+	InstanceID uuid.UUID
+	Generation *int64
+}
+
+// The operation of a pushed desired generation (app_operations_generation_key).
+func (q *Queries) GetAppPushOperation(ctx context.Context, arg GetAppPushOperationParams) (AppOperation, error) {
+	row := q.db.QueryRow(ctx, getAppPushOperation, arg.InstanceID, arg.Generation)
+	var i AppOperation
+	err := row.Scan(
+		&i.ID,
+		&i.InstanceID,
+		&i.Generation,
+		&i.Kind,
+		&i.State,
+		&i.Phase,
+		&i.AgentOperationID,
+		&i.ErrorCode,
+		&i.FromVersion,
+		&i.ToVersion,
+		&i.StartedBy,
+		&i.CreatedAt,
+		&i.FinishedAt,
 	)
 	return i, err
 }
@@ -1481,24 +1539,79 @@ func (q *Queries) ListAppInstancesInState(ctx context.Context, states []string) 
 	return items, nil
 }
 
-const listAppOperations = `-- name: ListAppOperations :many
-SELECT id, instance_id, generation, kind, state, phase, agent_operation_id, error_code, from_version, to_version, started_by, created_at, finished_at FROM app_operations WHERE instance_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2
+const listAppInstancesWaitingForAgent = `-- name: ListAppInstancesWaitingForAgent :many
+SELECT DISTINCT ON (instance_id) instance_id, error_code::text AS error_code FROM app_operations
+WHERE finished_at IS NULL AND error_code = ANY($1::text[])
+ORDER BY instance_id, created_at DESC
 `
 
-type ListAppOperationsParams struct {
+type ListAppInstancesWaitingForAgentRow struct {
 	InstanceID uuid.UUID
-	RowLimit   int32
+	ErrorCode  string
 }
 
-func (q *Queries) ListAppOperations(ctx context.Context, arg ListAppOperationsParams) ([]AppOperation, error) {
-	rows, err := q.db.Query(ctx, listAppOperations, arg.InstanceID, arg.RowLimit)
+// Instances with an unfinished operation that waits for the agent, with
+// the newest reason.
+func (q *Queries) ListAppInstancesWaitingForAgent(ctx context.Context, codes []string) ([]ListAppInstancesWaitingForAgentRow, error) {
+	rows, err := q.db.Query(ctx, listAppInstancesWaitingForAgent, codes)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AppOperation{}
+	items := []ListAppInstancesWaitingForAgentRow{}
 	for rows.Next() {
-		var i AppOperation
+		var i ListAppInstancesWaitingForAgentRow
+		if err := rows.Scan(&i.InstanceID, &i.ErrorCode); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAppOperationHistory = `-- name: ListAppOperationHistory :many
+SELECT o.id, o.instance_id, o.generation, o.kind, o.state, o.phase, o.agent_operation_id, o.error_code, o.from_version, o.to_version, o.started_by, o.created_at, o.finished_at, d.reason AS reason FROM app_operations o
+LEFT JOIN app_desired_specs d ON d.instance_id = o.instance_id AND d.generation = o.generation
+WHERE o.instance_id = $1
+ORDER BY o.created_at DESC, o.id DESC
+LIMIT $3 OFFSET $2
+`
+
+type ListAppOperationHistoryParams struct {
+	InstanceID uuid.UUID
+	RowOffset  int32
+	RowLimit   int32
+}
+
+type ListAppOperationHistoryRow struct {
+	ID               uuid.UUID
+	InstanceID       uuid.UUID
+	Generation       *int64
+	Kind             string
+	State            string
+	Phase            *string
+	AgentOperationID *uuid.UUID
+	ErrorCode        *string
+	FromVersion      *string
+	ToVersion        *string
+	StartedBy        *uuid.UUID
+	CreatedAt        time.Time
+	FinishedAt       *time.Time
+	Reason           *string
+}
+
+func (q *Queries) ListAppOperationHistory(ctx context.Context, arg ListAppOperationHistoryParams) ([]ListAppOperationHistoryRow, error) {
+	rows, err := q.db.Query(ctx, listAppOperationHistory, arg.InstanceID, arg.RowOffset, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAppOperationHistoryRow{}
+	for rows.Next() {
+		var i ListAppOperationHistoryRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.InstanceID,
@@ -1513,6 +1626,7 @@ func (q *Queries) ListAppOperations(ctx context.Context, arg ListAppOperationsPa
 			&i.StartedBy,
 			&i.CreatedAt,
 			&i.FinishedAt,
+			&i.Reason,
 		); err != nil {
 			return nil, err
 		}
@@ -2248,6 +2362,37 @@ func (q *Queries) ListTeamMemberIDs(ctx context.Context, teamID uuid.UUID) ([]uu
 	return items, nil
 }
 
+const listUnfinishedAppPushOperations = `-- name: ListUnfinishedAppPushOperations :many
+SELECT o.instance_id, o.generation::bigint AS generation FROM app_operations o
+WHERE o.finished_at IS NULL AND o.generation IS NOT NULL AND o.kind IN ('apply', 'upgrade', 'remove')
+ORDER BY o.created_at
+`
+
+type ListUnfinishedAppPushOperationsRow struct {
+	InstanceID uuid.UUID
+	Generation int64
+}
+
+func (q *Queries) ListUnfinishedAppPushOperations(ctx context.Context) ([]ListUnfinishedAppPushOperationsRow, error) {
+	rows, err := q.db.Query(ctx, listUnfinishedAppPushOperations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUnfinishedAppPushOperationsRow{}
+	for rows.Next() {
+		var i ListUnfinishedAppPushOperationsRow
+		if err := rows.Scan(&i.InstanceID, &i.Generation); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUnmanagedAccounts = `-- name: ListUnmanagedAccounts :many
 SELECT instance_id, external_id, login, seen_at FROM app_unmanaged_accounts WHERE instance_id = $1 ORDER BY login, external_id
 `
@@ -2356,6 +2501,60 @@ type MarkProvisioningQueuedParams struct {
 func (q *Queries) MarkProvisioningQueued(ctx context.Context, arg MarkProvisioningQueuedParams) error {
 	_, err := q.db.Exec(ctx, markProvisioningQueued, arg.InstanceID, arg.PersonID)
 	return err
+}
+
+const markStaleManagedHealth = `-- name: MarkStaleManagedHealth :execrows
+UPDATE app_instances SET health = 'unknown', health_code = 'agent_unavailable', updated_at = now()
+WHERE management = 'managed' AND state IN ('active', 'degraded') AND health <> 'unknown'
+  AND (health_checked_at IS NULL OR health_checked_at < $1::timestamptz)
+  AND (health_code IS NULL OR health_code = ANY($2::text[]))
+`
+
+type MarkStaleManagedHealthParams struct {
+	Before     time.Time
+	OwnedCodes []string
+}
+
+// Health becomes unknown when the agent missed two syncs.
+func (q *Queries) MarkStaleManagedHealth(ctx context.Context, arg MarkStaleManagedHealthParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markStaleManagedHealth, arg.Before, arg.OwnedCodes)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const mirrorAppOperation = `-- name: MirrorAppOperation :execrows
+UPDATE app_operations
+SET agent_operation_id = $1, state = $2, phase = $3, error_code = $4, finished_at = $5
+WHERE id = $6 AND finished_at IS NULL
+`
+
+type MirrorAppOperationParams struct {
+	AgentOperationID *uuid.UUID
+	State            string
+	Phase            *string
+	ErrorCode        *string
+	FinishedAt       *time.Time
+	ID               uuid.UUID
+}
+
+// Records what the agent reports (or a core-side end such as superseded).
+// Zero rows: the operation already finished, so nothing more is recorded
+// and its consequences are not applied twice.
+func (q *Queries) MirrorAppOperation(ctx context.Context, arg MirrorAppOperationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, mirrorAppOperation,
+		arg.AgentOperationID,
+		arg.State,
+		arg.Phase,
+		arg.ErrorCode,
+		arg.FinishedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const nextAppCredentialVersion = `-- name: NextAppCredentialVersion :one
@@ -2487,6 +2686,106 @@ func (q *Queries) SetAppCredentialStateFrom(ctx context.Context, arg SetAppCrede
 	return result.RowsAffected(), nil
 }
 
+const setAppInstanceApplied = `-- name: SetAppInstanceApplied :exec
+UPDATE app_instances
+SET observed_generation = $1,
+    package_version = coalesce($2, package_version), updated_at = now()
+WHERE id = $3 AND observed_generation <= $1
+`
+
+type SetAppInstanceAppliedParams struct {
+	Generation     int64
+	PackageVersion *string
+	ID             uuid.UUID
+}
+
+// An operation of generation succeeded. Fenced by generation: an older
+// operation that ends after a newer one was recorded changes nothing.
+func (q *Queries) SetAppInstanceApplied(ctx context.Context, arg SetAppInstanceAppliedParams) error {
+	_, err := q.db.Exec(ctx, setAppInstanceApplied, arg.Generation, arg.PackageVersion, arg.ID)
+	return err
+}
+
+const setAppInstanceDesiredGeneration = `-- name: SetAppInstanceDesiredGeneration :execrows
+UPDATE app_instances SET desired_generation = $1, updated_at = now()
+WHERE id = $2 AND desired_generation = $3
+`
+
+type SetAppInstanceDesiredGenerationParams struct {
+	Generation int64
+	ID         uuid.UUID
+	Previous   int64
+}
+
+// Conditional on the generation it replaces, so two writers cannot both
+// record the same next generation.
+func (q *Queries) SetAppInstanceDesiredGeneration(ctx context.Context, arg SetAppInstanceDesiredGenerationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAppInstanceDesiredGeneration, arg.Generation, arg.ID, arg.Previous)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setAppInstanceHealth = `-- name: SetAppInstanceHealth :execrows
+UPDATE app_instances SET health = $1, health_code = $2, health_checked_at = now(), updated_at = now()
+WHERE id = $3 AND state = $4 AND observed_generation = $5
+  AND (health_code IS NULL OR health_code = ANY($6::text[]))
+`
+
+type SetAppInstanceHealthParams struct {
+	Health             string
+	HealthCode         *string
+	ID                 uuid.UUID
+	State              string
+	ObservedGeneration int64
+	OwnedCodes         []string
+}
+
+// Conditional on the state the sync read, on the generation the health was
+// observed for (a check of an older generation never lands on a newer one)
+// and on a health code the sync owns, so it never overwrites a reason
+// another path set (setup_failed, webhook_deleted, ...).
+func (q *Queries) SetAppInstanceHealth(ctx context.Context, arg SetAppInstanceHealthParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAppInstanceHealth,
+		arg.Health,
+		arg.HealthCode,
+		arg.ID,
+		arg.State,
+		arg.ObservedGeneration,
+		arg.OwnedCodes,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setAppInstanceObservation = `-- name: SetAppInstanceObservation :execrows
+UPDATE app_instances
+SET observed_generation = $1,
+    package_version = coalesce($2, package_version), updated_at = now()
+WHERE id = $3 AND observed_generation <= $1
+`
+
+type SetAppInstanceObservationParams struct {
+	ObservedGeneration int64
+	PackageVersion     *string
+	ID                 uuid.UUID
+}
+
+// What the agent runs, fenced the same way: a status read before a newer
+// generation was recorded does not move it back. Zero rows: the status is
+// stale, and nothing else may be derived from it. (An agent that lost an
+// instance reports no status for it, so nothing is written.)
+func (q *Queries) SetAppInstanceObservation(ctx context.Context, arg SetAppInstanceObservationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAppInstanceObservation, arg.ObservedGeneration, arg.PackageVersion, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setAppInstanceState = `-- name: SetAppInstanceState :one
 UPDATE app_instances
 SET state = $1, health = $2, health_code = $3, health_checked_at = now(), updated_at = now()
@@ -2533,6 +2832,25 @@ func (q *Queries) SetAppInstanceState(ctx context.Context, arg SetAppInstanceSta
 		&i.DataRetained,
 	)
 	return i, err
+}
+
+const setAppOperationWaiting = `-- name: SetAppOperationWaiting :execrows
+UPDATE app_operations SET error_code = $1 WHERE id = $2 AND finished_at IS NULL
+`
+
+type SetAppOperationWaitingParams struct {
+	ErrorCode *string
+	ID        uuid.UUID
+}
+
+// Notes why an unfinished operation waits for the agent (agent_unavailable,
+// ...), or clears it (NULL) once the agent answers; a mirror clears it too.
+func (q *Queries) SetAppOperationWaiting(ctx context.Context, arg SetAppOperationWaitingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAppOperationWaiting, arg.ErrorCode, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setAppTeamMappingExternal = `-- name: SetAppTeamMappingExternal :exec

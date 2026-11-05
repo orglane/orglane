@@ -9,6 +9,7 @@ import { createApi } from "@/lib/api";
 export interface Call {
   method: string;
   path: string;
+  query: URLSearchParams;
   headers: Headers;
   body: unknown;
 }
@@ -85,6 +86,7 @@ export function fakeApi(routes: Record<string, Reply | ((call: Call) => Reply)> 
     const call: Call = {
       method: request.method,
       path: url.pathname,
+      query: url.searchParams,
       headers: request.headers,
       body: text ? JSON.parse(text) : undefined,
     };

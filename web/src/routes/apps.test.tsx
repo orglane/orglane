@@ -1,4 +1,5 @@
 import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { me, renderApp } from "@/test/harness";
@@ -408,5 +409,195 @@ describe("Apps guidance", () => {
       },
     });
     expect(await screen.findByText(/ask an administrator/)).toBeInTheDocument();
+  });
+
+  it("shows a managed install waiting for the agent and its operation history", async () => {
+    const managed = {
+      ...instance,
+      key: "managed-test",
+      provider: "agenttest",
+      management: "managed",
+      displayName: "Managed",
+      state: "installing",
+      health: "unknown",
+      packageId: "agenttest",
+      waitingForAgent: "agent_unavailable",
+    };
+    const op = (o: Record<string, unknown>) => ({
+      kind: "apply",
+      createdAt: "2026-11-01T10:00:00Z",
+      toVersion: "1.0.0-1",
+      ...o,
+    });
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": {
+        status: 200,
+        body: { items: [{ ...provider, id: "agenttest", management: "managed" }] },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}`]: {
+        status: 200,
+        body: {
+          instance: managed,
+          bindings: [],
+          operations: [],
+          credentials: [],
+          rotationStuck: false,
+          unmanagedAccountCount: 0,
+          provisioning: { queued: 0, done: 0, pendingEmployeeAction: 0, failed: 0 },
+        },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}/operations`]: ({ query }) => ({
+        status: 200,
+        body:
+          query.get("offset") === "3"
+            ? {
+                items: [op({ id: "o0", reason: "reinstall", state: "succeeded" })],
+                hasMore: false,
+              }
+            : {
+                items: [
+                  op({
+                    id: "o3",
+                    generation: 3,
+                    reason: "resync",
+                    state: "queued",
+                    errorCode: "agent_unavailable",
+                  }),
+                  op({
+                    id: "o2",
+                    generation: 2,
+                    reason: "configure",
+                    state: "failed",
+                    errorCode: "superseded",
+                    finishedAt: "2026-11-01T10:01:00Z",
+                  }),
+                  op({
+                    id: "o1",
+                    generation: 1,
+                    reason: "install",
+                    state: "succeeded",
+                    finishedAt: "2026-11-01T10:02:00Z",
+                  }),
+                ],
+                hasMore: true,
+              },
+      }),
+    });
+    const alert = await screen.findByText(/^To start the agent/);
+    expect(alert.parentElement).toHaveTextContent("enable-managed");
+    const table = await screen.findByRole("table", { name: "Operations" });
+    const rows = within(table).getAllByRole("row");
+    expect(rows[1]).toHaveTextContent("Restore after agent data loss");
+    expect(rows[1]).toHaveTextContent("Waiting for the agent");
+    expect(rows[2]).toHaveTextContent("Replaced by a newer change before it ran.");
+    expect(rows[3]).toHaveTextContent("Install");
+    expect(rows[3]).toHaveTextContent("Succeeded");
+    // Older history pages in after the ones shown.
+    await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(await within(table).findByText("Reinstall")).toBeInTheDocument();
+    expect(within(table).getAllByRole("row")).toHaveLength(5);
+    expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the loaded history and keyboard focus when more operations load, and names phases", async () => {
+    const managed = {
+      ...instance,
+      key: "managed-test",
+      provider: "agenttest",
+      management: "managed",
+      displayName: "Managed",
+      packageId: "agenttest",
+    };
+    const op = (o: Record<string, unknown>) => ({
+      kind: "apply",
+      createdAt: "2026-11-01T10:00:00Z",
+      toVersion: "1.0.0-1",
+      ...o,
+    });
+    let olderCalls = 0;
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": {
+        status: 200,
+        body: { items: [{ ...provider, id: "agenttest", management: "managed" }] },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}`]: {
+        status: 200,
+        body: {
+          instance: managed,
+          bindings: [],
+          operations: [],
+          credentials: [],
+          rotationStuck: false,
+          unmanagedAccountCount: 0,
+          provisioning: { queued: 0, done: 0, pendingEmployeeAction: 0, failed: 0 },
+        },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}/operations`]: ({ query }) => {
+        if (query.get("offset") !== "2") {
+          return {
+            status: 200,
+            body: {
+              items: [
+                op({
+                  id: "o2",
+                  generation: 2,
+                  reason: "configure",
+                  state: "running",
+                  phase: "policy_check",
+                }),
+                op({
+                  id: "o1",
+                  generation: 1,
+                  reason: "resync",
+                  state: "running",
+                  phase: "frobnicating",
+                }),
+              ],
+              hasMore: true,
+            },
+          };
+        }
+        olderCalls++;
+        // The first request for older operations fails (403: not retried).
+        return olderCalls === 1
+          ? {
+              status: 403,
+              body: { type: "about:blank", title: "Forbidden", status: 403 },
+            }
+          : {
+              status: 200,
+              body: {
+                items: [op({ id: "o0", generation: 0, reason: "install", state: "succeeded" })],
+                hasMore: false,
+              },
+            };
+      },
+    });
+    const table = await screen.findByRole("table", { name: "Operations" });
+    // Known phases are named; an unknown one stays readable.
+    expect(within(table).getByText("Checking the configuration")).toBeInTheDocument();
+    expect(within(table).getByText("frobnicating").parentElement).toHaveTextContent(
+      "In progress: frobnicating",
+    );
+
+    const user = userEvent.setup();
+    const more = screen.getByRole("button", { name: "Show more" });
+    more.focus();
+    await user.keyboard("{Enter}");
+    // A failed page keeps the loaded history, the control and the focus.
+    expect(await screen.findByText(/Older operations could not be loaded/)).toBeInTheDocument();
+    expect(within(table).getAllByRole("row")).toHaveLength(3);
+    const again = screen.getByRole("button", { name: "Try again to show more" });
+    expect(again).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    const install = await within(table).findByText("Install");
+    // Focus moves to the first new row and the append is announced.
+    expect(install.closest("th")).toHaveFocus();
+    expect(screen.getByText("1 more operation loaded.")).toBeInTheDocument();
+    expect(screen.queryByText(/Older operations could not be loaded/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /show more/i })).not.toBeInTheDocument();
   });
 });

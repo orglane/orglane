@@ -183,6 +183,8 @@ func Register(workers *river.Workers, s *Service) error {
 		func() error { return river.AddWorkerSafely(workers, &setupWorker{s: s}) },
 		func() error { return river.AddWorkerSafely(workers, &cleanupWorker{s: s}) },
 		func() error { return river.AddWorkerSafely(workers, &driftCheckWorker{s: s}) },
+		func() error { return river.AddWorkerSafely(workers, &agentApplyWorker{s: s}) },
+		func() error { return river.AddWorkerSafely(workers, &agentSyncWorker{s: s}) },
 	} {
 		if err := add(); err != nil {
 			return fmt.Errorf("apps: register worker: %w", err)
@@ -191,13 +193,17 @@ func Register(workers *river.Workers, s *Service) error {
 	return nil
 }
 
-// PeriodicJobs are the daily cleanup and drift check.
-func PeriodicJobs() []*river.PeriodicJob {
+// PeriodicJobs are the daily cleanup and drift check, and the agent sync
+// every Config.SyncInterval and at start. Without managed instances the sync
+// is one query.
+func (s *Service) PeriodicJobs() []*river.PeriodicJob {
 	return []*river.PeriodicJob{
 		river.NewPeriodicJob(river.PeriodicInterval(DailyInterval),
 			func() (river.JobArgs, *river.InsertOpts) { return CleanupArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}),
 		river.NewPeriodicJob(river.PeriodicInterval(DailyInterval),
 			func() (river.JobArgs, *river.InsertOpts) { return DriftCheckArgs{}, nil }, nil),
+		river.NewPeriodicJob(river.PeriodicInterval(s.cfg.SyncInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return AgentSyncArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}),
 	}
 }
 

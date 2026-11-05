@@ -47,7 +47,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	if err := migrator.Up(ctx); err != nil {
 		return err
 	}
-	stack, err := web.NewStack(pool, cfg, logger, web.StackOptions{})
+	stack, err := web.NewStack(pool, cfg, logger, web.StackOptions{Version: version})
 	if err != nil {
 		return err
 	}
@@ -72,6 +72,8 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	if err := jobClient.Start(context.WithoutCancel(ctx)); err != nil {
 		return fmt.Errorf("start job queue: %w", err)
 	}
+	// Syncs managed instances when the agent restarts (no-op without one).
+	go stack.Apps.WatchAgent(ctx)
 
 	ui, err := webui.New(webapp.Dist())
 	if err != nil {

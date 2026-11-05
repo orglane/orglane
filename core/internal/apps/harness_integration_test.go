@@ -47,11 +47,23 @@ type harness struct {
 	svc     *apps.Service
 	tp      *testprovider.Provider
 	managed *testprovider.Provider
+	// agentProv is the managed variant whose package is agenttest.
+	agentProv *testprovider.Provider
+	reg       *apps.Registry
+	keyring   *crypto.Keyring
+	cfg       apps.Config
+	queue     apps.Queue
 }
 
-func newHarness(t *testing.T) *harness {
+// newHarness builds the harness; opts change the service's configuration
+// (agent client, packages, intervals).
+func newHarness(t *testing.T, opts ...func(*apps.Config)) *harness {
 	t.Helper()
-	return newHarnessWith(t, apps.Config{})
+	var cfg apps.Config
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return newHarnessWith(t, cfg)
 }
 
 // newHarnessWith is newHarness with more of the service's configuration
@@ -79,7 +91,8 @@ func newHarnessWith(t *testing.T, cfg apps.Config, adapters ...provider.Capabili
 	}
 	tp := testprovider.New()
 	managed := testprovider.New(testprovider.WithID("testmanaged"), testprovider.Managed())
-	reg, err := apps.NewRegistry(append([]provider.CapabilityManifest{tp, managed}, adapters...)...)
+	agentProv := testprovider.New(testprovider.WithID("agenttest"), testprovider.Managed())
+	reg, err := apps.NewRegistry(append([]provider.CapabilityManifest{tp, managed, agentProv}, adapters...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +109,19 @@ func newHarnessWith(t *testing.T, cfg apps.Config, adapters ...provider.Capabili
 	if err := ids.SeedBuiltinRoles(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return &harness{t: t, ctx: ctx, pool: pool, ids: ids, svc: svc, tp: tp, managed: managed}
+	return &harness{t: t, ctx: ctx, pool: pool, ids: ids, svc: svc, tp: tp, managed: managed, agentProv: agentProv, reg: reg, keyring: keyring, cfg: cfg, queue: rc}
+}
+
+// restartCore returns a new service on the same database, as after a core
+// restart: nothing in memory survives.
+func (h *harness) restartCore(opts ...func(*apps.Config)) *apps.Service {
+	cfg := h.cfg
+	for _, o := range opts {
+		o(&cfg)
+	}
+	svc := apps.NewService(h.pool, h.reg, h.keyring, cfg)
+	svc.SetQueue(h.queue)
+	return svc
 }
 
 // instance creates an active test provider instance.
@@ -209,6 +234,12 @@ func (h *harness) work(j queued) error {
 	case apps.CleanupArgs{}.Kind():
 		_, err := h.svc.Cleanup(h.ctx)
 		return err
+	case apps.AgentApplyArgs{}.Kind():
+		var a apps.AgentApplyArgs
+		h.decode(j.args, &a)
+		return h.svc.RunAgentApply(h.ctx, a)
+	case apps.AgentSyncArgs{}.Kind():
+		return h.svc.RunAgentSync(h.ctx)
 	}
 	h.t.Fatalf("unknown job kind %s", j.kind)
 	return nil

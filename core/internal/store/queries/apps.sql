@@ -45,8 +45,85 @@ INSERT INTO app_operations (instance_id, generation, kind, state, phase, agent_o
 VALUES (@instance_id, @generation, @kind, @state, @phase, @agent_operation_id, @from_version, @to_version, @started_by)
 RETURNING *;
 
--- name: ListAppOperations :many
-SELECT * FROM app_operations WHERE instance_id = @instance_id ORDER BY created_at DESC, id DESC LIMIT @row_limit;
+-- name: GetAppDesiredSpec :one
+SELECT * FROM app_desired_specs WHERE instance_id = @instance_id AND generation = @generation;
+
+-- name: SetAppInstanceDesiredGeneration :execrows
+-- Conditional on the generation it replaces, so two writers cannot both
+-- record the same next generation.
+UPDATE app_instances SET desired_generation = @generation, updated_at = now()
+WHERE id = @id AND desired_generation = @previous;
+
+-- name: GetAppPushOperation :one
+-- The operation of a pushed desired generation (app_operations_generation_key).
+SELECT * FROM app_operations
+WHERE instance_id = @instance_id AND generation = @generation AND kind IN ('apply', 'upgrade', 'remove');
+
+-- name: MirrorAppOperation :execrows
+-- Records what the agent reports (or a core-side end such as superseded).
+-- Zero rows: the operation already finished, so nothing more is recorded
+-- and its consequences are not applied twice.
+UPDATE app_operations
+SET agent_operation_id = @agent_operation_id, state = @state, phase = @phase, error_code = @error_code, finished_at = @finished_at
+WHERE id = @id AND finished_at IS NULL;
+
+-- name: SetAppOperationWaiting :execrows
+-- Notes why an unfinished operation waits for the agent (agent_unavailable,
+-- ...), or clears it (NULL) once the agent answers; a mirror clears it too.
+UPDATE app_operations SET error_code = @error_code WHERE id = @id AND finished_at IS NULL;
+
+-- name: ListUnfinishedAppPushOperations :many
+SELECT o.instance_id, o.generation::bigint AS generation FROM app_operations o
+WHERE o.finished_at IS NULL AND o.generation IS NOT NULL AND o.kind IN ('apply', 'upgrade', 'remove')
+ORDER BY o.created_at;
+
+-- name: ListAppOperationHistory :many
+SELECT o.*, d.reason AS reason FROM app_operations o
+LEFT JOIN app_desired_specs d ON d.instance_id = o.instance_id AND d.generation = o.generation
+WHERE o.instance_id = @instance_id
+ORDER BY o.created_at DESC, o.id DESC
+LIMIT @row_limit OFFSET @row_offset;
+
+-- name: ListAppInstancesWaitingForAgent :many
+-- Instances with an unfinished operation that waits for the agent, with
+-- the newest reason.
+SELECT DISTINCT ON (instance_id) instance_id, error_code::text AS error_code FROM app_operations
+WHERE finished_at IS NULL AND error_code = ANY(@codes::text[])
+ORDER BY instance_id, created_at DESC;
+
+-- name: SetAppInstanceApplied :exec
+-- An operation of generation succeeded. Fenced by generation: an older
+-- operation that ends after a newer one was recorded changes nothing.
+UPDATE app_instances
+SET observed_generation = @generation,
+    package_version = coalesce(sqlc.narg(package_version), package_version), updated_at = now()
+WHERE id = @id AND observed_generation <= @generation;
+
+-- name: SetAppInstanceObservation :execrows
+-- What the agent runs, fenced the same way: a status read before a newer
+-- generation was recorded does not move it back. Zero rows: the status is
+-- stale, and nothing else may be derived from it. (An agent that lost an
+-- instance reports no status for it, so nothing is written.)
+UPDATE app_instances
+SET observed_generation = @observed_generation,
+    package_version = coalesce(sqlc.narg(package_version), package_version), updated_at = now()
+WHERE id = @id AND observed_generation <= @observed_generation;
+
+-- name: SetAppInstanceHealth :execrows
+-- Conditional on the state the sync read, on the generation the health was
+-- observed for (a check of an older generation never lands on a newer one)
+-- and on a health code the sync owns, so it never overwrites a reason
+-- another path set (setup_failed, webhook_deleted, ...).
+UPDATE app_instances SET health = @health, health_code = @health_code, health_checked_at = now(), updated_at = now()
+WHERE id = @id AND state = @state AND observed_generation = @observed_generation
+  AND (health_code IS NULL OR health_code = ANY(@owned_codes::text[]));
+
+-- name: MarkStaleManagedHealth :execrows
+-- Health becomes unknown when the agent missed two syncs.
+UPDATE app_instances SET health = 'unknown', health_code = 'agent_unavailable', updated_at = now()
+WHERE management = 'managed' AND state IN ('active', 'degraded') AND health <> 'unknown'
+  AND (health_checked_at IS NULL OR health_checked_at < @before::timestamptz)
+  AND (health_code IS NULL OR health_code = ANY(@owned_codes::text[]));
 
 -- Bindings -----------------------------------------------------------------
 

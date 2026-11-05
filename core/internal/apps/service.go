@@ -10,6 +10,7 @@
 package apps
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -31,6 +33,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/crypto"
 	"github.com/orglane/orglane/core/internal/packages"
@@ -95,10 +98,36 @@ type Config struct {
 	Now func() time.Time
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
-	// Packages are the embedded managed packages: the routes and upstreams
-	// of managed instances come from them. Nil: managed instances have
-	// none.
+
+	// Agent is the core's client of the agent; nil when managed services
+	// are disabled. Pushes then wait for the agent.
+	Agent AgentClient
+	// Packages are the embedded managed packages: the routes, hosts and
+	// upstreams of managed instances come from them, and without one a
+	// managed provider cannot be installed.
 	Packages *packages.Registry
+	// IngressMode is config.IngressDomain or config.IngressLocal (the
+	// default).
+	IngressMode string
+	// ServiceHost returns the public host of a service label (ADR 0018,
+	// config.ServiceHost). Defaults to "<label>.<workspace host>".
+	ServiceHost func(label string) string
+	// SyncInterval is how often orglane.apps.agent_sync runs. Defaults to
+	// 5m (config.Agent.SyncInterval).
+	SyncInterval time.Duration
+	// AgentPollInterval is how long agent_apply snoozes between polls of an
+	// operation. Defaults to 2s.
+	AgentPollInterval time.Duration
+	// AgentRetryMax caps the backoff while a push waits for the agent.
+	// Defaults to a minute.
+	AgentRetryMax time.Duration
+	// AgentWatchInterval is how often WatchAgent asks the agent for its boot
+	// ID. Defaults to 30s.
+	AgentWatchInterval time.Duration
+	// InstallPreflight, if set, checks an install before anything is
+	// recorded (#61: host, DNS, agent health, resource hints); its error is
+	// returned by Install.
+	InstallPreflight func(ctx context.Context, plan InstallPlan) error
 }
 
 // Service changes and reads everything the provider framework owns.
@@ -114,6 +143,9 @@ type Service struct {
 	queue Queue
 
 	badSignatures rateLimitedLog
+
+	// bootID is the agent boot ID seen last (uuid.UUID), for WatchAgent.
+	bootID atomic.Value
 }
 
 // NewService returns a Service.
@@ -133,6 +165,17 @@ func NewService(pool *pgxpool.Pool, reg *Registry, keyring *crypto.Keyring, cfg 
 	if cfg.IssuerURL == nil {
 		cfg.IssuerURL = cfg.WorkspaceURL
 	}
+	if cfg.IngressMode == "" {
+		cfg.IngressMode = agentapi.IngressLocal
+	}
+	if cfg.ServiceHost == nil {
+		host := cfg.WorkspaceURL.Hostname()
+		cfg.ServiceHost = func(label string) string { return label + "." + host }
+	}
+	cfg.SyncInterval = cmp.Or(cfg.SyncInterval, defaultSyncInterval)
+	cfg.AgentPollInterval = cmp.Or(cfg.AgentPollInterval, defaultAgentPollInterval)
+	cfg.AgentRetryMax = cmp.Or(cfg.AgentRetryMax, defaultAgentRetryMax)
+	cfg.AgentWatchInterval = cmp.Or(cfg.AgentWatchInterval, defaultAgentWatchInterval)
 	return &Service{
 		pool:          pool,
 		reg:           reg,
@@ -184,6 +227,10 @@ type Instance struct {
 	Settings map[string]any
 	// Adapter is nil when the provider is not compiled into this binary.
 	Adapter *Adapter
+	// WaitingForAgent is set (Instance and Instances only) while a change
+	// of a managed instance waits for the agent: agent_unavailable,
+	// agent_version_mismatch or agent_untrusted.
+	WaitingForAgent string
 	// upstream is the direct URL of a managed instance on the edge network
 	// (provider.Instance.Upstream); nil when its package is not embedded.
 	upstream *url.URL
@@ -242,7 +289,30 @@ func (s *Service) loadInstance(ctx context.Context, q *store.Queries, id uuid.UU
 
 // Instance returns an app instance.
 func (s *Service) Instance(ctx context.Context, id uuid.UUID) (Instance, error) {
-	return s.loadInstance(ctx, store.New(s.pool), id, false)
+	inst, err := s.loadInstance(ctx, store.New(s.pool), id, false)
+	if err != nil {
+		return Instance{}, err
+	}
+	waiting, err := s.waitingForAgent(ctx)
+	if err != nil {
+		return Instance{}, err
+	}
+	inst.WaitingForAgent = waiting[inst.ID]
+	return inst, nil
+}
+
+// waitingForAgent maps instances with an operation that waits for the
+// agent to the reason.
+func (s *Service) waitingForAgent(ctx context.Context) (map[uuid.UUID]string, error) {
+	rows, err := store.New(s.pool).ListAppInstancesWaitingForAgent(ctx, waitingCodes)
+	if err != nil {
+		return nil, fmt.Errorf("apps: list operations waiting for the agent: %w", err)
+	}
+	out := make(map[uuid.UUID]string, len(rows))
+	for _, r := range rows {
+		out[r.InstanceID] = r.ErrorCode
+	}
+	return out, nil
 }
 
 // Instances returns every app instance, removed ones included, oldest
@@ -252,12 +322,17 @@ func (s *Service) Instances(ctx context.Context) ([]Instance, error) {
 	if err != nil {
 		return nil, fmt.Errorf("apps: list instances: %w", err)
 	}
+	waiting, err := s.waitingForAgent(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]Instance, 0, len(rows))
 	for _, row := range rows {
 		inst, err := s.instance(row)
 		if err != nil {
 			return nil, err
 		}
+		inst.WaitingForAgent = waiting[inst.ID]
 		out = append(out, inst)
 	}
 	return out, nil
@@ -276,7 +351,14 @@ type NewInstance struct {
 }
 
 // CreateInstance creates an app instance and its generated credentials.
+// Installing a managed provider through the agent is Install.
 func (s *Service) CreateInstance(ctx context.Context, actor audit.Actor, in NewInstance) (Instance, error) {
+	return s.createInstance(ctx, actor, in, nil)
+}
+
+// createInstance creates an instance; then, if set, runs in the same
+// transaction after the instance and its credentials exist.
+func (s *Service) createInstance(ctx context.Context, actor audit.Actor, in NewInstance, then func(tx pgx.Tx, q *store.Queries, created Instance) error) (Instance, error) {
 	adapter, ok := s.reg.Adapter(in.Provider)
 	if !ok {
 		return Instance{}, fmt.Errorf("%w: %s", ErrProviderUnavailable, in.Provider)
@@ -365,6 +447,11 @@ func (s *Service) CreateInstance(ctx context.Context, actor audit.Actor, in NewI
 				continue
 			}
 			if _, err := s.storeCredential(ctx, q, actor, created, c.Name, []byte(crypto.RandomToken("")), credentialActive); err != nil {
+				return err
+			}
+		}
+		if then != nil {
+			if err := then(tx, q, created); err != nil {
 				return err
 			}
 		}
