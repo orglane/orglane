@@ -64,7 +64,14 @@ type Session struct {
 // It fails the test if the server is not in demo mode.
 func SignIn(t testing.TB, baseURL, username string) *Session {
 	t.Helper()
-	s := &Session{BaseURL: strings.TrimSuffix(baseURL, "/"), client: &http.Client{Timeout: 30 * time.Second}}
+	return SignInWith(t, &http.Client{Timeout: 30 * time.Second}, baseURL, username)
+}
+
+// SignInWith is SignIn through client, e.g. one that dials Traefik's
+// published port for a *.localhost workspace that the host cannot resolve.
+func SignInWith(t testing.TB, client *http.Client, baseURL, username string) *Session {
+	t.Helper()
+	s := &Session{BaseURL: strings.TrimSuffix(baseURL, "/"), client: client}
 
 	code, _, body := s.do(t, http.MethodGet, "/.well-known/orglane", nil)
 	var discovery struct {

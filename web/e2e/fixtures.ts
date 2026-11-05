@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { test as base, type CDPSession, type Page } from "@playwright/test";
 import { loadState, run } from "./env";
 
 export interface Instance {
-  /** http://localhost:<port> */
+  /** http://localhost:<port> (http://orglane.localhost:<port> with realAgent) */
   url: string;
   /** A fresh one-time setup token. */
   setupToken(): string;
@@ -67,11 +68,19 @@ export const test = base.extend<{
   demo: boolean;
   /** Managed services on, with an agent that never answers (its socket does not exist). */
   agent: boolean;
+  /**
+   * Managed services on with a real `orglane agent` process, without the
+   * Compose bundle (so installs fail once the agent needs the bundle's
+   * PostgreSQL). The workspace is orglane.localhost, as managed services
+   * need in local mode.
+   */
+  realAgent: boolean;
   webauthn: CDPSession;
   mailpit: { smtpPort: number; api: string };
 }>({
   demo: [false, { option: true }],
   agent: [false, { option: true }],
+  realAgent: [false, { option: true }],
   // Real SMTP, isolated per test; only starts for tests requesting it.
   // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture dependencies
   mailpit: async ({}, use) => {
@@ -105,18 +114,22 @@ export const test = base.extend<{
   },
   // A fresh database and `orglane server` for every test, reached on
   // localhost (the plain-HTTP development mode).
-  instance: async ({ demo, agent }, use, testInfo) => {
+  instance: async ({ demo, agent, realAgent }, use, testInfo) => {
     const state = loadState();
     const db = `e2e_${randomBytes(6).toString("hex")}`;
     run("docker", ["exec", state.container, "createdb", "-U", "orglane", db]);
     const port = await freePort();
-    const url = `http://localhost:${port}`;
+    const base = realAgent ? "orglane.localhost" : "localhost";
+    const url = `http://${base}:${port}`;
+    // The agent's socket directory holds nothing else (the agent sets its mode).
+    const agentDir = realAgent ? mkdtempSync(join(tmpdir(), "orglane-e2e-agent-")) : "";
+    const agentSecret = randomBytes(32).toString("hex");
     const env = {
       ...process.env,
       ORGLANE_ENVIRONMENT: "development",
       ORGLANE_DATABASE_URL: `${state.postgres}/${db}?sslmode=disable`,
-      ORGLANE_DOMAIN_BASE: "localhost",
-      ORGLANE_DOMAIN_WORKSPACE_HOST: `localhost:${port}`,
+      ORGLANE_DOMAIN_BASE: base,
+      ORGLANE_DOMAIN_WORKSPACE_HOST: `${base}:${port}`,
       ORGLANE_DOMAIN_SCHEME: "http",
       ORGLANE_SERVER_LISTEN: `127.0.0.1:${port}`,
       ORGLANE_LOG_FORMAT: "text",
@@ -129,8 +142,35 @@ export const test = base.extend<{
             ORGLANE_AGENT_SYNC_INTERVAL: "10s",
           }
         : {}),
+      ...(realAgent
+        ? {
+            ORGLANE_AGENT_SOCKET: join(agentDir, "run", "agent.sock"),
+            ORGLANE_AGENT_SECRET: agentSecret,
+            // Local mode, as install.sh --mode demo --managed runs it: no
+            // DNS check of *.localhost service hosts.
+            ORGLANE_INGRESS_MODE: "local",
+          }
+        : {}),
     };
     let log = "";
+    let agentProcess: ChildProcess | undefined;
+    if (realAgent) {
+      agentProcess = spawn(state.binary, ["agent"], {
+        env: {
+          ...process.env,
+          ORGLANE_LOG_FORMAT: "text",
+          ORGLANE_AGENT_LISTEN: join(agentDir, "run", "agent.sock"),
+          ORGLANE_AGENT_SECRET: agentSecret,
+          ORGLANE_AGENT_DATA_DIR: join(agentDir, "data"),
+          ORGLANE_AGENT_PEER_UID: "-1",
+          // No such Compose project: the agent finds no PostgreSQL.
+          ORGLANE_AGENT_COMPOSE_PROJECT: `e2e${randomBytes(4).toString("hex")}`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      agentProcess.stdout?.on("data", (d) => (log += `[agent] ${d}`));
+      agentProcess.stderr?.on("data", (d) => (log += `[agent] ${d}`));
+    }
     const server = spawn(state.binary, demo ? ["server", "--demo"] : ["server"], {
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -165,6 +205,8 @@ export const test = base.extend<{
       throw error;
     } finally {
       server.kill("SIGTERM");
+      agentProcess?.kill("SIGTERM");
+      if (agentDir) rmSync(agentDir, { recursive: true, force: true });
       if (testInfo.status !== testInfo.expectedStatus) {
         await testInfo.attach("orglane.log", { body: log, contentType: "text/plain" });
       }
