@@ -177,9 +177,19 @@ func TestAppsAPIPermissions(t *testing.T) {
 	expectStatusT(t, owner.req("GET", base+"/provisioning?offset=3000000000", nil), http.StatusBadRequest)
 	expectStatusT(t, owner.req("GET", base+"/operations?limit=101", nil), http.StatusBadRequest)
 	expectStatusT(t, owner.req("GET", base+"/operations?offset=3000000000", nil), http.StatusBadRequest)
-	// Unknown providers and a purge without the key's confirmation are refused.
+	// Unknown providers are refused; a connected instance is not purged here.
 	expectStatusT(t, owner.req("POST", "/api/v1/apps/instances", map[string]any{"provider": "nope"}), http.StatusConflict)
-	expectStatusT(t, owner.req("DELETE", base+"?purge=true", nil), http.StatusConflict)
+	expectStatusT(t, owner.req("DELETE", base+"?purge=true&confirm="+inst.Key, nil), http.StatusConflict)
+	// A managed instance's purge needs the key's confirmation (400 before
+	// anything else), checked before its state.
+	managed, err := e.stack.Apps.CreateInstance(ctx, audit.System, apps.NewInstance{Provider: "testmanaged"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedBase := "/api/v1/apps/instances/" + managed.ID.String()
+	expectStatusT(t, owner.req("DELETE", managedBase+"?purge=true", nil), http.StatusBadRequest)
+	expectStatusT(t, owner.req("DELETE", managedBase+"?purge=true&confirm=wrong", nil), http.StatusBadRequest)
+	expectStatusT(t, owner.req("DELETE", managedBase+"?purge=true&confirm="+managed.Key, nil), http.StatusConflict) // installing: not removable yet
 	var agent struct {
 		Enabled, Connected bool
 		Code               string

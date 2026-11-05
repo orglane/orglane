@@ -113,32 +113,20 @@ func TestManagedRemoval(t *testing.T) {
 		t.Fatalf("installing the retained host = %v", err)
 	}
 
-	// Purge of the retained instance fails; removed again it is retained
-	// (the purge did not finish); a reinstall brings it back.
+	// Reinstall brings the retained instance back.
 	gen := gen3 + 2
-	if _, err := h.svc.Remove(ctx, audit.System, id, true, inst.Key); err != nil {
-		t.Fatal(err)
-	}
-	expect(apps.StateRemoving, false, gen)
-	finish(gen, agentapi.OpFailed, agentapi.CodeDatabaseFailed)
-	expect(apps.StateFailed, false, gen)
-	if _, err := h.svc.Remove(ctx, audit.System, id, false, ""); err != nil {
-		t.Fatal(err)
-	}
-	finish(gen+1, agentapi.OpSucceeded, "")
-	expect(apps.StateRemoved, true, gen+1)
 	if _, err := h.svc.Reinstall(ctx, audit.System, id); err != nil {
 		t.Fatal(err)
 	}
-	got := expect(apps.StateInstalling, false, gen+2)
+	got := expect(apps.StateInstalling, false, gen)
 	if got.RemovedAt != nil {
 		t.Fatal("removed_at is still set")
 	}
-	if op := h.operation(id, gen+2); op.Kind != agentapi.KindApply || *op.ToVersion != agenttest.Version {
+	if op := h.operation(id, gen); op.Kind != agentapi.KindApply || *op.ToVersion != agenttest.Version {
 		t.Fatalf("reinstall operation %+v", op)
 	}
 	h.exec(`DELETE FROM river_job WHERE kind = $1`, apps.SetupArgs{}.Kind())
-	finish(gen+2, agentapi.OpSucceeded, "")
+	finish(gen, agentapi.OpSucceeded, "")
 	if h.jobs(apps.SetupArgs{}.Kind()) != 1 {
 		t.Fatal("the reinstalled instance runs no Setup")
 	}
@@ -146,8 +134,31 @@ func TestManagedRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Purge: removed, nothing retained, credentials deleted, key and host
-	// free again.
+	// Removed again (retained), then purged: the purge fails, perhaps after
+	// deleting part of the data. From purge_failed only a purge may follow:
+	// neither a removal that would mark the data retained nor a reinstall.
+	if _, err := h.svc.Remove(ctx, audit.System, id, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	finish(gen+1, agentapi.OpSucceeded, "")
+	expect(apps.StateRemoved, true, gen+1)
+	if _, err := h.svc.Remove(ctx, audit.System, id, true, inst.Key); err != nil {
+		t.Fatal(err)
+	}
+	expect(apps.StateRemoving, false, gen+2)
+	finish(gen+2, agentapi.OpFailed, agentapi.CodeDatabaseFailed)
+	if got := expect(apps.StateFailed, false, gen+2); derefS(got.HealthCode) != apps.CodePurgeFailed {
+		t.Fatalf("failed purge code %s", derefS(got.HealthCode))
+	}
+	if _, err := h.svc.Remove(ctx, audit.System, id, false, ""); !errors.Is(err, apps.ErrInvalidState) {
+		t.Fatalf("removing with data retained after a failed purge = %v", err)
+	}
+	if _, err := h.svc.Reinstall(ctx, audit.System, id); !errors.Is(err, apps.ErrInvalidState) {
+		t.Fatalf("reinstalling after a failed purge = %v", err)
+	}
+
+	// Purged again: removed, nothing retained, credentials deleted, key and
+	// host free again.
 	if _, err := h.svc.Remove(ctx, audit.System, id, true, inst.Key); err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +450,7 @@ func TestStalledOperationEnds(t *testing.T) {
 		t.Fatalf("stalled operation %+v (code %s)", op, derefS(op.ErrorCode))
 	}
 	got := h.reload(inst.ID)
-	if got.State != apps.StateFailed || derefS(got.HealthCode) != apps.CodeRemoveFailed {
+	if got.State != apps.StateFailed || derefS(got.HealthCode) != apps.CodePurgeFailed {
 		t.Fatalf("after a stalled purge: %s %s", got.State, derefS(got.HealthCode))
 	}
 	if h.count(`SELECT count(*) FROM app_credentials WHERE instance_id = $1`, inst.ID) == 0 {

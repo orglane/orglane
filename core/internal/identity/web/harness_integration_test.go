@@ -109,7 +109,7 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 
 	clk := &clock{t: time.Now()}
 	tp := testprovider.New()
-	stack, err := web.NewStack(pool, &cfg, logger, web.StackOptions{Hasher: fastHasher, Now: clk.Now, Adapters: []provider.CapabilityManifest{tp, githubprovider.New()}})
+	stack, err := web.NewStack(pool, &cfg, logger, web.StackOptions{Hasher: fastHasher, Now: clk.Now, Adapters: []provider.CapabilityManifest{tp, testprovider.New(testprovider.WithID("testmanaged"), testprovider.Managed()), githubprovider.New()}})
 	if err != nil {
 		t.Fatal(err)
 	}
