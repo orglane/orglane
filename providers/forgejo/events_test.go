@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -115,9 +116,11 @@ func TestNormalizeRealDeliveries(t *testing.T) {
 		t.Fatalf("issue comment = %+v", events)
 	}
 
-	events = normalize(t, fixture(t, "push"))
+	d = fixture(t, "push")
+	sum = sha256.Sum256(d.Body)
+	events = normalize(t, d)
 	if len(events) != 1 || events[0].Type != EventBranchPushed ||
-		events[0].DedupeKey != "push:1:refs/heads/feature:1d9f409fe45e70424165d37894742742bc287a54" ||
+		events[0].DedupeKey != "push:1:"+strings.Repeat("0", 40)+":1d9f409fe45e70424165d37894742742bc287a54:"+hex.EncodeToString(sum[:]) ||
 		events[0].Subject.Kind != "branch" || events[0].Subject.ExternalID != "1:feature" || events[0].Subject.Repository != "orglane/app" ||
 		events[0].Data["commit_count"] != 1 || events[0].Data["before"] != strings.Repeat("0", 40) || !events[0].OccurredAt.Equal(received) {
 		t.Fatalf("push = %+v", events)
@@ -281,6 +284,14 @@ func TestMentions(t *testing.T) {
 		{"too long", "@" + strings.Repeat("a", 41), nil},
 		{"not ascii", "@bøb @bob", []string{"bob"}},
 		{"bare @", "@ @. @-", nil},
+		{"code span across lines", "`first line\n@bob\nlast line` and @carol", []string{"carol"}},
+		{"code span ends at a paragraph", "`open\n\n@bob", []string{"bob"}},
+		{"indented code block", "intro\n\n    @bob\n\n    @eve\nafter @carol", []string{"carol"}},
+		{"indented code at the start", "    @bob\n@carol", []string{"carol"}},
+		{"tab-indented code", "\t@bob\n\n@carol", []string{"carol"}},
+		{"indented continuation of a paragraph", "please ask\n    @bob", []string{"bob"}},
+		{"fence interrupts a paragraph", "text @a\n```\n@bob\n```", []string{"a"}},
+		{"double backtick span across lines", "``a `\n@bob`` @carol", []string{"carol"}},
 	} {
 		if got := Mentions(c.text); !slices.Equal(got, c.want) {
 			t.Errorf("%s: %q -> %v, want %v", c.name, c.text, got, c.want)
@@ -288,5 +299,84 @@ func TestMentions(t *testing.T) {
 	}
 	if got := Mentions(many); len(got) != maxMentions {
 		t.Errorf("%d mentions, want at most %d", len(got), maxMentions)
+	}
+}
+
+// TestPushKeys: different pushes never share a dedupe key, even when they
+// move a ref to the same commit (A→B, B→C, C→B) or repeat a transition (a
+// force push back and forth); a redelivery of the same bytes does.
+func TestPushKeys(t *testing.T) {
+	push := func(before, after, at string) provider.Delivery {
+		return edit(t, fixture(t, "push"), func(b map[string]any) {
+			b["before"], b["after"] = before, after
+			b["compare_url"] = "http://git.orglane.localhost/orglane/app/compare/" + before + "..." + after
+			b["head_commit"].(map[string]any)["timestamp"] = at
+		})
+	}
+	a, b, c := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	keys := map[string]string{}
+	for name, d := range map[string]provider.Delivery{
+		"A→B":       push(a, b, "2026-11-05T05:00:00Z"),
+		"B→C":       push(b, c, "2026-11-05T05:01:00Z"),
+		"C→B":       push(c, b, "2026-11-05T05:02:00Z"),
+		"A→B again": push(a, b, "2026-11-05T05:03:00Z"),
+	} {
+		key := normalize(t, d)[0].DedupeKey
+		if other, ok := keys[key]; ok {
+			t.Fatalf("%s and %s share the key %s", name, other, key)
+		}
+		keys[key] = name
+	}
+	first := push(a, b, "2026-11-05T05:00:00Z")
+	if normalize(t, first)[0].DedupeKey != normalize(t, push(a, b, "2026-11-05T05:00:00Z"))[0].DedupeKey {
+		t.Fatal("a redelivery of the same bytes got another key")
+	}
+}
+
+// adversarialMarkdown is a body of unmatched backtick runs of lengths 1 to
+// n, each followed by " x ": every run needs a search for a closing run.
+func adversarialMarkdown(n int) string {
+	var b strings.Builder
+	b.WriteString("prefix ")
+	for i := 1; i <= n; i++ {
+		b.WriteString(strings.Repeat("`", i))
+		b.WriteString(" x ")
+	}
+	b.WriteString("@bob")
+	return b.String()
+}
+
+// TestMentionsScaleLinearly bounds the time of the largest adversarial
+// body below the webhook size limit (4.5 MB). Matching code spans by
+// rescanning took seconds; the bound is generous for slow runners and the
+// race detector.
+func TestMentionsScaleLinearly(t *testing.T) {
+	text := adversarialMarkdown(3000)
+	if len(text) > 5<<20 {
+		t.Fatalf("the body is %d bytes, over the webhook limit", len(text))
+	}
+	bound := time.Second
+	if raceEnabled {
+		bound *= 10
+	}
+	start := time.Now()
+	got := Mentions(text)
+	if d := time.Since(start); d > bound {
+		t.Fatalf("Mentions of %d bytes took %s, over %s", len(text), d, bound)
+	}
+	if !slices.Equal(got, []string{"bob"}) {
+		t.Fatalf("mentions = %v", got)
+	}
+}
+
+func BenchmarkMentionsAdversarial(b *testing.B) {
+	for _, n := range []int{1000, 2000, 3000} {
+		text := adversarialMarkdown(n)
+		b.Run(strconv.Itoa(len(text)>>10)+"KiB", func(b *testing.B) {
+			b.SetBytes(int64(len(text)))
+			for b.Loop() {
+				Mentions(text)
+			}
+		})
 	}
 }

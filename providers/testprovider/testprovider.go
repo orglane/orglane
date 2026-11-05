@@ -585,11 +585,19 @@ func (p *Provider) Hooks(instanceID uuid.UUID) int {
 	return p.org(provider.Instance{ID: instanceID}).hooks
 }
 
-// EnsureWebhooks implements provider.EventSource.
-func (p *Provider) EnsureWebhooks(_ context.Context, _ provider.Env, inst provider.Instance) error {
+// EnsureWebhooks implements provider.EventSource like a provider whose hook
+// secret Orglane sets (Forgejo): the hook gets the active webhook_secret,
+// which Secret(instance, "webhook_secret") then returns.
+func (p *Provider) EnsureWebhooks(ctx context.Context, env provider.Env, inst provider.Instance) error {
+	secret, err := env.Credential(ctx, "webhook_secret")
+	if err != nil {
+		return err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.org(inst).hooks++
+	o := p.org(inst)
+	o.hooks++
+	o.secrets["webhook_secret"] = slices.Clone(secret)
 	return nil
 }
 

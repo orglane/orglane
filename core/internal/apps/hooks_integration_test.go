@@ -3,11 +3,21 @@
 package apps_test
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+
 	"github.com/orglane/orglane/core/internal/apps"
 	"github.com/orglane/orglane/core/internal/audit"
+	"github.com/orglane/orglane/core/internal/crypto"
+	"github.com/orglane/orglane/providers/testprovider"
 )
 
 // holdWebhookLock takes the lock ensureWebhooks waits for, as a rotation
@@ -130,5 +140,132 @@ func TestWebhookSecretBackfilled(t *testing.T) {
 	}
 	if n := h.count(`SELECT count(*) FROM app_credentials WHERE instance_id = $1 AND name = 'webhook_secret' AND state = 'active'`, inst.ID); n != 0 || versions() != 1 {
 		t.Fatalf("backfilled next to a candidate: %d active of %d", n, versions())
+	}
+}
+
+// onOneConnection is the harness's service on a pool of one connection, the
+// smallest supported database.max_conns.
+func (h *harness) onOneConnection() *apps.Service {
+	h.t.Helper()
+	cfg := h.pool.Config()
+	cfg.MaxConns = 1
+	p, err := pgxpool.NewWithConfig(h.ctx, cfg)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.t.Cleanup(p.Close)
+	keyring, err := crypto.NewKeyring(masterSecret)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	svc := apps.NewService(p, h.svc.Registry(), keyring, apps.Config{})
+	rc, err := river.NewClient(riverpgxv5.New(p), &river.Config{})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	svc.SetQueue(rc)
+	return svc
+}
+
+// TestWebhooksOnOneConnection: ensuring webhooks, with the credential reads
+// of the adapter, needs no second pool connection while it holds its lock
+// connection: it completes with database.max_conns=1, from the daily job
+// and from Setup.
+func TestWebhooksOnOneConnection(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	installing, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{Provider: "testmanaged"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := h.onOneConnection()
+	ctx, cancel := context.WithTimeout(h.ctx, 5*time.Second)
+	defer cancel()
+	if err := svc.RunEnsureWebhooks(ctx, apps.EnsureWebhooksArgs{InstanceID: inst.ID}); err != nil {
+		t.Fatalf("ensure on one connection: %v", err)
+	}
+	active, err := h.svc.EnvForTest(inst).Credential(h.ctx, "webhook_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.tp.Hooks(inst.ID) != 1 || !bytes.Equal(h.tp.Secret(inst.ID, "webhook_secret"), active) {
+		t.Fatal("the hook does not have the active secret")
+	}
+	if err := svc.RunSetup(ctx, apps.SetupArgs{InstanceID: installing.ID}, 1, 8); err != nil {
+		t.Fatalf("setup on one connection: %v", err)
+	}
+	if got, _ := h.svc.Instance(h.ctx, installing.ID); got.State != apps.StateActive || h.managed.Hooks(installing.ID) != 1 {
+		t.Fatalf("after setup: %s, %d hooks", got.State, h.managed.Hooks(installing.ID))
+	}
+}
+
+// TestRepairWaitsForRotation: a rotation hands the provider a new secret
+// and loses the answer; the webhook repair (daily and from Setup) leaves
+// the provider's secret alone while the candidate is unresolved, so a
+// delayed delivery signed with the new secret proves it by use, and the
+// core's active secret is the one the provider uses.
+func TestRepairWaitsForRotation(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	if err := h.svc.RunEnsureWebhooks(h.ctx, apps.EnsureWebhooksArgs{InstanceID: inst.ID}); err != nil {
+		t.Fatal(err)
+	}
+	old := h.tp.Secret(inst.ID, "webhook_secret")
+	version, err := h.svc.RotateCredential(h.ctx, audit.System, inst.ID, "webhook_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.tp.LoseResponses("webhook_secret", 1)
+	if err := h.rotate(inst, version); err == nil {
+		t.Fatal("a lost answer was taken as an outcome")
+	}
+	candidate := h.tp.Secret(inst.ID, "webhook_secret")
+	if bytes.Equal(candidate, old) || h.credState(inst, version) != "uncertain" {
+		t.Fatalf("after the lost answer: %s", h.credState(inst, version))
+	}
+	// The daily repair: deferred, the provider keeps the candidate.
+	if err := h.svc.RunEnsureWebhooks(h.ctx, apps.EnsureWebhooksArgs{InstanceID: inst.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(h.tp.Secret(inst.ID, "webhook_secret"), candidate) || h.tp.Hooks(inst.ID) != 1 {
+		t.Fatal("the repair put the active secret back over the uncertain rotation")
+	}
+	// A delivery the provider signed with the candidate arrives: proof by use.
+	body, err := json.Marshal(testprovider.Payload{Organization: "acme", Action: "opened", ID: 7, Number: 1, Title: "x", Actor: "bob", ActorID: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr := http.Header{}
+	hdr.Set(testprovider.SignatureHeader, testprovider.Sign(candidate, body))
+	hdr.Set(testprovider.DeliveryHeader, "delayed-1")
+	hdr.Set("X-Forgejo-Event", "pull_request")
+	if _, err := h.svc.ReceiveWebhook(h.ctx, inst.ID, hdr, body); err != nil {
+		t.Fatal(err)
+	}
+	if h.credState(inst, version) != "active" {
+		t.Fatalf("candidate = %s, want active (proven by use)", h.credState(inst, version))
+	}
+	active, err := h.svc.EnvForTest(inst).Credential(h.ctx, "webhook_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(active, h.tp.Secret(inst.ID, "webhook_secret")) {
+		t.Fatal("the core's active secret is not the one the provider uses")
+	}
+
+	// Setup with a rotation in progress: the instance is set up and
+	// activated; the hook is left to the rotation.
+	installing, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{Provider: "testmanaged"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.RotateCredential(h.ctx, audit.System, installing.ID, "webhook_secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: installing.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.svc.Instance(h.ctx, installing.ID); got.State != apps.StateActive || h.managed.Hooks(installing.ID) != 0 {
+		t.Fatalf("setup during a rotation: %s, %d hooks", got.State, h.managed.Hooks(installing.ID))
 	}
 }

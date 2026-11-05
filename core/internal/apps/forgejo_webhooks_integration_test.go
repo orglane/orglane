@@ -32,6 +32,8 @@ type forgejoSite struct {
 	b     *managedtest.Bundle
 	inst  apps.Instance
 	admin managedtest.Auth
+	// faults injects failures into the core's requests to Forgejo.
+	faults *managedtest.Faults
 }
 
 func startForgejoSite(t *testing.T) *forgejoSite {
@@ -42,7 +44,8 @@ func startForgejoSite(t *testing.T) *forgejoSite {
 		t.Fatal(err)
 	}
 	agentClient := startAgent(t, b, registry)
-	h := newHarnessWith(t, apps.Config{HTTPClient: b.Client(), Packages: registry}, forgejo.New())
+	httpClient, faults := managedtest.WithFaults(b.Client())
+	h := newHarnessWith(t, apps.Config{HTTPClient: httpClient, Packages: registry}, forgejo.New())
 	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
 		Provider: forgejo.ID, BaseURL: "http://" + managedtest.ForgejoHost,
 		Settings: map[string]any{forgejo.SettingOrganization: "orglane"},
@@ -83,7 +86,8 @@ func startForgejoSite(t *testing.T) *forgejoSite {
 	if err != nil || inst.State != apps.StateActive {
 		t.Fatalf("after setup: %v, %v", inst.State, err)
 	}
-	return &forgejoSite{h: h, b: b, inst: inst, admin: managedtest.Auth{User: forgejo.AdminUsername, Password: secrets[forgejo.CredentialAdminPassword]}}
+	return &forgejoSite{h: h, b: b, inst: inst, faults: faults,
+		admin: managedtest.Auth{User: forgejo.AdminUsername, Password: secrets[forgejo.CredentialAdminPassword]}}
 }
 
 // call sends an API request as auth and fails on a non-2xx answer.
@@ -127,7 +131,7 @@ type recorded struct {
 }
 
 // deliveries returns the hook deliveries after id, once Forgejo has
-// attempted all want of them. Forgejo records every attempt with its request
+// attempted all want of them and recorded their requests. Forgejo records every attempt with its request
 // (headers, signature and body); the attempts themselves fail, as the
 // workspace of this test is not reachable from Forgejo. The test hands the
 // recorded requests to the core as the endpoint would.
@@ -135,8 +139,10 @@ func (s *forgejoSite) deliveries(t *testing.T, after, want int) []recorded {
 	t.Helper()
 	var out []recorded
 	managedtest.Eventually(t, time.Minute, "Forgejo attempts the deliveries", func() bool {
+		// Forgejo marks a task delivered before it sends it, and records the
+		// request afterwards: only tasks with a recorded request count.
 		rows := s.b.Psql(t, "svc_git", "select row_to_json(t) from (select id, event_type, request_content from hook_task where id > "+
-			strconv.Itoa(after)+" and is_delivered order by id) t")
+			strconv.Itoa(after)+" and is_delivered and coalesce(request_content, '') <> '' order by id) t")
 		out = nil
 		for _, line := range strings.Split(rows, "\n") {
 			if line == "" {
@@ -393,6 +399,64 @@ func TestForgejoWebhooks(t *testing.T) {
 	}
 	if r := s.receive(t, rotated); r.Duplicate {
 		t.Fatal("the delivery after the rotation is a duplicate")
+	}
+
+	// A rotation whose answer is lost: Forgejo created the candidate's hook,
+	// the core never heard. The daily repair leaves both hooks alone while
+	// the candidate is uncertain (it would otherwise put the active secret
+	// back and delete the candidate's hook); a delivery signed with the
+	// candidate proves it by use; the next repair keeps only its hook.
+	lost, err := h.svc.RotateCredential(h.ctx, audit.System, s.inst.ID, forgejo.CredentialWebhookSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.exec(`DELETE FROM river_job WHERE kind = $1`, apps.RotateCredentialArgs{}.Kind()) // no retry in this scenario
+	s.faults.Drop(http.MethodPost, "/api/v1/orgs/orglane/hooks")
+	if err := h.svc.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: s.inst.ID, Name: forgejo.CredentialWebhookSecret, Version: lost}); err == nil {
+		t.Fatal("a lost answer was taken as an outcome")
+	}
+	credState := func(v int32) string {
+		var st string
+		if err := h.pool.QueryRow(h.ctx, `SELECT state FROM app_credentials WHERE instance_id = $1 AND name = $2 AND version = $3`,
+			s.inst.ID, forgejo.CredentialWebhookSecret, v).Scan(&st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	if credState(lost) != "uncertain" || len(s.ourHooks(t)) != 2 {
+		t.Fatalf("after the lost answer: %s, %d hooks", credState(lost), len(s.ourHooks(t)))
+	}
+	if err := h.svc.RunDriftCheck(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	if n := len(s.ourHooks(t)); n != 2 {
+		t.Fatalf("the repair changed the hooks during an uncertain rotation: %d hooks", n)
+	}
+	start = s.lastTask(t)
+	s.call(t, people["bob"], http.MethodPost, "/api/v1/repos/orglane/app/issues/1/comments", map[string]any{"body": "both hooks @carol"})
+	for _, d := range s.deliveries(t, start, 2) {
+		s.receive(t, d) // the same body from both hooks: the second is a duplicate
+	}
+	if credState(lost) != "active" {
+		t.Fatalf("candidate = %s, want active (proven by use)", credState(lost))
+	}
+	if err := h.svc.RunDriftCheck(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	if n := len(s.ourHooks(t)); n != 1 {
+		t.Fatalf("%d hooks after the repair, want the candidate's only", n)
+	}
+	start = s.lastTask(t)
+	s.call(t, people["carol"], http.MethodPost, "/api/v1/repos/orglane/app/issues/1/comments", map[string]any{"body": "settled @bob"})
+	settled := s.deliveries(t, start, 1)[0]
+	activeNow, err := h.svc.EnvForTest(s.inst).Credential(h.ctx, forgejo.CredentialWebhookSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := forgejo.New().Verify(h.ctx, fixedSecret{Env: h.svc.EnvForTest(s.inst), value: activeNow}, s.inst.View(), settled.headers, settled.body); err != nil {
+		t.Fatalf("Forgejo does not sign with the core's active secret: %v", err)
 	}
 }
 
