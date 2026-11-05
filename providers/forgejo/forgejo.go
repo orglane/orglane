@@ -133,6 +133,17 @@ func (*Adapter) Manifest() provider.Manifest {
 	}
 }
 
+// SettingDefaults implements provider.SettingDefaulter: the organization
+// is named after the first label of the company's domain (acme.com: acme),
+// if Forgejo accepts that name.
+func (*Adapter) SettingDefaults(domainBase string) map[string]any {
+	label, _, _ := strings.Cut(strings.TrimSuffix(domainBase, "."), ".")
+	if validOrganization(label) != nil {
+		return map[string]any{}
+	}
+	return map[string]any{SettingOrganization: label}
+}
+
 // ValidateSettings implements provider.SettingsValidator: the organization
 // must be present and a name Forgejo accepts, because it is fixed once the
 // instance exists and Setup would fail on every retry otherwise.
@@ -166,6 +177,7 @@ func validOrganization(org string) error {
 
 var (
 	_ provider.SettingsValidator = (*Adapter)(nil)
+	_ provider.SettingDefaulter  = (*Adapter)(nil)
 	_ provider.Lifecycle         = (*Adapter)(nil)
 	_ provider.CredentialRotator = (*Adapter)(nil)
 )

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"strconv"
@@ -77,6 +78,9 @@ const (
 	// Core-side ends of an operation before the agent ran it.
 	CodePackageUnavailable = "package_unavailable"
 	CodeCredentialMissing  = "credential_missing" //nolint:gosec // an error code, not a credential
+	// CodeAgentStalled: the agent kept an operation queued for longer than
+	// Config.AgentQueueTimeout.
+	CodeAgentStalled = "agent_stalled"
 	// Health codes the sync owns (and may clear again).
 	CodeAgentUnhealthy       = "agent_unhealthy"
 	CodeAgentInstanceMissing = "agent_instance_missing"
@@ -92,6 +96,7 @@ const (
 	defaultAgentPollInterval  = 2 * time.Second
 	defaultAgentRetryMax      = time.Minute
 	defaultAgentWatchInterval = 30 * time.Second
+	defaultAgentQueueTimeout  = time.Hour
 )
 
 // DesiredChange is a new desired state of a managed instance.
@@ -109,7 +114,8 @@ type DesiredChange struct {
 type InstallPlan struct {
 	Provider provider.ID
 	Key      string
-	// BaseURL is the instance's public URL; its host is the first route's.
+	// Host is the first route's public host, BaseURL the instance's URL.
+	Host    string
 	BaseURL string
 	Package *packages.Package
 }
@@ -161,16 +167,39 @@ func (s *Service) Install(ctx context.Context, actor audit.Actor, in NewInstance
 	if in.BaseURL == "" && len(pkg.Manifest.Routes) > 0 {
 		in.BaseURL = s.serviceURL(pkg.Manifest.Routes[0].HostLabel)
 	}
+	if in.BaseURL == "" {
+		return Instance{}, invalid("host", "is required")
+	}
+	// Installation-dependent defaults (provider.SettingDefaulter) fill
+	// settings the request leaves out.
+	settings := maps.Clone(in.Settings)
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	for name, v := range adapter.settingDefaults(s.cfg.DomainBase) {
+		if settings[name] == nil {
+			settings[name] = v
+		}
+	}
+	in.Settings = settings
+	host, err := s.validHost(in.BaseURL)
+	if err != nil {
+		return Instance{}, err
+	}
+	var budget InstallBudget
 	if s.cfg.InstallPreflight != nil {
 		key := in.Key
 		if key == "" {
 			key = adapter.Manifest.DefaultKey
 		}
-		if err := s.cfg.InstallPreflight(ctx, InstallPlan{Provider: in.Provider, Key: key, BaseURL: in.BaseURL, Package: pkg}); err != nil {
+		if budget, err = s.cfg.InstallPreflight(ctx, InstallPlan{Provider: in.Provider, Key: key, Host: host, BaseURL: in.BaseURL, Package: pkg}); err != nil {
 			return Instance{}, err
 		}
 	}
 	created, err := s.createInstance(ctx, actor, in, func(tx pgx.Tx, q *store.Queries, created Instance) error {
+		if err := s.reserve(ctx, q, host, created.ID, budget, pkg); err != nil {
+			return err
+		}
 		_, err := s.recordDesired(ctx, tx, q, actor, created, DesiredChange{
 			RunState: agentapi.StateRunning, PackageVersion: pkg.Manifest.Version, Reason: ReasonInstall,
 		})
@@ -338,15 +367,8 @@ func (s *Service) ServiceHosts(row store.AppInstance, pkg *packages.Package) map
 	return hosts
 }
 
-// serviceURL is the public URL of a service host label: the workspace's
-// scheme and port with the service host.
-func (s *Service) serviceURL(label string) string {
-	u := url.URL{Scheme: s.cfg.WorkspaceURL.Scheme, Host: s.cfg.ServiceHost(label)}
-	if port := s.cfg.WorkspaceURL.Port(); port != "" {
-		u.Host = net.JoinHostPort(u.Host, port)
-	}
-	return u.String()
-}
+// serviceURL is the public URL of a service host label.
+func (s *Service) serviceURL(label string) string { return s.HostURL(s.cfg.ServiceHost(label)) }
 
 // Upstream is a managed instance's first route on the edge network, the
 // alias Traefik's routes use (agent.md "Networking"), from the package

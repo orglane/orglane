@@ -654,3 +654,39 @@ SELECT latest.name::text AS name, latest.version,
 FROM latest
 WHERE NOT EXISTS (SELECT 1 FROM candidates WHERE candidates.name = latest.name)
 ORDER BY name;
+
+-- Install, removal and reinstall of managed instances (#61) ----------------
+
+-- name: ListReservedAppInstanceHosts :many
+-- Base URLs of the instances that hold their key (and so their host): not
+-- removed, or removed with their data retained.
+SELECT id, base_url::text AS base_url FROM app_instances
+WHERE (state <> 'removed' OR data_retained) AND base_url IS NOT NULL;
+
+-- name: DeleteAppInstanceBindings :execrows
+DELETE FROM app_bindings WHERE instance_id = @instance_id;
+
+-- name: DeleteAppInstanceCredentials :execrows
+-- A purge deletes every credential version of the instance.
+DELETE FROM app_credentials WHERE instance_id = @instance_id;
+
+-- name: SetAppInstanceRemoved :execrows
+-- The removal's operation succeeded. Conditional on the state and on the
+-- generation that removed it, so a stale result changes nothing.
+UPDATE app_instances
+SET state = 'removed', data_retained = @data_retained, removed_at = now(),
+    health = 'unknown', health_code = NULL, health_checked_at = now(), updated_at = now()
+WHERE id = @id AND state = 'removing' AND desired_generation = @generation;
+
+-- name: SetAppInstanceReinstalling :execrows
+-- A removed instance with retained data comes back under the same ID.
+UPDATE app_instances
+SET state = 'installing', data_retained = false, removed_at = NULL,
+    health = 'unknown', health_code = NULL, health_checked_at = now(), updated_at = now()
+WHERE id = @id AND state = 'removed' AND data_retained;
+
+-- name: ClearAppInstanceRetained :execrows
+-- A purge of a retained instance: from here its data counts as being
+-- deleted (a failed purge leaves it failed; removing it again retains it).
+UPDATE app_instances SET data_retained = false, updated_at = now()
+WHERE id = @id AND state = 'removed' AND data_retained;

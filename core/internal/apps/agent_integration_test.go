@@ -318,7 +318,7 @@ func TestAgentWiring(t *testing.T) {
 	// A spec the agent refuses (a port below the package's minimum) fails
 	// the install; the agent never started anything for it.
 	h.agentProv.SetPackageSettings(map[string]any{"http_port": 80})
-	bad, err := h.svc.Install(ctx, audit.System, apps.NewInstance{Provider: "agenttest", Key: "refused"})
+	bad, err := h.svc.Install(ctx, audit.System, apps.NewInstance{Provider: "agenttest", Key: "refused", BaseURL: "https://refused.work.acme.test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,12 +476,12 @@ func TestAgentApplyWithoutAgent(t *testing.T) {
 	var plans []apps.InstallPlan
 	h := newHarness(t, func(c *apps.Config) {
 		c.Packages = registry
-		c.InstallPreflight = func(_ context.Context, p apps.InstallPlan) error {
+		c.InstallPreflight = func(_ context.Context, p apps.InstallPlan) (apps.InstallBudget, error) {
 			plans = append(plans, p)
 			if p.Key == "blocked" {
-				return errBlocked
+				return apps.InstallBudget{}, errBlocked
 			}
-			return nil
+			return apps.InstallBudget{}, nil
 		}
 	})
 	if _, err := h.svc.Install(h.ctx, audit.System, apps.NewInstance{Provider: "testmanaged"}); err == nil {

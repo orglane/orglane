@@ -94,6 +94,27 @@ func (e AppAccessPolicy) Valid() bool {
 	}
 }
 
+// Defines values for AppAgentStatusCode.
+const (
+	AppAgentStatusCodeAgentUnavailable     AppAgentStatusCode = "agent_unavailable"
+	AppAgentStatusCodeAgentUntrusted       AppAgentStatusCode = "agent_untrusted"
+	AppAgentStatusCodeAgentVersionMismatch AppAgentStatusCode = "agent_version_mismatch"
+)
+
+// Valid indicates whether the value is a known member of the AppAgentStatusCode enum.
+func (e AppAgentStatusCode) Valid() bool {
+	switch e {
+	case AppAgentStatusCodeAgentUnavailable:
+		return true
+	case AppAgentStatusCodeAgentUntrusted:
+		return true
+	case AppAgentStatusCodeAgentVersionMismatch:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AppCredentialRotationStatusState.
 const (
 	AppCredentialRotationStatusStateAccepted         AppCredentialRotationStatusState = "accepted"
@@ -225,19 +246,19 @@ func (e AppHealth) Valid() bool {
 
 // Defines values for AppInstanceWaitingForAgent.
 const (
-	AgentUnavailable     AppInstanceWaitingForAgent = "agent_unavailable"
-	AgentUntrusted       AppInstanceWaitingForAgent = "agent_untrusted"
-	AgentVersionMismatch AppInstanceWaitingForAgent = "agent_version_mismatch"
+	AppInstanceWaitingForAgentAgentUnavailable     AppInstanceWaitingForAgent = "agent_unavailable"
+	AppInstanceWaitingForAgentAgentUntrusted       AppInstanceWaitingForAgent = "agent_untrusted"
+	AppInstanceWaitingForAgentAgentVersionMismatch AppInstanceWaitingForAgent = "agent_version_mismatch"
 )
 
 // Valid indicates whether the value is a known member of the AppInstanceWaitingForAgent enum.
 func (e AppInstanceWaitingForAgent) Valid() bool {
 	switch e {
-	case AgentUnavailable:
+	case AppInstanceWaitingForAgentAgentUnavailable:
 		return true
-	case AgentUntrusted:
+	case AppInstanceWaitingForAgentAgentUntrusted:
 		return true
-	case AgentVersionMismatch:
+	case AppInstanceWaitingForAgentAgentVersionMismatch:
 		return true
 	default:
 		return false
@@ -994,6 +1015,30 @@ type AddPasskeyRequest struct {
 // AppAccessPolicy `all_people`: every active person; `mapped_teams`: members of mapped teams only.
 type AppAccessPolicy string
 
+// AppAgentStatus defines model for AppAgentStatus.
+type AppAgentStatus struct {
+	// Code Why it is not connected.
+	Code *AppAgentStatusCode `json:"code,omitempty"`
+
+	// Connected The agent answers with this server's version.
+	Connected bool `json:"connected"`
+
+	// DiskFree Free bytes where the instances' data lives.
+	DiskFree int64 `json:"diskFree"`
+
+	// Enabled Managed services are configured (agent socket and secret).
+	Enabled      bool  `json:"enabled"`
+	MemAvailable int64 `json:"memAvailable"`
+	MemTotal     int64 `json:"memTotal"`
+
+	// MemoryReserved The bundle's share plus the minimum memory of every installed managed app.
+	MemoryReserved int64   `json:"memoryReserved"`
+	Version        *string `json:"version,omitempty"`
+}
+
+// AppAgentStatusCode Why it is not connected.
+type AppAgentStatusCode string
+
 // AppBinding defines model for AppBinding.
 type AppBinding struct {
 	// Capability Example: code
@@ -1093,6 +1138,27 @@ type AppFeatureSupportSupport string
 
 // AppHealth defines model for AppHealth.
 type AppHealth string
+
+// AppInstallDefaults What an install of a managed provider uses when the request leaves
+// it out, and the package's resource hints. Present only for managed
+// providers whose package is embedded in this server.
+type AppInstallDefaults struct {
+	DiskMin int64 `json:"diskMin"`
+
+	// Host Example: git.acme.com
+	Host string `json:"host"`
+	Key  string `json:"key"`
+
+	// MemoryMin Bytes the package needs at least (hint, not a limit).
+	MemoryMin         int64 `json:"memoryMin"`
+	MemoryRecommended int64 `json:"memoryRecommended"`
+
+	// PackageVersion Example: 15.0.11-1
+	PackageVersion string `json:"packageVersion"`
+
+	// Settings Defaults that depend on this installation (e.g. Forgejo's organization).
+	Settings map[string]interface{} `json:"settings"`
+}
 
 // AppInstance defines model for AppInstance.
 type AppInstance struct {
@@ -1243,6 +1309,11 @@ type AppProvider struct {
 
 	// Id Example: forgejo
 	Id string `json:"id"`
+
+	// Install What an install of a managed provider uses when the request leaves
+	// it out, and the package's resource hints. Present only for managed
+	// providers whose package is embedded in this server.
+	Install *AppInstallDefaults `json:"install,omitempty"`
 
 	// Lifecycle The adapter has a managed lifecycle (setup, health).
 	Lifecycle bool `json:"lifecycle"`
@@ -1586,6 +1657,21 @@ type HeldRemovalBatch struct {
 
 	// ItemsHash Hex SHA-256 over the batch items; send it back to confirm exactly what was shown.
 	ItemsHash string `json:"itemsHash"`
+}
+
+// InstallAppInstanceRequest defines model for InstallAppInstanceRequest.
+type InstallAppInstanceRequest struct {
+	DisplayName *string `json:"displayName,omitempty"`
+
+	// Host The public host; defaults to `AppProvider.install.host`.
+	Host *string `json:"host,omitempty"`
+
+	// Key Defaults to the provider's default key.
+	Key *string `json:"key,omitempty"`
+
+	// Provider Example: forgejo
+	Provider string                  `json:"provider"`
+	Settings *map[string]interface{} `json:"settings,omitempty"`
 }
 
 // Instance defines model for Instance.
@@ -2587,6 +2673,14 @@ type CompleteGitHubConnectJSONBody struct {
 	State          string  `json:"state"`
 }
 
+// RemoveAppInstanceParams defines parameters for RemoveAppInstance.
+type RemoveAppInstanceParams struct {
+	Purge *bool `form:"purge,omitempty" json:"purge,omitempty"`
+
+	// Confirm The instance key, required with `purge=true`.
+	Confirm *string `form:"confirm,omitempty" json:"confirm,omitempty"`
+}
+
 // UploadAppCredentialJSONBody defines parameters for UploadAppCredential.
 type UploadAppCredentialJSONBody struct {
 	Value *string `json:"value,omitempty"`
@@ -2657,6 +2751,9 @@ type BeginGitHubConnectJSONRequestBody BeginGitHubConnectJSONBody
 
 // CompleteGitHubConnectJSONRequestBody defines body for CompleteGitHubConnect for application/json ContentType.
 type CompleteGitHubConnectJSONRequestBody CompleteGitHubConnectJSONBody
+
+// InstallAppInstanceJSONRequestBody defines body for InstallAppInstance for application/json ContentType.
+type InstallAppInstanceJSONRequestBody = InstallAppInstanceRequest
 
 // UpdateAppInstanceJSONRequestBody defines body for UpdateAppInstance for application/json ContentType.
 type UpdateAppInstanceJSONRequestBody = UpdateAppInstanceRequest
@@ -2738,6 +2835,9 @@ type ServerInterface interface {
 	// GetOrglaneDiscovery Instance discovery
 	// (GET /.well-known/orglane)
 	GetOrglaneDiscovery(w http.ResponseWriter, r *http.Request)
+	// GetAppAgent The agent of managed services
+	// (GET /api/v1/apps/agent)
+	GetAppAgent(w http.ResponseWriter, r *http.Request)
 	// ListAppBindings Capability bindings
 	// (GET /api/v1/apps/bindings)
 	ListAppBindings(w http.ResponseWriter, r *http.Request)
@@ -2753,6 +2853,12 @@ type ServerInterface interface {
 	// ListAppInstances App instances
 	// (GET /api/v1/apps/instances)
 	ListAppInstances(w http.ResponseWriter, r *http.Request)
+	// InstallAppInstance Install a managed provider
+	// (POST /api/v1/apps/instances)
+	InstallAppInstance(w http.ResponseWriter, r *http.Request)
+	// RemoveAppInstance Remove a managed instance
+	// (DELETE /api/v1/apps/instances/{instanceId})
+	RemoveAppInstance(w http.ResponseWriter, r *http.Request, instanceId InstanceId, params RemoveAppInstanceParams)
 	// GetAppInstance An app instance
 	// (GET /api/v1/apps/instances/{instanceId})
 	GetAppInstance(w http.ResponseWriter, r *http.Request, instanceId InstanceId)
@@ -2786,6 +2892,9 @@ type ServerInterface interface {
 	// RetryAppProvisioning Retry failed results
 	// (POST /api/v1/apps/instances/{instanceId}/provisioning/retry)
 	RetryAppProvisioning(w http.ResponseWriter, r *http.Request, instanceId InstanceId)
+	// ReinstallAppInstance Reinstall a removed managed instance
+	// (POST /api/v1/apps/instances/{instanceId}/reinstall)
+	ReinstallAppInstance(w http.ResponseWriter, r *http.Request, instanceId InstanceId)
 	// RetryAppInstanceSetup Retry the setup of a managed instance
 	// (POST /api/v1/apps/instances/{instanceId}/setup)
 	RetryAppInstanceSetup(w http.ResponseWriter, r *http.Request, instanceId InstanceId)
@@ -3024,6 +3133,20 @@ func (siw *ServerInterfaceWrapper) GetOrglaneDiscovery(w http.ResponseWriter, r 
 	handler.ServeHTTP(w, r)
 }
 
+// GetAppAgent operation middleware
+func (siw *ServerInterfaceWrapper) GetAppAgent(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetAppAgent(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListAppBindings operation middleware
 func (siw *ServerInterfaceWrapper) ListAppBindings(w http.ResponseWriter, r *http.Request) {
 
@@ -3097,6 +3220,75 @@ func (siw *ServerInterfaceWrapper) ListAppInstances(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListAppInstances(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// InstallAppInstance operation middleware
+func (siw *ServerInterfaceWrapper) InstallAppInstance(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.InstallAppInstance(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RemoveAppInstance operation middleware
+func (siw *ServerInterfaceWrapper) RemoveAppInstance(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "instanceId" -------------
+	var instanceId InstanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "instanceId", r.PathValue("instanceId"), &instanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "instanceId", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params RemoveAppInstanceParams
+
+	// ------------- Optional query parameter "purge" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "purge", r.URL.Query(), &params.Purge, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "purge"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "purge", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "confirm" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "confirm", r.URL.Query(), &params.Confirm, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "confirm"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "confirm", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RemoveAppInstance(w, r, instanceId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3486,6 +3678,32 @@ func (siw *ServerInterfaceWrapper) RetryAppProvisioning(w http.ResponseWriter, r
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RetryAppProvisioning(w, r, instanceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReinstallAppInstance operation middleware
+func (siw *ServerInterfaceWrapper) ReinstallAppInstance(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "instanceId" -------------
+	var instanceId InstanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "instanceId", r.PathValue("instanceId"), &instanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "instanceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReinstallAppInstance(w, r, instanceId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5226,8 +5444,12 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people-imports/{runId}/errors", wrapper.ExportPeopleImportErrors)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/providers", wrapper.ListAppProviders)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances", wrapper.ListAppInstances)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances", wrapper.InstallAppInstance)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/agent", wrapper.GetAppAgent)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}", wrapper.RemoveAppInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}", wrapper.GetAppInstance)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}", wrapper.UpdateAppInstance)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/reinstall", wrapper.ReinstallAppInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/operations", wrapper.ListAppInstanceOperations)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/setup", wrapper.RetryAppInstanceSetup)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate", wrapper.RotateAppCredential)
@@ -5294,6 +5516,75 @@ func (response GetOrglaneDiscovery200JSONResponse) VisitGetOrglaneDiscoveryRespo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAppAgentRequestObject struct {
+}
+
+type GetAppAgentResponseObject interface {
+	VisitGetAppAgentResponse(w http.ResponseWriter) error
+}
+
+type GetAppAgent200JSONResponse AppAgentStatus
+
+func (response GetAppAgent200JSONResponse) VisitGetAppAgentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAppAgent401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetAppAgent401ApplicationProblemPlusJSONResponse) VisitGetAppAgentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAppAgent403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response GetAppAgent403ApplicationProblemPlusJSONResponse) VisitGetAppAgentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAppAgent500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetAppAgent500ApplicationProblemPlusJSONResponse) VisitGetAppAgentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -5786,6 +6077,243 @@ type ListAppInstances500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response ListAppInstances500ApplicationProblemPlusJSONResponse) VisitListAppInstancesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InstallAppInstanceRequestObject struct {
+	Body *InstallAppInstanceJSONRequestBody
+}
+
+type InstallAppInstanceResponseObject interface {
+	VisitInstallAppInstanceResponse(w http.ResponseWriter) error
+}
+
+type InstallAppInstance202JSONResponse AppInstance
+
+func (response InstallAppInstance202JSONResponse) VisitInstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InstallAppInstance400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response InstallAppInstance400ApplicationProblemPlusJSONResponse) VisitInstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InstallAppInstance401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response InstallAppInstance401ApplicationProblemPlusJSONResponse) VisitInstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InstallAppInstance403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response InstallAppInstance403ApplicationProblemPlusJSONResponse) VisitInstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InstallAppInstance404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response InstallAppInstance404ApplicationProblemPlusJSONResponse) VisitInstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InstallAppInstance409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response InstallAppInstance409ApplicationProblemPlusJSONResponse) VisitInstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type InstallAppInstance500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response InstallAppInstance500ApplicationProblemPlusJSONResponse) VisitInstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveAppInstanceRequestObject struct {
+	InstanceId InstanceId `json:"instanceId"`
+	Params     RemoveAppInstanceParams
+}
+
+type RemoveAppInstanceResponseObject interface {
+	VisitRemoveAppInstanceResponse(w http.ResponseWriter) error
+}
+
+type RemoveAppInstance202JSONResponse AppInstance
+
+func (response RemoveAppInstance202JSONResponse) VisitRemoveAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveAppInstance400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response RemoveAppInstance400ApplicationProblemPlusJSONResponse) VisitRemoveAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveAppInstance401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response RemoveAppInstance401ApplicationProblemPlusJSONResponse) VisitRemoveAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveAppInstance403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response RemoveAppInstance403ApplicationProblemPlusJSONResponse) VisitRemoveAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveAppInstance404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response RemoveAppInstance404ApplicationProblemPlusJSONResponse) VisitRemoveAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveAppInstance409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response RemoveAppInstance409ApplicationProblemPlusJSONResponse) VisitRemoveAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveAppInstance500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response RemoveAppInstance500ApplicationProblemPlusJSONResponse) VisitRemoveAppInstanceResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -6960,6 +7488,108 @@ type RetryAppProvisioning500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response RetryAppProvisioning500ApplicationProblemPlusJSONResponse) VisitRetryAppProvisioningResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReinstallAppInstanceRequestObject struct {
+	InstanceId InstanceId `json:"instanceId"`
+}
+
+type ReinstallAppInstanceResponseObject interface {
+	VisitReinstallAppInstanceResponse(w http.ResponseWriter) error
+}
+
+type ReinstallAppInstance202JSONResponse AppInstance
+
+func (response ReinstallAppInstance202JSONResponse) VisitReinstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReinstallAppInstance401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ReinstallAppInstance401ApplicationProblemPlusJSONResponse) VisitReinstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReinstallAppInstance403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ReinstallAppInstance403ApplicationProblemPlusJSONResponse) VisitReinstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReinstallAppInstance404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ReinstallAppInstance404ApplicationProblemPlusJSONResponse) VisitReinstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReinstallAppInstance409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response ReinstallAppInstance409ApplicationProblemPlusJSONResponse) VisitReinstallAppInstanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReinstallAppInstance500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ReinstallAppInstance500ApplicationProblemPlusJSONResponse) VisitReinstallAppInstanceResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -12971,6 +13601,9 @@ type StrictServerInterface interface {
 	// GetOrglaneDiscovery Instance discovery
 	// (GET /.well-known/orglane)
 	GetOrglaneDiscovery(ctx context.Context, request GetOrglaneDiscoveryRequestObject) (GetOrglaneDiscoveryResponseObject, error)
+	// GetAppAgent The agent of managed services
+	// (GET /api/v1/apps/agent)
+	GetAppAgent(ctx context.Context, request GetAppAgentRequestObject) (GetAppAgentResponseObject, error)
 	// ListAppBindings Capability bindings
 	// (GET /api/v1/apps/bindings)
 	ListAppBindings(ctx context.Context, request ListAppBindingsRequestObject) (ListAppBindingsResponseObject, error)
@@ -12986,6 +13619,12 @@ type StrictServerInterface interface {
 	// ListAppInstances App instances
 	// (GET /api/v1/apps/instances)
 	ListAppInstances(ctx context.Context, request ListAppInstancesRequestObject) (ListAppInstancesResponseObject, error)
+	// InstallAppInstance Install a managed provider
+	// (POST /api/v1/apps/instances)
+	InstallAppInstance(ctx context.Context, request InstallAppInstanceRequestObject) (InstallAppInstanceResponseObject, error)
+	// RemoveAppInstance Remove a managed instance
+	// (DELETE /api/v1/apps/instances/{instanceId})
+	RemoveAppInstance(ctx context.Context, request RemoveAppInstanceRequestObject) (RemoveAppInstanceResponseObject, error)
 	// GetAppInstance An app instance
 	// (GET /api/v1/apps/instances/{instanceId})
 	GetAppInstance(ctx context.Context, request GetAppInstanceRequestObject) (GetAppInstanceResponseObject, error)
@@ -13019,6 +13658,9 @@ type StrictServerInterface interface {
 	// RetryAppProvisioning Retry failed results
 	// (POST /api/v1/apps/instances/{instanceId}/provisioning/retry)
 	RetryAppProvisioning(ctx context.Context, request RetryAppProvisioningRequestObject) (RetryAppProvisioningResponseObject, error)
+	// ReinstallAppInstance Reinstall a removed managed instance
+	// (POST /api/v1/apps/instances/{instanceId}/reinstall)
+	ReinstallAppInstance(ctx context.Context, request ReinstallAppInstanceRequestObject) (ReinstallAppInstanceResponseObject, error)
 	// RetryAppInstanceSetup Retry the setup of a managed instance
 	// (POST /api/v1/apps/instances/{instanceId}/setup)
 	RetryAppInstanceSetup(ctx context.Context, request RetryAppInstanceSetupRequestObject) (RetryAppInstanceSetupResponseObject, error)
@@ -13297,6 +13939,30 @@ func (sh *strictHandler) GetOrglaneDiscovery(w http.ResponseWriter, r *http.Requ
 	}
 }
 
+// GetAppAgent operation middleware
+func (sh *strictHandler) GetAppAgent(w http.ResponseWriter, r *http.Request) {
+	var request GetAppAgentRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetAppAgent(ctx, request.(GetAppAgentRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetAppAgent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetAppAgentResponseObject); ok {
+		if err := validResponse.VisitGetAppAgentResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListAppBindings operation middleware
 func (sh *strictHandler) ListAppBindings(w http.ResponseWriter, r *http.Request) {
 	var request ListAppBindingsRequestObject
@@ -13433,6 +14099,64 @@ func (sh *strictHandler) ListAppInstances(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListAppInstancesResponseObject); ok {
 		if err := validResponse.VisitListAppInstancesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// InstallAppInstance operation middleware
+func (sh *strictHandler) InstallAppInstance(w http.ResponseWriter, r *http.Request) {
+	var request InstallAppInstanceRequestObject
+
+	var body InstallAppInstanceJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.InstallAppInstance(ctx, request.(InstallAppInstanceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "InstallAppInstance")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(InstallAppInstanceResponseObject); ok {
+		if err := validResponse.VisitInstallAppInstanceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RemoveAppInstance operation middleware
+func (sh *strictHandler) RemoveAppInstance(w http.ResponseWriter, r *http.Request, instanceId InstanceId, params RemoveAppInstanceParams) {
+	var request RemoveAppInstanceRequestObject
+
+	request.InstanceId = instanceId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RemoveAppInstance(ctx, request.(RemoveAppInstanceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RemoveAppInstance")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RemoveAppInstanceResponseObject); ok {
+		if err := validResponse.VisitRemoveAppInstanceResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -13764,6 +14488,32 @@ func (sh *strictHandler) RetryAppProvisioning(w http.ResponseWriter, r *http.Req
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RetryAppProvisioningResponseObject); ok {
 		if err := validResponse.VisitRetryAppProvisioningResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ReinstallAppInstance operation middleware
+func (sh *strictHandler) ReinstallAppInstance(w http.ResponseWriter, r *http.Request, instanceId InstanceId) {
+	var request ReinstallAppInstanceRequestObject
+
+	request.InstanceId = instanceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ReinstallAppInstance(ctx, request.(ReinstallAppInstanceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ReinstallAppInstance")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ReinstallAppInstanceResponseObject); ok {
+		if err := validResponse.VisitReinstallAppInstanceResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
