@@ -198,7 +198,7 @@ func (s *Service) operationFinished(ctx context.Context, tx pgx.Tx, q *store.Que
 		}
 		if current && inst.State == StateInstalling && ds.RunState == agentapi.StateRunning {
 			// Installed: Setup runs and activates the instance (step 4).
-			return s.enqueue(ctx, tx, SetupArgs{InstanceID: inst.ID})
+			return s.enqueueSetup(ctx, tx, inst.ID)
 		}
 	case agentapi.OpFailed:
 		if current && inst.State == StateInstalling && code != agentapi.CodeSuperseded {

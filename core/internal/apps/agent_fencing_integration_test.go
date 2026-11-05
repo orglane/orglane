@@ -137,7 +137,9 @@ func TestStaleRecoveryCannotRunSetupForNewerGeneration(t *testing.T) {
 
 // TestInstallFailedRecoversWhenTheAgentRunsIt: without a newer
 // generation, an install_failed instance whose generation the agent's own
-// retry got running goes back to installing and runs Setup.
+// retry got running goes back to installing and runs Setup, also while an
+// earlier setup job still shows running in River (it may have read the
+// state already, so it never takes the new job's place).
 func TestInstallFailedRecoversWhenTheAgentRunsIt(t *testing.T) {
 	host := newAgentHost(t)
 	host.start()
@@ -148,7 +150,7 @@ func TestInstallFailedRecoversWhenTheAgentRunsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
-	h.exec(`DELETE FROM river_job WHERE kind = $1`, apps.SetupArgs{}.Kind())
+	h.exec(`UPDATE river_job SET state = 'running', attempted_at = now() WHERE kind = $1`, apps.SetupArgs{}.Kind())
 	h.exec(`UPDATE app_instances SET state = 'failed', health = 'unhealthy', health_code = 'install_failed', observed_generation = 0 WHERE id = $1`, inst.ID)
 	h.exec(`UPDATE app_operations SET state = 'failed', error_code = 'compose_failed' WHERE instance_id = $1 AND generation = 1`, inst.ID)
 	if err := h.svc.RunAgentSync(h.ctx); err != nil {

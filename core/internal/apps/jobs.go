@@ -145,9 +145,6 @@ func (RotateCredentialArgs) InsertOpts() river.InsertOpts { return uniqueOpts(ma
 // SetupArgs run Lifecycle.Setup of a managed instance.
 type SetupArgs struct {
 	InstanceID uuid.UUID `json:"instance_id" river:"unique"`
-	// Retry identifies an admin's retry (RetrySetup), so a job of an earlier
-	// attempt that is still running does not swallow it.
-	Retry uuid.UUID `json:"retry,omitzero" river:"unique"`
 }
 
 // Kind implements river.JobArgs.
@@ -346,17 +343,24 @@ func (s *Service) enqueueNew(ctx context.Context, tx pgx.Tx, args river.JobArgs,
 // and River persists its completion after the work returned (batched, after
 // the framework's locks are released), so it may even have finished. Hence:
 //  1. args are inserted; a waiting duplicate is enough;
-//  2. else the follow-up variant; a waiting duplicate is enough;
-//  3. else both twins run: a waiting continuation of an earlier change is
-//     locked and enough, or a continuation with its own unique ID is
-//     inserted (checked). At most one continuation waits, so bursts while
-//     both twins run stay bounded.
+//  2. else the follow-up variant (if the job has one); a waiting duplicate
+//     is enough;
+//  3. else the running jobs are all there is: a waiting continuation of an
+//     earlier change is locked and enough, or a continuation with its own
+//     unique ID is inserted (checked). At most one continuation waits, so
+//     bursts while the twins run stay bounded.
 func (s *Service) enqueueOnce(ctx context.Context, tx pgx.Tx, args, followUp river.JobArgs, opts *river.InsertOpts) error {
 	queue, err := s.getQueue()
 	if err != nil {
 		return err
 	}
-	for _, a := range []river.JobArgs{args, followUp} {
+	variants := []river.JobArgs{args}
+	if followUp != nil {
+		variants = append(variants, followUp)
+	} else {
+		followUp = args
+	}
+	for _, a := range variants {
 		res, err := queue.InsertTx(ctx, tx, a, opts)
 		if err != nil {
 			return fmt.Errorf("apps: queue %s: %w", a.Kind(), err)
@@ -412,6 +416,14 @@ func (c continuation) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(fields)
+}
+
+// enqueueSetup queues the setup job of an instance that is (or just became)
+// installing. A setup job that still runs may have read an earlier state,
+// so it never takes the place of this one (enqueueOnce); Setup is
+// idempotent and RunSetup rechecks the state.
+func (s *Service) enqueueSetup(ctx context.Context, tx pgx.Tx, instanceID uuid.UUID) error {
+	return s.enqueueOnce(ctx, tx, SetupArgs{InstanceID: instanceID}, nil, nil)
 }
 
 // enqueueInstance queues provision_instance for an instance.
