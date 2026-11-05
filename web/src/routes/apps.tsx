@@ -1604,7 +1604,7 @@ function Provisioning({
                           <Link
                             to="/people/$personId"
                             params={{ personId: r.person.id }}
-                            className="font-medium text-primary hover:underline"
+                            className="font-medium text-primary [overflow-wrap:anywhere] hover:underline"
                           >
                             {r.person.displayName}
                           </Link>

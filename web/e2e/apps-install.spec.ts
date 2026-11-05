@@ -34,11 +34,14 @@ test("an Admin installs Forgejo from Settings → Apps and sees it installing, t
   await expect(form.getByLabel("Key")).toBeFocused();
   await expect(form.getByText(/lowercase letters, digits and hyphens/)).toBeVisible();
   await form.getByLabel("Key").fill("git");
+  // A long name the form accepts must wrap wherever it shows.
+  const longName = `Forgejo${"x".repeat(93)}`;
+  await form.getByLabel("Name").fill(longName);
   await form.getByRole("button", { name: "Install" }).click();
 
   // The instance page: installing, then the agent's operation fails without
   // the bundle and the instance fails with an explanation.
-  await expect(page.getByRole("heading", { name: "Forgejo", exact: true, level: 1 })).toBeVisible({
+  await expect(page.getByRole("heading", { name: longName, exact: true, level: 1 })).toBeVisible({
     timeout: 30_000,
   });
   const operations = page.getByRole("table", { name: "Operations" });
@@ -58,6 +61,18 @@ test("an Admin installs Forgejo from Settings → Apps and sees it installing, t
   await expect(panel.getByRole("button", { name: "Cancel" })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("button", { name: "Remove", exact: true })).toBeFocused();
+
+  // No horizontal overflow at 360 px, on the instance page and in the list.
+  await page.setViewportSize({ width: 360, height: 780 });
+  const overflow = () =>
+    page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+  expect(await overflow()).toBeLessThanOrEqual(0);
+  await page.goto(`${instance.url}/settings/apps`);
+  await expect(page.getByRole("link", { name: longName })).toBeVisible();
+  expect(await overflow()).toBeLessThanOrEqual(0);
+  await page.setViewportSize({ width: 1280, height: 720 });
 
   if (process.env.ORGLANE_SCREENSHOTS) {
     for (const [name, size] of [
