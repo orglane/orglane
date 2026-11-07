@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.0.2](https://github.com/orglane/orglane/compare/v0.0.1...v0.0.2) (2026-11-07)
+
+
+### Features
+
+* **agent:** agent process, signed socket protocol, reconciliation and core client ([#73](https://github.com/orglane/orglane/issues/73)) ([8c414d9](https://github.com/orglane/orglane/commit/8c414d96a9cf3a974a0cf77893e2ea9e8565737f))
+* **apps:** drive the agent from the core with apply and sync jobs ([#87](https://github.com/orglane/orglane/issues/87)) ([4253251](https://github.com/orglane/orglane/commit/4253251853f07422d76ebe04f92bbbdd80d0fba0))
+* **apps:** provider framework in the core ([#74](https://github.com/orglane/orglane/issues/74)) ([4b4403a](https://github.com/orglane/orglane/commit/4b4403a5d69581a9e91052ad551efe005ab76189))
+* **deploy:** ship the agent in the bundle with an enable-managed installer ([#76](https://github.com/orglane/orglane/issues/76)) ([85096a7](https://github.com/orglane/orglane/commit/85096a7a4fcd4a2b487a2a71b6334e28050277dc))
+* **forgejo:** managed package, lifecycle adapter and dynamic ingress routes ([#85](https://github.com/orglane/orglane/issues/85)) ([7980987](https://github.com/orglane/orglane/commit/798098748ff697f4e13a4f83bb154b0a716653e8))
+* **github:** connect organizations with a GitHub App ([#80](https://github.com/orglane/orglane/issues/80)) ([6779282](https://github.com/orglane/orglane/commit/67792823e63a0b008ddd1a1c4a821bb360dbfe8d))
+* **people:** expire import runs and erase source material on apply ([#54](https://github.com/orglane/orglane/issues/54)) ([0165ca1](https://github.com/orglane/orglane/commit/0165ca15fa5b0a7aa69adfabfdc5dfb8a7183293))
+
+
+### Bug Fixes
+
+* **apps:** keep removal follow-ups, honor RetryAfter, never swallow a setup retry ([#86](https://github.com/orglane/orglane/issues/86)) ([b5718ff](https://github.com/orglane/orglane/commit/b5718ff460ce82e6b525060aca9ede32ec61378b))
+* **deploy:** name an edge subnet clash and capture the compose status in the installer ([#49](https://github.com/orglane/orglane/issues/49)) ([464e12c](https://github.com/orglane/orglane/commit/464e12c98f40f9516cb2078df4eca1ec8b3375bc))
+* **identity:** answer 409 to an invitation accepted during the lookup ([#55](https://github.com/orglane/orglane/issues/55)) ([1a87f02](https://github.com/orglane/orglane/commit/1a87f024e1b17936b7867e7c950bca2bba560a84))
+* **oidc:** answer a revocation without a token with invalid_request ([#56](https://github.com/orglane/orglane/issues/56)) ([33e3e5c](https://github.com/orglane/orglane/commit/33e3e5cc762794983dfc8a148ac5d76921926e69))
+* **oidc:** decrypt tokens with authenticated AES-256-GCM only ([#50](https://github.com/orglane/orglane/issues/50)) ([c879a28](https://github.com/orglane/orglane/commit/c879a28999a02fdf4a9d71e7afe4f3109c6a8ccf))
+* **website:** reset copy button label when a copy fails after a success ([#47](https://github.com/orglane/orglane/issues/47)) ([c2a7cdb](https://github.com/orglane/orglane/commit/c2a7cdbd653dfbf281c3e45dba7fa5975094be36))
+
 ## 0.0.1 (2026-11-04)
 
 
