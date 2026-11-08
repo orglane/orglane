@@ -1011,7 +1011,7 @@ Dedupe keys and `Data` per type (schema version 1). IDs are the provider's numer
 | `code.pull_request.opened` | `pr:<pull_request.id>:opened` | `draft` (bool), `base_ref`, `head_ref` (strings ≤ 255) |
 | `code.review.requested` | `pr:<pull_request.id>:review_requested:<reviewer id>:<pull_request.updated_at>` (team requests: `team:<team id>` instead of the reviewer) | `requested_team` (slug, only for team requests; such events have no targets in M2) |
 | `code.mention.created` | `comment:<comment.id>:mentions` for comments; `pr:<id>:body_mentions` / `issue:<id>:body_mentions` for the body on `opened`; Forgejo reviews (their payload has no review ID): `pr:<pull_request.id>:review:<sha>:mentions` | `excerpt` (plain text ≤ 280 runes), `comment_id` (when from a comment) |
-| `code.branch.pushed` | `push:<repository.id>:<before>:<after>:<sha>` (the transition and the signed body: two pushes may move a ref along the same commits, and only a redelivery of the same bytes is the same push) | `ref`, `before`, `after` (40/64 hex), `commit_count` (int), `forced` (bool) |
+| `code.branch.pushed` | `push:<repository.id>:<before>:<after>:<sha>` (the transition and the signed body: two pushes may move a ref along the same commits, and only a redelivery of the same bytes is the same push) | `ref`, `before`, `after` (40/64 hex), `commit_count` (int), `forced` (bool, optional: only when the provider reports it; Forgejo does not) |
 | `code.membership.changed` | `body:<sha>/<n>` (these payloads carry no stable event ID or timestamp) | `change` (`added` \| `removed` \| `invited`), `team` (slug, optional), `role` (`member` \| `admin`, optional) |
 
 Edited comments and bodies create no new mention events in M2. Unknown fields are never copied into `Data`.
