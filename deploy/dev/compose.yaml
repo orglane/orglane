@@ -19,7 +19,9 @@ services:
     volumes:
       - postgres:/var/lib/postgresql
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "orglane", "-d", "orglane"]
+      # Over TCP: PostgreSQL's temporary initialization server listens only
+      # on the Unix socket, so a socket probe would pass too early (#78).
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "orglane", "-d", "orglane"]
       interval: 2s
       timeout: 3s
       retries: 30
