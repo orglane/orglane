@@ -147,9 +147,11 @@ func (e *testEnv) assertFencedNames(key string, routed []string) {
 	}
 }
 
-// A service renamed to another version's routed alias (key "implicit":
-// v1 "web" routes through implicit-web, v2 calls a service implicit-web)
+// A service named like another version's routed alias (key "implicit":
+// v1 "web" routes through implicit-web, v2 adds a service implicit-web)
 // would answer that alias through Docker's service-name DNS entry. The
+// manifest refuses such a declared service (no "-" in service names, #88),
+// so v2 adds it as a one-shot service, which the policy check refuses. The
 // upgrade is refused before anything stops; the write acknowledged through
 // the old route afterwards is kept.
 func (s *upgradeSuite) testImplicitServiceName(t *testing.T) {
@@ -164,14 +166,9 @@ func (s *upgradeSuite) testImplicitServiceName(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		switch path {
-		case agenttest.Version2 + "/manifest.yaml":
-			data = bytes.ReplaceAll(data, []byte("services: [web, worker]"), []byte("services: [implicit-web, worker]"))
-			data = bytes.ReplaceAll(data, []byte("service: web,"), []byte("service: implicit-web,"))
-			data = bytes.ReplaceAll(data, []byte("stop_services: [web, worker]"), []byte("stop_services: [implicit-web, worker]"))
-		case agenttest.Version2 + "/compose.yaml.tmpl":
-			data = bytes.ReplaceAll(data, []byte("\n  web:"), []byte("\n  implicit-web:"))
-			data = bytes.ReplaceAll(data, []byte(`alias "web"`), []byte(`alias "implicit-web"`))
+		if path == agenttest.Version2+"/compose.yaml.tmpl" {
+			data = bytes.Replace(data, []byte("  # policy-test: services\n"),
+				[]byte("  implicit-web:\n    image: {{image \"web\" | quote}}\n    restart: \"no\"\n    command: [\"true\"]\n    networks: {edge: {}}\n"), 1)
 		}
 		src[path] = &fstest.MapFile{Data: data}
 		return nil

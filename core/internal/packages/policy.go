@@ -196,10 +196,14 @@ func (c *policyCheck) topNetworks(v any) error {
 }
 
 func (c *policyCheck) service(name string, svc map[string]any) error {
-	// Docker's DNS answers a container's service name on its networks: a
-	// name <key>-<other> would be the routed alias of another service.
-	if strings.HasPrefix(name, c.rc.Key+"-") {
-		return violation(RuleAlias, name, "service names may not start with the instance key %q (routed aliases do)", c.rc.Key+"-")
+	// Docker's DNS answers a container's service name on its networks: the
+	// names of declared and one-shot services alike must keep the names of
+	// all instances apart (ValidServiceName) and leave the bundle's alone.
+	if !ValidServiceName(name) {
+		return violation(RuleAlias, name, "service names may contain only lowercase letters and digits, start with a letter and not be %q", strings.TrimPrefix(FencedSuffix, "-"))
+	}
+	if slices.Contains(reservedServices, name) {
+		return violation(RuleAlias, name, "service name %q is reserved for the bundle", name)
 	}
 	declared := c.m.HasService(name)
 	restart, _ := svc["restart"].(string)
@@ -397,11 +401,6 @@ func (c *policyCheck) serviceNetworks(service string, v any) error {
 			continue
 		}
 		want := ServiceAlias(c.rc.Key, service, c.rc.Fenced)
-		if FencedName(service) {
-			// Declared services are checked by the manifest; this covers
-			// one-shot services too.
-			return violation(RuleAlias, service, "service names ending in %q are reserved for the write fence", FencedSuffix)
-		}
 		if kind != "edge" || len(aliases) != 1 || aliases[0] != want {
 			return violation(RuleAlias, service, "aliases %v on network %q are not allowed (only %s on the edge network)", aliases, key, want)
 		}

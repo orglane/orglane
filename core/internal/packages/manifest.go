@@ -261,8 +261,8 @@ func (m *Manifest) validate() error {
 		fail("services: duplicate names")
 	}
 	for _, s := range m.Services {
-		if !serviceNamePat.MatchString(s) {
-			fail("services: invalid name %q", s)
+		if !serviceNamePattern.MatchString(s) {
+			fail("services: invalid name %q (lowercase letters and digits, starting with a letter)", s)
 		}
 		if slices.Contains(reservedServices, s) {
 			fail("services: %q is reserved for the bundle", s)

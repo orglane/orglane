@@ -115,6 +115,7 @@ func TestManifestValidation(t *testing.T) {
 		"reserved service":      {"services: [web, worker]", "services: [web, worker, postgres]"},
 		"fence suffix service":  {"services: [web, worker]", "services: [web, worker, web-fenced]"},
 		"fence name service":    {"services: [web, worker]", "services: [web, worker, fenced]"},
+		"dash in service":       {"services: [web, worker]", "services: [web, worker, web-worker]"},
 		"bad version":           {"version: 1.0.0-1", "version: 1.0.0"},
 		"wrong format":          {"format: 1", "format: 2"},
 		"database password":     {"secrets: [db_password]", "secrets: [other]"},
@@ -498,6 +499,16 @@ func TestPolicy(t *testing.T) {
 			p["services"].(map[string]any)["web-fenced"] = map[string]any{
 				"image": svc(p, "web")["image"], "restart": "no",
 				"networks": map[string]any{"edge": map[string]any{"aliases": []any{"at1-web-fenced"}}},
+			}
+		}, RuleAlias},
+		// #88: a "-" in a service name makes the names of instances ambiguous.
+		"dash in one-shot service": {func(p map[string]any) {
+			p["services"].(map[string]any)["web-worker"] = map[string]any{"image": svc(p, "web")["image"], "restart": "no"}
+		}, RuleAlias},
+		"reserved one-shot service": {func(p map[string]any) {
+			p["services"].(map[string]any)["postgres"] = map[string]any{
+				"image": svc(p, "web")["image"], "restart": "no",
+				"networks": map[string]any{"services": nil},
 			}
 		}, RuleAlias},
 		"missing service":     {func(p map[string]any) { delete(p["services"].(map[string]any), "worker") }, RuleService},

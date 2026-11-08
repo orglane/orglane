@@ -52,6 +52,8 @@ var policyVariants = map[string]struct{ Old, New, Rule string }{
 	"device":           {"    # policy-test: web\n", "    devices: [\"/dev/kmsg:/dev/kmsg\"]\n", "devices"},
 	"alias_hijack":     {"    networks: {default: {}, services: {}}\n", "    networks: {default: {}, services: {aliases: [postgres]}}\n", "alias_not_allowed"},
 	"seccomp_off":      {"    security_opt: [\"no-new-privileges:true\"]\n    # policy-test: web\n", "    security_opt: [\"seccomp=unconfined\"]\n", "security_opt"},
+	"dash_in_service": {"  # policy-test: services\n",
+		"  web-worker:\n    image: {{image \"web\" | quote}}\n    restart: \"no\"\n    command: [\"true\"]\n", "alias_not_allowed"},
 	"undeclared_service": {"  # policy-test: services\n",
 		"  extra:\n    image: {{image \"web\" | quote}}\n    restart: unless-stopped\n    command: [\"sleep\", \"3600\"]\n", "service_not_declared"},
 }

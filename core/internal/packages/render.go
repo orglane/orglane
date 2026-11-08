@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -69,6 +70,36 @@ const FencedSuffix = "-fenced"
 // route of any instance or version can reach a fenced project.
 func FencedName(service string) bool {
 	return service == strings.TrimPrefix(FencedSuffix, "-") || strings.HasSuffix(service, FencedSuffix)
+}
+
+// serviceNamePattern is the pattern of service names: no "-", so that the
+// names an instance's containers get on shared networks are injective (see
+// ValidServiceName).
+var serviceNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]{0,30}$`)
+
+// ValidServiceName reports whether name may name a service of a package,
+// declared or one-shot (docs/specs/agent.md "Instance names").
+//
+// Instance keys (agentapi.KeyPattern) start with a letter and end with a
+// letter or digit; service names are letters and digits only, start with a
+// letter and are not "fenced". Then the names Docker's DNS gives an
+// instance's containers on the shared networks never coincide with those of
+// another instance or service:
+//
+//   - the routed alias <key>-<service>: its last "-" separates the key from
+//     the service, so it determines both;
+//   - the fenced alias <key>-<service>-fenced: it ends in FencedSuffix, which
+//     a routed alias never does (no service is "fenced"); without the
+//     suffix it is a routed alias;
+//   - the container name <project>-<key>-<service>-<n> (project fixed per
+//     agent, n a replica number): it ends in "-<digits>", aliases end in "-"
+//     and a letter;
+//   - the service name itself: it contains no "-", every name above does.
+//
+// The longest fenced alias (24 + 1 + 31 + 7 characters) still fits a DNS
+// label.
+func ValidServiceName(name string) bool {
+	return serviceNamePattern.MatchString(name) && !FencedName(name)
 }
 
 // TemplateData is the data of package templates (docs/specs/agent.md
@@ -141,6 +172,9 @@ var placeholderFuncs = template.FuncMap{
 // Render renders the package for a spec with validated inputs.
 func (p *Package) Render(spec *agentapi.Spec, in Inputs, rc RenderContext) (*Rendered, error) {
 	m := p.Manifest
+	if !agentapi.KeyPattern.MatchString(rc.Key) {
+		return nil, fmt.Errorf("render: invalid instance key %q", rc.Key)
+	}
 	var data TemplateData
 	data.Instance.Key, data.Instance.ID, data.Instance.Project = rc.Key, spec.InstanceID.String(), rc.Project()
 	data.Package.ID, data.Package.Version = m.ID, m.Version
@@ -245,7 +279,8 @@ func (p *Package) Render(spec *agentapi.Spec, in Inputs, rc RenderContext) (*Ren
 }
 
 // ServiceAlias returns a service's alias on the edge network: the upstream
-// host of its routes, or the fenced alias that routes never resolve.
+// host of its routes, or the fenced alias that routes never resolve. For a
+// valid key and a valid service name (ValidServiceName) it is injective.
 func ServiceAlias(key, service string, fenced bool) string {
 	a := key + "-" + service
 	if fenced {
