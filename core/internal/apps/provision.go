@@ -99,11 +99,12 @@ func sessionLock(ctx context.Context, pool *pgxpool.Pool, id int64) (*pgxpool.Co
 // desired access, plan, apply the non-removal actions in order (stopping
 // at the first failure), route removals to the guard and write the result.
 func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonArgs, attempt, maxAttempts int) error {
-	conn, release, err := sessionLock(ctx, s.pool, lockID("provision", args.InstanceID.String(), args.PersonID.String()))
+	held, err := s.holdLock(ctx, lockID("provision", args.InstanceID.String(), args.PersonID.String()))
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer held.release()
+	conn := held.conn
 	var startedAt time.Time
 	if err := conn.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&startedAt); err != nil {
 		return fmt.Errorf("apps: read clock: %w", err)
@@ -134,7 +135,7 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 	var recovered []ActionResult
 	if d.result != nil && d.result.PendingGrant != nil {
 		// An earlier run sent a grant whose outcome was never recorded.
-		rep, err := s.resolvePendingGrant(ctx, conn, inst, prov, d)
+		rep, err := s.resolvePendingGrant(ctx, held, inst, prov, d)
 		if err != nil {
 			return err
 		}
@@ -174,7 +175,7 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 		return s.followUp(err, conn, inst.ID, args.PersonID, startedAt)
 	}
 
-	env := s.env(inst)
+	env := held.env(inst)
 	view := inst.View()
 	plan, err := prov.Plan(ctx, env, view, d.access)
 	if err != nil {
@@ -378,12 +379,13 @@ type replay struct {
 //     read-only plan shows whether the access exists; if so it is left to
 //     an admin like above (never adopted, never removed), else the intent is
 //     simply cleared.
-func (s *Service) resolvePendingGrant(ctx context.Context, conn *pgxpool.Conn, inst Instance, prov provider.UserProvisioner, d desired) (replay, error) {
+func (s *Service) resolvePendingGrant(ctx context.Context, held *heldConn, inst Instance, prov provider.UserProvisioner, d desired) (replay, error) {
 	var a provider.Action
 	if err := json.Unmarshal(d.result.PendingGrant, &a); err != nil {
 		return replay{}, fmt.Errorf("apps: decode grant intent: %w", err)
 	}
-	env, view := s.env(inst), inst.View()
+	conn := held.conn
+	env, view := held.env(inst), inst.View()
 	failure := func(err error) (replay, error) {
 		code, retryable, _ := provider.Classify(err)
 		if !retryable {
@@ -610,12 +612,12 @@ func (s *Service) followUp(err error, conn *pgxpool.Conn, instanceID, personID u
 func (s *Service) RunProvisionInstance(ctx context.Context, args ProvisionInstanceArgs) error {
 	// One run per instance at a time (a follow-up may be queued while one
 	// runs): team syncs must not race.
-	conn, release, err := sessionLock(ctx, s.pool, lockID("instance", args.InstanceID.String()))
+	held, err := s.holdLock(ctx, lockID("instance", args.InstanceID.String()))
 	if err != nil {
 		return err
 	}
-	defer release()
-	q := store.New(conn)
+	defer held.release()
+	q := held.queries()
 	inst, err := s.loadInstance(ctx, q, args.InstanceID, false)
 	if errors.Is(err, ErrNotFound) {
 		return river.JobCancel(err)
@@ -629,7 +631,7 @@ func (s *Service) RunProvisionInstance(ctx context.Context, args ProvisionInstan
 	if !ok {
 		return nil
 	}
-	env, view := s.env(inst), inst.View()
+	env, view := held.env(inst), inst.View()
 	rows, err := q.ListAppTeamMappings(ctx, inst.ID)
 	if err != nil {
 		return fmt.Errorf("apps: list mappings: %w", err)
@@ -650,7 +652,7 @@ func (s *Service) RunProvisionInstance(ctx context.Context, args ProvisionInstan
 		return retryOrCancel(err)
 	}
 	realm := inst.Adapter.Realm(view)
-	return s.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
+	return held.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
 		for _, ref := range refs {
 			i := slices.IndexFunc(mappings, func(m provider.TeamMapping) bool { return m.TeamID == ref.TeamID })
 			if i < 0 || ref.ExternalRef == "" || len(ref.ExternalRef) > 100 {
@@ -737,11 +739,12 @@ func retryOrCancel(err error) error {
 // without spending an attempt, also on the last attempt, and ends the run's
 // provider calls: the provider asked to wait.
 func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs, attempt, maxAttempts int) error {
-	conn, release, err := sessionLock(ctx, s.pool, lockID("removals", args.InstanceID.String()))
+	held, err := s.holdLock(ctx, lockID("removals", args.InstanceID.String()))
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer held.release()
+	conn := held.conn
 	var startedAt time.Time
 	if err := conn.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&startedAt); err != nil {
 		return fmt.Errorf("apps: read clock: %w", err)
@@ -791,7 +794,7 @@ apply:
 		if stopped[item.removal.PersonID] {
 			continue
 		}
-		retryErr, err := s.applyRemoval(ctx, prov, item, final)
+		retryErr, err := s.applyRemoval(ctx, held, prov, item, final)
 		switch {
 		case errors.Is(err, errRemovalFailed):
 			stopped[item.removal.PersonID] = true
@@ -997,14 +1000,19 @@ var errRemovalFailed = errors.New("apps: the removal failed")
 // which then waits for a desired-state change or an admin's retry. It
 // returns the retryable provider error to retry the job with (the removal
 // stays open), or errInstanceInactive.
-func (s *Service) applyRemoval(ctx context.Context, prov provider.UserProvisioner, item queuedRemoval, final bool) (error, error) {
+//
+// The person's lock is taken on held, the removals lock's connection (lock
+// order: removals, then person), so the guard never waits for a second pool
+// connection while it holds one.
+func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provider.UserProvisioner, item queuedRemoval, final bool) (error, error) {
 	r := item.removal
-	conn, release, err := sessionLock(ctx, s.pool, lockID("provision", r.InstanceID.String(), r.PersonID.String()))
+	unlock, err := held.lockAlso(ctx, lockID("provision", r.InstanceID.String(), r.PersonID.String()))
 	if err != nil {
 		return nil, err
 	}
-	defer release()
-	q := store.New(conn)
+	defer unlock()
+	conn := held.conn
+	q := held.queries()
 	cur, err := q.GetRemoval(ctx, r.ID)
 	if err != nil {
 		return nil, fmt.Errorf("apps: reload removal: %w", err)
@@ -1038,7 +1046,7 @@ func (s *Service) applyRemoval(ctx context.Context, prov provider.UserProvisione
 	if err := json.Unmarshal(cur.Action, &a); err != nil {
 		return nil, fmt.Errorf("apps: decode removal: %w", err)
 	}
-	out, applyErr := prov.Apply(ctx, s.env(inst), inst.View(), a)
+	out, applyErr := prov.Apply(ctx, held.env(inst), inst.View(), a)
 	if applyErr != nil {
 		code, retryable, retryAfter := provider.Classify(applyErr)
 		if retryable && (retryAfter > 0 || !final) {
