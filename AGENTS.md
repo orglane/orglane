@@ -47,6 +47,7 @@ make generate          # regenerate the Go server code and the TypeScript client
 make build             # build all workspace packages (incl. the web UI), then go build -> bin/orglane with the UI embedded
 make test              # Go unit + integration tests (integration only when Docker is available); vitest; web e2e (when Docker and Chromium are available); website e2e (when Chromium is available)
 make test-unit         # Go unit tests only
+make test-root         # the root-only agent tests (*AsRoot) as root via sudo; make test runs them in CI on Linux
 make test-integration  # Go unit + integration tests, including the Compose bundle tests (needs Docker)
 make test-compose      # only the Compose bundle tests: local mode and domain mode against Pebble (needs Docker)
 make test-install      # the installer (deploy/install.sh) end to end: local, demo, domain mode with Pebble (needs Docker)

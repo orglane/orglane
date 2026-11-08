@@ -7,6 +7,13 @@
 // "message" setting from a data directory on a published port and the edge
 // network, and "worker", which holds a PostgreSQL client for the per-service
 // database; its configure hook writes the message into that database.
+//
+// Three versions exercise upgrades (docs/specs/agent.md "Upgrade"):
+// 2.0.0-1 upgrades from 1.0.0-1 and 3.0.0-1 only from 2.0.0-1 (a required
+// stop). Both run a migration hook and take a "fault" setting that makes the
+// healthcheck or the migration fail. The web service accepts writes on its
+// published port (GET /cgi-bin/write?<text>, read back at /writes.log) and
+// reports the running version at /version.
 package managed
 
 import (
@@ -19,11 +26,16 @@ import (
 
 // FS holds the package versions, one directory per version.
 //
-//go:embed all:1.0.0-1
+//go:embed all:1.0.0-1 all:2.0.0-1 all:3.0.0-1
 var FS embed.FS
 
-// Version is the package version in FS.
-const Version = "1.0.0-1"
+// The package versions in FS. Version is the one the policy variants
+// change.
+const (
+	Version  = "1.0.0-1"
+	Version2 = "2.0.0-1"
+	Version3 = "3.0.0-1"
+)
 
 // policyVariants are changes to the Compose template that the agent's
 // policy must refuse, by the rule that refuses them. Each replaces a

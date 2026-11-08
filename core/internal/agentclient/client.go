@@ -300,6 +300,74 @@ func (c *Client) Operation(ctx context.Context, id uuid.UUID) (*agentapi.Operati
 	return &o, nil
 }
 
+// postOperation sends a mutating request whose answer is an operation.
+func (c *Client) postOperation(ctx context.Context, target string, body any) (*agentapi.Operation, error) {
+	if err := c.checkVersion(ctx); err != nil {
+		return nil, err
+	}
+	var data []byte
+	if body != nil {
+		var err error
+		if data, err = json.Marshal(body); err != nil {
+			return nil, err
+		}
+	} else {
+		data = []byte("{}")
+	}
+	_, resp, err := c.do(ctx, http.MethodPost, target, data)
+	if err != nil {
+		return nil, err
+	}
+	var o agentapi.Operation
+	if err := json.Unmarshal(resp, &o); err != nil {
+		return nil, fmt.Errorf("agent: decode operation: %w", err)
+	}
+	return &o, nil
+}
+
+// Snapshot requests a manual snapshot of an instance (202 + operation). A
+// busy instance answers 409 agent_busy.
+func (c *Client) Snapshot(ctx context.Context, key string) (*agentapi.Operation, error) {
+	if !agentapi.KeyPattern.MatchString(key) {
+		return nil, fmt.Errorf("agent: invalid instance key %q", key)
+	}
+	return c.postOperation(ctx, agentapi.InstanceSnapshotsPath(key), agentapi.SnapshotRequest{Reason: agentapi.SnapshotReasonManual})
+}
+
+// Snapshots lists the complete snapshots of an instance, newest first.
+func (c *Client) Snapshots(ctx context.Context, key string) ([]agentapi.Snapshot, error) {
+	if !agentapi.KeyPattern.MatchString(key) {
+		return nil, fmt.Errorf("agent: invalid instance key %q", key)
+	}
+	var l agentapi.SnapshotList
+	if err := c.getJSON(ctx, agentapi.InstanceSnapshotsPath(key), &l); err != nil {
+		return nil, err
+	}
+	return l.Snapshots, nil
+}
+
+// Restore restores a snapshot as generation (newer than the accepted one);
+// it also retries a failed rollback (202 + operation).
+func (c *Client) Restore(ctx context.Context, key string, snapshot uuid.UUID, generation int64) (*agentapi.Operation, error) {
+	if !agentapi.KeyPattern.MatchString(key) {
+		return nil, fmt.Errorf("agent: invalid instance key %q", key)
+	}
+	return c.postOperation(ctx, agentapi.InstanceRestorePath(key), agentapi.RestoreRequest{SnapshotID: snapshot, Generation: generation})
+}
+
+// Confirm confirms an upgrade in awaiting_confirmation: the agent commits
+// it. Repeating it for a confirmed upgrade answers the operation again; an
+// operation not awaiting confirmation is 409 not_awaiting_confirmation.
+func (c *Client) Confirm(ctx context.Context, id uuid.UUID) (*agentapi.Operation, error) {
+	return c.postOperation(ctx, agentapi.OperationConfirmPath(id), nil)
+}
+
+// Abort rolls back an upgrade in awaiting_confirmation (error code
+// aborted). Repeating it answers the operation again.
+func (c *Client) Abort(ctx context.Context, id uuid.UUID) (*agentapi.Operation, error) {
+	return c.postOperation(ctx, agentapi.OperationAbortPath(id), nil)
+}
+
 // LogOptions select service logs.
 type LogOptions struct {
 	Service string

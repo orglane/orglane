@@ -63,6 +63,14 @@ func SecretEnvName(name string) string { return "ORGLANE_SECRET_" + strings.ToUp
 // FencedSuffix marks the aliases of a fenced render.
 const FencedSuffix = "-fenced"
 
+// FencedName reports whether a service name would give an unfenced alias
+// ending in FencedSuffix ("fenced" or "<name>-fenced"). Such names are
+// invalid, so routed aliases and fenced aliases are disjoint namespaces: no
+// route of any instance or version can reach a fenced project.
+func FencedName(service string) bool {
+	return service == strings.TrimPrefix(FencedSuffix, "-") || strings.HasSuffix(service, FencedSuffix)
+}
+
 // TemplateData is the data of package templates (docs/specs/agent.md
 // "Template rendering").
 type TemplateData struct {

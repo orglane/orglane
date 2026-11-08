@@ -22,19 +22,20 @@ const operationRetention = 7 * 24 * time.Hour
 // opStore keeps operations in memory and persists each one under
 // instances/.agent/operations/<id>.json.
 type opStore struct {
-	dir string
-	now func() time.Time
+	dir          string
+	instancesDir string
+	now          func() time.Time
 
 	mu  sync.Mutex
 	ops map[uuid.UUID]*agentapi.Operation
 }
 
-func newOpStore(dir string, now func() time.Time) *opStore {
-	return &opStore{dir: dir, now: now, ops: map[uuid.UUID]*agentapi.Operation{}}
+func newOpStore(dir, instancesDir string, now func() time.Time) *opStore {
+	return &opStore{dir: dir, instancesDir: instancesDir, now: now, ops: map[uuid.UUID]*agentapi.Operation{}}
 }
 
 // load reads the persisted operations and deletes those finished more than
-// operationRetention ago.
+// operationRetention ago, unless a journal still references them.
 func (s *opStore) load() error {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -70,6 +71,21 @@ func (s *opStore) pruneLocked() error {
 	var errs []error
 	for id, op := range s.ops {
 		if op.FinishedAt != nil && op.FinishedAt.Before(cutoff) {
+			// A crash may leave a terminal result with a journal whose
+			// deletion still needs retry: finalize records the result
+			// again, so the operation stays while its journal exists.
+			// Journals are replaced atomically, so reading one needs no
+			// instance file lock (which would invert the lock order).
+			if agentapi.KeyPattern.MatchString(op.Instance) {
+				j, err := readJournal(filepath.Join(s.instancesDir, op.Instance))
+				if err != nil {
+					errs = append(errs, fmt.Errorf("retain operation %s: %w", id, err))
+					continue
+				}
+				if j != nil && j.Operation == id {
+					continue
+				}
+			}
 			if err := os.Remove(s.path(id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				errs = append(errs, err)
 				continue
@@ -99,6 +115,27 @@ func (s *opStore) create(instance, kind string, generation int64) (agentapi.Oper
 	}
 	s.ops[id] = op
 	return *op, nil
+}
+
+// adopt re-creates an operation that a journal names but the store does
+// not know (its file was lost), as running, so the journal's result can
+// still be recorded. A known operation is left as it is.
+func (s *opStore) adopt(id uuid.UUID, instance, kind, phase string, generation int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.ops[id]; ok {
+		return nil
+	}
+	sec, nsec := id.Time().UnixTime()
+	op := &agentapi.Operation{
+		ID: id, Instance: instance, Kind: kind, Generation: generation,
+		State: agentapi.OpRunning, Phase: phase, StartedAt: time.Unix(sec, nsec).UTC(),
+	}
+	if err := writeJSON(s.path(id), op); err != nil {
+		return err
+	}
+	s.ops[id] = op
+	return nil
 }
 
 func (s *opStore) get(id uuid.UUID) (agentapi.Operation, bool) {
@@ -153,11 +190,11 @@ func (s *opStore) find(instance string, match func(*agentapi.Operation) bool) (a
 	return *best, true
 }
 
-// forGeneration returns the newest apply or remove operation of a
+// forGeneration returns the newest apply, remove or upgrade operation of a
 // generation.
 func (s *opStore) forGeneration(instance string, gen int64) (agentapi.Operation, bool) {
 	return s.find(instance, func(op *agentapi.Operation) bool {
-		return op.Generation == gen && (op.Kind == agentapi.KindApply || op.Kind == agentapi.KindRemove)
+		return op.Generation == gen && (op.Kind == agentapi.KindApply || op.Kind == agentapi.KindRemove || op.Kind == agentapi.KindUpgrade)
 	})
 }
 

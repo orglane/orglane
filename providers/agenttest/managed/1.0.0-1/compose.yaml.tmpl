@@ -9,6 +9,7 @@ services:
     environment:
       MESSAGE: {{index .Settings "message" | quote}}
       INSTANCE_HOST: {{index .Hosts "web" | quote}}
+      PACKAGE_VERSION: {{quote .Package.Version}}
     volumes:
       - type: bind
         source: {{dir "www" | quote}}
