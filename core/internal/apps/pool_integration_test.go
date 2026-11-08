@@ -220,10 +220,36 @@ func TestRemovalGuardCanceledPersonLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := credentialReadingService(t, h, sizedPool(t, h, 1))
-	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	if err := svc.RunApplyRemovals(ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8); err == nil {
-		t.Fatal("the guard applied a removal while the person's lock was held")
+	done := make(chan error, 1)
+	go func() { done <- svc.RunApplyRemovals(ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8) }()
+
+	// The guard's session holds the removals lock and waits for carol's.
+	removals := apps.LockIDForTest("removals", inst.ID.String())
+	wait := bounded(t)
+	for {
+		var waiting bool
+		if err := blocker.QueryRow(wait, `SELECT EXISTS (SELECT 1 FROM pg_locks w JOIN pg_locks g ON g.pid = w.pid
+			WHERE w.locktype = 'advisory' AND NOT w.granted AND ((w.classid::bigint << 32) | w.objid::bigint) = $1
+			AND g.locktype = 'advisory' AND g.granted AND ((g.classid::bigint << 32) | g.objid::bigint) = $2)`, person, removals).Scan(&waiting); err != nil {
+			t.Fatalf("the guard never waited for the person's lock: %v", err)
+		}
+		if waiting {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		// The canceled wait fails the run; which error (the context's or a
+		// closed connection) depends on where the cancellation lands.
+		if err == nil {
+			t.Fatal("the guard applied a removal while the person's lock was held")
+		}
+	case <-wait.Done():
+		t.Fatal("the guard did not stop after its context was canceled")
 	}
 	if _, err := blocker.Exec(h.ctx, "SELECT pg_advisory_unlock($1)", person); err != nil {
 		t.Fatal(err)
@@ -231,8 +257,6 @@ func TestRemovalGuardCanceledPersonLock(t *testing.T) {
 
 	// A separate session gets the removals lock once the discarded backend
 	// is gone.
-	removals := apps.LockIDForTest("removals", inst.ID.String())
-	wait := bounded(t)
 	for {
 		var ok bool
 		if err := blocker.QueryRow(wait, "SELECT pg_try_advisory_lock($1)", removals).Scan(&ok); err != nil {
