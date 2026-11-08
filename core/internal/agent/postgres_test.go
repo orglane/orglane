@@ -230,3 +230,190 @@ func TestPostgresDockerErrorFailsFast(t *testing.T) {
 		t.Fatalf("%d Docker calls, want the one ps", n)
 	}
 }
+
+// isPS reports a docker ps command.
+func isPS(args []string) bool { return len(args) > 0 && args[0] == "ps" }
+
+// isReadyProbe reports a pg_isready command.
+func isReadyProbe(args []string) bool {
+	return len(args) > 2 && args[0] == "exec" && args[2] == "pg_isready"
+}
+
+// nthCall makes match report true only for its nth matching command.
+func nthCall(n int, match func([]string) bool) func([]string) bool {
+	calls := 0
+	return func(args []string) bool {
+		if !match(args) {
+			return false
+		}
+		calls++
+		return calls == n
+	}
+}
+
+// blockingRunner stalls the commands selected by block until their context
+// ends, like a Docker daemon or container that stops answering.
+type blockingRunner struct {
+	*pgRunner
+	block   func([]string) bool
+	started chan struct{}
+	once    sync.Once
+}
+
+// run implements runner.
+func (r *blockingRunner) run(ctx context.Context, stdin []byte, args ...string) ([]byte, []byte, error) {
+	if r.block(args) {
+		r.once.Do(func() { close(r.started) })
+		<-ctx.Done()
+		return nil, nil, context.Cause(ctx)
+	}
+	return r.pgRunner.run(ctx, stdin, args...)
+}
+
+// TestPostgresBoundsBlockedProbes covers a stalled docker ps or docker exec
+// pg_isready: the probe must end with the readiness deadline, not wait for the
+// caller, the agent's lifetime context. This includes both probes on the
+// retry path after a psql connection failure.
+func TestPostgresBoundsBlockedProbes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		block func([]string) bool
+		psql  func(int) error
+	}{
+		"container lookup":       {block: nthCall(1, isPS), psql: always[error](nil)},
+		"readiness probe":        {block: nthCall(1, isReadyProbe), psql: always[error](nil)},
+		"retry container lookup": {block: nthCall(2, isPS), psql: from[error](1, exitError(2), nil)},
+		"retry readiness probe":  {block: nthCall(2, isReadyProbe), psql: from[error](1, exitError(2), nil)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := &blockingRunner{
+				pgRunner: &pgRunner{ps: always("c1"), ready: always(true), psql: tc.psql},
+				block:    tc.block,
+				started:  make(chan struct{}),
+			}
+			p := testPostgres(r.pgRunner)
+			p.r = r
+			p.timeout = 100 * time.Millisecond
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- p.exec(ctx, "SELECT 1;\n", nil) }()
+			select {
+			case <-r.started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the probe did not run")
+			}
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("exec accepted a stalled probe")
+				}
+			case <-time.After(2 * time.Second):
+				cancel()
+				t.Fatal("a stalled probe ignored the readiness deadline")
+			}
+		})
+	}
+}
+
+// lateReadyRunner lets a pg_isready probe succeed, but only after its
+// context ended.
+type lateReadyRunner struct{ *pgRunner }
+
+// run implements runner.
+func (r *lateReadyRunner) run(ctx context.Context, stdin []byte, args ...string) ([]byte, []byte, error) {
+	if isReadyProbe(args) {
+		<-ctx.Done()
+		return nil, nil, nil
+	}
+	return r.pgRunner.run(ctx, stdin, args...)
+}
+
+// TestPostgresRejectsLateReadiness makes sure a probe that returns success
+// after the readiness deadline is not taken for a ready server.
+func TestPostgresRejectsLateReadiness(t *testing.T) {
+	r := &lateReadyRunner{&pgRunner{ps: always("c1"), ready: always(true), psql: always[error](nil)}}
+	p := testPostgres(r.pgRunner)
+	p.r = r
+	p.timeout = 50 * time.Millisecond
+	if err := p.exec(t.Context(), "SELECT 1;\n", nil); err == nil {
+		t.Fatal("exec accepted a readiness probe that succeeded after the deadline")
+	}
+	if r.psqlN != 0 {
+		t.Fatalf("psql ran %d times after a late readiness result, want none", r.psqlN)
+	}
+}
+
+// transferRunner records the context of a dump or restore transfer.
+type transferRunner struct {
+	*pgRunner
+	args        []string
+	deadline    time.Time
+	hasDeadline bool
+	err         error
+}
+
+// pipe implements runner for dumps and restores.
+func (r *transferRunner) pipe(ctx context.Context, _ io.Reader, _ io.Writer, args ...string) ([]byte, error) {
+	r.args = args
+	r.deadline, r.hasDeadline = ctx.Deadline()
+	r.err = ctx.Err()
+	return nil, nil
+}
+
+// TestPostgresTransfersKeepTheCallersLifetime makes sure waiting for
+// readiness does not bound the single-shot dump and restore that follow it.
+func TestPostgresTransfersKeepTheCallersLifetime(t *testing.T) {
+	r := &transferRunner{pgRunner: &pgRunner{ps: always("c1"), ready: always(true)}}
+	p := testPostgres(r.pgRunner)
+	p.r = r
+	p.timeout = 20 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	run := func(name, command string, transfer func() error) {
+		t.Helper()
+		r.args, r.deadline, r.hasDeadline, r.err = nil, time.Time{}, false, nil
+		if err := transfer(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if r.err != nil {
+			t.Fatalf("%s transfer context ended early: %v", name, r.err)
+		}
+		if !r.hasDeadline || time.Until(r.deadline) < 30*time.Second {
+			t.Fatalf("%s transfer was bounded by the readiness deadline", name)
+		}
+		if !slices.Contains(r.args, command) {
+			t.Fatalf("%s ran %v", name, r.args)
+		}
+	}
+	run("dump", "pg_dump", func() error { return p.dump(ctx, "orglane_app", io.Discard) })
+	run("restore", "pg_restore", func() error {
+		return p.restore(ctx, "orglane_app", "orglane_app", strings.NewReader("dump"))
+	})
+}
+
+// TestPostgresBlockedProbeStopsWithTheContext makes sure the readiness
+// budget does not replace the caller's cancellation.
+func TestPostgresBlockedProbeStopsWithTheContext(t *testing.T) {
+	r := &blockingRunner{
+		pgRunner: &pgRunner{ps: always("c1"), ready: always(true), psql: always[error](nil)},
+		block:    nthCall(1, isReadyProbe),
+		started:  make(chan struct{}),
+	}
+	p := testPostgres(r.pgRunner)
+	p.r = r
+	p.timeout = time.Hour
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- p.exec(ctx, "SELECT 1;\n", nil) }()
+	<-r.started
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("exec = %v, want the caller's deadline", err)
+		}
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("a stalled probe did not stop with the caller's context")
+	}
+}

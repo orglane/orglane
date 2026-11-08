@@ -344,22 +344,49 @@ func (p postgres) pause(ctx context.Context, deadline time.Time, cause error) er
 }
 
 // ready waits until the container runs and its server accepts connections,
-// and returns the container. Other errors fail at once.
+// and returns the container. Other errors fail at once. Its Docker probes are
+// bounded by deadline, so a stalled daemon or container command cannot hold
+// the step past its readiness budget; a probe that succeeds only after the
+// deadline is not accepted.
 func (p postgres) ready(ctx context.Context, deadline time.Time) (string, error) {
+	probe, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	var cause error
 	for {
-		id, err := p.container(ctx)
+		id, err := p.container(probe)
 		switch {
-		case err == nil && p.accepting(ctx, id):
-			return id, nil
-		case err == nil:
-			err = errPostgresNotReady
-		case !errors.Is(err, errNoPostgres):
+		case err != nil && !errors.Is(err, errNoPostgres):
+			if probe.Err() != nil {
+				return "", errors.Join(err, context.Cause(probe))
+			}
 			return "", err
+		case err != nil:
+			cause = err
+		case !p.accepting(probe, id):
+			cause = errPostgresNotReady
+		case probe.Err() == nil:
+			return id, nil
+		default:
+			cause = errPostgresNotReady // succeeded too late
 		}
-		if err := p.pause(ctx, deadline, err); err != nil {
+		if err := p.pause(probe, deadline, cause); err != nil {
 			return "", err
 		}
 	}
+}
+
+// stillReady reports whether container id is still the running container and
+// its server accepts connections. Its Docker probes are bounded by deadline
+// like those of ready.
+func (p postgres) stillReady(ctx context.Context, deadline time.Time, id string) (same, ready bool) {
+	probe, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	cur, err := p.container(probe)
+	if err != nil || cur != id {
+		return false, false
+	}
+	accepting := p.accepting(probe, id)
+	return true, accepting && probe.Err() == nil
 }
 
 // script runs psql with args on SQL from standard input once the server
@@ -386,12 +413,13 @@ func (p postgres) script(ctx context.Context, args []string, sql string, secrets
 			return nil, cerr
 		}
 		// A container that stopped or was replaced under the command is
-		// waited for; otherwise only a connection failure is.
-		if cur, err2 := p.container(ctx); err2 == nil && cur == id {
+		// waited for; otherwise only a connection failure is. These probes
+		// are bounded by the readiness deadline too.
+		if same, accepts := p.stillReady(ctx, deadline, id); same {
 			if !exitedWith(err, psqlConnectionFailed) {
 				return nil, cerr
 			}
-			if p.accepting(ctx, id) {
+			if accepts {
 				if refused++; refused == 2 {
 					return nil, cerr
 				}
