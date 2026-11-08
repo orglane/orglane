@@ -1147,7 +1147,7 @@ New target kinds: `app_instance`, `account_link`. System jobs use `audit.System`
 
 ## Testing strategy
 
-**Rule (AGENTS.md):** integration tests use real services; no mocks of provider APIs. The in-repo `testprovider` exercises the framework (jobs, results, retries, guard) without pretending to be a real provider.
+**Rule (AGENTS.md):** integration tests use real services; no mocks of provider APIs. The in-repo `testprovider` exercises the framework (jobs, results, retries, guard) without pretending to be a real provider. The one exception is GitHub.com, which cannot run in a container: its integration tests use `providers/github/githubfake`, which checks every request and response against GitHub's published OpenAPI description instead of hand-written expectations, and the live tests below exercise the real service.
 
 | Area | Tests | Where |
 |---|---|---|

@@ -113,7 +113,7 @@ Add a new goose migration in `core/migrations` (never edit an applied one) with 
 - **One API:** the web UI, mobile app, modules and agents use the same public API. No private shortcuts.
 - **Permissions:** every endpoint declares the permission it requires. Add tests for both allowed and denied access.
 - **No new core infrastructure dependencies** (Redis, brokers, search engines, Node.js servers, JVMs) without an ADR. See [ADR 0009](docs/adr/0009-resource-philosophy.md).
-- **Tests use real services** (Postgres, Forgejo, ...) via containers for integration tests. Don't mock provider APIs in integration tests.
+- **Tests use real services** (Postgres, Forgejo, ...) via containers for integration tests. Don't mock provider APIs in integration tests. The one exception, GitHub.com (no self-hostable service), is documented in [docs/specs/providers.md](docs/specs/providers.md) "Testing strategy".
 - **Never weaken tests to make CI pass.** Removing assertions, skipping tests or changing the golden scenario is a high-risk change that needs a maintainer.
 - **i18n:** user-facing strings go through the i18n catalogs, never hard-coded (`make lint` checks JSX; see [web/README.md](web/README.md)).
 - **Security:** never commit secrets. Treat webhook payloads, imported files and module input as untrusted.
