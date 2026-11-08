@@ -254,6 +254,11 @@ func TestNormalizeEdgeCases(t *testing.T) {
 		{"# `heading\n@bob`", []string{"bob/mentioned"}},
 		{"- `one\n- @bob`", []string{"bob/mentioned"}},
 		{"\\` hi @bob \\`", []string{"bob/mentioned"}},
+		{"[x](/foo`) @bob `", []string{"bob/mentioned"}},
+		{"[x](url \"`title\") @bob `", []string{"bob/mentioned"}},
+		{"# `heading\r@bob`", []string{"bob/mentioned"}},
+		{"<pre>\n</style>\n@bob", []string{"bob/mentioned"}},
+		{"a <foo\fbar=\"@bob\">", nil},
 	} {
 		d := edit(t, fixture(t, "pull_request_opened"), func(b map[string]any) { b["pull_request"].(map[string]any)["body"] = c.body })
 		var got []string
@@ -351,6 +356,55 @@ func TestMentions(t *testing.T) {
 		{"code span before a tag", "`<a title=\"` @bob \">` @carol", []string{"bob", "carol"}},
 		{"inline comment", "a <!-- @bob --> @carol", []string{"carol"}},
 		{"autolink", "<mailto:@bob> @carol", []string{"carol"}},
+		// Line endings: CR and CRLF end lines as LF does.
+		{"heading ended by CR", "# `heading\r@bob`", []string{"bob"}},
+		{"code span across CRLF", "`a\r\n@bob`", nil},
+		{"code span across CR", "`a\r@bob\r\n`", nil},
+		{"blank line of CRs", "a\r\r@bob `\r`", []string{"bob"}},
+		// Links: destinations, titles and labels are no text, and a
+		// backtick in them opens no code span.
+		{"backtick in a destination", "[x](/foo`) @bob `", []string{"bob"}},
+		{"backtick in a title", "[x](url \"`title\") @bob `", []string{"bob"}},
+		{"backtick in a single-quoted title", "[x](/u 'it`s') @bob `", []string{"bob"}},
+		{"backtick in a parenthesized title", "[x](/u (a`b)) @bob `", []string{"bob"}},
+		{"backtick in an angle destination", "[x](<a`b>) @bob `", []string{"bob"}},
+		{"backtick in nested parentheses", "[x](a(b`)c) @bob `", []string{"bob"}},
+		{"a code span first is no link", "[not a `link](/foo`) @bob", []string{"bob"}},
+		{"link text is text, its destination not", "[@bob](/u) and [x](/@carol)", []string{"bob"}},
+		{"image description", "![@bob](/img.png) @carol", []string{"carol"}},
+		{"no links in links", "[a [b](/u) c](/v) @bob `x`", []string{"bob"}},
+		{"after a link", "[link](/u)@bob", []string{"bob"}},
+		{"escaped bracket is no link", "\\[x](/u `) @bob `", nil},
+		// Link reference definitions and references.
+		{"full reference", "[x][ref] @bob `\n\n[ref]: /u`", []string{"bob"}},
+		{"undefined reference", "[x][nope] `@bob`", nil},
+		{"shortcut reference", "[ref] @bob `\n\n[ref]: /u \"`\"", []string{"bob"}},
+		{"definition title", "[x]: /u \"@bob\"\n@carol", []string{"carol"}},
+		{"tab after the colon", "[x]:\t/u\n@bob", []string{"bob"}},
+		{"paragraph after a definition", "[x]: /u\n    @bob", []string{"bob"}},
+		{"definition before a setext underline", "[x]: /u\n===\n@bob", []string{"bob"}},
+		// HTML blocks of every kind, and their ends.
+		{"script block ends at another kind's closing tag", "<script>\n@bob\n</textarea>\n@carol", []string{"carol"}},
+		{"style block across blank lines", "<style>\n@bob\n\n@eve\n</style>\n@carol", []string{"carol"}},
+		{"comment block", "<!-- @bob\n--> @carol", nil},
+		{"processing instruction block", "<?\n@bob ?>\n@carol", []string{"carol"}},
+		{"declaration block", "<!X\n@bob >\n@carol", []string{"carol"}},
+		{"CDATA block", "<![CDATA[\n@bob ]]>\n@carol", []string{"carol"}},
+		{"block tag", "<div>\n@bob\n\n@carol", []string{"carol"}},
+		{"lone tag", "<x-y z=\"1\">\n@bob\n\n@carol", []string{"carol"}},
+		{"lone tag cannot interrupt a paragraph", "a\n<x-y>\n@bob", []string{"bob"}},
+		{"lone closing tag", "</pre>\n@bob\n\n@carol", []string{"carol"}},
+		// Whitespace in tags: form feed, vertical tab and line endings.
+		{"form feed in a tag", "a <foo\fbar=\"@bob\">", nil},
+		{"form feed between attributes", "a <b\fc=\"@bob\"> @carol", []string{"carol"}},
+		{"vertical tab between attributes", "a <b\vc='@bob'> @carol", []string{"carol"}},
+		{"unquoted attribute", "a <b c=@bob> @carol", []string{"carol"}},
+		{"line ending in a tag", "a <b\nc=\"@bob\"> @carol", []string{"carol"}},
+		// Tabs count in columns.
+		{"fence in a list item after a tab", "-\t```\n\t@bob\n\t```", nil},
+		{"tabs after a quote marker", ">\t\t@bob", nil},
+		{"tab-indented list item", "\t\t- a\n\t\t  @bob", nil},
+		{"form feed is no blank line", "a\f\n@bob", []string{"bob"}},
 	} {
 		if got := Mentions(c.text); !slices.Equal(got, c.want) {
 			t.Errorf("%s: %q -> %v, want %v", c.name, c.text, got, c.want)
@@ -456,6 +510,22 @@ func adversarialBodies() map[string]string {
 		"headings":                    rep("# `a\n"),
 		"lazy lines":                  "> a\n" + rep("b `\n"),
 		"tabs":                        rep("\t"),
+		"carriage returns":            rep("\r"),
+		"link openers":                rep("["),
+		"image openers":               rep("!["),
+		"link closers":                rep("]"),
+		"nested destinations":         rep("[](a(b)"),
+		"unclosed destinations":       rep("[a](b"),
+		"unclosed titles":             rep(`[a](b "`),
+		"unclosed paren titles":       rep("[a](b (c"),
+		"unclosed angle destinations": rep("[a](<b"),
+		"long labels":                 rep("[" + strings.Repeat("a", 999) + "]"),
+		"escaped labels":              rep("[" + strings.Repeat(`\]`, 600)),
+		"spaced shortcut labels":      rep("[a" + strings.Repeat(" ", 3000) + "]"),
+		"references":                  "[a]: /u\n" + rep("[a] [a][a] [b][a] "),
+		"reference definitions":       rep("[a]: /u 't'\n"),
+		"unclosed definitions":        rep("[a]: /u 't\n"),
+		"html block terminators":      "<pre>\n" + rep("</styl\n"),
 	}
 }
 

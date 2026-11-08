@@ -418,9 +418,10 @@ func (n *normalizer) mentions(text string) []provider.Target {
 
 // Mentions returns the logins mentioned as @login in Markdown text, in
 // order, deduplicated (case-insensitively), at most 50. Only text is
-// scanned, as CommonMark parses it (see markdown.go): code blocks, code
-// spans and HTML blocks are skipped, and code spans end with their
-// paragraph or heading. A mention starts at "@" that does not follow a
+// scanned, as CommonMark parses it (see markdown.go and
+// markdown_inline.go): code, raw HTML, autolinks, images and the
+// destinations, titles and labels of links are skipped, and code spans end
+// with their paragraph or heading. A mention starts at "@" that does not follow a
 // letter, digit or one of "-._/@`" (so e-mail addresses are no mentions);
 // the login is Forgejo's user name pattern, without trailing separators
 // ("@bob." mentions bob), not followed by another letter or digit.
@@ -430,8 +431,8 @@ func (n *normalizer) mentions(text string) []provider.Target {
 func Mentions(text string) []string {
 	var out []string
 	seen := map[string]bool{}
-	inlineContent(text, func(content string) bool {
-		for _, login := range lineMentions(inlineText(content)) {
+	textBlocks(text, func(content string) bool {
+		for _, login := range lineMentions(content) {
 			key := strings.ToLower(login)
 			if seen[key] {
 				continue
