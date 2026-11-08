@@ -77,6 +77,7 @@ func inlineContent(text string, f func(string) bool) {
 	}
 }
 
+// emit passes inline content on, and stops the walk when inline says so.
 func (b *blocks) emit(s string) {
 	if !b.done && !b.inline(s) {
 		b.done = true
@@ -448,10 +449,12 @@ var htmlBlockTags = func() map[string]bool {
 	return m
 }()
 
+// isASCIILetter reports whether c is an ASCII letter.
 func isASCIILetter(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
+// isAttrNameStart reports whether an HTML attribute name may start with c.
 func isAttrNameStart(c byte) bool {
 	return isASCIILetter(c) || c == '_' || c == ':'
 }
@@ -715,6 +718,8 @@ func autolink(s string, i int) int {
 	}
 }
 
+// skipSpace returns the position after the spaces, tabs and line endings
+// at s[i:].
 func skipSpace(s string, i int) int {
 	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n') {
 		i++
@@ -722,8 +727,11 @@ func skipSpace(s string, i int) int {
 	return i
 }
 
+// isDigit reports whether c is an ASCII digit.
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
+// isASCIIPunct reports whether c is ASCII punctuation, which a backslash
+// escapes.
 func isASCIIPunct(c byte) bool {
 	return c >= '!' && c <= '/' || c >= ':' && c <= '@' || c >= '[' && c <= '`' || c >= '{' && c <= '~'
 }

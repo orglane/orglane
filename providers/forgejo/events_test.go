@@ -459,6 +459,7 @@ func adversarialBodies() map[string]string {
 	}
 }
 
+// TestMentionsAdversarialBodies bounds the time of each adversarial body.
 func TestMentionsAdversarialBodies(t *testing.T) {
 	bound := time.Second
 	if raceEnabled {
