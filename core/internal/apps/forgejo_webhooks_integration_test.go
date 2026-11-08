@@ -55,7 +55,12 @@ func startForgejoSite(t *testing.T) *forgejoSite {
 	}
 	env := h.svc.EnvForTest(inst)
 	secrets := map[string]string{}
-	for _, name := range []string{forgejo.CredentialDBPassword, forgejo.CredentialSecretKey, forgejo.CredentialAdminPassword} {
+	lifecycle, _ := inst.Adapter.Lifecycle()
+	inputs, err := lifecycle.Inputs(h.ctx, env, inst.View())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range inputs.Secrets {
 		v, err := env.Credential(h.ctx, name)
 		if err != nil {
 			t.Fatal(err)
@@ -68,6 +73,9 @@ func startForgejoSite(t *testing.T) *forgejoSite {
 	})
 	b.Routes(t, managedtest.ForgejoRoutes(inst.Key)...)
 	spec := managedtest.ForgejoSpec(inst.ID, 1, managedtest.FreePort(t), secrets, agentapi.StateRunning)
+	for k, v := range inputs.Settings {
+		spec.Settings[k] = v
+	}
 	op, _, err := agentClient.Apply(t.Context(), inst.Key, spec)
 	if err != nil {
 		t.Fatal(err)
