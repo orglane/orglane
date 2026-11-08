@@ -391,6 +391,35 @@ func TestPlanRefreshesStaleLink(t *testing.T) {
 	}
 }
 
+// A move whose destination grant fails keeps the old membership: the plan
+// lists the addition before the removal, and the core stops at the first
+// failure (emulated here), so the removal never runs. The old team is
+// listed before the destination, so plan order follows the action kind,
+// not the teams' order.
+func TestGrantsPrecedeRemovals(t *testing.T) {
+	a := New()
+	f, inst := newFakeAdmin(t)
+	person := uuid.New()
+	u := f.addUser("maya", fakeSource, person.String())
+	old := f.addTeam("platform", teamMarker+" (team Platform).")
+	dest := f.addTeam("product", teamMarker+" (team Product).")
+	f.members[old]["maya"], f.members[f.base]["maya"] = true, true
+	plan := must(a.Plan(t.Context(), env(), inst, linked(desiredFor(person, "", true, true, ref(dest)), u)))
+	if !slices.Equal(keys(plan), []string{"add_to_team:" + ref(dest), "remove_from_team:" + ref(old)}) {
+		t.Fatalf("move plan = %v", keys(plan))
+	}
+	f.fail["PUT /api/v1/teams/"+ref(dest)+"/members/maya"] = []int{http.StatusBadGateway}
+	var failed error
+	for _, act := range plan.Actions {
+		if _, failed = a.Apply(t.Context(), env(), inst, act); failed != nil {
+			break
+		}
+	}
+	if code(failed) != CodeUnavailable || !f.members[old]["maya"] || f.members[dest]["maya"] {
+		t.Fatalf("failed grant: %v; old team %v, destination %v", failed, f.members[old]["maya"], f.members[dest]["maya"])
+	}
+}
+
 func must(p provider.Plan, err error) provider.Plan {
 	if err != nil {
 		panic(err)
