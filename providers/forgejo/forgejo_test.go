@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,6 +67,9 @@ type fakeForgejo struct {
 	fail     map[string][]int
 	requests []string
 	values   map[string]int64 // token value -> token ID
+	// source is the published sign-in source (0: none yet).
+	source     int64
+	sourceName string
 	// beforeMint runs before a token is minted (a concurrent attempt).
 	beforeMint func(f *fakeForgejo)
 }
@@ -92,7 +96,7 @@ func (f *fakeForgejo) hasToken(id int64) bool {
 
 func newFake(t *testing.T) (*fakeForgejo, provider.Instance) {
 	t.Helper()
-	f := &fakeForgejo{orgs: map[string]bool{}, health: http.StatusOK, admin: true, fail: map[string][]int{}, values: map[string]int64{}}
+	f := &fakeForgejo{orgs: map[string]bool{}, health: http.StatusOK, admin: true, fail: map[string][]int{}, values: map[string]int64{}, source: 3, sourceName: AuthSourceName}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	u, _ := url.Parse(srv.URL)
@@ -121,6 +125,14 @@ func (f *fakeForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = "fail"
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
+		return
+	}
+	if r.URL.Path == authSourcePath {
+		if f.source == 0 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": f.sourceName, "id": f.source})
 		return
 	}
 	if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "token "); ok {
@@ -284,6 +296,9 @@ func TestSetup(t *testing.T) {
 		"rate limited":    {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.fail["GET /api/v1/orgs/acme"] = []int{429} }, CodeRateLimited, true},
 		"rejected create": {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.fail["POST /api/v1/orgs"] = []int{400} }, CodeRejected, false},
 		"no upstream":     {func(_ *fakeForgejo, i *provider.Instance, _ *testEnv) { i.Upstream = nil }, CodeNoUpstream, true},
+		// The configure hook has not created the sign-in source yet.
+		"no sign-in source":    {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.source = 0 }, CodeSSONotConfigured, true},
+		"other sign-in source": {func(f *fakeForgejo, _ *provider.Instance, _ *testEnv) { f.sourceName = "github" }, CodeSSONotConfigured, true},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -554,5 +569,48 @@ func TestValidateSettings(t *testing.T) {
 		if spec.Name == SettingOrganization && (!spec.Required || spec.Mutable) {
 			t.Errorf("organization spec = %+v, want required and immutable", spec)
 		}
+	}
+}
+
+func TestOIDCClientAndOpenURL(t *testing.T) {
+	a := New()
+	for base, want := range map[string]string{
+		"https://git.acme.com":              "https://git.acme.com/user/oauth2/orglane/callback",
+		"https://git.acme.com/":             "https://git.acme.com/user/oauth2/orglane/callback",
+		"http://git.orglane.localhost":      "http://git.orglane.localhost/user/oauth2/orglane/callback",
+		"http://git.orglane.localhost:8080": "http://git.orglane.localhost:8080/user/oauth2/orglane/callback",
+	} {
+		u, _ := url.Parse(base)
+		c, err := a.OIDCClient(provider.Instance{Key: "git", BaseURL: u})
+		if err != nil || len(c.RedirectURIs) != 1 || c.RedirectURIs[0] != want || c.Secret != CredentialOIDCClientSecret {
+			t.Errorf("%s: %+v, %v; want %s", base, c, err, want)
+		}
+	}
+	if _, err := a.OIDCClient(provider.Instance{Key: "git"}); err == nil {
+		t.Error("an OIDC client without a base URL")
+	}
+
+	base, _ := url.Parse("https://git.acme.com")
+	inst := provider.Instance{Key: "git", BaseURL: base}
+	for target, want := range map[string]string{
+		"/acme/robot/pulls/3":    "https://git.acme.com/user/oauth2/orglane?redirect_to=%2Facme%2Frobot%2Fpulls%2F3",
+		"/acme/robot?tab=issues": "https://git.acme.com/user/oauth2/orglane?redirect_to=%2Facme%2Frobot%3Ftab%3Dissues",
+		"/":                      "https://git.acme.com/user/oauth2/orglane?redirect_to=%2F",
+	} {
+		u, err := a.OpenURL(inst, target)
+		if err != nil || u.String() != want {
+			t.Errorf("%s: %v, %v; want %s", target, u, err, want)
+		}
+		if u.Scheme != base.Scheme || u.Host != base.Host {
+			t.Errorf("%s: another origin %s", target, u)
+		}
+	}
+	if _, err := a.OpenURL(provider.Instance{}, "/"); err == nil {
+		t.Error("a deep link without a base URL")
+	}
+
+	in, err := a.Inputs(t.Context(), env(), provider.Instance{Key: "git", Settings: map[string]any{}})
+	if err != nil || in.Settings[settingOIDCClientID] != "app-git" || !slices.Contains(in.Secrets, CredentialOIDCClientSecret) {
+		t.Fatalf("inputs = %+v, %v", in, err)
 	}
 }

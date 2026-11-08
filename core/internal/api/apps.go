@@ -52,6 +52,8 @@ func appsError(err error) error {
 		return codedProblem(http.StatusNotFound, code, "")
 	case errors.Is(err, apps.ErrInvalid):
 		return codedProblem(http.StatusBadRequest, code, strings.TrimPrefix(err.Error(), "apps: invalid input: "))
+	case errors.Is(err, apps.ErrForbidden):
+		return codedProblem(http.StatusForbidden, code, "")
 	case code != "":
 		return codedProblem(http.StatusConflict, code, strings.TrimPrefix(err.Error(), "apps: "))
 	}
@@ -688,6 +690,23 @@ func (s *server) ListMyApps(ctx context.Context, _ apigen.ListMyAppsRequestObjec
 		items = append(items, item)
 	}
 	return apigen.ListMyApps200JSONResponse{Items: items}, nil
+}
+
+// OpenAppInstance returns a deep link into an app instance for the caller.
+func (s *server) OpenAppInstance(ctx context.Context, req apigen.OpenAppInstanceRequestObject) (apigen.OpenAppInstanceResponseObject, error) {
+	svc, err := s.appsService()
+	if err != nil {
+		return nil, err
+	}
+	personID, err := callerID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	u, err := svc.OpenURL(ctx, personID, req.InstanceId, req.Params.To)
+	if err != nil {
+		return nil, appsError(err)
+	}
+	return apigen.OpenAppInstance200JSONResponse{Url: u.String()}, nil
 }
 
 // ReceiveWebhook takes provider webhooks. The signature over the exact raw

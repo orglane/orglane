@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -44,6 +45,30 @@ type storage struct {
 	lifetimes Lifetimes
 	loginURL  string
 	logger    *slog.Logger
+	// access, if set, decides in the issuing transaction whether a person
+	// may get a code or tokens for a client (Provider.SetClientAccess).
+	access atomic.Pointer[ClientAccess]
+}
+
+// ClientAccess decides, in the transaction q that issues a code or tokens,
+// whether a person may be signed in to a client. It may lock what it reads
+// so that a concurrent withdrawal is ordered before or after the issuance.
+// An error denies.
+type ClientAccess func(ctx context.Context, q *store.Queries, clientID string, personID uuid.UUID) (bool, error)
+
+// allowed runs the client access check; no check allows.
+func (s *storage) allowed(ctx context.Context, q *store.Queries, clientID string, personID uuid.UUID) (bool, error) {
+	check := s.access.Load()
+	if check == nil {
+		return true, nil
+	}
+	return (*check)(ctx, q, clientID, personID)
+}
+
+// errAccessWithdrawn refuses a code or token exchange for a person the
+// client may no longer sign in.
+func errAccessWithdrawn() error {
+	return oidc.ErrInvalidGrant().WithDescription("access to this client was withdrawn")
 }
 
 var (
@@ -165,14 +190,35 @@ func (s *storage) SaveAuthCode(ctx context.Context, id, code string) error {
 	if err != nil {
 		return err
 	}
-	n, err := s.q().SetOIDCAuthCode(ctx, store.SetOIDCAuthCodeParams{ID: uid, CodeHash: crypto.HashToken(code)})
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return oidc.ErrInvalidRequest().WithDescription("the authorization request is not complete or already has a code")
-	}
-	return nil
+	// The code is issued only if the person may still sign in to the
+	// client, decided in this transaction.
+	return s.inTx(ctx, func(q *store.Queries) error {
+		row, err := q.GetOIDCAuthRequest(ctx, uid)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return oidc.ErrInvalidRequest().WithDescription("the authorization request is gone")
+		} else if err != nil {
+			return err
+		}
+		if row.PersonID == nil {
+			return oidc.ErrInvalidRequest().WithDescription("the authorization request is not complete")
+		}
+		ok, err := s.allowed(ctx, q, row.ClientID, *row.PersonID)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "client access check", "client", row.ClientID, "error", err)
+			return oidc.ErrServerError()
+		}
+		if !ok {
+			return oidc.ErrAccessDenied()
+		}
+		n, err := q.SetOIDCAuthCode(ctx, store.SetOIDCAuthCodeParams{ID: uid, CodeHash: crypto.HashToken(code)})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return oidc.ErrInvalidRequest().WithDescription("the authorization request is not complete or already has a code")
+		}
+		return nil
+	})
 }
 
 // AuthRequestByCode implements op.AuthStorage. A code can be exchanged once:
@@ -182,6 +228,7 @@ func (s *storage) SaveAuthCode(ctx context.Context, id, code string) error {
 func (s *storage) AuthRequestByCode(ctx context.Context, code string) (op.AuthRequest, error) {
 	hash := crypto.HashToken(code)
 	var row store.OidcAuthRequest
+	withdrawn := false
 	err := s.inTx(ctx, func(q *store.Queries) error {
 		var err error
 		if row, err = q.ClaimOIDCAuthCode(ctx, hash); err != nil {
@@ -190,8 +237,20 @@ func (s *storage) AuthRequestByCode(ctx context.Context, code string) (op.AuthRe
 		if row.PersonID == nil {
 			return oidc.ErrInvalidGrant().WithDescription("the authorization request is not complete")
 		}
+		ok, err := s.allowed(ctx, q, row.ClientID, *row.PersonID)
+		if err != nil {
+			return fmt.Errorf("oidcop: client access check: %w", err)
+		}
+		if !ok {
+			// The claim commits (the code is spent) without a grant.
+			withdrawn = true
+			return nil
+		}
 		return q.CreateOIDCGrant(ctx, store.CreateOIDCGrantParams{ID: row.ID, ClientID: row.ClientID, PersonID: *row.PersonID})
 	})
+	if err == nil && withdrawn {
+		return nil, errAccessWithdrawn()
+	}
 	if err == nil {
 		return &AuthRequest{row: row}, nil
 	}
@@ -250,6 +309,19 @@ func grantOf(req op.TokenRequest) (tokenGrant, error) {
 	}
 }
 
+// checkAccess refuses tokens (from a code or a refresh token) for a person
+// the client may no longer sign in, decided in the issuing transaction.
+func (s *storage) checkAccess(ctx context.Context, q *store.Queries, g tokenGrant) error {
+	ok, err := s.allowed(ctx, q, g.clientID, g.personID)
+	if err != nil {
+		return fmt.Errorf("oidcop: client access check: %w", err)
+	}
+	if !ok {
+		return errAccessWithdrawn()
+	}
+	return nil
+}
+
 func (s *storage) createAccessToken(ctx context.Context, q *store.Queries, g tokenGrant) (store.OidcAccessToken, error) {
 	return q.CreateOIDCAccessToken(ctx, store.CreateOIDCAccessTokenParams{
 		ClientID:   g.clientID,
@@ -289,6 +361,9 @@ func (s *storage) CreateAccessToken(ctx context.Context, req op.TokenRequest) (s
 		if err := lockGrant(ctx, q, g.grantID); err != nil {
 			return err
 		}
+		if err := s.checkAccess(ctx, q, g); err != nil {
+			return err
+		}
 		t, err = s.createAccessToken(ctx, q, g)
 		return err
 	})
@@ -311,6 +386,9 @@ func (s *storage) CreateAccessAndRefreshTokens(ctx context.Context, req op.Token
 	reused := false
 	err = s.inTx(ctx, func(q *store.Queries) error {
 		if err := lockGrant(ctx, q, g.grantID); err != nil {
+			return err
+		}
+		if err := s.checkAccess(ctx, q, g); err != nil {
 			return err
 		}
 		expires := time.Now().Add(s.lifetimes.RefreshToken)

@@ -35,6 +35,9 @@ const (
 	CodeNoUpstream = "no_upstream"
 	// CodeInvalidSettings: a required setting is missing or invalid.
 	CodeInvalidSettings = "invalid_settings"
+	// CodeSSONotConfigured: the sign-in source for Orglane does not exist
+	// (yet). Retryable: the package's configure hook creates it.
+	CodeSSONotConfigured = "sso_not_configured"
 )
 
 // statusError is a non-2xx answer. It carries only the status: response

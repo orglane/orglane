@@ -146,6 +146,11 @@ func (p *Provider) AuthRequest(ctx context.Context, id string) (*AuthRequest, er
 // already or does not exist.
 var ErrAuthRequestGone = errors.New("oidcop: the authorization request is no longer pending")
 
+// SetClientAccess installs the client access check that runs where codes
+// and tokens are issued (SaveAuthCode, the code exchange and every token
+// issuance, refresh included). Without one every person may get them.
+func (p *Provider) SetClientAccess(f ClientAccess) { p.storage.access.Store(&f) }
+
 // CompleteAuthRequest records the signed-in person for a pending request.
 // session is the browser session the person signed in with; its creation
 // time is the authentication time.
@@ -182,6 +187,10 @@ func (p *Provider) AuthRequestError(w http.ResponseWriter, r *http.Request, req 
 // ErrLoginRequired is the OAuth error for prompt=none without a usable
 // session.
 func ErrLoginRequired() error { return oidc.ErrLoginRequired() }
+
+// ErrAccessDenied is the OAuth error for a person the client may not sign
+// in (RFC 6749 4.1.2.1 access_denied).
+func ErrAccessDenied() error { return oidc.ErrAccessDenied() }
 
 // AccessToken is a valid OIDC access token presented to the API.
 type AccessToken struct {
