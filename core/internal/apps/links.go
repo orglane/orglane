@@ -166,6 +166,12 @@ func (s *Service) StartAccountLink(ctx context.Context, personID, sessionID uuid
 		return nil, err
 	}
 	err = s.inTx(ctx, func(_ pgx.Tx, q *store.Queries) error {
+		// Serializes concurrent starts of the person for the instance, so
+		// exactly one state stays live: without it, each transaction
+		// invalidates only the states committed before it and inserts its own.
+		if err := q.AcquireXactLock(ctx, lockID("account-link-start", personID.String(), inst.ID.String())); err != nil {
+			return err
+		}
 		if err := q.InvalidateAppLinkStates(ctx, store.InvalidateAppLinkStatesParams{PersonID: personID, InstanceID: inst.ID}); err != nil {
 			return fmt.Errorf("apps: invalidate link states: %w", err)
 		}

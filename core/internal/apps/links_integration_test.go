@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -290,6 +291,34 @@ func TestAccountLinkRevocation(t *testing.T) {
 
 // GitHub's rate limit on the user lookup is retryable with its delay; the
 // state is spent and the token revoked.
+func TestAccountLinkConcurrentStartsLeaveOneState(t *testing.T) {
+	h := newLinkHarness(t)
+	alice := h.person("alice")
+	session := uuid.UUID(h.session(alice))
+	const starts = 16
+	start := make(chan struct{})
+	errs := make(chan error, starts)
+	var wg sync.WaitGroup
+	for range starts {
+		wg.Go(func() {
+			<-start
+			_, err := h.svc.StartAccountLink(h.ctx, alice.ID, session, "github", nil)
+			errs <- err
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := h.count(`SELECT count(*) FROM app_oauth_states WHERE kind = 'link' AND consumed_at IS NULL`); n != 1 {
+		t.Fatalf("%d live link states after %d concurrent starts, want 1", n, starts)
+	}
+}
+
 func TestAccountLinkRateLimit(t *testing.T) {
 	h := newLinkHarness(t)
 	alice := h.person("alice")
