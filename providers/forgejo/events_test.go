@@ -301,6 +301,11 @@ func TestNormalizeUnicodeReferenceLabels(t *testing.T) {
 		{"ff ligature in the definition", "![ @bob ][ﬀ]\n\n[FF]: /img.png", false},
 		{"Greek sigma", "![ @bob ][Σ]\n\n[ς]: /img.png", false},
 		{"non-BMP Deseret", "![ @bob ][𐐀]\n\n[𐐨]: /img.png", false},
+		{"Cherokee in the reference", "![ @bob ][Ꭰ]\n\n[ꭰ]: /img.png", false},
+		{"Cherokee in the definition", "![ @bob ][ꭰ]\n\n[Ꭰ]: /img.png", false},
+		{"Cherokee Ye in the reference", "![ @bob ][Ᏸ]\n\n[ᏸ]: /img.png", false},
+		{"Cherokee Ye in the definition", "![ @bob ][ᏸ]\n\n[Ᏸ]: /img.png", false},
+		{"undefined Cherokee label", "![ @bob ][Ꭰ]\n\n[Ꭱ]: /img.png", true},
 		{"undefined label", "![ @bob ][STRASSE]\n\n[strase]: /img.png", true},
 	} {
 		d := edit(t, fixture(t, "pull_request_opened"), func(b map[string]any) {
@@ -430,6 +435,10 @@ func TestMentions(t *testing.T) {
 		{"capital sharp s", "![ @bob ][ẞ]\n\n[SS]: /img.png", nil},
 		{"Greek sigma", "![ @bob ][Σ]\n\n[ς]: /img.png", nil},
 		{"non-BMP Deseret", "![ @bob ][𐐀]\n\n[𐐨]: /img.png", nil},
+		{"Cherokee in the reference", "![ @bob ][Ꭰ]\n\n[ꭰ]: /img.png", nil},
+		{"Cherokee in the definition", "![ @bob ][ꭰ]\n\n[Ꭰ]: /img.png", nil},
+		{"Cherokee Ye in the reference", "![ @bob ][Ᏸ]\n\n[ᏸ]: /img.png", nil},
+		{"Cherokee Ye in the definition", "![ @bob ][ᏸ]\n\n[Ᏸ]: /img.png", nil},
 		// HTML blocks of every kind, and their ends.
 		{"script block ends at another kind's closing tag", "<script>\n@bob\n</textarea>\n@carol", []string{"carol"}},
 		{"style block across blank lines", "<style>\n@bob\n\n@eve\n</style>\n@carol", []string{"carol"}},
@@ -485,6 +494,8 @@ func TestNormalizeLabel(t *testing.T) {
 		{"Angstrom sign", "[\u212B]", "[\u00E5]", true},
 		{"dotted capital i expands", "[\u0130]", "[i\u0307]", true},
 		{"Deseret case pair", "[\U00010400]", "[\U00010428]", true},
+		{"Cherokee case pair", "[\u13A0]", "[\uAB70]", true},
+		{"Cherokee Ye case pair", "[\u13F0]", "[\u13F8]", true},
 		{"dotless i is no i", "[i]", "[\u0131]", false},
 		{"unrelated letters", "[a]", "[\u00E1]", false},
 	} {

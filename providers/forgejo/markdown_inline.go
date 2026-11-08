@@ -404,10 +404,39 @@ func utf16Len(r rune) int {
 	return 1
 }
 
-// labelFold is Unicode case folding, which CommonMark applies to link
+// labelCaser is Unicode case folding, which CommonMark applies to link
 // labels. It is full folding: it expands "ß" to "ss" and "ﬀ" to "ff".
 // cases.Fold is stateless, so the shared Caser is safe for concurrent use.
-var labelFold = cases.Fold()
+var labelCaser = cases.Fold()
+
+// foldLabel is the full Unicode case fold of a link label. CaseFolding.txt
+// maps the Cherokee small letters to the capital letters (U+AB70 to
+// U+13A0, U+13F8 to U+13F0) and leaves the capital letters unchanged.
+// golang.org/x/text v0.43.0 instead folds a capital letter to its small
+// letter, because it applies the simple lower-case mapping, so map the
+// small letters it returns back to the capitals. The mapping is idempotent
+// and does not change the fold of any other script.
+func foldLabel(s string) string {
+	folded := labelCaser.String(s)
+	if !strings.ContainsFunc(folded, isCherokeeSmall) {
+		return folded
+	}
+	return strings.Map(foldCherokee, folded)
+}
+
+func isCherokeeSmall(r rune) bool {
+	return ('\uAB70' <= r && r <= '\uABBF') || ('\u13F8' <= r && r <= '\u13FD')
+}
+
+func foldCherokee(r rune) rune {
+	switch {
+	case '\uAB70' <= r && r <= '\uABBF':
+		return r - '\uAB70' + '\u13A0'
+	case '\u13F8' <= r && r <= '\u13FD':
+		return r - '\u13F8' + '\u13F0'
+	}
+	return r
+}
 
 // normalizeLabel is a link label as definitions and references are
 // matched: without brackets, trimmed, inner whitespace collapsed, case
@@ -428,7 +457,7 @@ func normalizeLabel(label string) string {
 			b.WriteByte(c)
 		}
 	}
-	return labelFold.String(b.String())
+	return foldLabel(b.String())
 }
 
 // backtickRun is a maximal run of n backticks at start; escaped is 1 if a
