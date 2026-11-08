@@ -449,6 +449,13 @@ func (s *upgradeSuite) rollback(t *testing.T) {
 		if err := os.Rename(filepath.Join(e.dataDir, "db.dump.saved"), filepath.Join(snapDir, snapshotDB)); err != nil {
 			t.Fatal(err)
 		}
+		// A snapshot request is refused, so it cannot block the restore.
+		var pe *agentclient.ProblemError
+		if _, err := e.client.Snapshot(t.Context(), key); !errors.As(err, &pe) || pe.Code != agentapi.CodeAgentBusy {
+			t.Fatalf("snapshot after a failed rollback: %v", err)
+		}
+		e.agent.wake(key)
+		time.Sleep(time.Second)
 		restore, err := e.client.Restore(t.Context(), key, uuid.MustParse(op.SnapshotID), 3)
 		if err != nil {
 			t.Fatal(err)

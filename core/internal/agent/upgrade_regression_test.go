@@ -428,6 +428,50 @@ func TestRecoverDurableRollbackFailure(t *testing.T) {
 	}
 }
 
+// A failed rollback blocks snapshot requests: the worker takes none while
+// a journal exists, so a queued one would block the recovery restore until
+// a restart. The restore that retries the rollback is still accepted.
+func TestSnapshotRejectedAfterRollbackFailure(t *testing.T) {
+	now := time.Now()
+	a, _ := newTestAgent(t, func() time.Time { return now })
+	if rec := put(t, a, now, "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusAccepted {
+		t.Fatal(rec.Body)
+	}
+	if err := writeSpec(filepath.Join(a.instanceDir("git"), currentFile), testSpec(1)); err != nil {
+		t.Fatal(err)
+	}
+	snapID := writeTestSnapshot(t, a, agentapi.SnapshotReasonUpgrade, true)
+	op, err := a.ops.create("git", agentapi.KindUpgrade, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := &journal{
+		Operation: op.ID, Kind: agentapi.KindUpgrade, To: testSpec(2).Package, ToGeneration: 2, Spec: testSpec(2),
+		SnapshotID: snapID, Phase: agentapi.PhaseRollingBack, RollbackFailed: true,
+	}
+	if err := writeJournal(a.instanceDir("git"), j); err != nil {
+		t.Fatal(err)
+	}
+	a.reconcile(t.Context(), a.instance("git"))
+
+	manual := mustJSON(t, agentapi.SnapshotRequest{Reason: agentapi.SnapshotReasonManual})
+	if code, p, _ := post(t, a, now, agentapi.InstanceSnapshotsPath("git"), manual); code != http.StatusConflict || p.Code != agentapi.CodeAgentBusy {
+		t.Fatalf("snapshot after a failed rollback: %d %+v", code, p)
+	}
+	if in := a.instance("git"); in.snapshotOp != uuid.Nil {
+		t.Fatalf("a rejected snapshot was reserved: %s", in.snapshotOp)
+	}
+	a.reconcile(t.Context(), a.instance("git"))
+	code, p, body := post(t, a, now, agentapi.InstanceRestorePath("git"), mustJSON(t, agentapi.RestoreRequest{SnapshotID: snapID, Generation: 3}))
+	var restore agentapi.Operation
+	if code != http.StatusAccepted || json.Unmarshal(body, &restore) != nil || restore.Kind != agentapi.KindRestore {
+		t.Fatalf("recovery restore after a rejected snapshot: %d %+v", code, p)
+	}
+	if got, err := readJournal(a.instanceDir("git")); err != nil || got == nil || got.Operation != restore.ID || got.RollbackFailed {
+		t.Fatalf("journal after the restore request = %+v, %v", got, err)
+	}
+}
+
 // A failure before the switch blocks the generation with its code before
 // the operation records it. A crash in between recovers the same code and
 // rule from the journal, not "interrupted".

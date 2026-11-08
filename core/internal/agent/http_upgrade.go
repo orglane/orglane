@@ -61,38 +61,55 @@ func (a *Agent) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	in := a.instance(key)
 	in.files.Lock()
-	st, err := loadState(a.instanceDir(key))
-	var j *journal
-	if err == nil {
-		j, err = readJournal(a.instanceDir(key))
-	}
+	op, problem := a.acceptSnapshot(in, a.instanceDir(key))
 	in.files.Unlock()
-	if err != nil {
-		a.internalError(w, r, err)
-		return
-	}
-	if st.id == uuid.Nil || st.current == nil || st.current.State == agentapi.StateAbsent {
-		writeProblem(w, r, http.StatusNotFound, agentapi.CodeNotFound, "the instance is not installed", nil)
-		return
-	}
-	a.mu.Lock()
-	if a.busyLocked(in, j) {
-		a.mu.Unlock()
-		writeProblem(w, r, http.StatusConflict, agentapi.CodeAgentBusy, "an operation runs on the instance", nil)
-		return
-	}
-	op, err := a.ops.create(key, agentapi.KindSnapshot, 0)
-	if err == nil {
-		in.snapshotOp = op.ID
-	}
-	a.mu.Unlock()
-	if err != nil {
-		a.internalError(w, r, err)
+	if problem != nil {
+		problem(w, r)
 		return
 	}
 	a.log.Info("snapshot requested", "instance", key, "operation", op.ID)
 	a.wake(key)
 	writeJSONResponse(w, http.StatusAccepted, op)
+}
+
+// acceptSnapshot reserves a manual snapshot. The caller holds in.files,
+// the lock restore acceptance and the reconcile loop's journal read hold
+// too, so no journal appears between the check and the reservation.
+func (a *Agent) acceptSnapshot(in *instance, dir string) (agentapi.Operation, func(http.ResponseWriter, *http.Request)) {
+	fail := func(status int, code, detail string) (agentapi.Operation, func(http.ResponseWriter, *http.Request)) {
+		return agentapi.Operation{}, func(w http.ResponseWriter, r *http.Request) { writeProblem(w, r, status, code, detail, nil) }
+	}
+	internal := func(err error) (agentapi.Operation, func(http.ResponseWriter, *http.Request)) {
+		return agentapi.Operation{}, func(w http.ResponseWriter, r *http.Request) { a.internalError(w, r, err) }
+	}
+	st, err := loadState(dir)
+	if err != nil {
+		return internal(err)
+	}
+	j, err := readJournal(dir)
+	if err != nil {
+		return internal(err)
+	}
+	if st.id == uuid.Nil || st.current == nil || st.current.State == agentapi.StateAbsent {
+		return fail(http.StatusNotFound, agentapi.CodeNotFound, "the instance is not installed")
+	}
+	// Any journal blocks a snapshot, a failed rollback too: the worker
+	// takes no snapshot request while a journal exists, and a queued one
+	// would block the restore that recovers the failed rollback.
+	if j != nil {
+		return fail(http.StatusConflict, agentapi.CodeAgentBusy, "an operation runs on the instance")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.busyLocked(in, j) {
+		return fail(http.StatusConflict, agentapi.CodeAgentBusy, "an operation runs on the instance")
+	}
+	op, err := a.ops.create(in.key, agentapi.KindSnapshot, 0)
+	if err != nil {
+		return internal(err)
+	}
+	in.snapshotOp = op.ID
+	return op, nil
 }
 
 // handleSnapshots answers GET /v1/instances/{key}/snapshots.
