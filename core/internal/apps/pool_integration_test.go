@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -147,9 +148,16 @@ func TestProvisioningMinimumPoolConcurrent(t *testing.T) {
 	inst := h.instance(nil)
 	people := []uuid.UUID{h.person("alice").ID, h.person("bob").ID, h.person("carol").ID}
 	h.drain()
-	// Removals for the guard to work on: carol is suspended.
+	// A removal for the guard to work on: carol is suspended and her run
+	// plans the removal of her account.
 	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, people[2], identity.StatusSuspended); err != nil {
 		t.Fatal(err)
+	}
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: people[2]}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending'`, people[2]); n == 0 {
+		t.Fatal("no removal was planned")
 	}
 
 	svc := credentialReadingService(t, h, sizedPool(t, h, 1))
@@ -176,5 +184,76 @@ func TestProvisioningMinimumPoolConcurrent(t *testing.T) {
 		if err != nil && !errors.As(err, &snooze) {
 			t.Fatalf("worker failed: %v", err)
 		}
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'applied'`, people[2]); n == 0 {
+		t.Fatal("the guard applied no removal")
+	}
+	if acct, _ := h.tp.Account(inst.ID, "carol"); acct.Member {
+		t.Fatal("carol kept access")
+	}
+}
+
+// TestRemovalGuardCanceledPersonLock: when the guard's wait for a person's
+// lock is canceled, its connection is discarded rather than returned to the
+// pool with the instance's removals lock still held.
+func TestRemovalGuardCanceledPersonLock(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	carol := h.person("carol")
+	h.drain()
+	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, carol.ID, identity.StatusSuspended); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: carol.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another session holds carol's provisioning lock, so the guard waits
+	// for it under the removals lock until its context ends.
+	person := apps.LockIDForTest("provision", inst.ID.String(), carol.ID.String())
+	blocker, err := h.pool.Acquire(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Release()
+	if _, err := blocker.Exec(h.ctx, "SELECT pg_advisory_lock($1)", person); err != nil {
+		t.Fatal(err)
+	}
+	svc := credentialReadingService(t, h, sizedPool(t, h, 1))
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	if err := svc.RunApplyRemovals(ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8); err == nil {
+		t.Fatal("the guard applied a removal while the person's lock was held")
+	}
+	if _, err := blocker.Exec(h.ctx, "SELECT pg_advisory_unlock($1)", person); err != nil {
+		t.Fatal(err)
+	}
+
+	// A separate session gets the removals lock once the discarded backend
+	// is gone.
+	removals := apps.LockIDForTest("removals", inst.ID.String())
+	wait := bounded(t)
+	for {
+		var ok bool
+		if err := blocker.QueryRow(wait, "SELECT pg_try_advisory_lock($1)", removals).Scan(&ok); err != nil {
+			t.Fatalf("the removals lock stayed held: %v", err)
+		}
+		if ok {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := blocker.Exec(h.ctx, "SELECT pg_advisory_unlock($1)", removals); err != nil {
+		t.Fatal(err)
+	}
+	// The one-connection pool works again and the guard finishes.
+	if err := svc.RunApplyRemovals(bounded(t), apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8); err != nil {
+		t.Fatalf("apply_removals after the canceled run: %v", err)
+	}
+	if acct, _ := h.tp.Account(inst.ID, "carol"); acct.Member {
+		t.Fatal("carol kept access")
+	}
+	if n := h.count(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted`); n != 0 {
+		t.Fatalf("%d advisory locks still held", n)
 	}
 }
