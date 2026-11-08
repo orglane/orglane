@@ -87,6 +87,7 @@ func TestAppsAPIPermissions(t *testing.T) {
 		{"GET", "/api/v1/apps/bindings", nil, authz.AppsManage, 200},
 		{"PUT", "/api/v1/apps/bindings/code", map[string]any{"instanceId": inst.ID}, authz.AppsManage, 200},
 		{"GET", base + "/team-mappings", nil, authz.AppsManage, 200},
+		{"GET", base + "/provider-teams", nil, authz.AppsManage, 404}, // the test provider has no existing teams
 		{"PUT", base + "/team-mappings/" + team.ID.String(), map[string]any{"mode": "create"}, authz.AppsManage, 200},
 		{"DELETE", base + "/team-mappings/" + team.ID.String(), nil, authz.AppsManage, 204},
 		{"GET", base + "/provisioning", nil, authz.AppsManage, 200},

@@ -1536,6 +1536,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/instances/{instanceId}/provider-teams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Provider teams
+         * @description The provider's teams an admin can pick for a mapping of mode
+         *     `existing` (GitHub), read from the provider now. `managed` marks the
+         *     teams Orglane created for this instance's `create` mappings. 404 for
+         *     providers without existing-team mappings; 409 unless the instance is
+         *     `active` or `degraded`; 429 with `Retry-After` for the provider's
+         *     rate limit; 502 when the provider cannot be read (`code` says why).
+         */
+        get: operations["listAppProviderTeams"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/instances/{instanceId}/team-mappings/{teamId}": {
         parameters: {
             query?: never;
@@ -2752,6 +2777,11 @@ export interface components {
             defaultPolicy: components["schemas"]["AppAccessPolicy"];
             /** @description The adapter provisions people. */
             provisioning: boolean;
+            /**
+             * @description The adapter can map an existing provider team (mode `existing`,
+             *     listed by `listAppProviderTeams`).
+             */
+            existingTeams: boolean;
             /** @description The adapter receives webhooks. */
             webhooks: boolean;
             /** @description The adapter has a managed lifecycle (setup, health). */
@@ -2952,6 +2982,17 @@ export interface components {
         };
         AppTeamMappingList: {
             items: components["schemas"]["AppTeamMapping"][];
+        };
+        AppProviderTeam: {
+            /** @description The provider team ID, the `externalRef` of an `existing` mapping. */
+            externalRef: string;
+            name: string;
+            slug: string;
+            /** @description Orglane created the team for a `create` mapping of this instance. */
+            managed: boolean;
+        };
+        AppProviderTeamList: {
+            items: components["schemas"]["AppProviderTeam"][];
         };
         SetAppTeamMappingRequest: {
             mode: components["schemas"]["AppTeamMappingMode"];
@@ -5425,6 +5466,36 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
+        };
+    };
+    listAppProviderTeams: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The provider's teams, by name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppProviderTeamList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["InternalError"];
+            502: components["responses"]["BadGateway"];
         };
     };
     setAppTeamMapping: {

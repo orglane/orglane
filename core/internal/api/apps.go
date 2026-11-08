@@ -87,6 +87,7 @@ func appProvider(a *apps.Adapter) apigen.AppProvider {
 		DefaultPolicy: apigen.AppAccessPolicy(m.DefaultPolicy),
 	}
 	_, p.Provisioning = a.Provisioner()
+	_, p.ExistingTeams = a.TeamLister()
 	_, p.Webhooks = a.EventSource()
 	_, p.Lifecycle = a.Lifecycle()
 	if m.Package != "" {
@@ -427,6 +428,31 @@ func (s *server) ListAppTeamMappings(ctx context.Context, req apigen.ListAppTeam
 		items = append(items, teamMapping(m))
 	}
 	return apigen.ListAppTeamMappings200JSONResponse{Items: items}, nil
+}
+
+func (s *server) ListAppProviderTeams(ctx context.Context, req apigen.ListAppProviderTeamsRequestObject) (apigen.ListAppProviderTeamsResponseObject, error) {
+	svc, err := s.appsService()
+	if err != nil {
+		return nil, err
+	}
+	teams, err := svc.ProviderTeams(ctx, req.InstanceId)
+	if err != nil {
+		var pe *provider.Error
+		switch {
+		case errors.Is(err, apps.ErrNotSupported):
+			return nil, codedProblem(http.StatusNotFound, apps.Code(err), "This provider has no existing teams to pick.")
+		case errors.As(err, &pe) && pe.RetryAfter > 0:
+			return nil, &apiError{status: http.StatusTooManyRequests, code: pe.Code, detail: "The provider's rate limit was reached. Try again later.", retryAfter: seconds(pe.RetryAfter.Seconds())}
+		case errors.As(err, &pe):
+			return nil, codedProblem(http.StatusBadGateway, pe.Code, "The provider's teams could not be read. Try again.")
+		}
+		return nil, appsError(err)
+	}
+	items := make([]apigen.AppProviderTeam, 0, len(teams))
+	for _, t := range teams {
+		items = append(items, apigen.AppProviderTeam{ExternalRef: t.ExternalRef, Name: t.Name, Slug: t.Slug, Managed: t.Managed})
+	}
+	return apigen.ListAppProviderTeams200JSONResponse{Items: items}, nil
 }
 
 func (s *server) SetAppTeamMapping(ctx context.Context, req apigen.SetAppTeamMappingRequestObject) (apigen.SetAppTeamMappingResponseObject, error) {

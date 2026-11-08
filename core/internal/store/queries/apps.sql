@@ -379,8 +379,11 @@ RETURNING *;
 DELETE FROM app_team_mappings WHERE instance_id = @instance_id AND team_id = @team_id;
 
 -- name: SetAppTeamMappingExternal :exec
+-- Records the provider team a sync found or created for a mapping, unless
+-- the mapping changed since the sync read it (mode or reference).
 UPDATE app_team_mappings SET external_ref = @external_ref, external_name = @external_name, updated_at = now()
-WHERE instance_id = @instance_id AND team_id = @team_id;
+WHERE instance_id = @instance_id AND team_id = @team_id
+  AND mode = @mode AND external_ref IS NOT DISTINCT FROM sqlc.narg(synced_ref);
 
 -- name: ListPersonMappedTeams :many
 -- The provider teams of a person's direct memberships in non-archived teams.
@@ -439,6 +442,15 @@ ON CONFLICT (instance_id, person_id) DO UPDATE SET granted_by_orglane = true, pe
 INSERT INTO provisioning_results (instance_id, person_id, status, access, pending_grant)
 VALUES (@instance_id, @person_id, 'queued', true, @pending_grant)
 ON CONFLICT (instance_id, person_id) DO UPDATE SET pending_grant = EXCLUDED.pending_grant, updated_at = now();
+
+-- name: ClearProvisioningOwnership :exec
+-- A person's verified link was revoked or replaced: the access Orglane
+-- granted to that account is no longer the person's (the account becomes
+-- unmanaged: reported, never removed), and no interrupted grant for it is
+-- replayed.
+UPDATE provisioning_results SET granted_by_orglane = false, pending_grant = NULL, updated_at = now()
+WHERE person_id = @person_id AND instance_id = ANY(@instance_ids::uuid[])
+  AND (granted_by_orglane OR pending_grant IS NOT NULL);
 
 -- name: ClearPendingGrant :exec
 -- The provider definitely rejected the grant or the access already existed:

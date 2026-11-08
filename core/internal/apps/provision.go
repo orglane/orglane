@@ -157,7 +157,7 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 			}
 			code := CodeOwnershipUnproven
 			attempts := d.result.Attempts + 1
-			err = s.writeResult(ctx, conn, inst, d, StatusFailed, nil, actions, &code, d.result.GrantedByOrglane, nil, attempts, startedAt)
+			err = s.writeResult(ctx, conn, inst, d, StatusFailed, nil, actions, &code, false, nil, attempts, startedAt)
 			return s.followUp(err, conn, inst.ID, args.PersonID, startedAt)
 		}
 		recovered = append(recovered, rep.result)
@@ -171,7 +171,7 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 		return s.followUp(nil, conn, inst.ID, args.PersonID, startedAt)
 	}
 	if r := d.result; r != nil && !args.Drift && len(recovered) == 0 && bytes.Equal(r.AppliedHash, d.hash) && r.ErrorCode == nil && r.EmployeeStep == nil && r.Status != StatusFailed {
-		err := s.writeResult(ctx, conn, inst, d, StatusDone, nil, r.Actions, nil, r.GrantedByOrglane, r.AppliedHash, 0, startedAt)
+		err := s.writeResult(ctx, conn, inst, d, StatusDone, nil, r.Actions, nil, false, r.AppliedHash, 0, startedAt)
 		return s.followUp(err, conn, inst.ID, args.PersonID, startedAt)
 	}
 
@@ -189,13 +189,15 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 			return fmt.Errorf("apps: drop removals: %w", err)
 		}
 		step := plan.EmployeeStep
-		err := s.writeResult(ctx, conn, inst, d, StatusPendingEmployeeAction, &step, []byte("[]"), nil, d.result != nil && d.result.GrantedByOrglane, nil, 0, startedAt)
+		err := s.writeResult(ctx, conn, inst, d, StatusPendingEmployeeAction, &step, []byte("[]"), nil, false, nil, 0, startedAt)
 		return s.followUp(err, conn, inst.ID, args.PersonID, startedAt)
 	}
 
 	// Ownership is recovered on reruns: a link this instance provisioned
-	// makes the access Orglane's (computeDesired's Managed).
-	granted := (d.result != nil && d.result.GrantedByOrglane) || (d.access.Managed && !inst.ManageExistingMembers)
+	// makes the access Orglane's (computeDesired's Managed). The result's
+	// own flag is not passed on: the upsert keeps it, and a link revocation
+	// may have cleared it while this run worked (revokeLink).
+	granted := d.access.Link != nil && d.access.Link.Method == provider.LinkProvisioned && d.access.Managed
 	results := make([]ActionResult, 0, len(recovered)+len(plan.Actions))
 	results = append(results, recovered...)
 	var removals []provider.Action
@@ -249,11 +251,12 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 			if out.Changed {
 				ar.Outcome = OutcomeChanged
 			}
-			if grant && out.Proof != nil {
-				granted = true // only provider proof makes access Orglane's
-			}
-			if err := s.recordApplied(ctx, conn, inst, d.person.ID, a, out, false); err != nil {
+			owned, err := s.recordApplied(ctx, conn, inst, d.person.ID, a, out, false)
+			if err != nil {
 				return err
+			}
+			if owned {
+				granted = true // only provider proof makes access Orglane's
 			}
 		}
 		results = append(results, ar)
@@ -284,7 +287,15 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 // grant) and the verified link of that account. A grant without proof is
 // resolved without ownership or link: its intent is cleared. recovered
 // marks the replay of an earlier run's grant (recorded in the audit entry).
-func (s *Service) recordApplied(ctx context.Context, conn *pgxpool.Conn, inst Instance, personID uuid.UUID, a provider.Action, out provider.ActionOutcome, recovered bool) error {
+// It reports whether the grant made the access Orglane's.
+//
+// For providers whose accounts people prove themselves (AccountVerifier:
+// GitHub), a grant is Orglane's only for the account the person's verified
+// link names when the bookkeeping commits, checked under the realm's link
+// lock: if the link was revoked or replaced while the action ran, the
+// granted account is reported as unmanaged instead, so ownership never
+// passes to another account of the person.
+func (s *Service) recordApplied(ctx context.Context, conn *pgxpool.Conn, inst Instance, personID uuid.UUID, a provider.Action, out provider.ActionOutcome, recovered bool) (bool, error) {
 	grant := slices.Contains(grants, a.Kind)
 	owned := grant && out.Proof != nil
 	if !grant && out.Link != nil {
@@ -292,14 +303,28 @@ func (s *Service) recordApplied(ctx context.Context, conn *pgxpool.Conn, inst In
 		// login of the person's verified link of that same account. It never
 		// creates, moves or verifies a link: only grants with proof do.
 		if err := s.refreshLinkLogin(ctx, conn, inst, personID, *out.Link); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if !out.Changed && !grant {
-		return nil
+		return false, nil
 	}
-	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
+		if _, verifies := inst.Adapter.Verifier(); owned && verifies {
+			linked, err := s.linkedAccount(ctx, q, inst, personID, out.Link)
+			if err != nil {
+				return err
+			}
+			if !linked {
+				owned = false
+				if l := out.Link; l != nil && l.ExternalID != "" && len(l.ExternalID) <= 100 && l.Login != "" && len(l.Login) <= 100 {
+					if err := q.InsertUnmanagedAccount(ctx, store.InsertUnmanagedAccountParams{InstanceID: inst.ID, ExternalID: l.ExternalID, Login: l.Login}); err != nil {
+						return fmt.Errorf("apps: store unmanaged account: %w", err)
+					}
+				}
+			}
+		}
 		if out.Changed || owned {
 			meta := map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key}
 			if recovered {
@@ -331,11 +356,35 @@ func (s *Service) recordApplied(ctx context.Context, conn *pgxpool.Conn, inst In
 		if err := q.MarkProvisioningGranted(ctx, store.MarkProvisioningGrantedParams{InstanceID: inst.ID, PersonID: personID}); err != nil {
 			return fmt.Errorf("apps: record grant: %w", err)
 		}
-		if out.Link != nil {
+		if _, verifies := inst.Adapter.Verifier(); out.Link != nil && !verifies {
 			return s.provisionedLink(ctx, tx, q, inst, personID, *out.Link)
 		}
 		return nil
 	})
+	if err != nil {
+		return false, err
+	}
+	return owned, nil
+}
+
+// linkedAccount reports whether acct is the account of the person's
+// verified link in the instance's realm, under the realm's link lock (link
+// changes take it too, so the answer holds until the transaction ends).
+func (s *Service) linkedAccount(ctx context.Context, q *store.Queries, inst Instance, personID uuid.UUID, acct *provider.ExternalAccount) (bool, error) {
+	if acct == nil {
+		return false, nil
+	}
+	realm := inst.Adapter.Realm(inst.View())
+	if err := q.AcquireXactLock(ctx, lockID("account-links", inst.Provider, realm)); err != nil {
+		return false, fmt.Errorf("apps: lock links: %w", err)
+	}
+	cur, err := q.GetVerifiedAccountLink(ctx, store.GetVerifiedAccountLinkParams{PersonID: personID, Provider: inst.Provider, Realm: realm})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("apps: load link: %w", err)
+	}
+	return cur.ExternalID == acct.ExternalID && (acct.Realm == "" || acct.Realm == realm), nil
 }
 
 // setPendingGrant commits the intent of a granting action.
@@ -434,8 +483,12 @@ func (s *Service) resolvePendingGrant(ctx context.Context, held *heldConn, inst 
 	if out.Proof == nil {
 		return unproven(out.Link)
 	}
-	if err := s.recordApplied(ctx, conn, inst, d.person.ID, a, out, true); err != nil {
+	owned, err := s.recordApplied(ctx, conn, inst, d.person.ID, a, out, true)
+	if err != nil {
 		return replay{}, err
+	}
+	if !owned {
+		return replay{result: ActionResult{Kind: a.Kind, Key: a.Key, Outcome: OutcomeFailed, Error: CodeOwnershipUnproven}, unproven: true}, nil
 	}
 	return replay{result: ActionResult{Kind: a.Kind, Key: a.Key, Outcome: OutcomeChanged}}, nil
 }
@@ -540,7 +593,7 @@ func (s *Service) failed(ctx context.Context, conn *pgxpool.Conn, inst Instance,
 			actions = d.result.Actions
 		}
 	}
-	g := d.result != nil && d.result.GrantedByOrglane
+	g := false // the upsert keeps the result's own flag
 	if len(granted) > 0 {
 		g = granted[0]
 	}
@@ -643,9 +696,32 @@ func (s *Service) RunProvisionInstance(ctx context.Context, args ProvisionInstan
 		}
 		mappings = append(mappings, provider.TeamMapping{TeamID: m.TeamID, TeamSlug: m.TeamSlug, TeamName: m.TeamName, Mode: m.Mode, ExternalRef: derefString(m.ExternalRef)})
 	}
-	refs, err := prov.SyncTeams(ctx, env, view, mappings)
-	if err != nil {
-		return retryOrCancel(err)
+	refs, syncErr := prov.SyncTeams(ctx, env, view, mappings)
+	// The teams synced so far are stored first, also when the sync or the
+	// member listing fails afterwards: a team created at the provider and
+	// not recorded could only be found again by its name.
+	if err := held.inTx(ctx, func(_ pgx.Tx, q *store.Queries) error {
+		for _, ref := range refs {
+			i := slices.IndexFunc(mappings, func(m provider.TeamMapping) bool { return m.TeamID == ref.TeamID })
+			if i < 0 || ref.ExternalRef == "" || len(ref.ExternalRef) > 100 {
+				continue
+			}
+			name := truncateRunes(strings.ToValidUTF8(ref.Name, ""), 100)
+			m := mappings[i]
+			var synced *string
+			if m.ExternalRef != "" {
+				synced = &m.ExternalRef
+			}
+			if err := q.SetAppTeamMappingExternal(ctx, store.SetAppTeamMappingExternalParams{InstanceID: inst.ID, TeamID: ref.TeamID, ExternalRef: &ref.ExternalRef, ExternalName: &name, Mode: m.Mode, SyncedRef: synced}); err != nil {
+				return fmt.Errorf("apps: store provider team: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if syncErr != nil {
+		return retryOrCancel(syncErr)
 	}
 	members, err := prov.Members(ctx, env, view)
 	if err != nil {
@@ -653,16 +729,6 @@ func (s *Service) RunProvisionInstance(ctx context.Context, args ProvisionInstan
 	}
 	realm := inst.Adapter.Realm(view)
 	return held.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
-		for _, ref := range refs {
-			i := slices.IndexFunc(mappings, func(m provider.TeamMapping) bool { return m.TeamID == ref.TeamID })
-			if i < 0 || ref.ExternalRef == "" || len(ref.ExternalRef) > 100 {
-				continue
-			}
-			name := truncateRunes(strings.ToValidUTF8(ref.Name, ""), 100)
-			if err := q.SetAppTeamMappingExternal(ctx, store.SetAppTeamMappingExternalParams{InstanceID: inst.ID, TeamID: ref.TeamID, ExternalRef: &ref.ExternalRef, ExternalName: &name}); err != nil {
-				return fmt.Errorf("apps: store provider team: %w", err)
-			}
-		}
 		if err := s.refreshUnmanaged(ctx, q, inst, realm, members); err != nil {
 			return err
 		}

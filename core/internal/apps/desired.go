@@ -62,6 +62,16 @@ func (s *Service) computeDesired(ctx context.Context, q *store.Queries, inst Ins
 			d.Teams = append(d.Teams, provider.TeamRef{TeamID: m.TeamID, ExternalRef: derefString(m.ExternalRef), Name: m.ExternalName})
 		}
 	}
+	all, err := q.ListAppTeamMappings(ctx, inst.ID)
+	if err != nil {
+		return desired{}, fmt.Errorf("apps: load team mappings: %w", err)
+	}
+	d.Mapped = []provider.TeamRef{}
+	for _, m := range all {
+		if ref := derefString(m.ExternalRef); ref != "" {
+			d.Mapped = append(d.Mapped, provider.TeamRef{TeamID: m.TeamID, ExternalRef: ref, Name: derefString(m.ExternalName)})
+		}
+	}
 	if inst.Adapter != nil {
 		link, err := q.GetVerifiedAccountLink(ctx, store.GetVerifiedAccountLinkParams{PersonID: personID, Provider: inst.Provider, Realm: inst.Adapter.Realm(inst.View())})
 		if err == nil {
@@ -84,7 +94,11 @@ func (s *Service) computeDesired(ctx context.Context, q *store.Queries, inst Ins
 }
 
 // hashDesired is the SHA-256 of the canonical DesiredAccess. Logins are
-// informational and left out (they change; links are keyed by ID).
+// informational and left out (they change; links are keyed by ID). Mapped is
+// left out too: it is the instance-wide set of managed teams, so adding or
+// removing an unrelated mapping would otherwise invalidate every person's
+// desired state (and drop their held removals). A mapping change that
+// concerns a person changes that person's Teams.
 func hashDesired(d provider.DesiredAccess) []byte {
 	type team struct {
 		TeamID uuid.UUID `json:"team_id"`

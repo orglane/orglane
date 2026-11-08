@@ -72,6 +72,26 @@ func (q *Queries) ClearPendingGrant(ctx context.Context, arg ClearPendingGrantPa
 	return err
 }
 
+const clearProvisioningOwnership = `-- name: ClearProvisioningOwnership :exec
+UPDATE provisioning_results SET granted_by_orglane = false, pending_grant = NULL, updated_at = now()
+WHERE person_id = $1 AND instance_id = ANY($2::uuid[])
+  AND (granted_by_orglane OR pending_grant IS NOT NULL)
+`
+
+type ClearProvisioningOwnershipParams struct {
+	PersonID    uuid.UUID
+	InstanceIds []uuid.UUID
+}
+
+// A person's verified link was revoked or replaced: the access Orglane
+// granted to that account is no longer the person's (the account becomes
+// unmanaged: reported, never removed), and no interrupted grant for it is
+// replayed.
+func (q *Queries) ClearProvisioningOwnership(ctx context.Context, arg ClearProvisioningOwnershipParams) error {
+	_, err := q.db.Exec(ctx, clearProvisioningOwnership, arg.PersonID, arg.InstanceIds)
+	return err
+}
+
 const clearWebhookDeliveryBodies = `-- name: ClearWebhookDeliveryBodies :execrows
 UPDATE webhook_deliveries SET body = NULL
 WHERE body IS NOT NULL AND (
@@ -3513,6 +3533,7 @@ func (q *Queries) SetAppOperationWaiting(ctx context.Context, arg SetAppOperatio
 const setAppTeamMappingExternal = `-- name: SetAppTeamMappingExternal :exec
 UPDATE app_team_mappings SET external_ref = $1, external_name = $2, updated_at = now()
 WHERE instance_id = $3 AND team_id = $4
+  AND mode = $5 AND external_ref IS NOT DISTINCT FROM $6
 `
 
 type SetAppTeamMappingExternalParams struct {
@@ -3520,14 +3541,20 @@ type SetAppTeamMappingExternalParams struct {
 	ExternalName *string
 	InstanceID   uuid.UUID
 	TeamID       uuid.UUID
+	Mode         string
+	SyncedRef    *string
 }
 
+// Records the provider team a sync found or created for a mapping, unless
+// the mapping changed since the sync read it (mode or reference).
 func (q *Queries) SetAppTeamMappingExternal(ctx context.Context, arg SetAppTeamMappingExternalParams) error {
 	_, err := q.db.Exec(ctx, setAppTeamMappingExternal,
 		arg.ExternalRef,
 		arg.ExternalName,
 		arg.InstanceID,
 		arg.TeamID,
+		arg.Mode,
+		arg.SyncedRef,
 	)
 	return err
 }

@@ -73,6 +73,10 @@ type Fake struct {
 	failures       []failure
 	calls          []string
 	webhookSecret  string
+	// installationTokens are the installation tokens issued (and valid).
+	installationTokens map[string]bool
+	state              orgState
+	seats              int // 0: unlimited
 }
 
 type grant struct {
@@ -99,12 +103,14 @@ func New(report Reporter) *Fake {
 	}
 	f := &Fake{
 		report: report, key: key, now: time.Now,
-		org:            Org{ID: 9001, Login: "orglane-test"},
-		app:            App{ID: 456, Slug: "orglane-test-app", ClientID: "Iv1.fakeclientid", ClientSecret: token("fakesecret_"), WebhookSecret: token("")},
-		installationID: 789,
-		users:          map[int64]User{},
-		codes:          map[string]*grant{},
-		userTokens:     map[string]int64{},
+		org:                Org{ID: 9001, Login: "orglane-test"},
+		app:                App{ID: 456, Slug: "orglane-test-app", ClientID: "Iv1.fakeclientid", ClientSecret: token("fakesecret_"), WebhookSecret: token("")},
+		installationID:     789,
+		users:              map[int64]User{},
+		codes:              map[string]*grant{},
+		userTokens:         map[string]int64{},
+		installationTokens: map[string]bool{},
+		state:              newOrgState(),
 	}
 	f.srv = httptest.NewServer(f)
 	return f
@@ -186,6 +192,14 @@ func (f *Fake) Calls() []string {
 	return append([]string(nil), f.calls...)
 }
 
+// LimitSeats makes invitations fail with GitHub's seat-limit refusal once
+// members and pending invitations reach n (0: unlimited).
+func (f *Fake) LimitSeats(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seats = n
+}
+
 // LiveUserTokens counts user tokens that were issued and not revoked.
 func (f *Fake) LiveUserTokens() int {
 	f.mu.Lock()
@@ -244,7 +258,7 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rec := httptest.NewRecorder()
 	if !f.failed(rec, r) {
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		f.handle(rec, r, h, x.params, body)
+		f.handle(rec, r, h, x.route.Path, x.params, body)
 	}
 	res := rec.Result()
 	out, _ := io.ReadAll(res.Body)
@@ -276,33 +290,49 @@ func (f *Fake) failed(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-func (f *Fake) handle(w http.ResponseWriter, r *http.Request, h string, params map[string]string, body []byte) {
+// handle serves the documented operation route (its path template) that
+// the request matched.
+func (f *Fake) handle(w http.ResponseWriter, r *http.Request, h, route string, params map[string]string, body []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	switch {
+	switch op := r.Method + " " + route; {
 	case h == "github.com" && r.URL.Path == "/login/oauth/authorize":
 		f.authorize(w, r)
 	case h == "github.com" && r.URL.Path == "/login/oauth/access_token":
 		f.accessToken(w, body)
-	case r.Method == http.MethodGet && r.URL.Path == "/user":
+	case op == "GET /user":
 		f.currentUser(w, r)
-	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/applications/"):
+	case op == "GET /user/{account_id}":
+		f.getUserByID(w, r, params["account_id"])
+	case op == "DELETE /applications/{client_id}/grant":
 		f.deleteGrant(w, r, params["client_id"], body)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/orgs/"):
+	case op == "GET /orgs/{org}":
 		f.getOrg(w, params["org"])
-	case r.Method == http.MethodGet && r.URL.Path == "/app":
+	case route == "/orgs/{org}/memberships/{username}":
+		f.membership(w, r, params)
+	case route == "/orgs/{org}/invitations":
+		f.invitations(w, r, params, body)
+	case op == "DELETE /orgs/{org}/invitations/{invitation_id}":
+		f.cancelInvitation(w, r, params)
+	case op == "GET /orgs/{org}/members":
+		f.listMembers(w, r, params)
+	case route == "/orgs/{org}/teams":
+		f.teams(w, r, params, body)
+	case route == "/orgs/{org}/teams/{team_slug}/memberships/{username}":
+		f.teamMembership(w, r, params, body)
+	case op == "GET /app":
 		if f.appAuth(w, r) {
 			writeJSON(w, http.StatusOK, f.integration())
 		}
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/app/installations/"):
+	case op == "GET /app/installations/{installation_id}":
 		if f.appAuth(w, r) {
 			f.getInstallation(w, params["installation_id"])
 		}
-	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
+	case op == "POST /app/installations/{installation_id}/access_tokens":
 		if f.appAuth(w, r) {
 			f.installationToken(w, params["installation_id"])
 		}
-	case r.Method == http.MethodPatch && r.URL.Path == "/app/hook/config":
+	case op == "PATCH /app/hook/config":
 		if f.appAuth(w, r) {
 			f.hookConfig(w, body)
 		}
@@ -450,6 +480,7 @@ func (f *Fake) installationToken(w http.ResponseWriter, id string) {
 	}
 	body := example("installation-token")
 	body["token"] = token("ghs_")
+	f.installationTokens[body["token"].(string)] = true
 	body["expires_at"] = f.now().Add(time.Hour).UTC().Format(time.RFC3339)
 	writeJSON(w, http.StatusCreated, body)
 }
@@ -526,6 +557,35 @@ func bearer(r *http.Request) string {
 		return t
 	}
 	return ""
+}
+
+// anyAuth reports whether r carries a token the fake issued (installation
+// or user).
+func (f *Fake) anyAuth(r *http.Request) bool {
+	t := bearer(r)
+	_, user := f.userTokens[t]
+	return user || f.installationTokens[t]
+}
+
+// exampleItem returns the first object of a list example.
+func exampleItem(name string) map[string]any {
+	d, err := loadDescriptions()
+	if err != nil {
+		panic(err)
+	}
+	ex, ok := d[0].doc.Components.Examples[name]
+	if !ok || ex.Value == nil {
+		panic("githubfake: no example " + name)
+	}
+	raw, err := json.Marshal(ex.Value.Value)
+	if err != nil {
+		panic(err)
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil || len(out) == 0 {
+		panic("githubfake: example " + name + " is not a list of objects")
+	}
+	return out[0]
 }
 
 func challenge(verifier string) string {

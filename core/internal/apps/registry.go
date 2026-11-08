@@ -74,6 +74,13 @@ func (a *Adapter) validateTeamMapping(inst provider.Instance, mode, ref string) 
 	return nil
 }
 
+// TeamLister returns the adapter's TeamLister, if it has one: its team
+// mappings can pick existing provider teams.
+func (a *Adapter) TeamLister() (provider.TeamLister, bool) {
+	p, ok := a.impl.(provider.TeamLister)
+	return p, ok
+}
+
 // RelyingParty returns the adapter's OIDCRelyingParty, if it has one.
 func (a *Adapter) RelyingParty() (provider.OIDCRelyingParty, bool) {
 	p, ok := a.impl.(provider.OIDCRelyingParty)

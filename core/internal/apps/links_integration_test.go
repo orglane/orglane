@@ -97,6 +97,9 @@ func TestAccountLinkVerifiesByID(t *testing.T) {
 	alice := h.person("alice")
 	h.gh.AddUser(githubfake.User{ID: 1001, Login: "alice-gh"})
 	h.gh.AuthorizeAs(1001)
+	// Creating the person already queued provisioning (the instance has a
+	// provisioner now); the link must queue another run.
+	h.drain()
 	jobs := h.personJobs(alice.ID)
 	link, err := h.link(alice)
 	if err != nil {

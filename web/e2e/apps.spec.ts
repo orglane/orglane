@@ -126,6 +126,38 @@ test("an Admin sees Settings → Apps, maps a team and its members get access; a
   }
 });
 
+test("a person sees why GitHub provisioning waits for their account link", async ({
+  page,
+  instance,
+}) => {
+  const signedIn = await page.request.post(`${instance.url}/api/v1/demo/sign-in`, {
+    data: { username: "lucas.ferreira" },
+    headers: { Origin: instance.url },
+  });
+  expect(signedIn.ok()).toBeTruthy();
+  const githubId = instance
+    .sql(
+      `INSERT INTO app_instances (key, provider, management, display_name, state, base_url, settings, access_policy, health)
+       VALUES ('github-live', 'github', 'connected', 'GitHub', 'active', 'https://github.com',
+               '{"organization": "acme-robotics"}', 'mapped_teams', 'healthy')
+       RETURNING id`,
+    )
+    .split("\n")[0];
+  const priya = await page.request.get(`${instance.url}/api/v1/people?q=priya.raman%40`);
+  const priyaId = ((await priya.json()) as { items: { id: string }[] }).items[0]?.id ?? "";
+  instance.sql(
+    `INSERT INTO provisioning_results (instance_id, person_id, status, access, employee_step, desired_hash)
+     VALUES ('${githubId}', '${priyaId}', 'pending_employee_action', true, 'github.link-account', decode(repeat('00', 32), 'hex'))`,
+  );
+  await page.goto(`${instance.url}/people/${priyaId}`);
+  await expect(page.getByRole("heading", { name: "Apps and accounts" })).toBeVisible();
+  await expect(
+    page.getByText(
+      "Waiting for this person to link their GitHub account (a step in their onboarding).",
+    ),
+  ).toBeVisible();
+});
+
 // Review captures for the PR (not committed):
 //   ORGLANE_SCREENSHOTS=1 pnpm --filter @orglane/web test:e2e apps
 // writes .github/pr-assets/apps/<screen>-<viewport>-<theme>.png.

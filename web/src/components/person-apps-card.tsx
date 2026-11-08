@@ -11,6 +11,7 @@ import { call } from "@/lib/api";
 import { useApi } from "@/lib/api-context";
 import {
   explainCode,
+  explainStep,
   guidanceMessages,
   personAppsQuery,
   statusMessages,
@@ -120,6 +121,11 @@ export function PersonAppsCard({
                           <Badge>
                             <FormattedMessage {...messages.noAccess} />
                           </Badge>
+                        )}
+                        {r.access && r.status === "pending_employee_action" && r.employeeStep && (
+                          <span className="text-xs">
+                            {explainStep(intl, r.employeeStep) ?? r.employeeStep}
+                          </span>
                         )}
                         {r.status === "failed" && (
                           <span className="text-xs">

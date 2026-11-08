@@ -338,11 +338,40 @@ func (s *Service) RevokeAccountLink(ctx context.Context, actor audit.Actor, pers
 
 // revokeLink revokes a verified link with its audit entry. The caller holds
 // the realm's link lock. Zero rows: it was revoked meanwhile.
+//
+// A link the person proved (oauth) names the account Orglane's grants in
+// the realm went to, so revoking it also ends that ownership in every
+// instance of the realm: the account becomes unmanaged (reported, never
+// removed), and a later link to another account starts unmanaged too,
+// until Orglane's own grant proves otherwise. A provisioned link's account
+// is found by the provider's own marker, which still proves it.
 func (s *Service) revokeLink(ctx context.Context, q *store.Queries, actor audit.Actor, link store.AccountLink, reason string) error {
 	if _, err := q.RevokeAccountLink(ctx, link.ID); errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: account link", ErrNotFound)
 	} else if err != nil {
 		return fmt.Errorf("apps: revoke link: %w", err)
+	}
+	if link.Method == provider.LinkOAuth {
+		rows, err := q.ListAppInstances(ctx)
+		if err != nil {
+			return fmt.Errorf("apps: list instances: %w", err)
+		}
+		ids := []uuid.UUID{}
+		for _, row := range rows {
+			if row.Provider != link.Provider {
+				continue
+			}
+			inst, err := s.instance(row)
+			if err != nil {
+				return err
+			}
+			if inst.Adapter != nil && inst.Adapter.Realm(inst.View()) == link.Realm {
+				ids = append(ids, inst.ID)
+			}
+		}
+		if err := q.ClearProvisioningOwnership(ctx, store.ClearProvisioningOwnershipParams{PersonID: link.PersonID, InstanceIds: ids}); err != nil {
+			return fmt.Errorf("apps: clear ownership: %w", err)
+		}
 	}
 	_, err := audit.Record(ctx, q, audit.Entry{
 		Actor:    actor,

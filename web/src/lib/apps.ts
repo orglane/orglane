@@ -51,6 +51,19 @@ export function appTeamMappingsQuery(api: Api, instanceId: string) {
   });
 }
 
+/** The provider's teams for "existing" mappings, read from the provider. */
+export function appProviderTeamsQuery(api: Api, instanceId: string) {
+  return queryOptions({
+    queryKey: [...appsKey, "instances", instanceId, "provider-teams"],
+    queryFn: () =>
+      call(
+        api.client.GET("/api/v1/apps/instances/{instanceId}/provider-teams", {
+          params: { path: { instanceId } },
+        }),
+      ),
+  });
+}
+
 export function appProvisioningQuery(api: Api, instanceId: string) {
   return queryOptions({
     queryKey: [...appsKey, "instances", instanceId, "provisioning"],
@@ -485,7 +498,70 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
     id: "apps.code.forgejoRejected",
     defaultMessage: "Forgejo refused the change. Check the details, then retry.",
   },
+  account_not_found: {
+    id: "apps.code.accountNotFound",
+    defaultMessage:
+      "The linked account no longer exists in the app. The person links their current account, then Orglane retries.",
+  },
+  role_protected: {
+    id: "apps.code.roleProtected",
+    defaultMessage:
+      "This person has a special role in the app's organization (for example billing manager), so Orglane never removes them. Change the role in the app if they should go.",
+  },
+  maintainer_protected: {
+    id: "apps.code.maintainerProtected",
+    defaultMessage:
+      "This person maintains the team in the app, so Orglane never removes them from it. Change their team role in the app if they should go.",
+  },
+  invite_refused: {
+    id: "apps.code.inviteRefused",
+    defaultMessage:
+      "The app refused to invite this person (for example, the account blocks the organization). Resolve it in the app, then retry.",
+  },
+  not_invited: {
+    id: "apps.code.notInvited",
+    defaultMessage:
+      "The person is not invited to the app's organization yet. Orglane invites them and retries automatically.",
+  },
+  login_changed: {
+    id: "apps.code.loginChanged",
+    defaultMessage:
+      "The account's username changed while Orglane worked. Orglane retries automatically.",
+  },
+  github_unavailable: {
+    id: "apps.code.githubUnavailable",
+    defaultMessage: "GitHub did not answer. Orglane retries automatically.",
+  },
+  github_unauthorized: {
+    id: "apps.code.githubUnauthorized",
+    defaultMessage:
+      "GitHub refused the App's access. Orglane retries; if this stays, check that the App is still installed on the organization.",
+  },
+  github_forbidden: {
+    id: "apps.code.githubForbidden",
+    defaultMessage:
+      "GitHub does not allow the App to make this change (for example, a team synced from an identity provider). Change it on GitHub, then retry.",
+  },
+  github_rejected: {
+    id: "apps.code.githubRejected",
+    defaultMessage: "GitHub refused the change. Check the details, then retry.",
+  },
 });
+
+/** What a person still has to do, by employee step (see onboarding). */
+export const stepMessages: Record<string, MessageDescriptor> = defineMessages({
+  "github.link-account": {
+    id: "apps.step.githubLinkAccount",
+    defaultMessage:
+      "Waiting for this person to link their GitHub account (a step in their onboarding).",
+  },
+});
+
+/** The explanation of an employee step, if it is a known one. */
+export function explainStep(intl: IntlShape, step: string | undefined): string | undefined {
+  const m = step ? stepMessages[step] : undefined;
+  return m ? intl.formatMessage(m) : undefined;
+}
 
 export const guidanceMessages = defineMessages({
   instanceProblem: {

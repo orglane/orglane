@@ -1,6 +1,7 @@
-// Package github connects GitHub.com organizations through GitHub Apps,
-// links accounts and turns the App's webhook deliveries into normalized
-// events. Provisioning is separate M2 work.
+// Package github connects GitHub.com organizations through GitHub Apps:
+// the connection (this file), account linking (link.go), provisioning of
+// invitations, teams and removals (provision.go), and the App's webhook
+// deliveries normalized into events (webhooks.go, events.go).
 package github
 
 import (
@@ -52,10 +53,13 @@ func (*Adapter) Manifest() provider.Manifest {
 	for _, f := range provider.Features {
 		support := provider.Unsupported
 		switch f {
-		case provider.FeatureAccountsLink:
-			support = provider.Supported // the employee step (OAuth through the App)
-		case provider.FeatureEventsWebhooks:
-			support = provider.Supported // the App's webhook (webhooks.go, events.go)
+		case provider.FeatureAccountsLink, // the employee step (OAuth through the App)
+			provider.FeatureAccountsInvite,         // invitations by user ID, after the link
+			provider.FeatureTeamsSync,              // create and existing team mappings
+			provider.FeatureDeprovisionTeamRemoval, // through the removal guard
+			provider.FeatureDeprovisionOrgRemoval,  // owners and billing managers are protected
+			provider.FeatureEventsWebhooks:         // the App's webhook (webhooks.go, events.go)
+			support = provider.Supported
 		}
 		features = append(features, provider.FeatureSupport{Feature: f, Support: support})
 	}
@@ -371,7 +375,11 @@ func jwtFor(ctx context.Context, env provider.Env, inst provider.Instance) (stri
 
 // APIError contains only safe status metadata, never GitHub response bodies,
 // request URLs (manifest codes) or transport errors (which may contain secrets).
-type APIError struct{ Status int }
+type APIError struct {
+	Status int
+	// SeatLimit: a 422 whose message says the organization has no seat left.
+	SeatLimit bool
+}
 
 func (e *APIError) Error() string     { return fmt.Sprintf("github: API status %d", e.Status) }
 func protocolError(code string) error { return &provider.Error{Code: code, Retryable: false} }
@@ -445,14 +453,15 @@ func do(ctx context.Context, env provider.Env, c call) error {
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	res, err := client.Do(req)
 	if err != nil {
-		return protocolError("github_unavailable")
+		// No answer: GitHub may or may not have acted. Retryable.
+		return &provider.Error{Code: CodeUnavailable, Retryable: true}
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		if err := rateLimited(env.Now(), res); err != nil {
 			return err
 		}
-		return &APIError{Status: res.StatusCode}
+		return &APIError{Status: res.StatusCode, SeatLimit: res.StatusCode == http.StatusUnprocessableEntity && messageContains(res.Body, "seat")}
 	}
 	if out == nil {
 		_, err = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<20))
@@ -471,6 +480,10 @@ func do(ctx context.Context, env provider.Env, c call) error {
 
 // CodeRateLimited is the provider.Error code of a GitHub rate limit.
 const CodeRateLimited = "rate_limited"
+
+// CodeUnavailable is the code of a missing answer from GitHub (network
+// failure, timeout) or a server error. Retryable.
+const CodeUnavailable = "github_unavailable"
 
 // rateLimited recognizes GitHub's primary and secondary rate limits: a 429,
 // or a 403 with Retry-After, X-RateLimit-Remaining: 0 or a rate-limit
@@ -523,7 +536,11 @@ func rateLimited(now time.Time, res *http.Response) error {
 
 // rateLimitMessage reports whether a 403 body's message names a rate limit
 // (GitHub's secondary limits may come without headers).
-func rateLimitMessage(body io.Reader) bool {
+func rateLimitMessage(body io.Reader) bool { return messageContains(body, "rate limit") }
+
+// messageContains reports whether an error body's message contains word
+// (case-insensitive). The body is never kept.
+func messageContains(body io.Reader, word string) bool {
 	raw, err := io.ReadAll(io.LimitReader(body, 64<<10))
 	defer clear(raw)
 	if err != nil {
@@ -535,7 +552,7 @@ func rateLimitMessage(body io.Reader) bool {
 	if json.Unmarshal(raw, &msg) != nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(msg.Message), "rate limit")
+	return strings.Contains(strings.ToLower(msg.Message), word)
 }
 
 // ApplyCredential verifies an uploaded key without replacing the working one,

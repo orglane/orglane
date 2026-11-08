@@ -22,10 +22,17 @@ var operations = map[string][]string{
 	"/app-manifests/{code}/conversions":    {"post"},
 	"/app/hook/config":                     {"patch"},
 	"/app/installations/{installation_id}": {"get"},
-	"/app/installations/{installation_id}/access_tokens": {"post"},
-	"/applications/{client_id}/grant":                    {"delete"},
-	"/orgs/{org}":                                        {"get"},
-	"/user":                                              {"get"},
+	"/app/installations/{installation_id}/access_tokens":   {"post"},
+	"/applications/{client_id}/grant":                      {"delete"},
+	"/orgs/{org}":                                          {"get"},
+	"/orgs/{org}/invitations":                              {"get", "post"},
+	"/orgs/{org}/invitations/{invitation_id}":              {"delete"},
+	"/orgs/{org}/members":                                  {"get"},
+	"/orgs/{org}/memberships/{username}":                   {"get", "delete"},
+	"/orgs/{org}/teams":                                    {"get", "post"},
+	"/orgs/{org}/teams/{team_slug}/memberships/{username}": {"get", "put", "delete"},
+	"/user":              {"get"},
+	"/user/{account_id}": {"get"},
 }
 
 func main() {
