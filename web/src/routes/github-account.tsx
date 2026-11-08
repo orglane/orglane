@@ -17,7 +17,7 @@ const m = defineMessages({
   description: {
     id: "githubAccount.description",
     defaultMessage:
-      "Sign in to GitHub once so Orglane knows which GitHub account is yours. Orglane uses it to invite you to your company's GitHub organization and teams. It never posts anything as you and does not keep access to your account.",
+      "Sign in to GitHub once so Orglane knows which GitHub account is yours. It never posts anything as you and does not keep access to your account.",
   },
   loading: { id: "common.loading", defaultMessage: "Loading" },
   notConnected: {
@@ -47,7 +47,7 @@ const m = defineMessages({
   unlinkConfirm: defineMessage<{ login: string }>({
     id: "githubAccount.unlinkConfirm",
     defaultMessage:
-      "Unlink @{login}? Orglane stops managing your GitHub access through this account until you link one again.",
+      "Unlink @{login}? Orglane stops managing this account. Access it already has on GitHub is not removed.",
   }),
   unlinkYes: { id: "githubAccount.unlinkYes", defaultMessage: "Unlink account" },
   cancel: { id: "common.cancel", defaultMessage: "Cancel" },
