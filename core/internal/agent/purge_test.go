@@ -321,6 +321,17 @@ func TestRecoverOutcomes(t *testing.T) {
 	if err := os.RemoveAll(a.instanceDir("gone")); err != nil {
 		t.Fatal(err)
 	}
+	// The directory is gone and a purge record holds the generation, but the
+	// operation is an apply: only a remove may recover as succeeded.
+	purgedApply := running("purged-apply", 1)
+	if err := os.RemoveAll(a.instanceDir("purged-apply")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(a.purgedPath("purged-apply"), purgedRecord{
+		Generation: 1, Operation: purgedApply.ID, At: now.UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	b := newAgent()
 	for _, c := range []struct {
@@ -334,9 +345,103 @@ func TestRecoverOutcomes(t *testing.T) {
 		{"blocked", blocked, agentapi.OpFailed, agentapi.CodeHealthTimeout},
 		{"pending", pending, agentapi.OpQueued, ""},
 		{"gone", gone, agentapi.OpFailed, agentapi.CodeInterrupted},
+		{"purged-apply", purgedApply, agentapi.OpFailed, agentapi.CodeInterrupted},
 	} {
 		if got, _ := b.ops.get(c.op.ID); got.State != c.state || got.ErrorCode != c.code || got.Phase != "" {
 			t.Errorf("%s: operation after the restart = %+v, want %s %q", c.name, got, c.state, c.code)
 		}
+	}
+}
+
+// TestRecoverPurgeSyncsTheRename: a crash after a purge's rename but before
+// its directory sync leaves the operation unfinished and the purge record
+// durable. Recovery syncs the rename before it reports success; a sync
+// failure is recorded as internal, like one from the purge itself.
+func TestRecoverPurgeSyncsTheRename(t *testing.T) {
+	failure := errors.New("injected directory sync failure")
+	for _, tc := range []struct {
+		name  string
+		sync  func(string) error
+		state string
+		code  string
+	}{
+		{"synced", nil, agentapi.OpSucceeded, ""},
+		{"sync failure", func(string) error { return failure }, agentapi.OpFailed, agentapi.CodeInternal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			cfg := testConfig(t)
+			cfg.DataDir = t.TempDir()
+			opts := Options{Config: cfg, Version: "dev", Registry: testRegistry(t), Now: func() time.Time { return now }, runner: &recordingRunner{}}
+			a, err := New(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := testSpec(2)
+			op, err := a.ops.create("git", agentapi.KindRemove, spec.Generation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.ops.update(op.ID, func(o *agentapi.Operation) { o.State = agentapi.OpRunning }); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeJSON(a.purgedPath("git"), purgedRecord{
+				InstanceID: spec.InstanceID, Generation: spec.Generation, SpecHash: spec.Hash(), Operation: op.ID, At: now.UTC(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			opts.syncDir = tc.sync
+			b, err := New(opts)
+			if err != nil {
+				t.Fatalf("recover: %v", err)
+			}
+			got, ok := b.ops.get(op.ID)
+			if !ok || got.State != tc.state || got.ErrorCode != tc.code {
+				t.Fatalf("operation after recovery = %+v (%t), want %s %q", got, ok, tc.state, tc.code)
+			}
+		})
+	}
+}
+
+// TestPurgeRetryAfterPruningSyncsTheRename: the purge record survives
+// operation pruning. A retry that has to record the operation again checks
+// the rename's directory sync before it reports success, so a failed sync
+// stays failed instead of being hidden by a fresh succeeded operation.
+func TestPurgeRetryAfterPruningSyncsTheRename(t *testing.T) {
+	cfg := newPurgeEnv(t)
+	a, purge, op := purgeAgent(t, cfg, nil)
+	a.reconcile(t.Context(), a.instance("git"))
+	assertPurged(t, a, op.ID)
+
+	prune := func(id uuid.UUID) {
+		t.Helper()
+		old := cfg.now.Add(-8 * 24 * time.Hour)
+		if _, err := a.ops.update(id, func(o *agentapi.Operation) { o.FinishedAt = &old }); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.ops.prune(); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := a.ops.get(id); ok {
+			t.Fatal("operation was not pruned")
+		}
+	}
+	prune(op.ID)
+
+	// A failed sync on the retry is recorded, not hidden by success.
+	a.opts.syncDir = func(string) error { return errors.New("injected directory sync failure") }
+	rec := put(t, a, cfg.now, "git", mustJSON(t, purge))
+	failed := decodeOp(t, rec)
+	if rec.Code != http.StatusOK || failed.State != agentapi.OpFailed || failed.ErrorCode != agentapi.CodeInternal {
+		t.Fatalf("retry with a failed sync = %d %+v", rec.Code, failed)
+	}
+
+	// Once the rename is synced, the retry records success.
+	prune(failed.ID)
+	a.opts.syncDir = nil
+	rec = put(t, a, cfg.now, "git", mustJSON(t, purge))
+	if o := decodeOp(t, rec); rec.Code != http.StatusOK || o.State != agentapi.OpSucceeded {
+		t.Fatalf("retry after pruning = %d %+v", rec.Code, o)
 	}
 }

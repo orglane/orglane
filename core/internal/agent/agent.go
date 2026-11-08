@@ -59,6 +59,9 @@ type Options struct {
 	// hook, if set, is called at named points of a reconcile, so tests can
 	// interleave requests or stop the process there (a crash).
 	hook func(point string)
+	// syncDir replaces directory syncing in tests, to inject writeback
+	// failures.
+	syncDir func(string) error
 }
 
 // Agent is a running agent.
@@ -505,6 +508,16 @@ func (a *Agent) recoverOperations() error {
 					continue
 				}
 				state, code = recoveredOutcome(st, purged, op)
+				if state == agentapi.OpSucceeded && st.id == uuid.Nil && op.Kind == agentapi.KindRemove {
+					// The purge record is written before the rename, so it
+					// alone does not prove the directory stays gone. Sync the
+					// rename before reporting success; a failure is recorded
+					// like one from the purge itself.
+					if err := a.syncDirectory(a.instancesDir); err != nil {
+						a.log.Error("sync a recovered purge", "instance", op.Instance, "error", err)
+						state, code = agentapi.OpFailed, agentapi.CodeInternal
+					}
+				}
 			}
 		}
 		_, err := a.ops.update(op.ID, func(o *agentapi.Operation) {

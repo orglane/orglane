@@ -281,7 +281,7 @@ func (a *Agent) purgeDir(key string, target *agentapi.Spec, op *agentapi.Operati
 	// operation fails (a crash could bring the directory back after a
 	// success), and the trash is deleted all the same. Another purge
 	// generation completes it.
-	if err := syncDir(a.instancesDir); err != nil {
+	if err := a.syncDirectory(a.instancesDir); err != nil {
 		return trash, err
 	}
 	a.at("purged")

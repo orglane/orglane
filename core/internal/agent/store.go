@@ -236,3 +236,11 @@ func syncDir(dir string) error {
 	defer func() { _ = d.Close() }()
 	return d.Sync()
 }
+
+// syncDirectory syncs a directory, or the test replacement.
+func (a *Agent) syncDirectory(dir string) error {
+	if a.opts.syncDir != nil {
+		return a.opts.syncDir(dir)
+	}
+	return syncDir(dir)
+}

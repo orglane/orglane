@@ -294,11 +294,20 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 			}
 			op, ok := a.ops.get(p.Operation)
 			if !ok {
-				// The operation was pruned; record the outcome again.
+				// The operation was pruned; record the outcome again. The
+				// purge record is written before the rename, so sync the
+				// directory the rename freed before reporting success.
 				if op, err = a.ops.create(key, agentapi.KindRemove, p.Generation); err != nil {
 					return internal(err)
 				}
-				if op, err = a.ops.update(op.ID, func(o *agentapi.Operation) { o.State = agentapi.OpSucceeded }); err != nil {
+				state, code := agentapi.OpSucceeded, ""
+				if err := a.syncDirectory(a.instancesDir); err != nil {
+					a.log.Error("sync a purged instance directory", "instance", key, "error", err)
+					state, code = agentapi.OpFailed, agentapi.CodeInternal
+				}
+				if op, err = a.ops.update(op.ID, func(o *agentapi.Operation) {
+					o.State, o.ErrorCode = state, code
+				}); err != nil {
 					return internal(err)
 				}
 			}
