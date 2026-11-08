@@ -315,6 +315,7 @@ func (p postgres) accepting(ctx context.Context, id string) bool {
 	return err == nil
 }
 
+// deadline returns the time the wait for the server ends.
 func (p postgres) deadline() time.Time {
 	if p.timeout > 0 {
 		return time.Now().Add(p.timeout)
@@ -403,6 +404,7 @@ func (p postgres) script(ctx context.Context, args []string, sql string, secrets
 	}
 }
 
+// exitedWith reports whether err is a command that exited with code.
 func exitedWith(err error, code int) bool {
 	var ee interface{ ExitCode() int }
 	return errors.As(err, &ee) && ee.ExitCode() == code

@@ -15,7 +15,10 @@ import (
 // exitError is a command that exited with a status, like *exec.ExitError.
 type exitError int
 
+// Error implements error.
 func (e exitError) Error() string { return "exit status " + strconv.Itoa(int(e)) }
+
+// ExitCode reports the command's exit status.
 func (e exitError) ExitCode() int { return int(e) }
 
 // pgRunner answers the agent's PostgreSQL commands from the test's
@@ -32,6 +35,7 @@ type pgRunner struct {
 	psqlArgs  []string
 }
 
+// run implements runner for the commands of one PostgreSQL step.
 func (r *pgRunner) run(_ context.Context, _ []byte, args ...string) ([]byte, []byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -57,18 +61,22 @@ func (r *pgRunner) run(_ context.Context, _ []byte, args ...string) ([]byte, []b
 	return nil, nil, errors.New("unexpected command " + strings.Join(args, " "))
 }
 
+// tail implements runner; the database step does not tail.
 func (r *pgRunner) tail(context.Context, int, ...string) ([]byte, bool, []byte, error) {
 	return nil, false, nil, errors.New("unexpected tail")
 }
 
+// pipe implements runner; the database step pipes only dumps and restores.
 func (r *pgRunner) pipe(_ context.Context, _ io.Reader, _ io.Writer, args ...string) ([]byte, error) {
 	return nil, errors.New("unexpected pipe " + strings.Join(args, " "))
 }
 
+// stream implements runner; the database step does not stream.
 func (r *pgRunner) stream(context.Context, ...string) (io.ReadCloser, func() error, error) {
 	return nil, nil, errors.New("unexpected stream")
 }
 
+// always returns v for every call.
 func always[T any](v T) func(int) T { return func(int) T { return v } }
 
 // from returns before for the first n calls, then after.
@@ -81,6 +89,7 @@ func from[T any](n int, before, after T) func(int) T {
 	}
 }
 
+// testPostgres returns the runner-backed postgres with short waits.
 func testPostgres(r *pgRunner) postgres {
 	return postgres{r: r, project: "orglane", service: "postgres", user: "orglane", timeout: 2 * time.Second, wait: time.Millisecond}
 }
