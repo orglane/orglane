@@ -127,7 +127,7 @@
   "apps.code.setupFailed": "Setting up this app failed. Check the service, then retry the setup.",
   "apps.code.ssoNotConfigured": "Sign-in with Orglane is not set up in the app yet. Orglane retries; if this stays, reinstall the app.",
   "apps.code.superseded": "Replaced by a newer change before it ran.",
-  "apps.code.teamNotManaged": "A team this person is mapped to is not managed by Orglane, so Orglane does not change it. Map the Orglane team again so Orglane creates its own.",
+  "apps.code.teamNotManaged": "A team this person is mapped to is not managed by Orglane (its description lost the Managed by Orglane mark), so Orglane does not change it. Restore that mark in the team's description to keep the team, or rename the team in the app so Orglane creates its own, then retry.",
   "apps.code.teamNotSynced": "A team this person is mapped to does not exist in the app yet. Orglane creates it and retries automatically.",
   "apps.code.usernameTaken": "Another account in the app already has this person's username, and Orglane never takes over an account it did not create. Rename or remove that account in the app, then retry.",
   "apps.code.webhookDeleted": "The app no longer sends events to Orglane. Reconnect it to restore them.",

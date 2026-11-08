@@ -516,6 +516,26 @@ func TestUpdateAccount(t *testing.T) {
 	if _, err := a.Apply(t.Context(), env(), inst, clash); code(err) != CodeUsernameTaken {
 		t.Fatalf("rename onto another account: %v", err)
 	}
+	// A refused rename to a username nobody has: Forgejo does not allow it.
+	// A failed lookup keeps its own classification.
+	reserved := update
+	reserved.Params = map[string]string{paramPersonID: person.String(), paramUsername: "admin-reserved", paramDisplayName: "Maya O.", paramEmail: "maya@acme.test"}
+	for name, c := range map[string]struct {
+		fail  map[string][]int
+		code  string
+		retry bool
+	}{
+		"not allowed":         {map[string][]int{"POST /api/v1/admin/users/maya/rename": {422}}, CodeInvalidLogin, false},
+		"lookup rate limited": {map[string][]int{"POST /api/v1/admin/users/maya/rename": {422}, "GET /api/v1/users/admin-reserved": {429}}, CodeRateLimited, true},
+		"rename outage":       {map[string][]int{"POST /api/v1/admin/users/maya/rename": {502}}, CodeUnavailable, true},
+	} {
+		f.fail = c.fail
+		_, err := a.Apply(t.Context(), env(), inst, reserved)
+		if got, retry, _ := provider.Classify(err); got != c.code || retry != c.retry {
+			t.Errorf("%s: %v (%s, %v)", name, err, got, retry)
+		}
+	}
+	f.fail = map[string][]int{}
 	missing := update
 	missing.Params = map[string]string{paramPersonID: uuid.NewString(), paramUsername: "x"}
 	if _, err := a.Apply(t.Context(), env(), inst, missing); code(err) != CodeNoAccount {

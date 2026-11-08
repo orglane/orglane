@@ -56,6 +56,9 @@ const (
 	// CodeUsernameTaken: another Forgejo account (not Orglane's for this
 	// person) has the username. An admin resolves it.
 	CodeUsernameTaken = "username_taken"
+	// CodeInvalidLogin: Forgejo does not allow the username (reserved, or
+	// characters it refuses), and no account has it.
+	CodeInvalidLogin = "invalid_login"
 	// CodeAccountRefused: Forgejo refused the account's data (e.g. an email
 	// that another account uses).
 	CodeAccountRefused = "account_refused"
@@ -445,7 +448,19 @@ func updateAccount(ctx context.Context, c *client, inst instance, p map[string]s
 	if acct.Login != p[paramUsername] {
 		err := c.do(ctx, http.MethodPost, "/api/v1/admin/users/"+url.PathEscape(acct.Login)+"/rename", map[string]any{"new_username": p[paramUsername]}, nil)
 		if err != nil {
-			return provider.ActionOutcome{}, refusal(err, CodeUsernameTaken)
+			if !refused(err) {
+				return provider.ActionOutcome{}, classify(err)
+			}
+			// Only a successful lookup tells a taken username from one
+			// Forgejo does not allow (reserved, invalid characters).
+			taken, terr := usernameExists(ctx, c, p[paramUsername])
+			switch {
+			case terr != nil:
+				return provider.ActionOutcome{}, classify(terr)
+			case taken:
+				return provider.ActionOutcome{}, &provider.Error{Code: CodeUsernameTaken, Err: err}
+			}
+			return provider.ActionOutcome{}, &provider.Error{Code: CodeInvalidLogin, Err: err}
 		}
 		acct.Login, changed = p[paramUsername], true
 	}
@@ -461,10 +476,16 @@ func updateAccount(ctx context.Context, c *client, inst instance, p map[string]s
 	return provider.ActionOutcome{Changed: changed, Link: inst.account(*acct)}, nil
 }
 
+// refused reports whether Forgejo refused a change's data (validation).
+func refused(err error) bool {
+	s := status(err)
+	return s == http.StatusUnprocessableEntity || s == http.StatusBadRequest || s == http.StatusConflict
+}
+
 // refusal classifies a failed update: a validation refusal is permanent
 // with code, anything else as usual.
 func refusal(err error, code string) error {
-	if s := status(err); s == http.StatusUnprocessableEntity || s == http.StatusBadRequest || s == http.StatusConflict {
+	if refused(err) {
 		return &provider.Error{Code: code, Err: err}
 	}
 	return classify(err)

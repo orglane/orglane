@@ -468,7 +468,7 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
   team_not_managed: {
     id: "apps.code.teamNotManaged",
     defaultMessage:
-      "A team this person is mapped to is not managed by Orglane, so Orglane does not change it. Map the Orglane team again so Orglane creates its own.",
+      "A team this person is mapped to is not managed by Orglane (its description lost the Managed by Orglane mark), so Orglane does not change it. Restore that mark in the team's description to keep the team, or rename the team in the app so Orglane creates its own, then retry.",
   },
   forgejo_rejected: {
     id: "apps.code.forgejoRejected",
