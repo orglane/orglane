@@ -112,10 +112,14 @@ successful live invite/remove or webhook round trip.
 | Organization | Members | Read and write | [Invitations and membership removal](https://docs.github.com/en/rest/orgs/members), [team creation](https://docs.github.com/en/rest/teams/teams), and [team membership](https://docs.github.com/en/rest/teams/members) require Members write (#65). |
 | Repository | Metadata | Read | Mandatory for GitHub Apps; identifies repositories visible to the installation. See [choosing permissions](https://docs.github.com/en/apps/creating-github-apps/setting-up-a-github-app/choosing-permissions-for-a-github-app). |
 | Repository | Pull requests | Read | `pull_request`, `pull_request_review` and `pull_request_review_comment` subscriptions require Pull requests read (#66). See [webhook events](https://docs.github.com/en/webhooks/webhook-events-and-payloads). |
-| Repository | Issues | Read | `issue_comment`, including comments on pull requests for mentions, requires Issues read (#66). See [webhook events](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issue_comment). |
+| Repository | Issues | Read | `issue_comment`, including comments on pull requests for mentions, and `issues` (mentions in new issues) require Issues read (#66). See [webhook events](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issue_comment). |
 
 Subscribe to `pull_request`, `pull_request_review`, `issue_comment`,
-`pull_request_review_comment`, `member`, `membership` and `organization`.
+`pull_request_review_comment`, `issues`, `member`, `membership` and
+`organization`. Apps created before #66 lack `issues`; add it under the App's
+**Permissions & events** → **Subscribe to events** (no new permission, so no
+re-approval by the organization). GitHub sends `installation`, `meta` and
+`github_app_authorization` to every App without a subscription.
 Organization member and team events use Members read, included in Members write.
 No Contents, Administration, Actions, Checks or repository write permission is
 requested. An installation may be limited to selected repositories; events and
@@ -173,6 +177,57 @@ proof-by-use webhook verification and drift detection (a delivery signed with
 an older webhook secret is reported on the instance; rotate the secret then)
 for GitHub.
 Client-secret rotation is outside M2.
+
+## Webhooks (#66)
+
+The App carries one webhook, created by the manifest with the URL
+`https://<workspace>/api/v1/webhooks/<instanceId>`; Orglane creates no
+per-organization hooks. Each delivery is verified before anything is stored:
+`X-Hub-Signature-256` must be `sha256=` and the hex HMAC-SHA256 of the raw body
+under the App's webhook secret (during a rotation, under any version GitHub may
+still use), compared in constant time. A failed check answers `401` and stores
+nothing. Deliveries are deduplicated by the signed bytes and by
+`X-GitHub-Delivery`; GitHub's redeliveries of the same bytes are duplicates.
+
+Only signed body fields decide whether a delivery is for the instance: its
+`installation.id` must be the connected installation and `organization.id`,
+when present, the connected organization. Anything else is ignored
+(`foreign_installation`; `no_installation` for App-level events other than
+`meta` and `github_app_authorization`).
+
+What Orglane stores (as normalized events, delivered to people from M3):
+
+| GitHub event | Actions | Event |
+|---|---|---|
+| `pull_request` | `opened` | `code.pull_request.opened` (requested reviewers, assignees), and `code.mention.created` for the description |
+| `pull_request` | `review_requested` | `code.review.requested` (a person, or a team without targets) |
+| `issues` | `opened` | `code.mention.created` for the description |
+| `issue_comment`, `pull_request_review_comment` | `created` | `code.mention.created` |
+| `pull_request_review` | `submitted` | `code.mention.created` for the review's text |
+| `organization` | `member_added`, `member_removed`, `member_invited` | `code.membership.changed` |
+| `membership` | `added`, `removed` (team scope) | `code.membership.changed` |
+| `member` | `added`, `removed` (repository collaborators) | `code.membership.changed` |
+
+Edited comments and other actions create no events. Pushes are not received:
+they would need the Contents permission, which M2 does not request.
+
+Deliveries also change the connection:
+
+- `installation` `deleted`: the instance becomes **disconnected**
+  (`installation_deleted`); connect GitHub again to resume.
+- `installation` `suspend`: **degraded** (`installation_suspended`) until
+  `unsuspend` arrives.
+- `meta` `deleted` (the App's webhook was deleted): **degraded**
+  (`webhook_deleted`). Set the webhook URL and secret again in the App's
+  settings; the next delivery for the installation restores the instance.
+- `organization` member and `membership` team changes made in GitHub queue a
+  drift check of provisioning, so desired and actual access are compared
+  again (removals still go through the removal guard).
+
+To check deliveries, open the App's **Advanced** → **Recent Deliveries** in
+GitHub; Orglane's answer is `202` for a new delivery, `200` for a duplicate,
+`401` for a bad signature and `404` for an instance that does not take
+webhooks.
 
 ## Dedicated live-test setup (#71)
 
@@ -278,9 +333,11 @@ token-permission change is authorized or performed by the harness.
 If the bot cannot delete an eligible test repository, the janitor fails clearly
 and preserves the external acceptance failure. A selected-repository token may
 not see newly created repositories until the maintainer explicitly selects
-them. #66 must demonstrate a workable narrowly selected fixture and cleanup
-path, or report that concrete limitation; it must not solve it by broadening
-the token to all repositories. #64 creates no test teams or repositories, so a
+them. #66's webhook live test creates no repositories or teams: it reads the
+App's delivery log, so it needs no repository cleanup; a test that opens pull
+requests or comments to trigger deliveries still has to bring a selected
+disposable repository, and must not solve it by broadening the token to all
+repositories. #64 creates no test teams or repositories, so a
 successful empty janitor run does not prove repository deletion is authorized.
 
 ### Rotation status and recovery

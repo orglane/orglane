@@ -390,6 +390,44 @@ type Delivery struct {
 	ReceivedAt time.Time
 }
 
+// DeliveryEffects is implemented by event sources whose deliveries report
+// changes of the connection itself (GitHub: the App's installation was
+// deleted or suspended, its webhook was deleted) or of provider-side access
+// that provisioning should look at again (GitHub: organization and team
+// membership changed outside Orglane).
+type DeliveryEffects interface {
+	// Effects returns what a verified delivery changes besides its events.
+	// Like Normalize it is a pure function of its input, decides from
+	// signed body fields only, and returns ErrForeignDelivery for a
+	// delivery that is not for this instance. The core calls it before
+	// Normalize, in the transaction that stores the delivery's events.
+	Effects(inst Instance, d Delivery) (Effect, error)
+}
+
+// Instance states an Effect may ask for.
+const (
+	EffectDegraded     = "degraded"
+	EffectDisconnected = "disconnected"
+	// EffectRestored returns a degraded instance to active, only if its
+	// health code is Effect.Code (it clears what an earlier effect set and
+	// nothing else).
+	EffectRestored = "restored"
+)
+
+// Effect is what a delivery changes besides its events. The zero Effect
+// changes nothing.
+type Effect struct {
+	// State is "", EffectDegraded, EffectDisconnected or EffectRestored.
+	State string
+	// Code is the health code (lower_snake_case) State sets, or for
+	// EffectRestored the one it clears.
+	Code string
+	// Resync asks for a drift run of the instance's provisioning: access
+	// changed at the provider, so desired and actual access are compared
+	// again (plans are idempotent; nothing is removed outside the guard).
+	Resync bool
+}
+
 // DeepLinker builds links into the provider.
 type DeepLinker interface {
 	// OpenURL returns the URL that opens target in the provider, signed in
