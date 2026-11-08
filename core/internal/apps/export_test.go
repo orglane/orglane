@@ -45,3 +45,6 @@ func (s *Service) CheckBootForTest(ctx context.Context) { s.checkBoot(ctx) }
 func CredentialLockIDForTest(instanceID [16]byte, name string) int64 {
 	return credentialLockID(instanceID, name)
 }
+
+// LockIDForTest is the advisory lock ID of parts.
+func LockIDForTest(parts ...string) int64 { return lockID(parts...) }

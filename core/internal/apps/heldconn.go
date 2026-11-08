@@ -2,7 +2,10 @@ package apps
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,9 +36,13 @@ func inTxOn(ctx context.Context, db txStarter, fn func(tx pgx.Tx, q *store.Queri
 // database.max_conns=1, or a pool exhausted by other lock holders, that wait
 // would never end.
 type heldConn struct {
-	s       *Service
-	conn    *pgxpool.Conn
-	release func()
+	s    *Service
+	conn *pgxpool.Conn
+	// unlock releases the first lock and hands the connection back.
+	unlock func()
+	// tainted: a nested lock (lockAlso) may still be held, so the
+	// connection is closed instead of returned to the pool.
+	tainted bool
 	// reads serves the Env of adapter calls made under the lock. The holder
 	// itself never uses the connection while an adapter call runs.
 	reads *credentialReader
@@ -44,11 +51,48 @@ type heldConn struct {
 // holdLock takes session advisory lock id on a dedicated connection.
 // Release it with release.
 func (s *Service) holdLock(ctx context.Context, id int64) (*heldConn, error) {
-	conn, release, err := sessionLock(ctx, s.pool, id)
+	conn, unlock, err := sessionLock(ctx, s.pool, id)
 	if err != nil {
 		return nil, err
 	}
-	return &heldConn{s: s, conn: conn, release: release, reads: newCredentialReader(conn)}, nil
+	return &heldConn{s: s, conn: conn, unlock: unlock, reads: newCredentialReader(conn)}, nil
+}
+
+// release releases the lock and the connection.
+func (h *heldConn) release() {
+	if h.tainted {
+		// Never hand a connection that may hold a lock back to the pool;
+		// closing it releases every lock of its session.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := h.conn.Conn().Close(ctx); err != nil {
+			h.s.cfg.Logger.WarnContext(ctx, "apps: close a connection that may hold a lock", "error", err)
+		}
+		h.conn.Release()
+		return
+	}
+	h.unlock()
+}
+
+// lockAlso takes a further session advisory lock on the held connection,
+// for work nested under the first lock (which comes first in the lock
+// order), instead of waiting for a second connection. The returned
+// function releases it.
+func (h *heldConn) lockAlso(ctx context.Context, id int64) (func(), error) {
+	if h.tainted {
+		return nil, errors.New("apps: lock: the held connection may still hold a lock")
+	}
+	if _, err := h.conn.Exec(ctx, "SELECT pg_advisory_lock($1)", id); err != nil {
+		h.tainted = true // the lock may have been taken all the same
+		return nil, fmt.Errorf("apps: lock: %w", err)
+	}
+	return func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if _, err := h.conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", id); err != nil {
+			h.tainted = true
+		}
+	}, nil
 }
 
 // queries runs single statements on the held connection, outside a
