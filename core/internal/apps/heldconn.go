@@ -65,7 +65,9 @@ func (h *heldConn) release() {
 		// closing it releases every lock of its session.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = h.conn.Conn().Close(ctx)
+		if err := h.conn.Conn().Close(ctx); err != nil {
+			h.s.cfg.Logger.WarnContext(ctx, "apps: close a connection that may hold a lock", "error", err)
+		}
 		h.conn.Release()
 		return
 	}
