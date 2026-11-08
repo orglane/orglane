@@ -316,6 +316,14 @@ FOR SHARE;
 -- name: GetProvisioningResultForShare :one
 SELECT * FROM provisioning_results WHERE instance_id = @instance_id AND person_id = @person_id FOR SHARE;
 
+-- name: RefreshAccountLinkLogin :execrows
+-- The provider-side login of a verified link changed (informational: links
+-- are keyed by the immutable external ID). Only that person's link of that
+-- account changes.
+UPDATE account_links SET login = @login, updated_at = now()
+WHERE person_id = @person_id AND provider = @provider AND realm = @realm AND external_id = @external_id
+  AND state = 'verified' AND login <> @login;
+
 -- name: RevokeAccountLink :one
 UPDATE account_links SET state = 'revoked', revoked_at = now(), updated_at = now()
 WHERE id = @id AND state = 'verified'

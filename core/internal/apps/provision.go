@@ -286,6 +286,14 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 func (s *Service) recordApplied(ctx context.Context, conn *pgxpool.Conn, inst Instance, personID uuid.UUID, a provider.Action, out provider.ActionOutcome, recovered bool) error {
 	grant := slices.Contains(grants, a.Kind)
 	owned := grant && out.Proof != nil
+	if !grant && out.Link != nil {
+		// An action that saw the account (e.g. a rename) refreshes the
+		// login of the person's verified link of that same account. It never
+		// creates, moves or verifies a link: only grants with proof do.
+		if err := s.refreshLinkLogin(ctx, conn, inst, personID, *out.Link); err != nil {
+			return err
+		}
+	}
 	if !out.Changed && !grant {
 		return nil
 	}
@@ -1345,4 +1353,20 @@ func (s *Service) RunDriftCheck(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+// refreshLinkLogin updates the informational login of the person's verified
+// link of the account an action reported. Nothing happens for another
+// account, another person or an unchanged login (zero rows).
+func (s *Service) refreshLinkLogin(ctx context.Context, conn *pgxpool.Conn, inst Instance, personID uuid.UUID, acct provider.ExternalAccount) error {
+	if acct.ExternalID == "" || acct.Login == "" || len(acct.Login) > 100 || inst.Adapter == nil {
+		return nil
+	}
+	_, err := store.New(conn).RefreshAccountLinkLogin(ctx, store.RefreshAccountLinkLoginParams{
+		PersonID: personID, Provider: inst.Provider, Realm: inst.Adapter.Realm(inst.View()), ExternalID: acct.ExternalID, Login: acct.Login,
+	})
+	if err != nil {
+		return fmt.Errorf("apps: refresh link login: %w", err)
+	}
+	return nil
 }

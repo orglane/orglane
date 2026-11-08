@@ -497,6 +497,13 @@ type OIDCClient struct {
 // OIDCClientID returns the ID of an instance's OIDC client: "app-<key>".
 func OIDCClientID(key string) string { return "app-" + key }
 
+// TeamMappingValidator refuses team mappings a provider cannot honor, e.g.
+// mode "existing" where the provider only manages teams it creates. The
+// core calls it before storing a mapping. Pure: no provider calls.
+type TeamMappingValidator interface {
+	ValidateTeamMapping(inst Instance, mode, externalRef string) error
+}
+
 // SettingsValidator checks instance settings beyond what SettingSpec can
 // express (e.g. a product's reserved names). The core calls it with the
 // merged, typed settings when an instance is created and when its settings
