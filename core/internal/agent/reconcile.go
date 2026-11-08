@@ -277,8 +277,11 @@ func (a *Agent) purgeDir(key string, target *agentapi.Spec, op *agentapi.Operati
 	if err := os.Rename(a.instanceDir(key), trash); err != nil {
 		return "", err
 	}
+	// The rename is done: the purge succeeded. If the sync fails and a
+	// crash undoes the rename, the directory is back with its generation
+	// pending, and the purge runs again.
 	if err := syncDir(a.instancesDir); err != nil {
-		return "", err
+		a.log.Warn("sync the instances directory after a purge", "instance", key, "error", err)
 	}
 	a.at("purged")
 	return trash, nil
