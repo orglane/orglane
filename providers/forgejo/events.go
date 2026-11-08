@@ -56,30 +56,30 @@ var (
 	shaRE      = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 )
 
-// user is an account in a payload.
-type user struct {
+// payloadUser is an account in a webhook payload.
+type payloadUser struct {
 	ID    int64  `json:"id"`
 	Login string `json:"login"`
 }
 
 type repository struct {
-	ID       int64  `json:"id"`
-	FullName string `json:"full_name"`
-	HTMLURL  string `json:"html_url"`
-	Owner    user   `json:"owner"`
+	ID       int64       `json:"id"`
+	FullName string      `json:"full_name"`
+	HTMLURL  string      `json:"html_url"`
+	Owner    payloadUser `json:"owner"`
 }
 
 type pullRequest struct {
-	ID                 int64     `json:"id"`
-	Number             int       `json:"number"`
-	Title              string    `json:"title"`
-	Body               string    `json:"body"`
-	HTMLURL            string    `json:"html_url"`
-	Draft              bool      `json:"draft"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
-	RequestedReviewers []user    `json:"requested_reviewers"`
-	Assignees          []user    `json:"assignees"`
+	ID                 int64         `json:"id"`
+	Number             int           `json:"number"`
+	Title              string        `json:"title"`
+	Body               string        `json:"body"`
+	HTMLURL            string        `json:"html_url"`
+	Draft              bool          `json:"draft"`
+	CreatedAt          time.Time     `json:"created_at"`
+	UpdatedAt          time.Time     `json:"updated_at"`
+	RequestedReviewers []payloadUser `json:"requested_reviewers"`
+	Assignees          []payloadUser `json:"assignees"`
 	Base               struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
@@ -106,10 +106,10 @@ type comment struct {
 // ignored.
 type payload struct {
 	Action            string       `json:"action"`
-	Sender            user         `json:"sender"`
+	Sender            payloadUser  `json:"sender"`
 	Repository        *repository  `json:"repository"`
 	PullRequest       *pullRequest `json:"pull_request"`
-	RequestedReviewer *user        `json:"requested_reviewer"`
+	RequestedReviewer *payloadUser `json:"requested_reviewer"`
 	Review            *struct {
 		Content string `json:"content"`
 	} `json:"review"`
@@ -198,7 +198,7 @@ func (n *normalizer) common() error {
 		return invalidPayload("invalid repository name")
 	}
 	n.repo = r.FullName
-	actor, ok := ref(n.p.Sender)
+	actor, ok := payloadRef(n.p.Sender)
 	if !ok {
 		return invalidPayload("invalid sender")
 	}
@@ -212,8 +212,8 @@ func validRepoName(name string) bool {
 
 func validLogin(login string) bool { return len(login) <= maxLogin && loginRE.MatchString(login) }
 
-// ref is an account with its ID; false if the login is invalid.
-func ref(u user) (provider.ExternalRef, bool) {
+// payloadRef is an account with its ID; false if the login is invalid.
+func payloadRef(u payloadUser) (provider.ExternalRef, bool) {
 	if !validLogin(u.Login) || u.ID == 0 {
 		return provider.ExternalRef{}, false
 	}
@@ -222,10 +222,10 @@ func ref(u user) (provider.ExternalRef, bool) {
 
 // targets turns accounts into targets with reason, dropping invalid ones
 // and duplicates.
-func targets(users []user, reason string, seen map[string]bool) []provider.Target {
+func targets(users []payloadUser, reason string, seen map[string]bool) []provider.Target {
 	out := []provider.Target{}
 	for _, u := range users {
-		r, ok := ref(u)
+		r, ok := payloadRef(u)
 		if !ok || seen[strings.ToLower(r.Login)+"\x00"+reason] {
 			continue
 		}
@@ -312,7 +312,7 @@ func (n *normalizer) reviewRequested() ([]provider.Event, error) {
 	if n.p.RequestedReviewer == nil {
 		return []provider.Event{}, nil
 	}
-	reviewer, ok := ref(*n.p.RequestedReviewer)
+	reviewer, ok := payloadRef(*n.p.RequestedReviewer)
 	if !ok {
 		return nil, invalidPayload("invalid requested reviewer")
 	}

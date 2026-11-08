@@ -92,9 +92,6 @@ var reservedNames = []string{
 // reservedSuffixes are Forgejo's reserved name patterns (*.keys, ...).
 var reservedSuffixes = []string{".keys", ".gpg", ".rss", ".atom", ".png"}
 
-// planned is the milestone of what #62 adds in M2.
-const planned = "M2"
-
 // Adapter is the Forgejo adapter. It holds no state; all methods are safe
 // for concurrent use.
 type Adapter struct{}
