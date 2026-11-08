@@ -27,6 +27,7 @@ type instanceName struct {
 	replica            int
 }
 
+// String returns the DNS name n stands for.
 func (n instanceName) String() string {
 	const project = "orglane"
 	switch n.kind {
@@ -213,6 +214,8 @@ func FuzzInstanceNames(f *testing.F) {
 	})
 }
 
+// TestRenderRefusesInvalidKey: Render checks the key itself, the other
+// half of the names rule.
 func TestRenderRefusesInvalidKey(t *testing.T) {
 	p := testPackage(t)
 	in, err := p.Inputs(testSpec())
