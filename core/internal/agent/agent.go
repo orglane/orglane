@@ -474,9 +474,10 @@ func (a *Agent) renderContext(key string) packages.RenderContext {
 // An apply, remove or upgrade without a journal is settled from what is
 // durable on disk: it succeeded if its generation is current.json (the
 // process stopped between the state write and the operation update), as
-// did a purge its purge record names; a pending generation runs again; a
-// generation replaced by a newer accepted spec is superseded; a blocked one
-// fails with its blocking code. Anything else fails as interrupted.
+// did a purge whose purge record names that operation; a pending generation
+// runs again; a generation replaced by a newer accepted spec is superseded;
+// a blocked one fails with its blocking code. Anything else fails as
+// interrupted.
 func (a *Agent) recoverOperations() error {
 	var errs []error
 	for _, op := range a.ops.unfinished() {
@@ -578,8 +579,11 @@ func recoveredOutcome(st *instanceState, purged *purgedRecord, op agentapi.Opera
 	gen := op.Generation
 	switch {
 	case st.id == uuid.Nil:
-		// No directory: the key was purged, by this operation or not.
-		if purged != nil && purged.Generation == gen && op.Kind == agentapi.KindRemove {
+		// No directory: the key was purged. Only the operation the purge
+		// record names may be settled from it, so a remove of a new
+		// instance that reused the key at the same generation is not
+		// reported as succeeded from the previous instance's purge.
+		if purged != nil && purged.Operation == op.ID && purged.Generation == gen && op.Kind == agentapi.KindRemove {
 			return agentapi.OpSucceeded, ""
 		}
 	case st.current != nil && st.current.Generation == gen:

@@ -116,7 +116,7 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 		o, ok := a.ops.forGeneration(in.key, target.Generation)
 		if !ok || o.Terminal() {
 			// A retry after a failure, or an operation pruned meanwhile.
-			if o, err = a.ops.create(in.key, opKind(target, st.current), target.Generation); err != nil {
+			if o, err = a.createOperation(in.key, opKind(target, st.current), target.Generation); err != nil {
 				a.log.Error("create operation", "instance", in.key, "error", err)
 				a.clearBusy(in, agentapi.CodeInternal)
 				return

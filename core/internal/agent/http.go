@@ -259,6 +259,18 @@ func (a *Agent) handlePut(w http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(w, status, op)
 }
 
+// createOperation publishes an operation for an accepted spec. The
+// instance's directory entry is synced first: a host crash between
+// publishing a remove and losing a new binding's directory entry would
+// otherwise leave an operation that the previous instance's purge record
+// could settle (recoveredOutcome).
+func (a *Agent) createOperation(key, kind string, generation int64) (agentapi.Operation, error) {
+	if err := a.syncDirectory(a.instancesDir); err != nil {
+		return agentapi.Operation{}, err
+	}
+	return a.ops.create(key, kind, generation)
+}
+
 // accept decides on a spec and persists it; the caller holds the
 // instance's file lock.
 func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int, func(http.ResponseWriter, *http.Request)) {
@@ -294,12 +306,19 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 			}
 			op, ok := a.ops.get(p.Operation)
 			if !ok {
-				// The operation was pruned; record the outcome again. The
-				// purge record is written before the rename, so sync the
-				// directory the rename freed before reporting success.
-				if op, err = a.ops.create(key, agentapi.KindRemove, p.Generation); err != nil {
+				// The operation was pruned; record it again under the ID
+				// the purge record already names, so repeated retries, a
+				// crash before the result and a restart keep one identity
+				// and one terminal result. The purge record is written
+				// before the rename, so sync the directory the rename freed
+				// before reporting success.
+				if p.Operation == uuid.Nil {
+					return internal(errors.New("the purge record names no operation"))
+				}
+				if op, err = a.ops.recreate(p.Operation, key, agentapi.KindRemove, p.Generation); err != nil {
 					return internal(err)
 				}
+				a.at("purge-retry-recorded")
 				state, code := agentapi.OpSucceeded, ""
 				if err := a.syncDirectory(a.instancesDir); err != nil {
 					a.log.Error("sync a purged instance directory", "instance", key, "error", err)
@@ -325,7 +344,7 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 			op, ok := a.ops.forGeneration(key, spec.Generation)
 			if !ok {
 				// The operation was pruned; record the outcome again.
-				if op, err = a.ops.create(key, opKind(spec, st.current), spec.Generation); err != nil {
+				if op, err = a.createOperation(key, opKind(spec, st.current), spec.Generation); err != nil {
 					return internal(err)
 				}
 				if st.current != nil && st.current.Generation >= spec.Generation {
@@ -388,7 +407,7 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 	if err := a.supersede(key, spec.Generation); err != nil {
 		return internal(err)
 	}
-	op, err := a.ops.create(key, opKind(spec, st.current), spec.Generation)
+	op, err := a.createOperation(key, opKind(spec, st.current), spec.Generation)
 	if err != nil {
 		return internal(err)
 	}

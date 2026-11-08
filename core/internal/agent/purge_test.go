@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,6 +16,21 @@ import (
 
 	"github.com/orglane/orglane/core/internal/agentapi"
 )
+
+// pruneOperation marks an operation as finished long ago and prunes it.
+func pruneOperation(t *testing.T, a *Agent, id uuid.UUID, now time.Time) {
+	t.Helper()
+	old := now.Add(-8 * 24 * time.Hour)
+	if _, err := a.ops.update(id, func(o *agentapi.Operation) { o.FinishedAt = &old }); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ops.prune(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.ops.get(id); ok {
+		t.Fatal("operation was not pruned")
+	}
+}
 
 // purgeAgent returns an agent whose Docker calls all succeed (the Postgres
 // lookup finds a container), with an installed instance "git" at
@@ -414,20 +430,7 @@ func TestPurgeRetryAfterPruningSyncsTheRename(t *testing.T) {
 	a.reconcile(t.Context(), a.instance("git"))
 	assertPurged(t, a, op.ID)
 
-	prune := func(id uuid.UUID) {
-		t.Helper()
-		old := cfg.now.Add(-8 * 24 * time.Hour)
-		if _, err := a.ops.update(id, func(o *agentapi.Operation) { o.FinishedAt = &old }); err != nil {
-			t.Fatal(err)
-		}
-		if err := a.ops.prune(); err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := a.ops.get(id); ok {
-			t.Fatal("operation was not pruned")
-		}
-	}
-	prune(op.ID)
+	pruneOperation(t, a, op.ID, cfg.now)
 
 	// A failed sync on the retry is recorded, not hidden by success.
 	a.opts.syncDir = func(string) error { return errors.New("injected directory sync failure") }
@@ -438,10 +441,207 @@ func TestPurgeRetryAfterPruningSyncsTheRename(t *testing.T) {
 	}
 
 	// Once the rename is synced, the retry records success.
-	prune(failed.ID)
+	pruneOperation(t, a, failed.ID, cfg.now)
 	a.opts.syncDir = nil
 	rec = put(t, a, cfg.now, "git", mustJSON(t, purge))
 	if o := decodeOp(t, rec); rec.Code != http.StatusOK || o.State != agentapi.OpSucceeded {
 		t.Fatalf("retry after pruning = %d %+v", rec.Code, o)
+	}
+}
+
+// TestPurgeRetryAfterPruningKeepsIdentity: a pruned purge operation is
+// recorded again under the ID the purge record names. Two identical retries
+// without pruning between them, and a restart, return that one operation
+// instead of accumulating replacements.
+func TestPurgeRetryAfterPruningKeepsIdentity(t *testing.T) {
+	cfg := newPurgeEnv(t)
+	a, purge, op := purgeAgent(t, cfg, nil)
+	a.reconcile(t.Context(), a.instance("git"))
+	assertPurged(t, a, op.ID)
+	pruneOperation(t, a, op.ID, cfg.now)
+
+	rec := put(t, a, cfg.now, "git", mustJSON(t, purge))
+	first := decodeOp(t, rec)
+	if rec.Code != http.StatusOK || first.ID != op.ID || first.State != agentapi.OpSucceeded {
+		t.Fatalf("retry after pruning = %d %+v, want 200 with %s succeeded", rec.Code, first, op.ID)
+	}
+	rec = put(t, a, cfg.now, "git", mustJSON(t, purge))
+	second := decodeOp(t, rec)
+	if rec.Code != http.StatusOK || second.ID != first.ID || second.State != agentapi.OpSucceeded {
+		t.Fatalf("repeated retry = %d %+v, want 200 with %s succeeded", rec.Code, second, first.ID)
+	}
+
+	b := cfg.agent(t, nil)
+	rec = put(t, b, cfg.now, "git", mustJSON(t, purge))
+	third := decodeOp(t, rec)
+	if rec.Code != http.StatusOK || third.ID != op.ID || third.State != agentapi.OpSucceeded {
+		t.Fatalf("retry after a restart = %d %+v, want 200 with %s succeeded", rec.Code, third, op.ID)
+	}
+	assertPurged(t, b, op.ID)
+}
+
+// TestPurgeRetryAfterPruningKeepsFailedResult: a sync failure recorded by a
+// pruned-operation retry is the terminal result of that operation. Repeated
+// retries without pruning it and a restart with a working sync return the
+// same failed operation rather than a fresh success.
+func TestPurgeRetryAfterPruningKeepsFailedResult(t *testing.T) {
+	cfg := newPurgeEnv(t)
+	a, purge, op := purgeAgent(t, cfg, nil)
+	a.reconcile(t.Context(), a.instance("git"))
+	assertPurged(t, a, op.ID)
+	pruneOperation(t, a, op.ID, cfg.now)
+
+	a.opts.syncDir = func(string) error { return errors.New("injected directory sync failure") }
+	rec := put(t, a, cfg.now, "git", mustJSON(t, purge))
+	failed := decodeOp(t, rec)
+	if rec.Code != http.StatusOK || failed.ID != op.ID || failed.State != agentapi.OpFailed || failed.ErrorCode != agentapi.CodeInternal {
+		t.Fatalf("retry with a failed sync = %d %+v, want 200 with %s failed internal", rec.Code, failed, op.ID)
+	}
+
+	a.opts.syncDir = nil
+	rec = put(t, a, cfg.now, "git", mustJSON(t, purge))
+	if o := decodeOp(t, rec); rec.Code != http.StatusOK || o.ID != failed.ID || o.State != agentapi.OpFailed || o.ErrorCode != agentapi.CodeInternal {
+		t.Fatalf("repeated retry = %d %+v, want the retained failure %s", rec.Code, o, failed.ID)
+	}
+	b := cfg.agent(t, nil)
+	rec = put(t, b, cfg.now, "git", mustJSON(t, purge))
+	if o := decodeOp(t, rec); rec.Code != http.StatusOK || o.ID != failed.ID || o.State != agentapi.OpFailed || o.ErrorCode != agentapi.CodeInternal {
+		t.Fatalf("retry after a restart = %d %+v, want the retained failure %s", rec.Code, o, failed.ID)
+	}
+
+	// Pruning the failure lets the next retry check and report again.
+	pruneOperation(t, b, failed.ID, cfg.now)
+	retryPurge(t, b, cfg.now, purge, op.ID)
+}
+
+// TestPurgeRetryAfterPruningCrashRecovery: the operation recorded again for
+// a pruned purge is durable under the purge record's ID before its result.
+// A crash there recovers that operation, not a new one.
+func TestPurgeRetryAfterPruningCrashRecovery(t *testing.T) {
+	cfg := newPurgeEnv(t)
+	a, purge, op := purgeAgent(t, cfg, func(point string) {
+		if point == "purge-retry-recorded" {
+			runtime.Goexit()
+		}
+	})
+	a.reconcile(t.Context(), a.instance("git"))
+	assertPurged(t, a, op.ID)
+	pruneOperation(t, a, op.ID, cfg.now)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		signedPut(t, a, cfg.now, "git", mustJSON(t, purge))
+	}()
+	<-done
+	if got, ok := a.ops.get(op.ID); !ok || got.Terminal() {
+		t.Fatalf("operation after the crash = %+v (%t), want unfinished", got, ok)
+	}
+
+	b := cfg.agent(t, nil)
+	got, ok := b.ops.get(op.ID)
+	if !ok || got.State != agentapi.OpSucceeded || got.ErrorCode != "" {
+		t.Fatalf("operation after the restart = %+v (%t), want succeeded", got, ok)
+	}
+	retryPurge(t, b, cfg.now, purge, op.ID)
+}
+
+// TestPurgeRecordDoesNotSettleAnotherInstance: after a real purge, a new
+// instance reuses the key and accepts a remove at the same generation. A
+// host crash can lose its directory entry while its operation survives
+// (syncing a child does not sync its parent). Recovery must not settle that
+// remove from the previous instance's purge record, although key, generation
+// and kind match.
+func TestPurgeRecordDoesNotSettleAnotherInstance(t *testing.T) {
+	cfg := newPurgeEnv(t)
+	a, purge, op := purgeAgent(t, cfg, nil)
+	a.reconcile(t.Context(), a.instance("git"))
+	assertPurged(t, a, op.ID)
+
+	remove := testSpec(purge.Generation)
+	remove.InstanceID = uuid.MustParse("0190f0f0-0000-7000-8000-000000000002")
+	remove.State, remove.Purge = agentapi.StateAbsent, false
+	rec := put(t, a, cfg.now, "git", mustJSON(t, remove))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("remove of the new instance: %d %s", rec.Code, rec.Body)
+	}
+	reused := decodeOp(t, rec)
+	if reused.ID == op.ID || reused.Kind != agentapi.KindRemove || reused.Generation != purge.Generation {
+		t.Fatalf("remove of the new instance = %+v", reused)
+	}
+
+	// The state the old code permitted: the new binding's directory entry
+	// was never durable, its operation was.
+	if err := os.RemoveAll(a.instanceDir("git")); err != nil {
+		t.Fatal(err)
+	}
+	p, err := readPurged(a.purgedPath("git"))
+	if err != nil || p == nil || p.InstanceID != purge.InstanceID || p.Operation != op.ID {
+		t.Fatalf("purge record after the reuse = %+v, %v", p, err)
+	}
+
+	b := cfg.agent(t, nil)
+	got, ok := b.ops.get(reused.ID)
+	if !ok || got.State != agentapi.OpFailed || got.ErrorCode != agentapi.CodeInterrupted {
+		t.Fatalf("operation after the restart = %+v (%t), want failed interrupted", got, ok)
+	}
+}
+
+// TestNewBindingIsDurableBeforeOperation: the directory entry of a new
+// binding is synced in instances/ before the operation of its first spec is
+// published, so a host crash cannot lose the binding while keeping an
+// operation that another instance's purge record could settle. A failed sync
+// refuses the acceptance without publishing an operation; the retry syncs
+// again.
+func TestNewBindingIsDurableBeforeOperation(t *testing.T) {
+	cfg := newPurgeEnv(t)
+	a := cfg.agent(t, nil)
+	var synced []string
+	a.opts.syncDir = func(path string) error {
+		if path == a.instancesDir {
+			if _, ok := a.ops.forGeneration("git", 1); ok {
+				t.Error("the operation was published before the binding was synced")
+			}
+		}
+		synced = append(synced, path)
+		return syncDir(path)
+	}
+	if rec := put(t, a, cfg.now, "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusAccepted {
+		t.Fatalf("install: %d %s", rec.Code, rec.Body)
+	}
+	if !slices.Contains(synced, a.instancesDir) {
+		t.Fatal("the new binding was not synced before the operation")
+	}
+
+	failure := errors.New("injected directory sync failure")
+	a.opts.syncDir = func(path string) error {
+		if path == a.instancesDir {
+			return failure
+		}
+		return syncDir(path)
+	}
+	wiki := testSpec(1)
+	rec := put(t, a, cfg.now, "wiki", mustJSON(t, wiki))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("install with a failed binding sync: %d %s", rec.Code, rec.Body)
+	}
+	if _, ok := a.ops.forGeneration("wiki", 1); ok {
+		t.Fatal("an operation was published although the binding sync failed")
+	}
+
+	a.opts.syncDir = func(path string) error {
+		if path == a.instancesDir {
+			if _, ok := a.ops.forGeneration("wiki", 1); ok {
+				t.Error("the operation was published before the binding was synced")
+			}
+		}
+		return syncDir(path)
+	}
+	rec = put(t, a, cfg.now, "wiki", mustJSON(t, wiki))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry after the failed sync: %d %s", rec.Code, rec.Body)
+	}
+	if op, ok := a.ops.forGeneration("wiki", 1); !ok || op.State != agentapi.OpQueued {
+		t.Fatalf("operation after the retry = %+v (%t), want queued", op, ok)
 	}
 }

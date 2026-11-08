@@ -117,6 +117,26 @@ func (s *opStore) create(instance, kind string, generation int64) (agentapi.Oper
 	return *op, nil
 }
 
+// recreate records an operation again under the ID of a pruned operation,
+// as running, so a retry reports the same identity and terminal result.
+func (s *opStore) recreate(id uuid.UUID, instance, kind string, generation int64) (agentapi.Operation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if op, ok := s.ops[id]; ok {
+		return *op, nil
+	}
+	sec, nsec := id.Time().UnixTime()
+	op := &agentapi.Operation{
+		ID: id, Instance: instance, Kind: kind, Generation: generation,
+		State: agentapi.OpRunning, StartedAt: time.Unix(sec, nsec).UTC(),
+	}
+	if err := writeJSON(s.path(id), op); err != nil {
+		return agentapi.Operation{}, err
+	}
+	s.ops[id] = op
+	return *op, nil
+}
+
 // adopt re-creates an operation that a journal names but the store does
 // not know (its file was lost), as running, so the journal's result can
 // still be recorded. A known operation is left as it is.
