@@ -1,9 +1,11 @@
 package apps
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/orglane/orglane/providers/forgejo"
 	"github.com/orglane/orglane/providers/provider"
 	"github.com/orglane/orglane/providers/testprovider"
 )
@@ -134,5 +136,35 @@ func TestIntSettingsRejectOutOfRangeFloats(t *testing.T) {
 	}
 	if n, err := settingValue(spec, float64(1<<53)); err != nil || n != int64(1<<53) {
 		t.Fatalf("settingValue(2^53) = %v, %v", n, err)
+	}
+}
+
+// relyingParty is the Forgejo adapter with another manifest.
+type relyingParty struct {
+	*forgejo.Adapter
+	m provider.Manifest
+}
+
+func (r relyingParty) Manifest() provider.Manifest { return r.m }
+
+// OIDC client secrets (Source identity) belong to relying parties and are
+// not rotatable in M2.
+func TestRegistryIdentityCredentials(t *testing.T) {
+	good := forgejo.New().Manifest()
+	if _, err := NewRegistry(forgejo.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRegistry(manifestOnly{good}); err == nil || !strings.Contains(err.Error(), "relying party") {
+		t.Fatalf("identity credential without a relying party: %v", err)
+	}
+	rotatable := good
+	rotatable.Credentials = slices.Clone(good.Credentials)
+	for i, c := range rotatable.Credentials {
+		if c.Source == provider.SourceIdentity {
+			rotatable.Credentials[i].Rotatable = true
+		}
+	}
+	if _, err := NewRegistry(relyingParty{forgejo.New(), rotatable}); err == nil || !strings.Contains(err.Error(), "not rotatable") {
+		t.Fatalf("rotatable OIDC client secret: %v", err)
 	}
 }

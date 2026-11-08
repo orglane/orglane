@@ -8,6 +8,8 @@
 package forgejo
 
 import (
+	"errors"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -33,7 +35,18 @@ const (
 	// CredentialAdminToken is an API token of the service admin, minted by
 	// the adapter (ApplyCredential) and named after its version.
 	CredentialAdminToken = "admin_token"
+	// CredentialOIDCClientSecret is the secret of the instance's OIDC client
+	// in Orglane, issued when the instance is created. Not rotatable in M2.
+	CredentialOIDCClientSecret = "oidc_client_secret" //nolint:gosec // a credential name, not a credential
 )
+
+// AuthSourceName is the name of Forgejo's sign-in source for Orglane, the
+// same as in the package's configure hook. It is part of the source's
+// URLs: /user/oauth2/<name> and /user/oauth2/<name>/callback.
+const AuthSourceName = "orglane"
+
+// settingOIDCClientID is the package setting that carries the client ID.
+const settingOIDCClientID = "oidc_client_id"
 
 // Setting names.
 const (
@@ -96,11 +109,11 @@ func (*Adapter) Manifest() provider.Manifest {
 		Capabilities: []provider.Capability{"code"},
 		Management:   provider.Managed,
 		Package:      "forgejo",
-		// The matrix says what this adapter does today: single sign-on,
-		// accounts and teams come with #62, webhooks with #63.
+		// The matrix says what this adapter does today: accounts and teams
+		// come with the rest of #62, webhooks with #63.
 		Features: []provider.FeatureSupport{
-			{Feature: provider.FeatureSSO, Support: provider.Planned, Milestone: planned},
-			{Feature: provider.FeatureDeepLinks, Support: provider.Planned, Milestone: planned},
+			{Feature: provider.FeatureSSO, Support: provider.Supported},
+			{Feature: provider.FeatureDeepLinks, Support: provider.Supported},
 			{Feature: provider.FeatureAccountsCreate, Support: provider.Planned, Milestone: planned},
 			{Feature: provider.FeatureAccountsInvite, Support: provider.Unsupported},
 			{Feature: provider.FeatureAccountsLink, Support: provider.Planned, Milestone: planned},
@@ -120,6 +133,7 @@ func (*Adapter) Manifest() provider.Manifest {
 			{Name: CredentialSecretKey, Source: provider.SourceGenerated, Agent: true},
 			{Name: CredentialAdminPassword, Source: provider.SourceGenerated, Agent: true},
 			{Name: CredentialAdminToken, Source: provider.SourceProvider, Rotatable: true, ReadBack: true, Overlap: time.Hour},
+			{Name: CredentialOIDCClientSecret, Source: provider.SourceIdentity, Agent: true},
 		},
 		Settings: []provider.SettingSpec{
 			{Name: SettingSSHPort, Type: provider.SettingInt, Min: 1024, Max: 65535, Default: DefaultSSHPort, Mutable: true},
@@ -164,7 +178,43 @@ func validOrganization(org string) error {
 	return nil
 }
 
+// OIDCClient implements provider.OIDCRelyingParty: the redirect URI is the
+// sign-in source's callback under the instance's base URL, scheme and port
+// included (http://git.orglane.localhost/... in local mode).
+func (*Adapter) OIDCClient(inst provider.Instance) (provider.OIDCClient, error) {
+	cb, err := sourceURL(inst, "callback")
+	if err != nil {
+		return provider.OIDCClient{}, err
+	}
+	return provider.OIDCClient{RedirectURIs: []string{cb.String()}, Secret: CredentialOIDCClientSecret}, nil
+}
+
+// OpenURL implements provider.DeepLinker: Forgejo's sign-in start for the
+// Orglane source with the target as redirect_to. Forgejo sends the browser
+// to Orglane, which signs it in without asking (first-party client, an
+// existing session), and Forgejo then opens the target; it follows only
+// local redirect_to paths. target is a relative path the core validated.
+func (*Adapter) OpenURL(inst provider.Instance, target string) (*url.URL, error) {
+	u, err := sourceURL(inst)
+	if err != nil {
+		return nil, err
+	}
+	u.RawQuery = url.Values{"redirect_to": {target}}.Encode()
+	return u, nil
+}
+
+// sourceURL returns /user/oauth2/<source>[/elem...] under the base URL.
+func sourceURL(inst provider.Instance, elem ...string) (*url.URL, error) {
+	if inst.BaseURL == nil || inst.BaseURL.Host == "" {
+		return nil, errors.New("forgejo: the instance has no base URL")
+	}
+	u := &url.URL{Scheme: inst.BaseURL.Scheme, Host: inst.BaseURL.Host, Path: strings.TrimSuffix(inst.BaseURL.Path, "/")}
+	return u.JoinPath(append([]string{"user", "oauth2", AuthSourceName}, elem...)...), nil
+}
+
 var (
+	_ provider.OIDCRelyingParty  = (*Adapter)(nil)
+	_ provider.DeepLinker        = (*Adapter)(nil)
 	_ provider.SettingsValidator = (*Adapter)(nil)
 	_ provider.Lifecycle         = (*Adapter)(nil)
 	_ provider.CredentialRotator = (*Adapter)(nil)

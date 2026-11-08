@@ -98,13 +98,17 @@ func newHarnessWith(t *testing.T, cfg apps.Config, adapters ...provider.Capabili
 	}
 	ws, _ := url.Parse("https://work.acme.test")
 	cfg.WorkspaceURL, cfg.Logger = ws, logger
+	// Local mode for managed services (http://*.orglane.localhost).
+	ids := identity.NewService(pool, identity.WithPasswordHasher(fastHasher), identity.WithLocalServiceDomain("orglane.localhost"))
+	if cfg.OIDC == nil {
+		cfg.OIDC = ids
+	}
 	svc := apps.NewService(pool, reg, keyring, cfg)
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Logger: logger})
 	if err != nil {
 		t.Fatal(err)
 	}
 	svc.SetQueue(rc)
-	ids := identity.NewService(pool, identity.WithPasswordHasher(fastHasher))
 	ids.SetDirectoryObserver(svc)
 	if err := ids.SeedBuiltinRoles(ctx); err != nil {
 		t.Fatal(err)

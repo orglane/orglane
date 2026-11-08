@@ -655,6 +655,44 @@ func (q *Queries) GetAppInstance(ctx context.Context, id uuid.UUID) (AppInstance
 	return i, err
 }
 
+const getAppInstanceByKeyForShare = `-- name: GetAppInstanceByKeyForShare :one
+
+SELECT id, key, provider, management, display_name, state, base_url, settings, access_policy, manage_existing_members, package_id, package_version, desired_generation, observed_generation, health, health_code, health_checked_at, created_at, updated_at, removed_at, data_retained FROM app_instances WHERE key = $1 AND (state <> 'removed' OR data_retained) FOR SHARE
+`
+
+// OIDC access of app clients (apps.Service.OIDCAccessTx): read under share
+// locks in the transaction that issues a code or tokens, so a withdrawal
+// (an UPDATE of any of these rows) is ordered before or after it, never
+// in between.
+func (q *Queries) GetAppInstanceByKeyForShare(ctx context.Context, key string) (AppInstance, error) {
+	row := q.db.QueryRow(ctx, getAppInstanceByKeyForShare, key)
+	var i AppInstance
+	err := row.Scan(
+		&i.ID,
+		&i.Key,
+		&i.Provider,
+		&i.Management,
+		&i.DisplayName,
+		&i.State,
+		&i.BaseUrl,
+		&i.Settings,
+		&i.AccessPolicy,
+		&i.ManageExistingMembers,
+		&i.PackageID,
+		&i.PackageVersion,
+		&i.DesiredGeneration,
+		&i.ObservedGeneration,
+		&i.Health,
+		&i.HealthCode,
+		&i.HealthCheckedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RemovedAt,
+		&i.DataRetained,
+	)
+	return i, err
+}
+
 const getAppInstanceForUpdate = `-- name: GetAppInstanceForUpdate :one
 SELECT id, key, provider, management, display_name, state, base_url, settings, access_policy, manage_existing_members, package_id, package_version, desired_generation, observed_generation, health, health_code, health_checked_at, created_at, updated_at, removed_at, data_retained FROM app_instances WHERE id = $1 FOR NO KEY UPDATE
 `
@@ -822,6 +860,38 @@ func (q *Queries) GetProvisioningResult(ctx context.Context, arg GetProvisioning
 	return i, err
 }
 
+const getProvisioningResultForShare = `-- name: GetProvisioningResultForShare :one
+SELECT instance_id, person_id, status, access, employee_step, granted_by_orglane, pending_grant, desired_hash, applied_hash, actions, error_code, attempts, last_attempt_at, next_attempt_at, updated_at FROM provisioning_results WHERE instance_id = $1 AND person_id = $2 FOR SHARE
+`
+
+type GetProvisioningResultForShareParams struct {
+	InstanceID uuid.UUID
+	PersonID   uuid.UUID
+}
+
+func (q *Queries) GetProvisioningResultForShare(ctx context.Context, arg GetProvisioningResultForShareParams) (ProvisioningResult, error) {
+	row := q.db.QueryRow(ctx, getProvisioningResultForShare, arg.InstanceID, arg.PersonID)
+	var i ProvisioningResult
+	err := row.Scan(
+		&i.InstanceID,
+		&i.PersonID,
+		&i.Status,
+		&i.Access,
+		&i.EmployeeStep,
+		&i.GrantedByOrglane,
+		&i.PendingGrant,
+		&i.DesiredHash,
+		&i.AppliedHash,
+		&i.Actions,
+		&i.ErrorCode,
+		&i.Attempts,
+		&i.LastAttemptAt,
+		&i.NextAttemptAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getRemoval = `-- name: GetRemoval :one
 SELECT id, instance_id, person_id, action, action_key, desired_hash, state, batch_id, error_code, created_at, updated_at FROM provisioning_removals WHERE id = $1
 `
@@ -918,6 +988,40 @@ type GetVerifiedAccountLinkByAccountParams struct {
 
 func (q *Queries) GetVerifiedAccountLinkByAccount(ctx context.Context, arg GetVerifiedAccountLinkByAccountParams) (AccountLink, error) {
 	row := q.db.QueryRow(ctx, getVerifiedAccountLinkByAccount, arg.Provider, arg.Realm, arg.ExternalID)
+	var i AccountLink
+	err := row.Scan(
+		&i.ID,
+		&i.PersonID,
+		&i.Provider,
+		&i.Realm,
+		&i.ExternalID,
+		&i.Login,
+		&i.Method,
+		&i.InstanceID,
+		&i.State,
+		&i.Evidence,
+		&i.VerifiedAt,
+		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getVerifiedAccountLinkForShare = `-- name: GetVerifiedAccountLinkForShare :one
+SELECT id, person_id, provider, realm, external_id, login, method, instance_id, state, evidence, verified_at, revoked_at, created_at, updated_at FROM account_links
+WHERE person_id = $1 AND provider = $2 AND realm = $3 AND state = 'verified'
+FOR SHARE
+`
+
+type GetVerifiedAccountLinkForShareParams struct {
+	PersonID uuid.UUID
+	Provider string
+	Realm    string
+}
+
+func (q *Queries) GetVerifiedAccountLinkForShare(ctx context.Context, arg GetVerifiedAccountLinkForShareParams) (AccountLink, error) {
+	row := q.db.QueryRow(ctx, getVerifiedAccountLinkForShare, arg.PersonID, arg.Provider, arg.Realm)
 	var i AccountLink
 	err := row.Scan(
 		&i.ID,
