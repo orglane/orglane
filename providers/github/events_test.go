@@ -256,6 +256,20 @@ func TestNormalizeFixtures(t *testing.T) {
 			{typ: EventMembershipChanged, subjectKind: "repository", subjectID: "186853002",
 				targets: []string{"hacktocat/member_added"}, data: map[string]any{"change": "added"}},
 		}},
+		{"pull request closed", "pull_request", withFields(t, payloadFixture(t, "pull_request.opened.with-organization"), map[string]any{"action": "closed", "pull_request.merged": true}), []wantEvent{}},
+		{"organization member removed", "organization", withFields(t, payloadFixture(t, "organization.member_added.with-installation"), map[string]any{"action": "member_removed"}), []wantEvent{
+			{typ: EventMembershipChanged, subjectKind: "organization", subjectID: "38302899",
+				targets: []string{"hacktocat/member_removed"}, data: map[string]any{"change": "removed", "role": "member"}},
+		}},
+		{"team membership added", "membership", withFields(t, payloadFixture(t, "membership.removed.with-installation"), map[string]any{"action": "added"}), []wantEvent{
+			{typ: EventMembershipChanged, subjectKind: "team", subjectID: "3253328",
+				targets: []string{"Codertocat/member_added"}, data: map[string]any{"change": "added", "team": "github"}},
+		}},
+		{"repository collaborator removed", "member", withFields(t, payloadFixture(t, "member.added.with-installation"), map[string]any{"action": "removed"}), []wantEvent{
+			{typ: EventMembershipChanged, subjectKind: "repository", subjectID: "186853002",
+				targets: []string{"hacktocat/member_removed"}, data: map[string]any{"change": "removed"}},
+		}},
+		{"push is not normalized", "push", payloadFixture(t, "pull_request.opened.with-organization"), []wantEvent{}},
 		{"unhandled action", "pull_request", withFields(t, payloadFixture(t, "pull_request.opened.with-organization"), map[string]any{"action": "labeled"}), []wantEvent{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -315,10 +329,11 @@ func TestNormalizeForeignAndAppLevel(t *testing.T) {
 		body  []byte
 		code  string
 	}{
-		"another installation":    {other, "pull_request", body, CodeForeignInstallation},
-		"another organization":    {otherOrg, "pull_request", body, CodeForeignInstallation},
-		"no installation":         {octocoders(), "issues", payloadFixture(t, "issues.opened.with-organization"), CodeNoInstallation},
-		"installation of another": {octocoders(), "installation", payloadFixture(t, "installation.deleted"), CodeForeignInstallation},
+		"another installation":                    {other, "pull_request", body, CodeForeignInstallation},
+		"another organization":                    {otherOrg, "pull_request", body, CodeForeignInstallation},
+		"no installation":                         {octocoders(), "issues", payloadFixture(t, "issues.opened.with-organization"), CodeNoInstallation},
+		"installation of another":                 {octocoders(), "installation", payloadFixture(t, "installation.deleted"), CodeForeignInstallation},
+		"installation name on a repository event": {octocoders(), "installation", body, CodeForeignInstallation},
 	} {
 		_, err := New().Normalize(c.inst, deliveryOf(c.event, c.body))
 		var pe *provider.Error
@@ -435,5 +450,18 @@ func TestUntrustedInput(t *testing.T) {
 	got, err = New().Normalize(octocoders(), deliveryOf("pull_request", withFields(t, base, map[string]any{"pull_request.body": b.String()})))
 	if err != nil || len(got[1].Targets) != maxTargets {
 		t.Errorf("mention targets = %d, %v", len(got[1].Targets), err)
+	}
+	// NUL would make PostgreSQL's jsonb write fail; the payload is untrusted.
+	got, err = New().Normalize(octocoders(), deliveryOf("pull_request", withFields(t, base, map[string]any{
+		"pull_request.title": "a\x00b", "pull_request.body": "@octocat\x00",
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Subject.Title != "ab" || strings.ContainsRune(got[0].Subject.Title, 0) {
+		t.Errorf("title with NUL = %q", got[0].Subject.Title)
+	}
+	if got[1].Data["excerpt"] != "@octocat" {
+		t.Errorf("excerpt with NUL = %q", got[1].Data["excerpt"])
 	}
 }

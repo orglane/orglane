@@ -161,6 +161,14 @@ func TestGitHubWebhooks(t *testing.T) {
 	if _, id := send("pull_request", reencoded); outcome(id) != "processed//0" {
 		t.Fatalf("redelivery: %s", outcome(id))
 	}
+	// PostgreSQL's jsonb rejects NUL in text; a signed payload may still
+	// carry it, so the adapter drops it rather than failing forever.
+	nul := githubFixture(t, "pull_request.opened.with-organization", map[string]any{
+		"pull_request.id": 6, "pull_request.title": "a\x00b", "pull_request.body": "Please look, @hubot\x00.",
+	})
+	if _, id := send("pull_request", nul); outcome(id) != "processed//2" {
+		t.Fatalf("NUL in text: %s", outcome(id))
+	}
 
 	for _, c := range []struct {
 		name, event string

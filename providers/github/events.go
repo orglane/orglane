@@ -198,8 +198,14 @@ func parse(inst provider.Instance, d provider.Delivery) (*delivery, error) {
 	if p.Organization != nil && strconv.FormatInt(p.Organization.ID, 10) != orgID {
 		return nil, foreign(CodeForeignInstallation)
 	}
-	if acct := p.Installation.Account; d.EventName == "installation" && acct != nil && strconv.FormatInt(acct.ID, 10) != orgID {
-		return nil, foreign(CodeForeignInstallation)
+	if d.EventName == "installation" {
+		// Installation events always name the account; requiring it keeps a
+		// spoofed X-GitHub-Event header (the headers are not signed) from
+		// turning another event's body into an installation change.
+		acct := p.Installation.Account
+		if acct == nil || acct.ID <= 0 || strconv.FormatInt(acct.ID, 10) != orgID {
+			return nil, foreign(CodeForeignInstallation)
+		}
 	}
 	return &delivery{inst: inst, d: d, p: p}, nil
 }
@@ -661,9 +667,11 @@ func (n *normalizer) mentions(text string) []provider.Target {
 	return out
 }
 
-// truncate makes s valid UTF-8 and at most n runes.
+// truncate makes s valid UTF-8 without NUL and at most n runes. NUL is
+// removed because PostgreSQL's jsonb rejects \u0000; the payload is
+// untrusted even after signing.
 func truncate(s string, n int) string {
-	s = strings.ToValidUTF8(s, "")
+	s = strings.ReplaceAll(strings.ToValidUTF8(s, ""), "\x00", "")
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
