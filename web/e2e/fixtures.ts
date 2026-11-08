@@ -19,6 +19,12 @@ export interface Instance {
   sql(query: string): string;
   /** The server's log so far, for failures. */
   log(): string;
+  /**
+   * The fake GitHub.com this server talks to (build tag githubtest), whose
+   * requests and responses are validated against GitHub's OpenAPI
+   * description: http://127.0.0.1:<port>.
+   */
+  githubFake: string;
 }
 
 async function freePort(): Promise<number> {
@@ -111,6 +117,7 @@ export const test = base.extend<{
     run("docker", ["exec", state.container, "createdb", "-U", "orglane", db]);
     const port = await freePort();
     const url = `http://localhost:${port}`;
+    const githubFake = `127.0.0.1:${await freePort()}`;
     const env = {
       ...process.env,
       ORGLANE_ENVIRONMENT: "development",
@@ -122,6 +129,7 @@ export const test = base.extend<{
       ORGLANE_LOG_FORMAT: "text",
       ORGLANE_EMAIL_RETRY_DELAY: "1s",
       ORGLANE_EMAIL_MAX_ATTEMPTS: "2",
+      ORGLANE_TEST_GITHUB_FAKE_ADDR: githubFake,
       ...(agent
         ? {
             ORGLANE_AGENT_SOCKET: join(tmpdir(), `orglane-e2e-${db}`, "agent.sock"),
@@ -159,6 +167,7 @@ export const test = base.extend<{
             query,
           ]),
         log: () => log,
+        githubFake: `http://${githubFake}`,
       });
     } catch (error) {
       await testInfo.attach("server-startup.log", { body: log, contentType: "text/plain" });

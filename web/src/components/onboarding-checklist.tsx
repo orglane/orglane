@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { FormattedMessage, useIntl } from "react-intl";
+import { defineMessages, FormattedMessage, useIntl } from "react-intl";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -8,7 +8,19 @@ import { useApi } from "@/lib/api-context";
 import { errorMessage } from "@/lib/errors";
 import { onboardingMessages as m, onboardingQuery } from "@/lib/onboarding";
 
+const providerMessages = defineMessages({
+  githubLinkTitle: {
+    id: "onboarding.githubLinkTitle",
+    defaultMessage: "Link your GitHub account",
+  },
+  githubLinkDescription: {
+    id: "onboarding.githubLinkDescription",
+    defaultMessage: "Sign in to GitHub once so Orglane knows which GitHub account is yours.",
+  },
+});
+
 const builtinMessages = {
+  "github.link-account": [providerMessages.githubLinkTitle, providerMessages.githubLinkDescription],
   profile: [m.profileTitle, m.profileDescription],
   "profile-admin": [m.adminStepTitle, m.adminStepDescription],
   avatar: [m.avatarTitle, m.avatarDescription],

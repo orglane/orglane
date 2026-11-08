@@ -957,6 +957,8 @@ type AcceptInvitationRequest struct {
 // proven (OAuth from the person's own session, or an account Orglane
 // created); `pending` is import evidence that proves nothing.
 type AccountLinkView struct {
+	// Conflict Pending evidence only. The account it names is verified for another person.
+	Conflict   *bool                    `json:"conflict,omitempty"`
 	Evidence   *AccountLinkViewEvidence `json:"evidence,omitempty"`
 	ExternalId string                   `json:"externalId"`
 
@@ -1701,6 +1703,13 @@ type IssuedInvitation struct {
 	Link *string `json:"link,omitempty"`
 }
 
+// LinkableProvider defines model for LinkableProvider.
+type LinkableProvider struct {
+	DisplayName string             `json:"displayName"`
+	InstanceId  openapi_types.UUID `json:"instanceId"`
+	Provider    string             `json:"provider"`
+}
+
 // Me defines model for Me.
 type Me struct {
 	// CsrfToken Present for browser sessions.
@@ -1714,6 +1723,13 @@ type Me struct {
 
 	// WelcomePending An invited person has not yet finished welcome; optional setup and ordinary sign-in are preserved.
 	WelcomePending *bool `json:"welcomePending,omitempty"`
+}
+
+// MyAccountLinks defines model for MyAccountLinks.
+type MyAccountLinks struct {
+	// Linkable Providers where the caller can verify an account, with the instance used.
+	Linkable []LinkableProvider `json:"linkable"`
+	Links    []AccountLinkView  `json:"links"`
 }
 
 // MyApp defines model for MyApp.
@@ -2543,8 +2559,14 @@ type InstanceId = openapi_types.UUID
 // InvitationId defines model for InvitationId.
 type InvitationId = openapi_types.UUID
 
+// LinkId defines model for LinkId.
+type LinkId = openapi_types.UUID
+
 // PersonId defines model for PersonId.
 type PersonId = openapi_types.UUID
+
+// ProviderId defines model for ProviderId.
+type ProviderId = string
 
 // TeamId defines model for TeamId.
 type TeamId = openapi_types.UUID
@@ -2626,6 +2648,18 @@ type ListAppInstanceOperationsParams struct {
 type GetAppProvisioningParams struct {
 	Limit  *int `form:"limit,omitempty" json:"limit,omitempty"`
 	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
+// CompleteAccountLinkJSONBody defines parameters for CompleteAccountLink.
+type CompleteAccountLinkJSONBody struct {
+	Code  string `json:"code"`
+	State string `json:"state"`
+}
+
+// StartAccountLinkJSONBody defines parameters for StartAccountLink.
+type StartAccountLinkJSONBody struct {
+	// InstanceId The instance whose provider App to authorize through; defaults to the oldest active one.
+	InstanceId *openapi_types.UUID `json:"instanceId,omitempty"`
 }
 
 // ListPeopleParams defines parameters for ListPeople.
@@ -2712,6 +2746,12 @@ type SignInAsDemoPersonJSONRequestBody = DemoSignInRequest
 
 // CreateInvitationJSONRequestBody defines body for CreateInvitation for application/json ContentType.
 type CreateInvitationJSONRequestBody = CreateInvitationRequest
+
+// CompleteAccountLinkJSONRequestBody defines body for CompleteAccountLink for application/json ContentType.
+type CompleteAccountLinkJSONRequestBody CompleteAccountLinkJSONBody
+
+// StartAccountLinkJSONRequestBody defines body for StartAccountLink for application/json ContentType.
+type StartAccountLinkJSONRequestBody StartAccountLinkJSONBody
 
 // AddMyPasskeyJSONRequestBody defines body for AddMyPasskey for application/json ContentType.
 type AddMyPasskeyJSONRequestBody = AddPasskeyRequest
@@ -2871,6 +2911,18 @@ type ServerInterface interface {
 	// GetMe The signed-in person
 	// (GET /api/v1/me)
 	GetMe(w http.ResponseWriter, r *http.Request)
+	// ListMyAccountLinks My account links
+	// (GET /api/v1/me/account-links)
+	ListMyAccountLinks(w http.ResponseWriter, r *http.Request)
+	// UnlinkMyAccount Unlink one of my accounts
+	// (DELETE /api/v1/me/account-links/{linkId})
+	UnlinkMyAccount(w http.ResponseWriter, r *http.Request, linkId LinkId)
+	// CompleteAccountLink Finish verifying my account at a provider
+	// (POST /api/v1/me/account-links/{provider}/complete)
+	CompleteAccountLink(w http.ResponseWriter, r *http.Request, provider ProviderId)
+	// StartAccountLink Begin verifying my account at a provider
+	// (POST /api/v1/me/account-links/{provider}/start)
+	StartAccountLink(w http.ResponseWriter, r *http.Request, provider ProviderId)
 	// ListMyApps My apps
 	// (GET /api/v1/me/apps)
 	ListMyApps(w http.ResponseWriter, r *http.Request)
@@ -2934,6 +2986,9 @@ type ServerInterface interface {
 	// UpdatePerson Edit public base profile fields
 	// (PATCH /api/v1/people/{personId})
 	UpdatePerson(w http.ResponseWriter, r *http.Request, personId PersonId)
+	// RevokePersonAccountLink Revoke a person's account link
+	// (DELETE /api/v1/people/{personId}/account-links/{linkId})
+	RevokePersonAccountLink(w http.ResponseWriter, r *http.Request, personId PersonId, linkId LinkId)
 	// GetPersonApps A person's app access and links
 	// (GET /api/v1/people/{personId}/apps)
 	GetPersonApps(w http.ResponseWriter, r *http.Request, personId PersonId)
@@ -3954,6 +4009,98 @@ func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request)
 	handler.ServeHTTP(w, r)
 }
 
+// ListMyAccountLinks operation middleware
+func (siw *ServerInterfaceWrapper) ListMyAccountLinks(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMyAccountLinks(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UnlinkMyAccount operation middleware
+func (siw *ServerInterfaceWrapper) UnlinkMyAccount(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "linkId" -------------
+	var linkId LinkId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "linkId", r.PathValue("linkId"), &linkId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "linkId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UnlinkMyAccount(w, r, linkId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CompleteAccountLink operation middleware
+func (siw *ServerInterfaceWrapper) CompleteAccountLink(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "provider" -------------
+	var provider ProviderId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider", r.PathValue("provider"), &provider, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CompleteAccountLink(w, r, provider)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// StartAccountLink operation middleware
+func (siw *ServerInterfaceWrapper) StartAccountLink(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "provider" -------------
+	var provider ProviderId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "provider", r.PathValue("provider"), &provider, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StartAccountLink(w, r, provider)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListMyApps operation middleware
 func (siw *ServerInterfaceWrapper) ListMyApps(w http.ResponseWriter, r *http.Request) {
 
@@ -4452,6 +4599,41 @@ func (siw *ServerInterfaceWrapper) UpdatePerson(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdatePerson(w, r, personId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokePersonAccountLink operation middleware
+func (siw *ServerInterfaceWrapper) RevokePersonAccountLink(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "personId" -------------
+	var personId PersonId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "personId", r.PathValue("personId"), &personId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "personId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "linkId" -------------
+	var linkId LinkId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "linkId", r.PathValue("linkId"), &linkId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "linkId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokePersonAccountLink(w, r, personId, linkId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5309,6 +5491,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/provisioning/removal-batches/{batchId}/confirm", wrapper.ConfirmAppRemovalBatch)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/people/{personId}/apps", wrapper.GetPersonApps)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/me/apps", wrapper.ListMyApps)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/me/account-links", wrapper.ListMyAccountLinks)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/me/account-links/{provider}/start", wrapper.StartAccountLink)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/me/account-links/{provider}/complete", wrapper.CompleteAccountLink)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/me/account-links/{linkId}", wrapper.UnlinkMyAccount)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/people/{personId}/account-links/{linkId}", wrapper.RevokePersonAccountLink)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/webhooks/{instanceId}", wrapper.ReceiveWebhook)
 
 	return m
@@ -9009,6 +9196,350 @@ func (response GetMe500ApplicationProblemPlusJSONResponse) VisitGetMeResponse(w 
 	return err
 }
 
+type ListMyAccountLinksRequestObject struct {
+}
+
+type ListMyAccountLinksResponseObject interface {
+	VisitListMyAccountLinksResponse(w http.ResponseWriter) error
+}
+
+type ListMyAccountLinks200JSONResponse MyAccountLinks
+
+func (response ListMyAccountLinks200JSONResponse) VisitListMyAccountLinksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMyAccountLinks401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListMyAccountLinks401ApplicationProblemPlusJSONResponse) VisitListMyAccountLinksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMyAccountLinks500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ListMyAccountLinks500ApplicationProblemPlusJSONResponse) VisitListMyAccountLinksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UnlinkMyAccountRequestObject struct {
+	LinkId LinkId `json:"linkId"`
+}
+
+type UnlinkMyAccountResponseObject interface {
+	VisitUnlinkMyAccountResponse(w http.ResponseWriter) error
+}
+
+type UnlinkMyAccount204Response struct {
+}
+
+func (response UnlinkMyAccount204Response) VisitUnlinkMyAccountResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type UnlinkMyAccount401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response UnlinkMyAccount401ApplicationProblemPlusJSONResponse) VisitUnlinkMyAccountResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UnlinkMyAccount404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response UnlinkMyAccount404ApplicationProblemPlusJSONResponse) VisitUnlinkMyAccountResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UnlinkMyAccount500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response UnlinkMyAccount500ApplicationProblemPlusJSONResponse) VisitUnlinkMyAccountResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteAccountLinkRequestObject struct {
+	Provider ProviderId `json:"provider"`
+	Body     *CompleteAccountLinkJSONRequestBody
+}
+
+type CompleteAccountLinkResponseObject interface {
+	VisitCompleteAccountLinkResponse(w http.ResponseWriter) error
+}
+
+type CompleteAccountLink200JSONResponse AccountLinkView
+
+func (response CompleteAccountLink200JSONResponse) VisitCompleteAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteAccountLink400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteAccountLink400ApplicationProblemPlusJSONResponse) VisitCompleteAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteAccountLink401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteAccountLink401ApplicationProblemPlusJSONResponse) VisitCompleteAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteAccountLink403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteAccountLink403ApplicationProblemPlusJSONResponse) VisitCompleteAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteAccountLink409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteAccountLink409ApplicationProblemPlusJSONResponse) VisitCompleteAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteAccountLink429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteAccountLink429ApplicationProblemPlusJSONResponse) VisitCompleteAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CompleteAccountLink500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteAccountLink500ApplicationProblemPlusJSONResponse) VisitCompleteAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartAccountLinkRequestObject struct {
+	Provider ProviderId `json:"provider"`
+	Body     *StartAccountLinkJSONRequestBody
+}
+
+type StartAccountLinkResponseObject interface {
+	VisitStartAccountLinkResponse(w http.ResponseWriter) error
+}
+
+type StartAccountLink200JSONResponse struct {
+	Url string `json:"url"`
+}
+
+func (response StartAccountLink200JSONResponse) VisitStartAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartAccountLink400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response StartAccountLink400ApplicationProblemPlusJSONResponse) VisitStartAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartAccountLink401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response StartAccountLink401ApplicationProblemPlusJSONResponse) VisitStartAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartAccountLink403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response StartAccountLink403ApplicationProblemPlusJSONResponse) VisitStartAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartAccountLink409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response StartAccountLink409ApplicationProblemPlusJSONResponse) VisitStartAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartAccountLink500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response StartAccountLink500ApplicationProblemPlusJSONResponse) VisitStartAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListMyAppsRequestObject struct {
 }
 
@@ -10678,6 +11209,87 @@ type UpdatePerson500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response UpdatePerson500ApplicationProblemPlusJSONResponse) VisitUpdatePersonResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokePersonAccountLinkRequestObject struct {
+	PersonId PersonId `json:"personId"`
+	LinkId   LinkId   `json:"linkId"`
+}
+
+type RevokePersonAccountLinkResponseObject interface {
+	VisitRevokePersonAccountLinkResponse(w http.ResponseWriter) error
+}
+
+type RevokePersonAccountLink204Response struct {
+}
+
+func (response RevokePersonAccountLink204Response) VisitRevokePersonAccountLinkResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RevokePersonAccountLink401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response RevokePersonAccountLink401ApplicationProblemPlusJSONResponse) VisitRevokePersonAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokePersonAccountLink403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response RevokePersonAccountLink403ApplicationProblemPlusJSONResponse) VisitRevokePersonAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokePersonAccountLink404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response RevokePersonAccountLink404ApplicationProblemPlusJSONResponse) VisitRevokePersonAccountLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokePersonAccountLink500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response RevokePersonAccountLink500ApplicationProblemPlusJSONResponse) VisitRevokePersonAccountLinkResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -13269,6 +13881,18 @@ type StrictServerInterface interface {
 	// GetMe The signed-in person
 	// (GET /api/v1/me)
 	GetMe(ctx context.Context, request GetMeRequestObject) (GetMeResponseObject, error)
+	// ListMyAccountLinks My account links
+	// (GET /api/v1/me/account-links)
+	ListMyAccountLinks(ctx context.Context, request ListMyAccountLinksRequestObject) (ListMyAccountLinksResponseObject, error)
+	// UnlinkMyAccount Unlink one of my accounts
+	// (DELETE /api/v1/me/account-links/{linkId})
+	UnlinkMyAccount(ctx context.Context, request UnlinkMyAccountRequestObject) (UnlinkMyAccountResponseObject, error)
+	// CompleteAccountLink Finish verifying my account at a provider
+	// (POST /api/v1/me/account-links/{provider}/complete)
+	CompleteAccountLink(ctx context.Context, request CompleteAccountLinkRequestObject) (CompleteAccountLinkResponseObject, error)
+	// StartAccountLink Begin verifying my account at a provider
+	// (POST /api/v1/me/account-links/{provider}/start)
+	StartAccountLink(ctx context.Context, request StartAccountLinkRequestObject) (StartAccountLinkResponseObject, error)
 	// ListMyApps My apps
 	// (GET /api/v1/me/apps)
 	ListMyApps(ctx context.Context, request ListMyAppsRequestObject) (ListMyAppsResponseObject, error)
@@ -13332,6 +13956,9 @@ type StrictServerInterface interface {
 	// UpdatePerson Edit public base profile fields
 	// (PATCH /api/v1/people/{personId})
 	UpdatePerson(ctx context.Context, request UpdatePersonRequestObject) (UpdatePersonResponseObject, error)
+	// RevokePersonAccountLink Revoke a person's account link
+	// (DELETE /api/v1/people/{personId}/account-links/{linkId})
+	RevokePersonAccountLink(ctx context.Context, request RevokePersonAccountLinkRequestObject) (RevokePersonAccountLinkResponseObject, error)
 	// GetPersonApps A person's app access and links
 	// (GET /api/v1/people/{personId}/apps)
 	GetPersonApps(ctx context.Context, request GetPersonAppsRequestObject) (GetPersonAppsResponseObject, error)
@@ -14583,6 +15210,125 @@ func (sh *strictHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ListMyAccountLinks operation middleware
+func (sh *strictHandler) ListMyAccountLinks(w http.ResponseWriter, r *http.Request) {
+	var request ListMyAccountLinksRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListMyAccountLinks(ctx, request.(ListMyAccountLinksRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListMyAccountLinks")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListMyAccountLinksResponseObject); ok {
+		if err := validResponse.VisitListMyAccountLinksResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UnlinkMyAccount operation middleware
+func (sh *strictHandler) UnlinkMyAccount(w http.ResponseWriter, r *http.Request, linkId LinkId) {
+	var request UnlinkMyAccountRequestObject
+
+	request.LinkId = linkId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UnlinkMyAccount(ctx, request.(UnlinkMyAccountRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UnlinkMyAccount")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UnlinkMyAccountResponseObject); ok {
+		if err := validResponse.VisitUnlinkMyAccountResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CompleteAccountLink operation middleware
+func (sh *strictHandler) CompleteAccountLink(w http.ResponseWriter, r *http.Request, provider ProviderId) {
+	var request CompleteAccountLinkRequestObject
+
+	request.Provider = provider
+
+	var body CompleteAccountLinkJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CompleteAccountLink(ctx, request.(CompleteAccountLinkRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CompleteAccountLink")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CompleteAccountLinkResponseObject); ok {
+		if err := validResponse.VisitCompleteAccountLinkResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// StartAccountLink operation middleware
+func (sh *strictHandler) StartAccountLink(w http.ResponseWriter, r *http.Request, provider ProviderId) {
+	var request StartAccountLinkRequestObject
+
+	request.Provider = provider
+
+	var body StartAccountLinkJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StartAccountLink(ctx, request.(StartAccountLinkRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StartAccountLink")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StartAccountLinkResponseObject); ok {
+		if err := validResponse.VisitStartAccountLinkResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListMyApps operation middleware
 func (sh *strictHandler) ListMyApps(w http.ResponseWriter, r *http.Request) {
 	var request ListMyAppsRequestObject
@@ -15130,6 +15876,33 @@ func (sh *strictHandler) UpdatePerson(w http.ResponseWriter, r *http.Request, pe
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdatePersonResponseObject); ok {
 		if err := validResponse.VisitUpdatePersonResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokePersonAccountLink operation middleware
+func (sh *strictHandler) RevokePersonAccountLink(w http.ResponseWriter, r *http.Request, personId PersonId, linkId LinkId) {
+	var request RevokePersonAccountLinkRequestObject
+
+	request.PersonId = personId
+	request.LinkId = linkId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokePersonAccountLink(ctx, request.(RevokePersonAccountLinkRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokePersonAccountLink")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokePersonAccountLinkResponseObject); ok {
+		if err := validResponse.VisitRevokePersonAccountLinkResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -1,0 +1,113 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "GitHub web application flow (hand-written)",
+    "version": "2026-11-05",
+    "description": "Not part of github/rest-api-description: written by Orglane from GitHub's documentation of the user authorization flow for GitHub Apps, https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app and https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#web-application-flow (PKCE: code_challenge, code_challenge_method S256, code_verifier)."
+  },
+  "servers": [{ "url": "https://github.com" }],
+  "paths": {
+    "/login/oauth/authorize": {
+      "get": {
+        "operationId": "oauth/authorize",
+        "parameters": [
+          { "name": "client_id", "in": "query", "required": true, "schema": { "type": "string" } },
+          {
+            "name": "redirect_uri",
+            "in": "query",
+            "schema": { "type": "string", "format": "uri" }
+          },
+          { "name": "state", "in": "query", "schema": { "type": "string" } },
+          { "name": "login", "in": "query", "schema": { "type": "string" } },
+          {
+            "name": "allow_signup",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["true", "false"] }
+          },
+          {
+            "name": "prompt",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["select_account"] }
+          },
+          {
+            "name": "code_challenge",
+            "in": "query",
+            "schema": { "type": "string", "minLength": 43, "maxLength": 128 }
+          },
+          {
+            "name": "code_challenge_method",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["S256"] }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to redirect_uri with code and state (or error=access_denied).",
+            "headers": { "Location": { "required": true, "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/login/oauth/access_token": {
+      "post": {
+        "operationId": "oauth/access-token",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": ["client_id", "client_secret", "code"],
+                "properties": {
+                  "client_id": { "type": "string" },
+                  "client_secret": { "type": "string" },
+                  "code": { "type": "string" },
+                  "redirect_uri": { "type": "string", "format": "uri" },
+                  "code_verifier": { "type": "string", "minLength": 43, "maxLength": 128 },
+                  "repository_id": { "type": "string" }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A user access token, or an error with HTTP 200 (GitHub's behavior).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": ["access_token", "token_type", "scope"],
+                      "properties": {
+                        "access_token": { "type": "string" },
+                        "token_type": { "type": "string", "enum": ["bearer"] },
+                        "scope": { "type": "string" },
+                        "expires_in": { "type": "integer" },
+                        "refresh_token": { "type": "string" },
+                        "refresh_token_expires_in": { "type": "integer" }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "required": ["error"],
+                      "properties": {
+                        "error": { "type": "string" },
+                        "error_description": { "type": "string" },
+                        "error_uri": { "type": "string" }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

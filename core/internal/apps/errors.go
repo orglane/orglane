@@ -55,6 +55,7 @@ func Code(err error) string {
 		{ErrRotationInProgress, "rotation_in_progress"},
 		{ErrNoRotation, "no_rotation"},
 		{ErrCandidateValueUnknown, "candidate_value_unknown"},
+		{ErrAccountAlreadyLinked, "account_already_linked"},
 		{ErrBatchChanged, "batch_changed"},
 		{ErrForbidden, "forbidden"},
 	} {

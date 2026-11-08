@@ -823,6 +823,14 @@ Nothing else creates a verified link: not an email match, not the M1 import, not
 
 **Uniqueness:** one verified link per provider account, one per person per realm. Verifying an account already linked to another person fails with `account_already_linked`; an admin must revoke the other link first. Verifying a different account for the same person revokes the old link in the same transaction. The old account then becomes unmanaged: it is reported, not removed.
 
+**Link flow (#65, decided):**
+
+- `POST /me/account-links/{provider}/start` (browser session only) picks the oldest active instance of the provider whose adapter verifies accounts (or the given `instanceId`); any of them proves the realm's account, because a GitHub user ID is the same account in every organization (`AccountRealm` = `github.com`). It stores a state (`oll_` + 32 random bytes, only its hash) and a PKCE verifier sealed with `PurposeAppOAuthState` (AD = row ID), bound to the person and the session, expiring after 10 minutes. A new start invalidates the person's older link states for the instance.
+- `POST /me/account-links/{provider}/complete` consumes the state first (single-use, only by the same person and session, also when the exchange then fails), then lets the adapter exchange the code. GitHub: `POST https://github.com/login/oauth/access_token` with the App's client ID and secret, `redirect_uri` and `code_verifier`; `GET /user` with the user token; then `DELETE /applications/{client_id}/grant`, which revokes the access token and any refresh token (a failed revocation is logged; the token was never stored). The link stores the numeric user ID; the login is informational.
+- Under one transaction lock per realm: the account verified for another person → `account_already_linked` (nothing changes); the same account again → only its login is refreshed; another account of the same person → the old link is revoked (`account_link.revoked`, reason `replaced`) and the new one stored. `account_link.verified` records provider, realm, instance, method, evidence and the external ID (never the login or a token). Every link change queues `provision_person` for the person in every instance of the realm.
+- Evidence compares the person's pending rows for the verifying instance's organization: `matched`, `mismatched`, or `none`. Conflicts are computed on read: pending evidence whose account is verified for another person is shown as `conflict`.
+- `DELETE /me/account-links/{linkId}` (the person, reason `unlinked`) and `DELETE /people/{personId}/account-links/{linkId}` (`people.manage`, reason `revoked`) revoke a verified link; the link must belong to that person (otherwise 404).
+
 **Login changes:** links are keyed by the immutable external ID. Adapters refresh `login` when they observe a change (API reads, webhook payloads) and resolve the current login from the ID before calls that need a login.
 
 ## Desired access and team mappings
@@ -1139,7 +1147,7 @@ New target kinds: `app_instance`, `account_link`. System jobs use `audit.System`
 
 ## Testing strategy
 
-**Rule (AGENTS.md):** integration tests use real services; no mocks of provider APIs. The in-repo `testprovider` exercises the framework (jobs, results, retries, guard) without pretending to be a real provider.
+**Rule (AGENTS.md):** integration tests use real services; no mocks of provider APIs. The in-repo `testprovider` exercises the framework (jobs, results, retries, guard) without pretending to be a real provider. The one exception is GitHub.com, which cannot run in a container: its integration tests use `providers/github/githubfake`, which checks every request and response against GitHub's published OpenAPI description instead of hand-written expectations, and the live tests below exercise the real service.
 
 | Area | Tests | Where |
 |---|---|---|
@@ -1147,8 +1155,8 @@ New target kinds: `app_instance`, `account_link`. System jobs use `audit.System`
 | Store | Integration tests (`pgtest`) for every table: constraints, unique links, append-only events, credential sealing and AD binding, migration up/down | #58 |
 | API | Allowed and denied tests for every operation; audit entries per mutation | #58 onward |
 | Forgejo | testcontainers with the **same image reference** as the package manifest (read from the embedded manifest in the test): accounts, teams, webhooks with real signatures, deep link through a real OIDC round trip in domain mode and in local mode (`http://git.orglane.localhost`); agent install path in `tests/integration` | #61–#63 |
-| GitHub | Live tests against a real test organization and test GitHub App (below) | #64–#66 |
-| Web | Playwright: Settings → Apps, install flow, connect up to the GitHub redirect, the link step up to the GitHub redirect | #58, #61, #64, #65 |
+| GitHub | Unit and integration tests with the real adapter against `providers/github/githubfake`, a fake GitHub.com that validates every request and response against GitHub's official OpenAPI description (a pinned, vendored subset of github/rest-api-description, MIT) and a hand-written description of the OAuth web flow; live tests against a real test organization and test GitHub App (below) | #64–#66 |
+| Web | Playwright: Settings → Apps, install flow, connect up to the GitHub redirect, the link step through the fake GitHub (acceptance build tag `githubtest`) | #58, #61, #64, #65 |
 
 ### GitHub live tests
 

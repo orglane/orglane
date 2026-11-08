@@ -678,3 +678,29 @@ SELECT latest.name::text AS name, latest.version,
 FROM latest
 WHERE NOT EXISTS (SELECT 1 FROM candidates WHERE candidates.name = latest.name)
 ORDER BY name;
+
+-- Account linking (docs/specs/providers.md "Account links") -----------------
+
+-- name: InvalidateAppLinkStates :exec
+-- A new start invalidates the person's older link states for the instance.
+UPDATE app_oauth_states SET consumed_at = now()
+WHERE kind = 'link' AND person_id = @person_id AND instance_id = @instance_id AND consumed_at IS NULL;
+
+-- name: GetAccountLink :one
+SELECT * FROM account_links WHERE id = @id;
+
+-- name: ListPendingAccountLinksForOrganization :many
+SELECT * FROM pending_account_links
+WHERE provider = @provider AND organization_id = @organization_id
+ORDER BY person_id, external_id;
+
+-- name: ListPersonPendingAccountLinksWithConflict :many
+-- A person's import evidence, and whether the account it names is verified
+-- for someone else (shown as conflicting, never resolved automatically).
+SELECT p.*, EXISTS (
+    SELECT 1 FROM account_links l
+    WHERE l.state = 'verified' AND l.provider = p.provider AND l.realm = 'github.com'
+      AND l.external_id = p.external_id::text AND l.person_id <> p.person_id
+)::boolean AS conflict
+FROM pending_account_links p WHERE p.person_id = @person_id
+ORDER BY p.provider, p.organization_id, p.login;
