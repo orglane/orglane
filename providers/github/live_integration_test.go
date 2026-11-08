@@ -134,6 +134,19 @@ func TestGitHubLiveProvisioning(t *testing.T) {
 	defer clear(env.key)
 	inst := provider.Instance{ID: uuid.New(), Provider: "github", Settings: map[string]any{"organization": org, "app_id": os.Getenv("ORGLANE_TEST_GITHUB_APP_ID"), "app_client_id": os.Getenv("ORGLANE_TEST_GITHUB_APP_CLIENT_ID"), "installation_id": os.Getenv("ORGLANE_TEST_GITHUB_INSTALLATION_ID")}}
 	a := New()
+	// The App slug names the bot that GitHub attributes installation-token
+	// invitations to; read it rather than adding another required setting.
+	jwt, err := jwtFor(ctx, env, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var app struct {
+		Slug string `json:"slug"`
+	}
+	if err := request(ctx, env, http.MethodGet, "/app", jwt, nil, &app); err != nil || !slugPattern.MatchString(app.Slug) {
+		t.Fatalf("App identity = %+v, %v", app, err)
+	}
+	inst.Settings["app_slug"] = app.Slug
 	token, err := a.InstallationToken(ctx, env, inst)
 	if err != nil {
 		t.Fatal(err)
@@ -240,6 +253,13 @@ func TestGitHubLiveProvisioning(t *testing.T) {
 	}
 	if _, state, err := liveMembership(ctx, env, token, org, botLogin); err != nil || state != "pending" {
 		t.Fatalf("invited membership = %q, %v", state, err)
+	}
+	// GitHub attributes the installation token's invitation to the App's bot;
+	// the ensure proves the earlier call again with that marker (the recovery
+	// path for an invitation whose answer was lost).
+	out, err = a.Apply(ctx, env, inst, invite)
+	if err != nil || out.Changed || out.Proof == nil || out.Proof.Kind != provider.ProofMarker {
+		t.Fatalf("invite ensure (bot inviter) = %+v, %v", out, err)
 	}
 	out, err = a.Apply(ctx, env, inst, accountAction(provider.ActionCancelInvitation, botID, true))
 	if err != nil || !out.Changed {

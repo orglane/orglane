@@ -1217,7 +1217,8 @@ function TeamMappings({
     providerTeams.data?.items.filter(
       (t) => !t.managed && !mappings.data?.items.some((m) => m.externalRef === t.externalRef),
     ) ?? [];
-  const ready = teamId !== "" && (mode === "create" || externalRef !== "");
+  const ready =
+    teamId !== "" && (mode === "create" || pickable.some((t) => t.externalRef === externalRef));
   return (
     <Card>
       <CardHeader>

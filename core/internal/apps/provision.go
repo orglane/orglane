@@ -196,8 +196,11 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 	// Ownership is recovered on reruns: a link this instance provisioned
 	// makes the access Orglane's (computeDesired's Managed). The result's
 	// own flag is not passed on: the upsert keeps it, and a link revocation
-	// may have cleared it while this run worked (revokeLink).
-	granted := d.access.Link != nil && d.access.Link.Method == provider.LinkProvisioned && d.access.Managed
+	// may have cleared it while this run worked (revokeLink). Verifier
+	// providers store ownership only in recordApplied (under the link lock);
+	// carrying an in-memory flag could restore it after a revocation.
+	_, verifies := inst.Adapter.Verifier()
+	granted := !verifies && d.access.Link != nil && d.access.Link.Method == provider.LinkProvisioned && d.access.Managed
 	results := make([]ActionResult, 0, len(recovered)+len(plan.Actions))
 	results = append(results, recovered...)
 	var removals []provider.Action
@@ -255,7 +258,7 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 			if err != nil {
 				return err
 			}
-			if owned {
+			if owned && !verifies {
 				granted = true // only provider proof makes access Orglane's
 			}
 		}

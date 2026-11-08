@@ -308,8 +308,10 @@ installation, permission levels, token issuance and an authenticated repository
 listing. The provisioning test invites the dedicated non-owner bot by user ID,
 creates one temporarily named team, adds the bot to it, removes it again, removes
 the bot from the organization, cancels an invitation and restores the bot's
-membership. Tests use real GitHub with no API mocks; temporary teams follow the
-naming convention above and are deleted by the test. The workflow should run the
+membership; it also re-runs the invitation ensure and requires GitHub to
+attribute the invitation to the App's bot (`<app-slug>[bot]`). Tests use real
+GitHub with no API mocks; temporary teams follow the naming convention above and
+are deleted by the test. The workflow should run the
 same package target as #65/#66 extend it.
 
 External acceptance remains incomplete until that test passes with supplied
