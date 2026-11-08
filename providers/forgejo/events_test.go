@@ -243,6 +243,29 @@ func TestNormalizeEdgeCases(t *testing.T) {
 	if ex := events[1].Data["excerpt"].(string); len([]rune(ex)) != 280 {
 		t.Errorf("excerpt has %d runes", len([]rune(ex)))
 	}
+	// Mentions follow the Markdown structure of the recorded pull request's
+	// body: no mention event for code, one for text.
+	for _, c := range []struct {
+		body string
+		want []string
+	}{
+		{"> ~~~\n> @bob\n> ~~~", nil},
+		{"> ```\n> @bob\n> ````", nil},
+		{"# `heading\n@bob`", []string{"bob/mentioned"}},
+		{"- `one\n- @bob`", []string{"bob/mentioned"}},
+		{"\\` hi @bob \\`", []string{"bob/mentioned"}},
+	} {
+		d := edit(t, fixture(t, "pull_request_opened"), func(b map[string]any) { b["pull_request"].(map[string]any)["body"] = c.body })
+		var got []string
+		for _, e := range normalize(t, d) {
+			if e.Type == EventMention {
+				got = append(got, logins(e.Targets)...)
+			}
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("body %q: mentions %v, want %v", c.body, got, c.want)
+		}
+	}
 	// A comment without mentions: no event.
 	quiet := edit(t, fixture(t, "issue_comment_created"), func(b map[string]any) { b["comment"].(map[string]any)["body"] = "no one here" })
 	if events, err := a.Normalize(inst, quiet); err != nil || len(events) != 0 {
@@ -295,6 +318,39 @@ func TestMentions(t *testing.T) {
 		{"triple backtick span, then a fence", "```a``` @bob\n```\n@eve\n```\n@carol", []string{"bob", "carol"}},
 		{"tilde fence with backticks in its info", "~~~ `x`\n@bob\n~~~\n@carol", []string{"carol"}},
 		{"double backtick span across lines", "``a `\n@bob`` @carol", []string{"carol"}},
+		// Container blocks: a fence in a block quote or list item is a
+		// fence, and a block ends where its container does.
+		{"fence in a quote", "> ~~~\n> @bob\n> ~~~", nil},
+		{"longer closing fence in a quote", "> ```\n> @bob\n> ````", nil},
+		{"fence in a nested quote", "> > ```\n> > @bob\n> > ```\n> @carol", []string{"carol"}},
+		{"tab after the quote marker", ">\t```\n>\t@bob\n>\t```", nil},
+		{"the quote ends, and its fence", "> ```\n@bob\n> ```\n> @eve", []string{"bob"}},
+		{"fence in a list item", "- ```\n  @bob\n  ```\n- @carol", []string{"carol"}},
+		{"the list item ends, and its fence", "- ```\n@bob", []string{"bob"}},
+		{"indented code in a list item", "- a\n\n      @bob\n- @carol", []string{"carol"}},
+		{"an empty list item ends at a blank line", "-\n\n    @bob\n\n@carol", []string{"carol"}},
+		{"deep nesting stays text", strings.Repeat("> ", 40) + "@bob", []string{"bob"}},
+		// Leaf blocks: a code span ends with its paragraph or heading.
+		{"heading and paragraph", "# `heading\n@bob`", []string{"bob"}},
+		{"heading interrupts a paragraph", "`a\n# b\n@bob`", []string{"bob"}},
+		{"separate list items", "- `one\n- @bob`", []string{"bob"}},
+		{"setext heading", "`a\n---\n@bob`", []string{"bob"}},
+		{"thematic break", "`a\n***\n@bob`", []string{"bob"}},
+		{"lazy continuation of a quote", "> `a\nb @bob`", nil},
+		{"ordered item from 2 does not interrupt", "a `x\n2. @bob`", nil},
+		{"ordered item from 1 interrupts", "a `x\n1. @bob`", []string{"bob"}},
+		{"html block", "<div>\n@bob\n</div>\n\n@carol", []string{"carol"}},
+		{"html comment block", "<!--\n@bob\n-->\n@carol", []string{"carol"}},
+		// Inline content: backslash escapes, raw HTML and autolinks.
+		{"escaped backticks", "\\` hi @bob \\`", []string{"bob"}},
+		{"escaped first backtick of a run", "\\``@bob` @carol", []string{"carol"}},
+		{"backslash in a code span", "`a\\`@bob", []string{"bob"}},
+		{"escaped at", "a\\@bob \\@carol", []string{"carol"}},
+		{"html attribute", `<a title="@bob">@carol</a>`, []string{"carol"}},
+		{"backtick in a tag", "<span title=\"`\">@bob</span> `x`", []string{"bob"}},
+		{"code span before a tag", "`<a title=\"` @bob \">` @carol", []string{"bob", "carol"}},
+		{"inline comment", "a <!-- @bob --> @carol", []string{"carol"}},
+		{"autolink", "<mailto:@bob> @carol", []string{"carol"}},
 	} {
 		if got := Mentions(c.text); !slices.Equal(got, c.want) {
 			t.Errorf("%s: %q -> %v, want %v", c.name, c.text, got, c.want)
@@ -369,6 +425,62 @@ func TestMentionsScaleLinearly(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"bob"}) {
 		t.Fatalf("mentions = %v", got)
+	}
+}
+
+// adversarialBodies are 1 MB bodies of the shapes that make Markdown
+// parsers slow: deep nesting, unclosed constructs that invite a search to
+// the end, and many short blocks. A quadratic scan of any of them takes
+// seconds (goldmark: nested list markers, unclosed links).
+func adversarialBodies() map[string]string {
+	const size = 1 << 20
+	rep := func(s string) string { return strings.Repeat(s, size/len(s)) }
+	return map[string]string{
+		"nested quotes":               rep(">"),
+		"nested list items":           rep("- "),
+		"blank lines in nested items": strings.Repeat("1. ", 40) + "a\n" + rep("\n"),
+		"nested quote lines":          rep(strings.Repeat("> ", 40) + "x\n"),
+		"unclosed comments":           rep("<!--"),
+		"unclosed declarations":       rep("<!A"),
+		"unclosed processing":         rep("<?"),
+		"unclosed CDATA":              rep("<![CDATA["),
+		"unclosed attribute values":   rep(`<a x="`),
+		"mixed attribute values":      rep(`<a x='<a y="`),
+		"attributes without end":      rep("<a b c d e f g h i j "),
+		"autolinks without end":       rep("<ab:cd"),
+		"e-mail autolinks":            rep("<a@b.c.d.e"),
+		"backslashes":                 rep(`\`),
+		"escaped backticks":           rep("\\`` "),
+		"unclosed html block":         "<pre>\n" + rep("x</pr\n"),
+		"fences":                      rep("```\n"),
+		"headings":                    rep("# `a\n"),
+		"lazy lines":                  "> a\n" + rep("b `\n"),
+		"tabs":                        rep("\t"),
+	}
+}
+
+func TestMentionsAdversarialBodies(t *testing.T) {
+	bound := time.Second
+	if raceEnabled {
+		bound *= 10
+	}
+	for name, text := range adversarialBodies() {
+		start := time.Now()
+		Mentions(text)
+		if d := time.Since(start); d > bound {
+			t.Errorf("%s: Mentions of %d bytes took %s, over %s", name, len(text), d, bound)
+		}
+	}
+}
+
+func BenchmarkMentionsAdversarialBodies(b *testing.B) {
+	for name, text := range adversarialBodies() {
+		b.Run(name, func(b *testing.B) {
+			b.SetBytes(int64(len(text)))
+			for b.Loop() {
+				Mentions(text)
+			}
+		})
 	}
 }
 

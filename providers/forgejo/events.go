@@ -417,22 +417,21 @@ func (n *normalizer) mentions(text string) []provider.Target {
 }
 
 // Mentions returns the logins mentioned as @login in Markdown text, in
-// order, deduplicated (case-insensitively), at most 50. Code is never
-// scanned: fenced code blocks, indented code blocks and code spans (which
-// may span lines within a paragraph) are skipped, as CommonMark renders
-// them as code. A mention starts at "@" that does not follow a letter,
-// digit or one of "-._/@`" (so e-mail addresses are no mentions); the login
-// is Forgejo's user name pattern, without trailing separators ("@bob."
-// mentions bob), not followed by another letter or digit.
+// order, deduplicated (case-insensitively), at most 50. Only text is
+// scanned, as CommonMark parses it (see markdown.go): code blocks, code
+// spans and HTML blocks are skipped, and code spans end with their
+// paragraph or heading. A mention starts at "@" that does not follow a
+// letter, digit or one of "-._/@`" (so e-mail addresses are no mentions);
+// the login is Forgejo's user name pattern, without trailing separators
+// ("@bob." mentions bob), not followed by another letter or digit.
 //
-// The work is linear in the length of text (code spans are matched through
-// an index of backtick runs), so a large adversarial body cannot occupy a
-// worker.
+// The work is linear in the length of text, so a large adversarial body
+// cannot occupy a worker.
 func Mentions(text string) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, para := range paragraphs(text) {
-		for _, login := range lineMentions(stripCodeSpans(para)) {
+	inlineContent(text, func(content string) bool {
+		for _, login := range lineMentions(inlineText(content)) {
 			key := strings.ToLower(login)
 			if seen[key] {
 				continue
@@ -440,140 +439,12 @@ func Mentions(text string) []string {
 			seen[key] = true
 			out = append(out, login)
 			if len(out) == maxMentions {
-				return out
+				return false
 			}
 		}
-	}
+		return true
+	})
 	return out
-}
-
-// paragraphs returns the text outside code blocks as runs of consecutive
-// non-blank lines (where code spans may continue across lines). Code
-// blocks are fenced (a line of three or more backticks or tildes, indented
-// at most three spaces, up to a closing fence of the same character at
-// least as long, or the end; an opening backtick fence has no backtick
-// after it on its line) or indented (four or more columns, starting
-// where no paragraph continues, running on over indented and blank lines).
-func paragraphs(text string) []string {
-	var out []string
-	var para []string
-	flush := func() {
-		if len(para) > 0 {
-			out = append(out, strings.Join(para, "\n"))
-			para = para[:0]
-		}
-	}
-	fence := ""
-	indented := false
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimLeft(line, " \t")
-		indent := columns(line[:len(line)-len(trimmed)])
-		if fence != "" {
-			if f := fenceOf(trimmed); indent <= 3 && f != "" && f[0] == fence[0] && len(f) >= len(fence) && strings.TrimSpace(trimmed[len(f):]) == "" {
-				fence = ""
-			}
-			continue
-		}
-		if strings.TrimSpace(line) == "" {
-			flush()
-			continue // an indented block runs on over blank lines
-		}
-		if indent >= 4 && (len(para) == 0 || indented) {
-			// An indented code block: it cannot interrupt a paragraph.
-			flush()
-			indented = true
-			continue
-		}
-		indented = false
-		if f := fenceOf(trimmed); indent <= 3 && f != "" && (f[0] != '`' || !strings.Contains(trimmed[len(f):], "`")) {
-			// A backtick fence's info string has no backtick: "```x``` @bob"
-			// is a code span in a paragraph, not a fence.
-			flush()
-			fence = f
-			continue
-		}
-		para = append(para, line)
-	}
-	flush()
-	return out
-}
-
-// columns is the width of leading whitespace, tabs to the next multiple of
-// four.
-func columns(ws string) int {
-	n := 0
-	for _, c := range ws {
-		if c == '\t' {
-			n += 4 - n%4
-		} else {
-			n++
-		}
-	}
-	return n
-}
-
-// fenceOf returns the fence that opens or closes a code block at the start
-// of s (three or more backticks or tildes), or "".
-func fenceOf(s string) string {
-	for _, c := range []byte{'`', '~'} {
-		i := 0
-		for i < len(s) && s[i] == c {
-			i++
-		}
-		if i >= 3 {
-			return s[:i]
-		}
-	}
-	return ""
-}
-
-// stripCodeSpans blanks the code spans of a paragraph: a run of backticks
-// up to the next run of exactly the same length, across lines; a run
-// without one stays literal. The runs are indexed once (the next run of
-// each length, found from the end), so matching is linear.
-func stripCodeSpans(s string) string {
-	type run struct{ start, n int }
-	var runs []run
-	for i := 0; i < len(s); {
-		if s[i] != '`' {
-			i++
-			continue
-		}
-		j := i
-		for j < len(s) && s[j] == '`' {
-			j++
-		}
-		runs = append(runs, run{i, j - i})
-		i = j
-	}
-	if len(runs) == 0 {
-		return s
-	}
-	next := make([]int, len(runs))
-	last := map[int]int{}
-	for k := len(runs) - 1; k >= 0; k-- {
-		if v, ok := last[runs[k].n]; ok {
-			next[k] = v
-		} else {
-			next[k] = -1
-		}
-		last[runs[k].n] = k
-	}
-	var b strings.Builder
-	pos := 0
-	for k := 0; k < len(runs); {
-		if next[k] < 0 {
-			k++ // unmatched: literal backticks
-			continue
-		}
-		open, closing := runs[k], runs[next[k]]
-		b.WriteString(s[pos:open.start])
-		b.WriteByte(' ')
-		pos = closing.start + closing.n
-		k = next[k] + 1
-	}
-	b.WriteString(s[pos:])
-	return b.String()
 }
 
 func lineMentions(line string) []string {
