@@ -285,6 +285,43 @@ func TestNormalizeEdgeCases(t *testing.T) {
 	}
 }
 
+// TestNormalizeUnicodeReferenceLabels edits the recorded pull request's body:
+// an image whose reference label and definition differ only by a full
+// Unicode case fold is an image, so its description is no text and creates
+// no mention event. The undefined label is the control that the edit is
+// sensitive.
+func TestNormalizeUnicodeReferenceLabels(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		mentions   bool
+	}{
+		{"sharp s in the reference", "![ @bob ][STRASSE]\n\n[straße]: /img.png", false},
+		{"sharp s in the definition", "![ @bob ][straße]\n\n[STRASSE]: /img.png", false},
+		{"ff ligature in the reference", "![ @bob ][FF]\n\n[ﬀ]: /img.png", false},
+		{"ff ligature in the definition", "![ @bob ][ﬀ]\n\n[FF]: /img.png", false},
+		{"Greek sigma", "![ @bob ][Σ]\n\n[ς]: /img.png", false},
+		{"non-BMP Deseret", "![ @bob ][𐐀]\n\n[𐐨]: /img.png", false},
+		{"undefined label", "![ @bob ][STRASSE]\n\n[strase]: /img.png", true},
+	} {
+		d := edit(t, fixture(t, "pull_request_opened"), func(b map[string]any) {
+			b["pull_request"].(map[string]any)["body"] = c.body
+		})
+		var got []string
+		for _, e := range normalize(t, d) {
+			if e.Type == EventMention {
+				got = append(got, logins(e.Targets)...)
+			}
+		}
+		var want []string
+		if c.mentions {
+			want = []string{"bob/mentioned"}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: body %q: mentions %v, want %v", c.name, c.body, got, want)
+		}
+	}
+}
+
 func TestMentions(t *testing.T) {
 	many := ""
 	for i := range 60 {
@@ -383,6 +420,16 @@ func TestMentions(t *testing.T) {
 		{"tab after the colon", "[x]:\t/u\n@bob", []string{"bob"}},
 		{"paragraph after a definition", "[x]: /u\n    @bob", []string{"bob"}},
 		{"definition before a setext underline", "[x]: /u\n===\n@bob", []string{"bob"}},
+		// Reference labels match after full Unicode case folding, which
+		// expands some characters ("ß" is "ss", "ﬀ" is "ff") and folds
+		// others without an ASCII equivalent.
+		{"sharp s in the reference", "![ @bob ][STRASSE]\n\n[straße]: /img.png", nil},
+		{"sharp s in the definition", "![ @bob ][straße]\n\n[STRASSE]: /img.png", nil},
+		{"ff ligature in the reference", "![ @bob ][FF]\n\n[ﬀ]: /img.png", nil},
+		{"ff ligature in the definition", "![ @bob ][ﬀ]\n\n[FF]: /img.png", nil},
+		{"capital sharp s", "![ @bob ][ẞ]\n\n[SS]: /img.png", nil},
+		{"Greek sigma", "![ @bob ][Σ]\n\n[ς]: /img.png", nil},
+		{"non-BMP Deseret", "![ @bob ][𐐀]\n\n[𐐨]: /img.png", nil},
 		// HTML blocks of every kind, and their ends.
 		{"script block ends at another kind's closing tag", "<script>\n@bob\n</textarea>\n@carol", []string{"carol"}},
 		{"style block across blank lines", "<style>\n@bob\n\n@eve\n</style>\n@carol", []string{"carol"}},
@@ -412,6 +459,40 @@ func TestMentions(t *testing.T) {
 	}
 	if got := Mentions(many); len(got) != maxMentions {
 		t.Errorf("%d mentions, want at most %d", len(got), maxMentions)
+	}
+}
+
+// TestNormalizeLabel covers the Unicode classes of reference label folding:
+// ASCII and simple non-ASCII folds, expanding folds ("ß" is "ss", "ﬀ" is
+// "ff") and a case pair outside the BMP. Labels without a fold relation
+// stay distinct.
+func TestNormalizeLabel(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		a, b  string
+		equal bool
+	}{
+		{"ASCII case", "[AbC]", "[aBc]", true},
+		{"collapsed whitespace", "[ A\tB ]", "[a b]", true},
+		{"sharp s expands", "[STRASSE]", "[straße]", true},
+		{"capital sharp s expands", "[\u1E9E]", "[SS]", true},
+		{"ff ligature expands", "[FF]", "[\uFB00]", true},
+		{"ffi ligature expands", "[FFI]", "[\uFB03]", true},
+		{"Greek sigma", "[\u03A3]", "[\u03C2]", true},
+		{"Greek iota subscript expands", "[\u1F88]", "[\u1F80]", true},
+		{"Cyrillic", "[\u0401]", "[\u0451]", true},
+		{"Kelvin sign", "[\u212A]", "[k]", true},
+		{"Angstrom sign", "[\u212B]", "[\u00E5]", true},
+		{"dotted capital i expands", "[\u0130]", "[i\u0307]", true},
+		{"Deseret case pair", "[\U00010400]", "[\U00010428]", true},
+		{"dotless i is no i", "[i]", "[\u0131]", false},
+		{"unrelated letters", "[a]", "[\u00E1]", false},
+	} {
+		a, b := normalizeLabel(c.a), normalizeLabel(c.b)
+		if (a == b) != c.equal {
+			t.Errorf("%s: normalizeLabel(%q) = %q, normalizeLabel(%q) = %q; equal = %v, want %v",
+				c.name, c.a, a, c.b, b, a == b, c.equal)
+		}
 	}
 }
 

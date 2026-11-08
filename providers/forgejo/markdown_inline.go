@@ -3,6 +3,8 @@ package forgejo
 import (
 	"strings"
 	"unicode/utf8"
+
+	"golang.org/x/text/cases"
 )
 
 // The inline content of a paragraph or heading is read from left to right
@@ -402,6 +404,11 @@ func utf16Len(r rune) int {
 	return 1
 }
 
+// labelFold is Unicode case folding, which CommonMark applies to link
+// labels. It is full folding: it expands "ß" to "ss" and "ﬀ" to "ff".
+// cases.Fold is stateless, so the shared Caser is safe for concurrent use.
+var labelFold = cases.Fold()
+
 // normalizeLabel is a link label as definitions and references are
 // matched: without brackets, trimmed, inner whitespace collapsed, case
 // folded.
@@ -421,7 +428,7 @@ func normalizeLabel(label string) string {
 			b.WriteByte(c)
 		}
 	}
-	return strings.ToUpper(strings.ToLower(b.String()))
+	return labelFold.String(b.String())
 }
 
 // backtickRun is a maximal run of n backticks at start; escaped is 1 if a
