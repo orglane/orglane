@@ -64,6 +64,15 @@ func (b blockedState) has(gen int64) bool {
 	return slices.ContainsFunc(b.Generations, func(g blockedGeneration) bool { return g.Generation == gen })
 }
 
+// code returns the error code a generation was blocked with.
+func (b blockedState) code(gen int64) (string, bool) {
+	i := slices.IndexFunc(b.Generations, func(g blockedGeneration) bool { return g.Generation == gen })
+	if i < 0 {
+		return "", false
+	}
+	return b.Generations[i].ErrorCode, true
+}
+
 func (b blockedState) list() []int64 {
 	out := make([]int64, 0, len(b.Generations))
 	for _, g := range b.Generations {
@@ -77,19 +86,48 @@ func (s *instanceState) pending() bool {
 	return s.desired != nil && (s.current == nil || s.desired.Generation > s.current.Generation) && !s.blocked.has(s.desired.Generation)
 }
 
+// purgedRecord is instances/.agent/purged/<key>.json: the last completed
+// purge of a key. It lives outside the deleted directory, so a retry of the
+// purge spec gets the operation that purged it, and a restart after the
+// deletion reports that operation as succeeded.
+type purgedRecord struct {
+	InstanceID uuid.UUID `json:"instance_id"`
+	Generation int64     `json:"generation"`
+	SpecHash   string    `json:"spec_hash"`
+	Operation  uuid.UUID `json:"operation_id"`
+	At         time.Time `json:"at"`
+}
+
+// readPurged returns the purge record of a key, nil if there is none.
+func readPurged(path string) (*purgedRecord, error) {
+	var p purgedRecord
+	ok, err := readJSON(path, &p)
+	if !ok || err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// readBinding returns the instance ID a directory is bound to, uuid.Nil if
+// it has none.
+func readBinding(dir string) (uuid.UUID, error) {
+	var bind struct {
+		InstanceID uuid.UUID `json:"instance_id"`
+	}
+	if _, err := readJSON(filepath.Join(dir, instanceFile), &bind); err != nil {
+		return uuid.Nil, err
+	}
+	return bind.InstanceID, nil
+}
+
 // loadState reads an instance directory. A missing directory is an empty
 // state.
 func loadState(dir string) (*instanceState, error) {
 	st := &instanceState{}
-	var bind struct {
-		InstanceID uuid.UUID `json:"instance_id"`
-	}
-	if ok, err := readJSON(filepath.Join(dir, instanceFile), &bind); err != nil {
-		return nil, err
-	} else if ok {
-		st.id = bind.InstanceID
-	}
 	var err error
+	if st.id, err = readBinding(dir); err != nil {
+		return nil, err
+	}
 	if st.desired, err = readSpec(filepath.Join(dir, desiredFile)); err != nil {
 		return nil, err
 	}

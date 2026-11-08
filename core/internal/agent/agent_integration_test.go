@@ -477,9 +477,20 @@ func TestAgentWithDocker(t *testing.T) {
 	// Purge: the directory, the database and the role go; the key is free.
 	purge := integrationSpec(id, 6, port, "second", agentapi.StateAbsent)
 	purge.Purge = true
-	e.mustApply(purge)
+	purgeOp := e.apply("at1", purge)
+	if purgeOp.State != agentapi.OpSucceeded {
+		t.Fatalf("purge operation: %+v", purgeOp)
+	}
 	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("instance directory after purge: %v", err)
+	}
+	// A retry of the purge (its answer was lost) gets the purge's own
+	// operation and leaves the key free (#83).
+	if again, accepted, err := e.client.Apply(t.Context(), "at1", purge); err != nil || accepted || again.ID != purgeOp.ID || again.State != agentapi.OpSucceeded {
+		t.Fatalf("retried purge: %+v, accepted %v, %v", again, accepted, err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("instance directory after the retried purge: %v", err)
 	}
 	if got := e.psql("orglane", "select count(*) from pg_database where datname = 'svc_at1'") + e.psql("orglane", "select count(*) from pg_roles where rolname = 'svc_at1'"); got != "00" {
 		t.Fatalf("database or role after purge: %s", got)

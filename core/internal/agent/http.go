@@ -277,6 +277,34 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 		return fail(http.StatusConflict, agentapi.CodeInstanceMismatch,
 			"the instance directory belongs to another instance (a removed instance's data is retained under this key)", nil)
 	}
+	if st.id == uuid.Nil {
+		// A retry of the purge that freed the key (its answer was lost)
+		// gets that purge's operation; the key stays free.
+		p, err := readPurged(a.purgedPath(key))
+		if err != nil {
+			return internal(err)
+		}
+		if p != nil && p.InstanceID == spec.InstanceID && spec.Generation <= p.Generation {
+			switch {
+			case spec.Generation < p.Generation:
+				return fail(http.StatusConflict, agentapi.CodeStaleGeneration, "a newer generation was accepted",
+					func(pr *agentapi.Problem) { pr.AcceptedGeneration = p.Generation })
+			case spec.Hash() != p.SpecHash:
+				return fail(http.StatusConflict, agentapi.CodeGenerationConflict, "this generation was accepted with other content", nil)
+			}
+			op, ok := a.ops.get(p.Operation)
+			if !ok {
+				// The operation was pruned; record the outcome again.
+				if op, err = a.ops.create(key, agentapi.KindRemove, p.Generation); err != nil {
+					return internal(err)
+				}
+				if op, err = a.ops.update(op.ID, func(o *agentapi.Operation) { o.State = agentapi.OpSucceeded }); err != nil {
+					return internal(err)
+				}
+			}
+			return op, http.StatusOK, nil
+		}
+	}
 	if d := st.desired; d != nil {
 		switch {
 		case spec.Generation < d.Generation:
