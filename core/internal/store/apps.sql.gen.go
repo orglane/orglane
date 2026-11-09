@@ -197,6 +197,28 @@ func (q *Queries) ConsumeAppOAuthState(ctx context.Context, arg ConsumeAppOAuthS
 	return i, err
 }
 
+const countAcceptedRemovals = `-- name: CountAcceptedRemovals :one
+SELECT count(*) FROM provisioning_removals
+WHERE instance_id = $1 AND person_id = $2 AND state = 'pending'
+  AND error_code = $3::text
+`
+
+type CountAcceptedRemovalsParams struct {
+	InstanceID   uuid.UUID
+	PersonID     uuid.UUID
+	AcceptedCode string
+}
+
+// A person's open removals the provider accepted but has not confirmed
+// (error_code = accepted_code). While one is open, the person's grants wait:
+// the accepted removal may still land on access a grant would restore.
+func (q *Queries) CountAcceptedRemovals(ctx context.Context, arg CountAcceptedRemovalsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAcceptedRemovals, arg.InstanceID, arg.PersonID, arg.AcceptedCode)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countAppliedRemovalsSince = `-- name: CountAppliedRemovalsSince :one
 SELECT count(*) FROM provisioning_removals WHERE instance_id = $1 AND state = 'applied' AND updated_at > $2
 `
@@ -3318,6 +3340,30 @@ type MarkProvisioningQueuedParams struct {
 // a desired-state change or an admin's retry runs it again.
 func (q *Queries) MarkProvisioningQueued(ctx context.Context, arg MarkProvisioningQueuedParams) error {
 	_, err := q.db.Exec(ctx, markProvisioningQueued, arg.InstanceID, arg.PersonID)
+	return err
+}
+
+const markProvisioningResultWaiting = `-- name: MarkProvisioningResultWaiting :exec
+UPDATE provisioning_results SET error_code = $1, actions = $2, updated_at = now()
+WHERE instance_id = $3 AND person_id = $4 AND status = 'queued'
+`
+
+type MarkProvisioningResultWaitingParams struct {
+	ErrorCode  *string
+	Actions    []byte
+	InstanceID uuid.UUID
+	PersonID   uuid.UUID
+}
+
+// A queued result shows why it waits (the provider accepted a removal and
+// Orglane polls for its confirmation).
+func (q *Queries) MarkProvisioningResultWaiting(ctx context.Context, arg MarkProvisioningResultWaitingParams) error {
+	_, err := q.db.Exec(ctx, markProvisioningResultWaiting,
+		arg.ErrorCode,
+		arg.Actions,
+		arg.InstanceID,
+		arg.PersonID,
+	)
 	return err
 }
 

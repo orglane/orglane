@@ -1649,7 +1649,7 @@ function Provisioning({
                               {explainStep(intl, r.employeeStep) ?? r.employeeStep}
                             </p>
                           )}
-                          {r.status === "failed" && (
+                          {(r.status === "failed" || (r.status === "queued" && r.errorCode)) && (
                             <p className="mt-1 max-w-xs text-xs">
                               {explainCode(intl, r.errorCode) ??
                                 intl.formatMessage(guidanceMessages.resultFailed)}

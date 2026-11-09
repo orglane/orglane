@@ -166,12 +166,15 @@ accounts.
   Orglane never sends that DELETE again: every later check only reads (a
   repeated DELETE could restart GitHub's processing), and an accepted removal
   is never moved into a held batch. If the person's desired access changes
-  meanwhile (for example they rejoin the mapped team), one read settles it:
-  gone means the removal completed (applied and audited); still there means
-  it is settled as superseded (`provisioning.removal_superseded` in the audit
-  log), the restored membership or invitation is kept, and the person is
-  planned again, so the additive path runs. A removal GitHub never completes
-  while it is still wanted stays pending and queued.
+  meanwhile (for example they rejoin the mapped team), Orglane keeps watching:
+  a membership GitHub still serves may be the old one its queued DELETE has
+  not reached yet. The person's grants wait (the result is queued with
+  `removal_pending`, explained in Settings → Apps) until GitHub stops serving
+  the target; then the removal is applied and audited and the person is
+  planned again, so the restored access comes back right away. Only a
+  confirmation that fails permanently settles a no-longer-wanted removal as
+  superseded (`provisioning.removal_superseded`). A removal GitHub never
+  completes stays pending and queued.
   A `200` whose
   [`direct_membership`](https://docs.github.com/en/rest/orgs/members#get-organization-membership-for-a-user)
   is false is a membership granted only by an enterprise team; GitHub documents

@@ -631,11 +631,12 @@ func planGitHubRemoval(t *testing.T, h *linkHarness, p store.Person) {
 // read fails: the acceptance is durable across the plan's cleanup and a
 // restart, a transient failure on the job's last attempt keeps it pending, the
 // DELETE is never issued again, and the removal ends in exactly one audit
-// entry. With restored, the desired access changes and grant restores it on
-// GitHub: the read-only confirmation still sees it, so the removal is settled
-// as superseded (provisioning.removal_superseded, no action_applied) and the
-// restored grant stays. Without, remove completes the removal on GitHub and the
-// confirmation applies and audits it. The removal must already be planned.
+// entry. With restored, the desired access changes and grant puts the target
+// back on GitHub first: the read-only confirmation cannot tell it from the old
+// access GitHub has not removed yet, so the removal stays accepted (never
+// superseded, never removed again) until GitHub stops serving the target. In
+// both variants remove completes the removal on GitHub and the confirmation
+// applies and audits it. The removal must already be planned.
 func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfterDelete, p store.Person, externalID, deletePath, confirmPath string, restored bool, grant func(), granted func() bool, remove func()) {
 	t.Helper()
 	var key string
@@ -687,37 +688,34 @@ func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfte
 	fault.clear()
 
 	if restored {
-		// Access is restored while the accepted removal is unconfirmed: the
-		// read-only confirmation sees the new grant and settles the removal
-		// as superseded instead of removing the grant or waiting forever.
+		// The target is there again while the accepted removal is
+		// unconfirmed: the read-only confirmation keeps watching instead of
+		// removing it again or declaring the removal over.
 		h.exec(`UPDATE provisioning_removals SET desired_hash = decode(repeat('00', 32), 'hex') WHERE person_id = $1 AND state = 'pending'`, p.ID)
 		grant()
-		if err := svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 2, 8); err != nil {
-			t.Fatalf("read-only confirmation after access returned = %v, want settled", err)
+		err := svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 2, 8)
+		if !errors.As(err, &snooze) || snooze.Duration != 5*time.Second {
+			t.Fatalf("read-only confirmation with the target back = %v, want a 5s snooze", err)
 		}
 		if !granted() {
-			t.Fatal("the confirmation removed the restored grant")
+			t.Fatal("the confirmation removed the target")
 		}
-		if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'dropped' AND error_code = $2`, p.ID, provider.CodeRemovalPending); n != 1 {
-			t.Fatalf("superseded removals = %d, want 1", n)
+		if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending' AND error_code = $2`, p.ID, provider.CodeRemovalPending); n != 1 {
+			t.Fatalf("accepted removals while the target is back = %d, want 1", n)
 		}
-		if n := audits(audit.ProvisioningRemovalSuperseded); n != 1 {
-			t.Fatalf("superseded audit entries = %d, want 1", n)
-		}
-		if n := audits(audit.ProvisioningActionApplied); n != 0 {
-			t.Fatalf("applied audit entries for the superseded removal = %d, want 0", n)
-		}
-	} else {
-		remove()
-		if err := svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 3, 8); err != nil {
-			t.Fatal(err)
-		}
-		if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'applied'`, p.ID); n != 1 {
-			t.Fatalf("applied removals = %d, want 1", n)
-		}
-		if n := audits(audit.ProvisioningActionApplied); n != 1 {
-			t.Fatalf("audit entries after the confirmation = %d, want 1", n)
-		}
+	}
+	remove()
+	if err := svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 3, 8); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'applied'`, p.ID); n != 1 {
+		t.Fatalf("applied removals = %d, want 1", n)
+	}
+	if n := audits(audit.ProvisioningActionApplied); n != 1 {
+		t.Fatalf("audit entries after the confirmation = %d, want 1", n)
+	}
+	if n := audits(audit.ProvisioningRemovalSuperseded); n != 0 {
+		t.Fatalf("superseded audit entries = %d, want 0", n)
 	}
 	if n := fault.deleteCount() - deletes; n != 1 {
 		t.Fatalf("DELETEs = %d, want exactly 1", n)
@@ -837,7 +835,21 @@ func newAcceptedOrgRemoval(t *testing.T, readbacks int) *acceptedOrgRemoval {
 	if n := a.audits(audit.ProvisioningActionApplied); n != 0 {
 		t.Fatalf("audit entries before the confirmation = %d, want 0", n)
 	}
+	a.wantResult(t, apps.StatusQueued, provider.CodeRemovalPending)
 	return a
+}
+
+// wantResult checks alice's provisioning result: its status and the code
+// the admin sees.
+func (a *acceptedOrgRemoval) wantResult(t *testing.T, status, code string) {
+	t.Helper()
+	var gotStatus, gotCode string
+	if err := a.h.pool.QueryRow(a.h.ctx, `SELECT status, coalesce(error_code, '') FROM provisioning_results WHERE instance_id = $1 AND person_id = $2`, a.h.inst.ID, a.alice.ID).Scan(&gotStatus, &gotCode); err != nil {
+		t.Fatal(err)
+	}
+	if gotStatus != status || gotCode != code {
+		t.Fatalf("result = %s/%q, want %s/%q", gotStatus, gotCode, status, code)
+	}
 }
 
 // row is the state and error code of alice's latest removal row.
@@ -934,12 +946,12 @@ func TestGitHubAcceptedRemovalStateMachine(t *testing.T) {
 			snooze: 5 * time.Second, state: pending, code: provider.CodeRemovalPending, member: true,
 		},
 		{
-			name: "restored, still served: superseded, membership kept",
+			name: "restored, still served: keeps watching, membership kept",
 			event: func(t *testing.T, a *acceptedOrgRemoval) *apps.Service {
 				a.restore(t)
 				return nil
 			},
-			state: dropped, code: provider.CodeRemovalPending, supersededAudits: 1, member: true, drain: true,
+			snooze: 5 * time.Second, state: pending, code: provider.CodeRemovalPending, member: true,
 		},
 		{
 			name: "restored after GitHub finished: applied, then invited again",
@@ -951,19 +963,22 @@ func TestGitHubAcceptedRemovalStateMachine(t *testing.T) {
 			state: applied, appliedAudits: 1, invited: true, drain: true,
 		},
 		{
-			name: "restored with a new invitation: superseded, invitation kept",
+			name: "restored, replanned before the confirmation: the grant waits, then runs",
 			event: func(t *testing.T, a *acceptedOrgRemoval) *apps.Service {
 				a.h.gh.RemoveMember(1001)
 				a.restore(t)
 				if err := a.h.svc.RunProvisionPerson(a.h.ctx, apps.ProvisionPersonArgs{InstanceID: a.h.inst.ID, PersonID: a.alice.ID}, 1, 8); err != nil {
 					t.Fatal(err)
 				}
-				if len(a.h.gh.Invitations()) != 1 {
-					t.Fatalf("invitations = %+v, want the restored one", a.h.gh.Invitations())
+				// The invitation waits for the accepted removal: it could
+				// otherwise be mistaken for the old access, or be removed by it.
+				if len(a.h.gh.Invitations()) != 0 {
+					t.Fatalf("invitations = %+v, want none before the confirmation", a.h.gh.Invitations())
 				}
+				a.wantResult(t, apps.StatusQueued, provider.CodeRemovalPending)
 				return nil
 			},
-			state: dropped, code: provider.CodeRemovalPending, supersededAudits: 1, invited: true, drain: true,
+			state: applied, appliedAudits: 1, invited: true, drain: true,
 		},
 		{
 			name: "restored, an enterprise team keeps the membership: superseded",
@@ -1075,5 +1090,51 @@ func TestGitHubAcceptedRemovalIsNeverReissued(t *testing.T) {
 	}
 	if _, ok := h.gh.Members()[1001]; ok {
 		t.Fatal("alice is still a member")
+	}
+}
+
+// TestGitHubLateRemovalAfterRestorationIsReconciled: access is restored while
+// GitHub still serves a membership whose removal it accepted. The removal
+// keeps being watched (a still-served target is not proof that the queued
+// DELETE stopped); when it lands late, the confirmation audits it and the
+// person is planned again, so the restored access comes back without waiting
+// for a drift check.
+func TestGitHubLateRemovalAfterRestorationIsReconciled(t *testing.T) {
+	a := newAcceptedOrgRemoval(t, 1000)
+	h := a.h
+	a.restore(t)
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: h.inst.ID, PersonID: a.alice.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	a.wantResult(t, apps.StatusQueued, provider.CodeRemovalPending)
+	err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 2, 8)
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) || snooze.Duration != 5*time.Second {
+		t.Fatalf("guard run while GitHub still serves the membership = %v, want a 5s snooze", err)
+	}
+	if _, ok := h.gh.Members()[1001]; !ok {
+		t.Fatal("alice lost the membership before GitHub's queued removal landed")
+	}
+
+	// GitHub's queued DELETE lands now, after the restoration.
+	h.gh.RemoveMember(1001)
+	h.drain()
+	if state, _ := a.row(t); state != "applied" {
+		t.Fatalf("removal = %s, want applied", state)
+	}
+	if n := a.audits(audit.ProvisioningActionApplied); n != 1 {
+		t.Fatalf("applied audit entries = %d, want 1", n)
+	}
+	if n := a.audits(audit.ProvisioningRemovalSuperseded); n != 0 {
+		t.Fatalf("superseded audit entries = %d, want 0", n)
+	}
+	if len(h.gh.Invitations()) != 1 {
+		t.Fatalf("invitations = %+v, want alice invited again", h.gh.Invitations())
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state IN ('pending', 'held')`, a.alice.ID); n != 0 {
+		t.Fatalf("open removals = %d, want 0", n)
+	}
+	if n := a.fault.deleteCount(); n != 1 {
+		t.Fatalf("DELETEs = %d, want 1", n)
 	}
 }

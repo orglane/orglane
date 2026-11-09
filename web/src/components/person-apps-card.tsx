@@ -127,7 +127,7 @@ export function PersonAppsCard({
                             {explainStep(intl, r.employeeStep) ?? r.employeeStep}
                           </span>
                         )}
-                        {r.status === "failed" && (
+                        {(r.status === "failed" || (r.status === "queued" && r.errorCode)) && (
                           <span className="text-xs">
                             {explainCode(intl, r.errorCode) ??
                               intl.formatMessage(guidanceMessages.resultFailed)}
