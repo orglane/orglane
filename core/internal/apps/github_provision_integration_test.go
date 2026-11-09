@@ -617,9 +617,12 @@ func planGitHubRemoval(t *testing.T, h *linkHarness, p store.Person) {
 
 // exerciseGitHubAcceptedRemoval drives an accepted removal whose confirmation
 // read fails: the acceptance is durable across a restart, a transient failure
-// on the job's last attempt keeps it pending, and the eventual confirmation
-// writes exactly one audit entry. The removal must already be planned.
-func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfterDelete, p store.Person, externalID, deletePath, confirmPath string) {
+// on the job's last attempt keeps it pending, a desired-state change keeps the
+// row and confirms it read-only (a restored grant is not removed again), and
+// the eventual confirmation writes exactly one audit entry. The removal must
+// already be planned. grant restores the desired access on GitHub, granted
+// reports whether it is still there, and remove completes the accepted removal.
+func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfterDelete, p store.Person, externalID, deletePath, confirmPath string, grant func(), granted func() bool, remove func()) {
 	t.Helper()
 	var key string
 	if err := h.pool.QueryRow(h.ctx, `SELECT action_key FROM provisioning_removals WHERE person_id = $1 AND state = 'pending'`, p.ID).Scan(&key); err != nil {
@@ -654,6 +657,24 @@ func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfte
 		t.Fatalf("accepted removals after the plan cleanup = %d, want 1", n)
 	}
 
+	// Access is restored while the accepted removal is unconfirmed. The
+	// changed desired state keeps the row, but the confirmation must only read:
+	// a membership or invitation the new grant created is never removed again.
+	grant()
+	err = h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 2, 8)
+	if !errors.As(err, &snooze) || snooze.Duration != 5*time.Second {
+		t.Fatalf("read-only confirmation after access returned = %v, want a 5s snooze", err)
+	}
+	if !granted() {
+		t.Fatal("the confirmation removed the restored grant")
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending'`, p.ID); n != 1 {
+		t.Fatalf("removals after the read-only confirmation = %d, want 1 pending", n)
+	}
+	if n := audits(); n != 0 {
+		t.Fatalf("audit entries before the confirmation = %d, want 0", n)
+	}
+
 	// A restart keeps the acceptance; a transient failure on the retry's first
 	// read must not fail the removal on the job's last attempt.
 	svc := h.restartCore()
@@ -671,6 +692,7 @@ func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfte
 	}
 
 	fault.clear()
+	remove()
 	if err := svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 3, 8); err != nil {
 		t.Fatal(err)
 	}
@@ -700,7 +722,10 @@ func TestGitHubRemovalConfirmationFailureKeepsAcceptance(t *testing.T) {
 		h.leave(platform, alice)
 		planGitHubRemoval(t, h, alice)
 		path := "/orgs/" + h.gh.Org().Login + "/memberships/alice-gh"
-		exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", path, path)
+		grant := func() { h.gh.AddMember(1001, githubfake.RoleMember) }
+		granted := func() bool { return h.gh.Members()[1001] == githubfake.RoleMember }
+		remove := func() { h.gh.RemoveMember(1001) }
+		exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", path, path, grant, granted, remove)
 	})
 	t.Run("team membership", func(t *testing.T) {
 		h, fault := newFaultyGitHubHarness(t)
@@ -715,7 +740,10 @@ func TestGitHubRemovalConfirmationFailureKeepsAcceptance(t *testing.T) {
 		h.leave(platform, alice)
 		planGitHubRemoval(t, h, alice)
 		path := "/organizations/" + strconv.FormatInt(h.gh.Org().ID, 10) + "/team/" + strconv.FormatInt(platformRef, 10) + "/memberships/alice-gh"
-		exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", path, path)
+		grant := func() { h.gh.SetTeamMember(platformRef, 1001, githubfake.TeamMember) }
+		granted := func() bool { return h.gh.TeamMembers(platformRef)[1001] != "" }
+		remove := func() { h.gh.RemoveTeamMember(platformRef, 1001) }
+		exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", path, path, grant, granted, remove)
 	})
 	t.Run("invitation", func(t *testing.T) {
 		h, fault := newFaultyGitHubHarness(t)
@@ -732,6 +760,9 @@ func TestGitHubRemovalConfirmationFailureKeepsAcceptance(t *testing.T) {
 		planGitHubRemoval(t, h, alice)
 		deletePath := "/orgs/" + h.gh.Org().Login + "/invitations/" + strconv.FormatInt(inv[0].ID, 10)
 		confirmPath := "/orgs/" + h.gh.Org().Login + "/memberships/alice-gh"
-		exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", deletePath, confirmPath)
+		grant := func() { h.gh.InviteAs(1001, h.gh.BotLogin()) }
+		granted := func() bool { return len(h.gh.Invitations()) > 0 }
+		remove := func() { h.gh.RemoveMember(1001) }
+		exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", deletePath, confirmPath, grant, granted, remove)
 	})
 }

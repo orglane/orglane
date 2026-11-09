@@ -162,7 +162,11 @@ accounts.
   login's 404 look like removal. A transient confirmation read failure (5xx,
   timeout, rate limit, renewed token) keeps the accepted removal pending too,
   preserving the provider's retry delay; it never loses the acceptance or fails
-  the removal on the job's last attempt.
+  the removal on the job's last attempt. An accepted removal is never moved
+  into a held batch and is never dropped when the desired access changes: it
+  stays on the confirmation path, and while the new plan may restore access
+  the core asks only for a read-only confirmation, so a restored membership or
+  invitation is never removed again.
   A `200` whose
   [`direct_membership`](https://docs.github.com/en/rest/orgs/members#get-organization-membership-for-a-user)
   is false is a membership granted only by an enterprise team; GitHub documents

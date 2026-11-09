@@ -322,6 +322,11 @@ type Action struct {
 	Params map[string]string `json:"params,omitempty"` // non-secret
 	// Removal is true for actions that take access away (removal guard).
 	Removal bool `json:"removal,omitempty"`
+	// ConfirmOnly asks a removal the provider accepted earlier to be confirmed
+	// by a read only, never by issuing the removal again: the target may be a
+	// new grant since the desired access changed. Adapters that return
+	// CodeRemovalPending honor it; others never receive it.
+	ConfirmOnly bool `json:"confirm_only,omitempty"`
 }
 
 // ActionOutcome is the result of UserProvisioner.Apply.

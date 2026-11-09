@@ -663,11 +663,11 @@ func (a *Adapter) Apply(ctx context.Context, env provider.Env, inst provider.Ins
 	case provider.ActionInvite:
 		return o.invite(ctx, *u)
 	case provider.ActionCancelInvitation:
-		return o.cancelInvitation(ctx, *u)
+		return o.cancelInvitation(ctx, *u, act.ConfirmOnly)
 	case provider.ActionRemoveFromOrg:
-		return o.removeFromOrg(ctx, *u)
+		return o.removeFromOrg(ctx, *u, act.ConfirmOnly)
 	case provider.ActionAddToTeam, provider.ActionRemoveFromTeam:
-		return o.teamMember(ctx, *u, act.Params[paramTeam], act.Kind == provider.ActionAddToTeam)
+		return o.teamMember(ctx, *u, act.Params[paramTeam], act.Kind == provider.ActionAddToTeam, act.ConfirmOnly)
 	}
 	return provider.ActionOutcome{}, &provider.Error{Code: "unsupported_action", Err: fmt.Errorf("github: %s", act.Kind)}
 }
@@ -728,8 +728,21 @@ func (o *org) invite(ctx context.Context, u ghUser) (provider.ActionOutcome, err
 	return provider.ActionOutcome{}, &provider.Error{Code: CodeInviteRefused, Err: err}
 }
 
-func (o *org) cancelInvitation(ctx context.Context, u ghUser) (provider.ActionOutcome, error) {
+func (o *org) cancelInvitation(ctx context.Context, u ghUser, confirmOnly bool) (provider.ActionOutcome, error) {
 	out := provider.ActionOutcome{Link: u.account()}
+	if confirmOnly {
+		// The cancellation was accepted earlier. Only confirm it: access may
+		// have been restored, so a pending invitation now may be the new grant
+		// and must not be canceled.
+		mem, err := o.membershipAfterRemoval(ctx, strconv.FormatInt(u.ID, 10))
+		if err != nil {
+			return out, acceptedButUnconfirmed(err)
+		}
+		if mem != nil && mem.State == "pending" {
+			return out, removalPending("invitation")
+		}
+		return out, nil
+	}
 	inv, err := o.invitation(ctx, u)
 	if err != nil || inv == nil {
 		return out, err
@@ -767,8 +780,21 @@ func (o *org) cancelInvitation(ctx context.Context, u ghUser) (provider.ActionOu
 
 // removeFromOrg removes u's membership (or invitation), never an owner's or
 // a billing manager's.
-func (o *org) removeFromOrg(ctx context.Context, u ghUser) (provider.ActionOutcome, error) {
+func (o *org) removeFromOrg(ctx context.Context, u ghUser, confirmOnly bool) (provider.ActionOutcome, error) {
 	out := provider.ActionOutcome{Link: u.account()}
+	if confirmOnly {
+		// The removal was accepted earlier. Only confirm it: access may have
+		// been restored, so a present membership may be the new grant and must
+		// not be removed again.
+		after, err := o.membershipAfterRemoval(ctx, strconv.FormatInt(u.ID, 10))
+		if err != nil {
+			return out, acceptedButUnconfirmed(err)
+		}
+		if after != nil {
+			return out, removalPending("organization membership")
+		}
+		return out, nil
+	}
 	mem, err := o.membership(ctx, u)
 	if err != nil || mem == nil {
 		return out, err
@@ -835,8 +861,20 @@ func (o *org) removeFromOrg(ctx context.Context, u ghUser) (provider.ActionOutco
 // teamMember ensures u's membership (add) or its absence (remove) in the
 // team with the ID, read now. An addition needs an organization membership
 // or invitation first; a removal never takes a maintainer out.
-func (o *org) teamMember(ctx context.Context, u ghUser, teamID string, add bool) (provider.ActionOutcome, error) {
+func (o *org) teamMember(ctx context.Context, u ghUser, teamID string, add, confirmOnly bool) (provider.ActionOutcome, error) {
 	out := provider.ActionOutcome{Link: u.account()}
+	if !add && confirmOnly {
+		// The removal was accepted earlier. Only confirm it: a present team
+		// membership may be the restored grant and must not be removed again.
+		after, err := o.teamMembershipAfterRemoval(ctx, teamID, strconv.FormatInt(u.ID, 10))
+		if err != nil {
+			return out, acceptedButUnconfirmed(err)
+		}
+		if after != nil {
+			return out, removalPending("team membership")
+		}
+		return out, nil
+	}
 	if add {
 		mem, err := o.membership(ctx, u)
 		if err != nil {

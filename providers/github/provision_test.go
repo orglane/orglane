@@ -1051,3 +1051,68 @@ func TestMembersPaged(t *testing.T) {
 		t.Fatalf("members = %d, %v", len(members), err)
 	}
 }
+
+// An accepted removal confirmed after the desired access changed is read-only:
+// a membership or invitation restored by the new plan is never removed again.
+func TestProvisionConfirmOnlyRemovalDoesNotRemove(t *testing.T) {
+	t.Run("organization membership", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+		f.AddMember(70, githubfake.RoleMember)
+		act := plan2(provider.ActionRemoveFromOrg, "70")
+		act.ConfirmOnly = true
+		out, err := a.Apply(t.Context(), env, inst, act)
+		if c, retryable, _ := provider.Classify(err); c != CodeRemovalPending || !retryable || out.Changed {
+			t.Fatalf("confirm-only removal = %+v, %v; want retryable %s", out, err, CodeRemovalPending)
+		}
+		if f.Members()[70] != githubfake.RoleMember {
+			t.Fatal("the confirm-only removal removed the membership")
+		}
+		f.RemoveMember(70)
+		if out, err := a.Apply(t.Context(), env, inst, act); err != nil || out.Changed {
+			t.Fatalf("confirmed removal = %+v, %v", out, err)
+		}
+	})
+	t.Run("team membership", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		team := syncTeam(t, a, env, inst, "platform")
+		teamID := mustInt(team.ExternalRef)
+		f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+		f.AddMember(70, githubfake.RoleMember)
+		f.SetTeamMember(teamID, 70, githubfake.TeamMember)
+		act := teamAction(provider.ActionRemoveFromTeam, "70", ghTeam{ID: teamID, Slug: team.Name})
+		act.ConfirmOnly = true
+		out, err := a.Apply(t.Context(), env, inst, act)
+		if c, retryable, _ := provider.Classify(err); c != CodeRemovalPending || !retryable || out.Changed {
+			t.Fatalf("confirm-only team removal = %+v, %v; want retryable %s", out, err, CodeRemovalPending)
+		}
+		if f.TeamMembers(teamID)[70] == "" {
+			t.Fatal("the confirm-only team removal removed the membership")
+		}
+		f.RemoveTeamMember(teamID, 70)
+		if out, err := a.Apply(t.Context(), env, inst, act); err != nil || out.Changed {
+			t.Fatalf("confirmed team removal = %+v, %v", out, err)
+		}
+	})
+	t.Run("invitation", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+		f.InviteAs(70, f.BotLogin())
+		act := accountAction(provider.ActionCancelInvitation, "70", true)
+		act.ConfirmOnly = true
+		out, err := a.Apply(t.Context(), env, inst, act)
+		if c, retryable, _ := provider.Classify(err); c != CodeRemovalPending || !retryable || out.Changed {
+			t.Fatalf("confirm-only cancellation = %+v, %v; want retryable %s", out, err, CodeRemovalPending)
+		}
+		if len(f.Invitations()) != 1 {
+			t.Fatalf("invitations = %+v, want the new pending invitation", f.Invitations())
+		}
+		f.RemoveMember(70)
+		if out, err := a.Apply(t.Context(), env, inst, act); err != nil || out.Changed {
+			t.Fatalf("confirmed cancellation = %+v, %v", out, err)
+		}
+	})
+}

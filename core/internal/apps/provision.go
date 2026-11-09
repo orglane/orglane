@@ -1004,15 +1004,25 @@ func (s *Service) selectRemovals(ctx context.Context, q *store.Queries, inst Ins
 	if err != nil {
 		return nil, nil, fmt.Errorf("apps: list removals: %w", err)
 	}
-	var freshPending []store.ProvisioningRemoval
+	var freshPending, acceptedPending []store.ProvisioningRemoval
 	for _, r := range pending {
 		ok, err := fresh(r)
 		if err != nil {
 			return nil, nil, err
 		}
-		if ok {
+		if !ok {
+			continue
+		}
+		if r.ErrorCode != nil && *r.ErrorCode == provider.CodeRemovalPending {
+			acceptedPending = append(acceptedPending, r)
+		} else {
 			freshPending = append(freshPending, r)
 		}
+	}
+	// A removal the provider already accepted is in flight: confirm it now,
+	// never move it into a held batch that an admin would have to release.
+	for _, r := range acceptedPending {
+		toApply = append(toApply, queuedRemoval{removal: r, state: removalPending})
 	}
 	if len(freshPending) == 0 {
 		return toApply, batches, nil
@@ -1122,18 +1132,19 @@ var errRemovalFailed = errors.New("apps: the removal failed")
 // person replanned, in one transaction; so is an applied removal and its
 // person's follow-up job (and audit entry). A stale removal the provider has
 // already accepted (removal_pending) is not dropped: the provider may still
-// complete it, so it is confirmed and audited instead. A retryable provider
-// error that asks for a delay (a rate limit, or a removal the provider
-// accepted but has not confirmed) snoozes the job; provider.CodeRemovalPending
-// is remembered on the pending row so the later attempt that confirms the
-// removal audits the earlier accepted change even though it changes nothing
-// itself. A transient failure on a later check of such an accepted removal
-// keeps it pending with the confirmation delay, even on the job's last
-// attempt. A permanent failure (or the last attempt's retryable one without
-// RetryAfter and without an earlier acceptance) fails the person's result,
-// which then waits for a desired-state change or an admin's retry. It returns
-// the retryable provider error to retry the job with (the removal stays
-// open), or errInstanceInactive.
+// complete it, so it is confirmed and audited instead, read-only
+// (Action.ConfirmOnly) because a changed desired state may have restored the
+// access. A retryable provider error that asks for a delay (a rate limit, or a
+// removal the provider accepted but has not confirmed) snoozes the job;
+// provider.CodeRemovalPending is remembered on the pending row so the later
+// attempt that confirms the removal audits the earlier accepted change even
+// though it changes nothing itself. A transient failure on a later check of
+// such an accepted removal keeps it pending with the confirmation delay, even
+// on the job's last attempt. A permanent failure (or the last attempt's
+// retryable one without RetryAfter and without an earlier acceptance) fails
+// the person's result, which then waits for a desired-state change or an
+// admin's retry. It returns the retryable provider error to retry the job with
+// (the removal stays open), or errInstanceInactive.
 //
 // The person's lock is taken on held, the removals lock's connection (lock
 // order: removals, then person), so the guard never waits for a second pool
@@ -1173,10 +1184,13 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 	}
 	// A removal the provider already accepted is confirmed and audited even if
 	// the desired access changed: dropping it would lose the acceptance while
-	// the provider may still complete the removal. It is never reported as
+	// the provider may still complete the removal. A changed desired state also
+	// means the target may be a new grant (access restored): the confirmation
+	// may only read, never issue the removal again. It is never reported as
 	// applied before the confirmation.
 	acceptedEarlier := cur.ErrorCode != nil && *cur.ErrorCode == provider.CodeRemovalPending
-	if !acceptedEarlier && (!bytes.Equal(d.hash, cur.DesiredHash) || !removalManaged(inst, d, a)) {
+	stale := !bytes.Equal(d.hash, cur.DesiredHash) || !removalManaged(inst, d, a)
+	if !acceptedEarlier && stale {
 		return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			q := store.New(tx)
 			if _, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalDropped}); err != nil {
@@ -1184,6 +1198,9 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 			}
 			return s.enqueuePerson(ctx, tx, q, inst.ID, r.PersonID, false)
 		})
+	}
+	if acceptedEarlier && stale {
+		a.ConfirmOnly = true
 	}
 	out, applyErr := prov.Apply(ctx, held.env(inst), inst.View(), a)
 	if applyErr != nil {

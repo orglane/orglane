@@ -780,3 +780,60 @@ func alicePerson(h *harness) store.Person {
 	}
 	return p
 }
+
+// TestAcceptedRemovalIsNotHeldWithNewRemovals: a removal the provider already
+// accepted must stay on the confirmation path when other removals cross the
+// guard's threshold. It is applied/confirmed, not swept into the held batch
+// that an admin would have to release.
+func TestAcceptedRemovalIsNotHeldWithNewRemovals(t *testing.T) {
+	h := newHarness(t)
+	inst := h.instance(nil)
+	people := []store.Person{h.person("alice"), h.person("bob"), h.person("carol"), h.person("dave"), h.person("erin")}
+	h.drain()
+	alice := people[0]
+
+	// One accepted removal first: the provider answers removal_pending, so the
+	// row keeps the durable acceptance marker.
+	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, alice.ID, identity.StatusSuspended); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: alice.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	h.tp.Fail("apply:remove_from_org", &provider.Error{Code: provider.CodeRemovalPending, Retryable: true, RetryAfter: 5 * time.Second})
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8); err == nil {
+		t.Fatal("the pending removal did not snooze")
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending' AND error_code = $2`, alice.ID, provider.CodeRemovalPending); n != 1 {
+		t.Fatalf("accepted removals = %d, want 1", n)
+	}
+
+	// Four more removals cross the threshold of three. The accepted row must
+	// still be confirmed; only the four new ones are held.
+	for _, p := range people[1:] {
+		if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, p.ID, identity.StatusSuspended); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: p.ID}, 1, 8); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 2, 8); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'applied'`, alice.ID); n != 1 {
+		t.Fatalf("accepted removal applied = %d, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM audit_entries WHERE action = $1 AND metadata->>'key' = 'remove_from_org'`, string(audit.ProvisioningActionApplied)); n != 1 {
+		t.Fatalf("audit entries = %d, want 1 for the accepted removal", n)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'held'`, alice.ID); n != 0 {
+		t.Fatalf("accepted removal held = %d, want 0", n)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE instance_id = $1 AND state = 'held'`, inst.ID); n != 4 {
+		t.Fatalf("held removals = %d, want 4", n)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removal_batches WHERE instance_id = $1 AND state = 'held'`, inst.ID); n != 1 {
+		t.Fatalf("held batches = %d, want 1", n)
+	}
+}

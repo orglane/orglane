@@ -248,6 +248,25 @@ func (f *Fake) DeleteUser(id int64) {
 	f.leave(id)
 }
 
+// RemoveMember ends a user's organization membership (and its invitations and
+// team memberships) without deleting the account, as if GitHub completed an
+// accepted removal.
+func (f *Fake) RemoveMember(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.leave(id)
+}
+
+// RemoveTeamMember removes a user's membership of a team without touching the
+// account or the organization.
+func (f *Fake) RemoveTeamMember(teamID, userID int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t := f.state.teams[teamID]; t != nil {
+		delete(t.members, userID)
+	}
+}
+
 // QueueOrgRemovals makes organization membership removals asynchronous for
 // tests: the DELETE still answers 204, but the membership (and its team
 // memberships) remains visible for the next readbacks membership reads. The
