@@ -79,6 +79,12 @@ func TestAppsAPIPermissions(t *testing.T) {
 		{"PATCH", base, map[string]any{"displayName": "Code"}, authz.AppsManage, 200},
 		{"POST", base + "/setup", nil, authz.AppsManage, 409}, // connected: not supported
 		{"GET", base + "/operations", nil, authz.AppsManage, 200},
+		{"GET", "/api/v1/apps/agent", nil, authz.AppsManage, 200},
+		// Connected providers are not installed, removed or reinstalled
+		// here (not_supported): the caller passed the permission check.
+		{"POST", "/api/v1/apps/instances", map[string]any{"provider": "testprovider"}, authz.AppsManage, 409},
+		{"DELETE", base, nil, authz.AppsManage, 409},
+		{"POST", base + "/reinstall", nil, authz.AppsManage, 409},
 		{"GET", "/api/v1/apps/instances/" + uuid.NewString() + "/operations", nil, authz.AppsManage, 404},
 		{"POST", base + "/credentials/webhook_secret/rotate", nil, authz.AppsManage, 202},
 		{"POST", base + "/credentials/api_token/abandon", nil, authz.AppsManage, 409},                                       // no rotation
@@ -123,7 +129,7 @@ func TestAppsAPIPermissions(t *testing.T) {
 			if caller == owner && strings.HasSuffix(op.path, "/rotate") {
 				want = http.StatusConflict
 			}
-			if caller == owner && op.method == "DELETE" {
+			if caller == owner && op.method == "DELETE" && strings.Contains(op.path, "/team-mappings/") {
 				want = http.StatusNotFound
 			}
 			expectStatusT(t, caller.req(op.method, op.path, op.body), want)
@@ -171,6 +177,28 @@ func TestAppsAPIPermissions(t *testing.T) {
 	expectStatusT(t, owner.req("GET", base+"/provisioning?offset=3000000000", nil), http.StatusBadRequest)
 	expectStatusT(t, owner.req("GET", base+"/operations?limit=101", nil), http.StatusBadRequest)
 	expectStatusT(t, owner.req("GET", base+"/operations?offset=3000000000", nil), http.StatusBadRequest)
+	// Unknown providers are refused; a connected instance is not purged here.
+	expectStatusT(t, owner.req("POST", "/api/v1/apps/instances", map[string]any{"provider": "nope"}), http.StatusConflict)
+	expectStatusT(t, owner.req("DELETE", base+"?purge=true&confirm="+inst.Key, nil), http.StatusConflict)
+	// A managed instance's purge needs the key's confirmation (400 before
+	// anything else), checked before its state.
+	managed, err := e.stack.Apps.CreateInstance(ctx, audit.System, apps.NewInstance{Provider: "testmanaged"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedBase := "/api/v1/apps/instances/" + managed.ID.String()
+	expectStatusT(t, owner.req("DELETE", managedBase+"?purge=true", nil), http.StatusBadRequest)
+	expectStatusT(t, owner.req("DELETE", managedBase+"?purge=true&confirm=wrong", nil), http.StatusBadRequest)
+	expectStatusT(t, owner.req("DELETE", managedBase+"?purge=true&confirm="+managed.Key, nil), http.StatusConflict) // installing: not removable yet
+	var agent struct {
+		Enabled, Connected bool
+		Code               string
+	}
+	r0 := owner.req("GET", "/api/v1/apps/agent", nil)
+	r0.json(t, &agent)
+	if agent.Enabled || agent.Connected || agent.Code != "agent_unavailable" {
+		t.Errorf("agent status without managed services = %s", r0.body)
+	}
 	// Problem details carry a stable code.
 	var problem struct {
 		Code string `json:"code"`

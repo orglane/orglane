@@ -46,6 +46,21 @@ func (q *Queries) AppCredentialCallInFlight(ctx context.Context, arg AppCredenti
 	return exists, err
 }
 
+const clearAppInstanceRetained = `-- name: ClearAppInstanceRetained :execrows
+UPDATE app_instances SET data_retained = false, updated_at = now()
+WHERE id = $1 AND state = 'removed' AND data_retained
+`
+
+// A purge of a retained instance: from here its data counts as being
+// deleted (a failed purge leaves it failed; removing it again retains it).
+func (q *Queries) ClearAppInstanceRetained(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, clearAppInstanceRetained, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const clearDefaultAppBinding = `-- name: ClearDefaultAppBinding :exec
 UPDATE app_bindings SET is_default = false WHERE capability = $1 AND is_default
 `
@@ -241,6 +256,31 @@ func (q *Queries) CountUnmanagedAccounts(ctx context.Context, instanceID uuid.UU
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteAppInstanceBindings = `-- name: DeleteAppInstanceBindings :execrows
+DELETE FROM app_bindings WHERE instance_id = $1
+`
+
+func (q *Queries) DeleteAppInstanceBindings(ctx context.Context, instanceID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAppInstanceBindings, instanceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteAppInstanceCredentials = `-- name: DeleteAppInstanceCredentials :execrows
+DELETE FROM app_credentials WHERE instance_id = $1
+`
+
+// A purge deletes every credential version of the instance.
+func (q *Queries) DeleteAppInstanceCredentials(ctx context.Context, instanceID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAppInstanceCredentials, instanceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteAppTeamMapping = `-- name: DeleteAppTeamMapping :execrows
@@ -2879,6 +2919,40 @@ func (q *Queries) ListRealmAccountLinks(ctx context.Context, arg ListRealmAccoun
 	return items, nil
 }
 
+const listReservedAppInstanceHosts = `-- name: ListReservedAppInstanceHosts :many
+
+SELECT id, base_url::text AS base_url FROM app_instances
+WHERE (state <> 'removed' OR data_retained) AND base_url IS NOT NULL
+`
+
+type ListReservedAppInstanceHostsRow struct {
+	ID      uuid.UUID
+	BaseUrl string
+}
+
+// Install, removal and reinstall of managed instances (#61) ----------------
+// Base URLs of the instances that hold their key (and so their host): not
+// removed, or removed with their data retained.
+func (q *Queries) ListReservedAppInstanceHosts(ctx context.Context) ([]ListReservedAppInstanceHostsRow, error) {
+	rows, err := q.db.Query(ctx, listReservedAppInstanceHosts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReservedAppInstanceHostsRow{}
+	for rows.Next() {
+		var i ListReservedAppInstanceHostsRow
+		if err := rows.Scan(&i.ID, &i.BaseUrl); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRetainedAppCredentials = `-- name: ListRetainedAppCredentials :many
 SELECT instance_id, name, version, ciphertext, state, created_at, activated_at, retire_at, id, stuck_reported_at, ended_at, drift_detected_at FROM app_credentials
 WHERE instance_id = $1 AND name = $2
@@ -3437,6 +3511,45 @@ type SetAppInstanceObservationParams struct {
 // instance reports no status for it, so nothing is written.)
 func (q *Queries) SetAppInstanceObservation(ctx context.Context, arg SetAppInstanceObservationParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setAppInstanceObservation, arg.ObservedGeneration, arg.PackageVersion, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setAppInstanceReinstalling = `-- name: SetAppInstanceReinstalling :execrows
+UPDATE app_instances
+SET state = 'installing', data_retained = false, removed_at = NULL,
+    health = 'unknown', health_code = NULL, health_checked_at = now(), updated_at = now()
+WHERE id = $1 AND state = 'removed' AND data_retained
+`
+
+// A removed instance with retained data comes back under the same ID.
+func (q *Queries) SetAppInstanceReinstalling(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, setAppInstanceReinstalling, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setAppInstanceRemoved = `-- name: SetAppInstanceRemoved :execrows
+UPDATE app_instances
+SET state = 'removed', data_retained = $1, removed_at = now(),
+    health = 'unknown', health_code = NULL, health_checked_at = now(), updated_at = now()
+WHERE id = $2 AND state = 'removing' AND desired_generation = $3
+`
+
+type SetAppInstanceRemovedParams struct {
+	DataRetained bool
+	ID           uuid.UUID
+	Generation   int64
+}
+
+// The removal's operation succeeded. Conditional on the state and on the
+// generation that removed it, so a stale result changes nothing.
+func (q *Queries) SetAppInstanceRemoved(ctx context.Context, arg SetAppInstanceRemovedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAppInstanceRemoved, arg.DataRetained, arg.ID, arg.Generation)
 	if err != nil {
 		return 0, err
 	}

@@ -78,8 +78,10 @@ var transitions = map[string][]string{
 	StateUpgrading:    {StateActive, StateDegraded, StateFailed},
 	StateFailed:       {StateInstalling, StateRemoving},
 	StateDisconnected: {StateActive, StateRemoving, StateRemoved},
-	StateRemoving:     {StateRemoved},
-	StateRemoved:      {StateInstalling},
+	// A failed removal (remove_failed) can be removed again from failed.
+	StateRemoving: {StateRemoved, StateFailed},
+	// removed -> removing: purging a retained instance.
+	StateRemoved: {StateInstalling, StateRemoving},
 }
 
 // Queue inserts jobs; *river.Client is one.
@@ -129,15 +131,31 @@ type Config struct {
 	// AgentWatchInterval is how often WatchAgent asks the agent for its boot
 	// ID. Defaults to 30s.
 	AgentWatchInterval time.Duration
+	// AgentQueueTimeout is how long an agent operation may stay queued
+	// before the core gives up on it (agent_stalled). The agent runs one
+	// operation per instance at a time, so a long upgrade ahead of it is
+	// the only legitimate wait. Defaults to an hour.
+	AgentQueueTimeout time.Duration
+	// DomainBase is config domain.base, for installation-dependent setting
+	// defaults (provider.SettingDefaulter).
+	DomainBase string
+	// CoreVersion is the core's version: the agent must run the same one.
+	CoreVersion string
+	// Resolver looks up hosts for the DNS check of an install in domain
+	// mode. Defaults to NewDNSResolver().
+	Resolver Resolver
 	// InstallPreflight, if set, checks an install before anything is
 	// recorded (#61: host, DNS, agent health, resource hints); its error is
-	// returned by Install.
-	InstallPreflight func(ctx context.Context, plan InstallPlan) error
+	// returned by Install. The budget it returns (the host's resources) is
+	// checked again in the install transaction, under the install lock.
+	InstallPreflight func(ctx context.Context, plan InstallPlan) (InstallBudget, error)
 }
 
-// OIDCClients registers OIDC clients in the caller's transaction.
+// OIDCClients registers and deletes OIDC clients in the caller's
+// transaction.
 type OIDCClients interface {
 	CreateOIDCClientTx(ctx context.Context, q *store.Queries, actor audit.Actor, in identity.NewOIDCClient) (store.OidcClient, string, error)
+	DeleteOIDCClientTx(ctx context.Context, q *store.Queries, actor audit.Actor, id string) error
 }
 
 // Service changes and reads everything the provider framework owns.
@@ -186,6 +204,10 @@ func NewService(pool *pgxpool.Pool, reg *Registry, keyring *crypto.Keyring, cfg 
 	cfg.AgentPollInterval = cmp.Or(cfg.AgentPollInterval, defaultAgentPollInterval)
 	cfg.AgentRetryMax = cmp.Or(cfg.AgentRetryMax, defaultAgentRetryMax)
 	cfg.AgentWatchInterval = cmp.Or(cfg.AgentWatchInterval, defaultAgentWatchInterval)
+	cfg.AgentQueueTimeout = cmp.Or(cfg.AgentQueueTimeout, defaultAgentQueueTimeout)
+	if cfg.Resolver == nil {
+		cfg.Resolver = NewDNSResolver()
+	}
 	return &Service{
 		pool:          pool,
 		reg:           reg,

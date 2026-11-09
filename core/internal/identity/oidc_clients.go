@@ -2,12 +2,15 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/crypto"
@@ -160,6 +163,41 @@ func (s *Service) CreateOIDCClientTx(ctx context.Context, q *store.Queries, acto
 		return store.OidcClient{}, "", err
 	}
 	return client, secret, nil
+}
+
+// DeleteOIDCClient deletes a client and everything issued through it: its
+// pending authorization requests, grants, access tokens and refresh tokens
+// (the client's foreign keys cascade). Tokens it issued stop working at once,
+// because the rows are gone. A purge of an app instance releases its
+// `app-<key>` client this way; a retained removal keeps it for the reinstall.
+func (s *Service) DeleteOIDCClient(ctx context.Context, actor audit.Actor, id string) error {
+	return s.inTx(ctx, func(q *store.Queries) error {
+		return s.DeleteOIDCClientTx(ctx, q, actor, id)
+	})
+}
+
+// DeleteOIDCClientTx is DeleteOIDCClient in the caller's transaction (q), so
+// the client and its state are deleted together with what the deletion
+// belongs to (an app instance's purge), and its audit entry commits with it.
+func (s *Service) DeleteOIDCClientTx(ctx context.Context, q *store.Queries, actor audit.Actor, id string) error {
+	client, err := q.DeleteOIDCClient(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return notFound(pgx.ErrNoRows, "OIDC client")
+	} else if err != nil {
+		return fmt.Errorf("identity: delete OIDC client: %w", err)
+	}
+	if _, err := audit.Record(ctx, q, audit.Entry{
+		Actor:  actor,
+		Action: audit.OIDCClientDeleted,
+		Target: audit.Target{Kind: audit.TargetOIDCClient, ID: client.ID},
+		Metadata: map[string]any{
+			"name": client.Name, "application_type": client.ApplicationType, "auth_method": client.AuthMethod,
+			"redirect_uris": client.RedirectUris, "grant_types": client.GrantTypes,
+		},
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // validateRedirectURI accepts absolute URIs without fragments: https,

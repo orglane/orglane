@@ -9,6 +9,11 @@ SELECT * FROM oidc_clients WHERE id = @id;
 -- name: ListOIDCClients :many
 SELECT * FROM oidc_clients ORDER BY id;
 
+-- name: DeleteOIDCClient :one
+-- Everything issued through the client (pending authorization requests,
+-- grants, access and refresh tokens) cascades.
+DELETE FROM oidc_clients WHERE id = @id RETURNING *;
+
 -- name: CreateOIDCAuthRequest :one
 INSERT INTO oidc_auth_requests (
     client_id, redirect_uri, scopes, state, nonce, response_type, response_mode,

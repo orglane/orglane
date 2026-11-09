@@ -132,6 +132,17 @@ func (s *Service) mirror(ctx context.Context, ds store.AppDesiredSpec, op store.
 	if aop.Terminal() {
 		return s.finishOp(ctx, ds, op, aop, aop.State, aop.ErrorCode)
 	}
+	// An operation the agent never starts is not polled forever: after
+	// Config.AgentQueueTimeout in queued it ends failed with agent_stalled
+	// (a removal then leaves the instance failed with remove_failed, from
+	// where it can be removed again). This bounds, for example, the
+	// replacement operation the agent returns for a purge retry that races
+	// with the purge's completion (#83).
+	if aop.State == agentapi.OpQueued && !aop.StartedAt.IsZero() && s.cfg.Now().Sub(aop.StartedAt) > s.cfg.AgentQueueTimeout {
+		s.cfg.Logger.WarnContext(ctx, "the agent has not started an operation; giving up on it", "app_instance", op.InstanceID, "generation", ds.Generation, "operation", aop.ID)
+		stalled := *aop
+		return s.finishOp(ctx, ds, op, &stalled, agentapi.OpFailed, CodeAgentStalled)
+	}
 	// Part 2 of #75 hooks in here: an upgrade in awaiting_confirmation is
 	// checked with Lifecycle.CheckHealth through the fenced upstream and
 	// confirmed or aborted (agentclient Confirm and Abort); until then it is
@@ -183,8 +194,8 @@ func (s *Service) finishOp(ctx context.Context, ds store.AppDesiredSpec, op stor
 //
 // Extension points: part 2 of #75 handles upgrades here (a rolled_back
 // operation records the revert spec and re-runs Setup; a succeeded upgrade is
-// audited as app_instance.upgraded), and the removal flow (#61) moves a
-// removing instance to removed when its absent generation succeeded.
+// audited as app_instance.upgraded). A removal (an absent generation) ends
+// in removalFinished (install.go).
 func (s *Service) operationFinished(ctx context.Context, tx pgx.Tx, q *store.Queries, inst Instance, ds store.AppDesiredSpec, state, code string) error {
 	current := ds.Generation == inst.DesiredGeneration
 	switch state {
@@ -196,11 +207,17 @@ func (s *Service) operationFinished(ctx context.Context, tx pgx.Tx, q *store.Que
 		if err := q.SetAppInstanceApplied(ctx, store.SetAppInstanceAppliedParams{ID: inst.ID, Generation: ds.Generation, PackageVersion: version}); err != nil {
 			return fmt.Errorf("apps: record applied generation: %w", err)
 		}
+		if ds.RunState == agentapi.StateAbsent {
+			return s.removalFinished(ctx, tx, q, inst, ds, state)
+		}
 		if current && inst.State == StateInstalling && ds.RunState == agentapi.StateRunning {
 			// Installed: Setup runs and activates the instance (step 4).
 			return s.enqueueSetup(ctx, tx, inst.ID)
 		}
 	case agentapi.OpFailed:
+		if ds.RunState == agentapi.StateAbsent && code != agentapi.CodeSuperseded {
+			return s.removalFinished(ctx, tx, q, inst, ds, state)
+		}
 		if current && inst.State == StateInstalling && code != agentapi.CodeSuperseded {
 			_, err := s.transition(ctx, tx, q, audit.System, inst.ID, StateFailed, CodeInstallFailed)
 			return err

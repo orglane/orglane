@@ -157,6 +157,13 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 		WorkspaceURL: u, IssuerURL: issuer, Logger: logger,
 		Packages: pkgs, OIDC: svc, IngressMode: cfg.Ingress.Mode, ServiceHost: cfg.ServiceHost, SyncInterval: cfg.Agent.SyncInterval,
 		HTTPClient: opts.AppsHTTPClient,
+		DomainBase: cfg.Domain.Base, CoreVersion: opts.Version,
+	}
+	// The production checks of an install (local mode, agent, resources,
+	// DNS) are the service's own; the hook reaches it once it exists.
+	var appsSvc *apps.Service
+	appsCfg.InstallPreflight = func(ctx context.Context, plan apps.InstallPlan) (apps.InstallBudget, error) {
+		return appsSvc.CheckInstall(ctx, plan)
 	}
 	agent, err := agentclient.FromConfig(cfg.Agent, opts.Version)
 	if err != nil {
@@ -165,7 +172,7 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 	if agent != nil { // a nil *Client must not become a non-nil interface
 		appsCfg.Agent = agent
 	}
-	appsSvc := apps.NewService(pool, registry, keyring, appsCfg)
+	appsSvc = apps.NewService(pool, registry, keyring, appsCfg)
 	svc.SetDirectoryObserver(appsSvc)
 	// App clients sign in only people provisioned in their instance.
 	auth.SetClientAccess(appsSvc.OIDCAccess)

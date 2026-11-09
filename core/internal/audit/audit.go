@@ -116,6 +116,10 @@ const (
 	SigningKeyRetired Action = "signing_key.retired"
 
 	OIDCClientCreated Action = "oidc_client.created"
+	// OIDCClientDeleted: a client was deleted with everything issued through
+	// it (pending authorization requests, grants, access and refresh tokens),
+	// so tokens it issued are invalid at once.
+	OIDCClientDeleted Action = "oidc_client.deleted"
 	// OIDCGrantRevoked: every token of an OIDC grant was revoked, for
 	// example because a used refresh token or code was presented again.
 	OIDCGrantRevoked Action = "oidc_grant.revoked"

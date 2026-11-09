@@ -418,6 +418,30 @@ func (q *Queries) DeleteExpiredSigningKeys(ctx context.Context, now time.Time) (
 	return result.RowsAffected(), nil
 }
 
+const deleteOIDCClient = `-- name: DeleteOIDCClient :one
+DELETE FROM oidc_clients WHERE id = $1 RETURNING id, name, secret_hash, application_type, auth_method, redirect_uris, post_logout_redirect_uris, grant_types, created_at, updated_at
+`
+
+// Everything issued through the client (pending authorization requests,
+// grants, access and refresh tokens) cascades.
+func (q *Queries) DeleteOIDCClient(ctx context.Context, id string) (OidcClient, error) {
+	row := q.db.QueryRow(ctx, deleteOIDCClient, id)
+	var i OidcClient
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.SecretHash,
+		&i.ApplicationType,
+		&i.AuthMethod,
+		&i.RedirectUris,
+		&i.PostLogoutRedirectUris,
+		&i.GrantTypes,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const deletePendingOIDCAuthRequest = `-- name: DeletePendingOIDCAuthRequest :exec
 DELETE FROM oidc_auth_requests WHERE id = $1 AND code_used_at IS NULL
 `
