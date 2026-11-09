@@ -143,7 +143,7 @@ const messages = defineMessages({
   purgeExplain: {
     id: "appLifecycle.purgeExplain",
     defaultMessage:
-      "Removes the app and deletes all its data: repositories, accounts, its database and its credentials. This cannot be undone.",
+      "Removes the app and deletes all its data: repositories, accounts, its database, its credentials and its Orglane sign-in. This cannot be undone.",
   },
   purgeType: defineMessage<{ key: string }>({
     id: "appLifecycle.purgeType",
