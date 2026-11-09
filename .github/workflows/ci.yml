@@ -32,10 +32,11 @@ name: CI
 
 on:
   pull_request:
-    # Not `labeled`: the Policy workflow adds a risk label to every pull
-    # request, which would start a second CI run. The `full-ci` label is
-    # honored on every run (push, sync, reopen); workflow_dispatch's
-    # `full-ci` input forces the heavy tier on the current branch by hand.
+    # `labeled`/`unlabeled` re-run CI so adding or removing the `full-ci`
+    # label takes effect immediately. Every label change starts a run (the
+    # Policy workflow adds a `risk/*` label after CI, which costs one extra
+    # run); the tier selection below reads the event's current label snapshot.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
     paths-ignore:
@@ -91,12 +92,17 @@ jobs:
       - id: paths
         name: Decide the heavy tiers
         if: github.event_name == 'pull_request'
+        env:
+          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: |
           # The selector's skip allowlist is deliberately narrow (docs,
           # Markdown, website, license texts): every other path runs the heavy
           # tiers, so a new dependency of an e2e test cannot silently stop
-          # running it. tests/ci has the regression cases for the selector.
-          git diff --name-only HEAD^1 HEAD | go run ./tests/ci paths >> "$GITHUB_OUTPUT"
+          # running it. Rename detection is off in tests/ci, so both sides of
+          # a move are considered (moving code into docs/ still runs them).
+          # The full-ci label forces both tiers; removing it is honoured on
+          # the unlabeled run. tests/ci has the regression cases.
+          go run ./tests/ci paths -base HEAD^1 -head HEAD -full-ci="$FULL_CI" >> "$GITHUB_OUTPUT"
       - name: Select the tiers outside pull requests
         id: plan
         if: github.event_name != 'pull_request'

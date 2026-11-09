@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -12,56 +16,205 @@ func TestEvaluatePaths(t *testing.T) {
 	// dependencies, test helpers, images, deploy and workspace files the e2e
 	// suites use) runs it.
 	cases := []struct {
-		name  string
-		paths []string
-		heavy bool
-		web   bool
+		name   string
+		paths  []string
+		fullCI bool
+		heavy  bool
+		web    bool
 	}{
-		{"no paths", nil, true, true},
-		{"docs", []string{"docs/guide.md", "docs/adr/0020-x.md"}, false, false},
-		{"markdown anywhere", []string{"README.md", "deploy/README.md"}, false, false},
-		{"website", []string{"website/src/pages/index.astro"}, false, false},
-		{"license", []string{"LICENSE"}, false, false},
-		{"mixed docs and code", []string{"docs/guide.md", "core/internal/crypto/password.go"}, true, true},
-		{"crypto outside identity", []string{"core/internal/crypto/password.go"}, true, true},
-		{"authz", []string{"core/internal/authz/roles.go"}, true, true},
-		{"audit", []string{"core/internal/audit/audit.go"}, true, true},
-		{"test helpers", []string{"tests/pgtest/pgtest.go"}, true, true},
-		{"shard helper", []string{"tests/shard.sh"}, true, true},
-		{"dockerignore", []string{".dockerignore"}, true, true},
-		{"compose", []string{"deploy/compose/compose.yaml"}, true, true},
-		{"migrations", []string{"core/migrations/0001_init.sql"}, true, true},
-		{"demo dataset", []string{"demo/people.yaml"}, true, true},
-		{"workspace config", []string{"pnpm-workspace.yaml"}, true, true},
-		{"web", []string{"web/src/App.tsx"}, true, true},
-		{"identity oidc", []string{"core/internal/identity/oidc.go"}, true, true},
-		{"server", []string{"core/internal/server/server.go"}, true, true},
+		{"no paths", nil, false, true, true},
+		{"no paths with the label", nil, true, true, true},
+		{"docs", []string{"docs/guide.md", "docs/adr/0020-x.md"}, false, false, false},
+		{"docs with the full-ci label", []string{"docs/guide.md"}, true, true, true},
+		{"website with the full-ci label", []string{"website/src/pages/index.astro"}, true, true, true},
+		{"docs after removing the full-ci label", []string{"docs/guide.md"}, false, false, false},
+		{"markdown anywhere", []string{"README.md", "deploy/README.md"}, false, false, false},
+		{"website", []string{"website/src/pages/index.astro"}, false, false, false},
+		{"license", []string{"LICENSE"}, false, false, false},
+		{"mixed docs and code", []string{"docs/guide.md", "core/internal/crypto/password.go"}, false, true, true},
+		{"crypto outside identity", []string{"core/internal/crypto/password.go"}, false, true, true},
+		{"authz", []string{"core/internal/authz/roles.go"}, false, true, true},
+		{"audit", []string{"core/internal/audit/audit.go"}, false, true, true},
+		{"test helpers", []string{"tests/pgtest/pgtest.go"}, false, true, true},
+		{"shard helper", []string{"tests/shard.sh"}, false, true, true},
+		{"dockerignore", []string{".dockerignore"}, false, true, true},
+		{"compose", []string{"deploy/compose/compose.yaml"}, false, true, true},
+		{"migrations", []string{"core/migrations/0001_init.sql"}, false, true, true},
+		{"demo dataset", []string{"demo/people.yaml"}, false, true, true},
+		{"workspace config", []string{"pnpm-workspace.yaml"}, false, true, true},
+		{"web", []string{"web/src/App.tsx"}, false, true, true},
+		{"identity oidc", []string{"core/internal/identity/oidc.go"}, false, true, true},
+		{"server", []string{"core/internal/server/server.go"}, false, true, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			heavy, web := evaluatePaths(c.paths)
+			heavy, web := evaluatePaths(c.paths, c.fullCI)
 			if heavy != c.heavy || web != c.web {
-				t.Fatalf("evaluatePaths(%v) = heavy %v, web %v; want %v, %v", c.paths, heavy, web, c.heavy, c.web)
+				t.Fatalf("evaluatePaths(%v, %v) = heavy %v, web %v; want %v, %v", c.paths, c.fullCI, heavy, web, c.heavy, c.web)
 			}
 		})
 	}
 }
 
+// TestRunPaths exercises the command the workflow runs, against a real git
+// repository, including the full-ci override from a pull request's label.
 func TestRunPaths(t *testing.T) {
+	dir := newRepo(t, map[string]string{"core/internal/crypto/password.go": "package crypto\n"})
+	base := rev(t, dir)
+	write(t, dir, "docs/guide.md", "# guide\n")
+	commit(t, dir, "docs")
+	head := rev(t, dir)
+
 	var out strings.Builder
-	if err := runPaths(strings.NewReader("core/internal/crypto/password.go\n"), &out); err != nil {
+	if err := runPaths([]string{"-dir", dir, "-base", base, "-head", head}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := out.String(), "heavy=true\nweb=true\n"; got != want {
+	if got, want := out.String(), "heavy=false\nweb=false\n"; got != want {
 		t.Fatalf("runPaths = %q, want %q", got, want)
 	}
 	out.Reset()
-	if err := runPaths(strings.NewReader(""), &out); err != nil {
+	if err := runPaths([]string{"-dir", dir, "-base", base, "-head", head, "-full-ci"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := out.String(), "heavy=true\nweb=true\n"; got != want {
-		t.Fatalf("empty runPaths = %q, want %q", got, want)
+		t.Fatalf("runPaths with full-ci = %q, want %q", got, want)
 	}
+}
+
+// TestChangedPathsRenamesAndDeletions: git rename detection is off, so both
+// sides of a move are seen. Moving code into an allowlisted path (or docs
+// into code) still runs the heavy tiers, and deleting code does too.
+func TestChangedPathsRenamesAndDeletions(t *testing.T) {
+	cases := []struct {
+		name string
+		from map[string]string
+		move func(t *testing.T, dir string)
+		// want lists paths that must be in the diff, if any.
+		want  []string
+		heavy bool
+	}{
+		{
+			name: "code moved into docs",
+			from: map[string]string{"core/internal/apps/coverage_test.go": "package apps\n"},
+			move: func(t *testing.T, dir string) {
+				mkdir(t, dir, "docs")
+				git(t, dir, "mv", "core/internal/apps/coverage_test.go", "docs/coverage.md")
+			},
+			want:  []string{"core/internal/apps/coverage_test.go", "docs/coverage.md"},
+			heavy: true,
+		},
+		{
+			name: "docs moved into code",
+			from: map[string]string{"docs/guide.md": "# guide\n"},
+			move: func(t *testing.T, dir string) {
+				mkdir(t, dir, "core")
+				git(t, dir, "mv", "docs/guide.md", "core/guide.go")
+			},
+			want:  []string{"docs/guide.md", "core/guide.go"},
+			heavy: true,
+		},
+		{
+			name: "code deleted",
+			from: map[string]string{"core/internal/agent/agent.go": "package agent\n"},
+			move: func(t *testing.T, dir string) {
+				git(t, dir, "rm", "-q", "core/internal/agent/agent.go")
+			},
+			want:  []string{"core/internal/agent/agent.go"},
+			heavy: true,
+		},
+		{
+			name: "docs renamed and deleted",
+			from: map[string]string{"docs/a.md": "# a\n", "docs/b.md": "# b\n"},
+			move: func(t *testing.T, dir string) {
+				git(t, dir, "mv", "docs/a.md", "docs/c.md")
+				git(t, dir, "rm", "-q", "docs/b.md")
+			},
+			heavy: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := newRepo(t, c.from)
+			base := rev(t, dir)
+			c.move(t, dir)
+			commit(t, dir, "change")
+			paths, err := changedPaths(dir, base, rev(t, dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range c.want {
+				found := false
+				for _, p := range paths {
+					if p == want {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("changedPaths = %v, want %s", paths, want)
+				}
+			}
+			heavy, web := evaluatePaths(paths, false)
+			if heavy != c.heavy || web != c.heavy {
+				t.Fatalf("tiers for %v = heavy %v, web %v; want %v", paths, heavy, web, c.heavy)
+			}
+		})
+	}
+}
+
+func newRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	git(t, dir, "config", "user.email", "ci@example.test")
+	git(t, dir, "config", "user.name", "CI")
+	for name, content := range files {
+		write(t, dir, name, content)
+	}
+	commit(t, dir, "initial")
+	return dir
+}
+
+func mkdir(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, name), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func write(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func commit(t *testing.T, dir, message string) {
+	t.Helper()
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", message)
+}
+
+func rev(t *testing.T, dir string) string {
+	t.Helper()
+	return git(t, dir, "rev-parse", "HEAD")
+}
+
+func git(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(context.Background(), "git", args...) //nolint:gosec // test helper with fixed arguments
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestSelectShard(t *testing.T) {

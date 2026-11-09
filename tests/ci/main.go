@@ -8,19 +8,21 @@
 //
 // Usage:
 //
-//	go run ./tests/ci paths        # changed paths on stdin -> GITHUB_OUTPUT lines
+//	go run ./tests/ci paths        # git diff of the change -> GITHUB_OUTPUT tier lines
 //	go run ./tests/ci shard        # test names on stdin -> one shard's names on stdout
 //	go run ./tests/ci aggregate    # needs JSON in NEEDS -> verdict on stdout, exit code
 package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
@@ -34,7 +36,7 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "paths":
-		err = runPaths(os.Stdin, os.Stdout)
+		err = runPaths(os.Args[2:], os.Stdout)
 	case "shard":
 		err = runShard(os.Args[2:], os.Stdin, os.Stdout)
 	case "aggregate":
@@ -62,9 +64,10 @@ func skipTier(p string) bool {
 }
 
 // evaluatePaths returns whether the heavy tier and the web e2e tier must run
-// for the changed paths. With no paths (an unexpected empty diff) both run.
-func evaluatePaths(paths []string) (heavy, web bool) {
-	if len(paths) == 0 {
+// for the changed paths. A pull request's full-ci label forces both. With no
+// paths (an unexpected empty diff) both run.
+func evaluatePaths(paths []string, fullCI bool) (heavy, web bool) {
+	if fullCI || len(paths) == 0 {
 		return true, true
 	}
 	for _, p := range paths {
@@ -75,12 +78,40 @@ func evaluatePaths(paths []string) (heavy, web bool) {
 	return false, false
 }
 
-func runPaths(stdin io.Reader, stdout io.Writer) error {
-	paths, err := readLines(stdin)
+// changedPaths lists every path a change touches. Rename detection is off on
+// purpose: a rename is reported as the deletion of its old path and the
+// addition of its new one, so moving code into a docs path (or the other way)
+// cannot hide the old path from the tier selection. Deletions keep their path.
+func changedPaths(dir, base, head string) ([]string, error) {
+	cmd := exec.CommandContext(context.Background(), "git", "-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", base, head) //nolint:gosec // fixed binary; revisions chosen by the workflow
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff %s %s: %w", base, head, err)
+	}
+	var paths []string
+	for _, p := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths, nil
+}
+
+func runPaths(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("paths", flag.ContinueOnError)
+	dir := fs.String("dir", ".", "repository directory")
+	base := fs.String("base", "HEAD^1", "base revision")
+	head := fs.String("head", "HEAD", "head revision")
+	fullCI := fs.Bool("full-ci", false, "force every tier (the pull request full-ci label)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	paths, err := changedPaths(*dir, *base, *head)
 	if err != nil {
 		return err
 	}
-	heavy, web := evaluatePaths(paths)
+	heavy, web := evaluatePaths(paths, *fullCI)
 	if _, err := fmt.Fprintf(stdout, "heavy=%t\nweb=%t\n", heavy, web); err != nil {
 		return err
 	}

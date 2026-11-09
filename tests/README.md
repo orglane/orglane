@@ -24,9 +24,12 @@ allowlist of paths that may *skip* the heavy tiers: only documentation,
 Markdown, the website and license texts skip them; everything else (code,
 tests, helpers, migrations, deploy and image inputs, demo data, workspace
 configuration) runs them. A new dependency of an e2e test therefore never
-silently stops running it; the failure mode is running too much. The selector,
-the shard selection and the aggregate check have regression tests in
-`tests/ci` (`make lint-ci`).
+silently stops running it; the failure mode is running too much. Rename
+detection is off: a move is seen as the deletion of the old path plus the
+addition of the new one, so moving `core/**` into `docs/` cannot hide the code
+from the selector, and deleted files keep their path. The selector, the shard
+selection and the aggregate check have regression tests in `tests/ci`
+(`make lint-ci`), including moves into/out of the allowlist and deletions.
 
 | Tier | Jobs and targets | Runs on pull requests |
 |---|---|---|
@@ -42,10 +45,13 @@ reports a failed verdict instead of disappearing, and it fails on any failed
 or cancelled job and on any skip that the changes job did not explicitly
 select (the heavy tiers are the only jobs that may be skipped, and only when
 the selector left them out). The aggregate's own logic is tested in
-`tests/ci`. The `full-ci` pull request label forces the heavy tier on the
-next run; because a `labeled` event would also fire for every `risk/*` label
-the Policy workflow adds, the label is read on push/synchronize runs and the
-`workflow_dispatch` input `full-ci` runs everything immediately by hand.
+`tests/ci`. The `full-ci` pull request label forces both tiers immediately:
+`labeled`/`unlabeled` are pull request trigger types, so adding or removing the
+label starts a run, and the changes job reads the event's current label
+snapshot (removing it returns to the path selection on the next run). Every
+label change starts a run, including the `risk/*` label the Policy workflow
+adds (one extra run per pull request). The `workflow_dispatch` input
+`full-ci` runs everything immediately by hand.
 
 `make test` still runs everything locally, one heavy group after the other
 (the Docker Desktop/Colima ownership caveat in the Makefile). To run one
