@@ -3,15 +3,17 @@ import { expect, test } from "./fixtures";
 
 // Managed services on with a real agent process but no Compose bundle: the
 // install goes through the API, the agent accepts it and fails once it
-// needs the bundle's PostgreSQL. The success path is covered by the
-// Compose acceptance test (tests/compose TestManagedProfile).
+// needs the bundle's PostgreSQL. The agent waits up to two minutes for that
+// container to appear (#101), so the failure expectation is generous. The
+// success path is covered by the Compose acceptance test (tests/compose
+// TestManagedProfile).
 test.use({ demo: true, realAgent: true });
 
 test("an Admin installs Forgejo from Settings → Apps and sees it installing, then failed", async ({
   page,
   instance,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(210_000);
   const signedIn = await page.request.post(`${instance.url}/api/v1/demo/sign-in`, {
     data: { username: "lucas.ferreira" },
     headers: { Origin: instance.url },
@@ -47,7 +49,7 @@ test("an Admin installs Forgejo from Settings → Apps and sees it installing, t
   const operations = page.getByRole("table", { name: "Operations" });
   await expect(operations.getByRole("row").filter({ hasText: "Install" })).toBeVisible();
   await expect(page.getByText(/Installing this app failed/)).toBeVisible({
-    timeout: 60_000,
+    timeout: 150_000,
   });
   const installRow = operations.getByRole("row").filter({ hasText: "Install" });
   await expect(installRow.getByText("Failed", { exact: true })).toBeVisible();
