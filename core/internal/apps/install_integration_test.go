@@ -272,6 +272,12 @@ func (budgetAgent) Apply(context.Context, string, *agentapi.Spec) (*agentapi.Ope
 func (budgetAgent) Operation(context.Context, uuid.UUID) (*agentapi.Operation, error) {
 	return nil, errors.New("not used")
 }
+func (budgetAgent) Confirm(context.Context, uuid.UUID) (*agentapi.Operation, error) {
+	return nil, errors.New("not used")
+}
+func (budgetAgent) Abort(context.Context, uuid.UUID) (*agentapi.Operation, error) {
+	return nil, errors.New("not used")
+}
 
 // TestConcurrentInstallsShareTheMemoryBudget: two installs whose
 // preflights both passed against the same remaining memory (enough for
@@ -396,6 +402,12 @@ func (a *queuedAgent) Operation(_ context.Context, id uuid.UUID) (*agentapi.Oper
 	defer a.mu.Unlock()
 	op := *a.ops[id]
 	return &op, nil
+}
+func (a *queuedAgent) Confirm(context.Context, uuid.UUID) (*agentapi.Operation, error) {
+	return nil, errors.New("not used")
+}
+func (a *queuedAgent) Abort(context.Context, uuid.UUID) (*agentapi.Operation, error) {
+	return nil, errors.New("not used")
 }
 
 // TestStalledOperationEnds: an operation the agent keeps queued is polled

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 
 	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/audit"
@@ -68,10 +69,30 @@ func (s *Service) RunAgentSync(ctx context.Context) error {
 	}
 	h, err := s.cfg.Agent.Health(ctx)
 	if err != nil {
+		// Nothing is planned while the agent is down: moving an instance
+		// to upgrading would put its routes into maintenance even though
+		// its containers are fine. The next reachable sync plans.
 		s.cfg.Logger.WarnContext(ctx, "agent sync: the agent is not reachable", "error", err)
 		return s.markStale(ctx)
 	}
 	s.noteBoot(h.BootID)
+	// Drive one attempt of the unfinished pushes of an upgrading instance
+	// here, independently of River's stuck-job rescue (one hour by default):
+	// a confirmation the core was about to send when it crashed is recovered
+	// at the next sync instead of being lost to the agent's confirm_timeout.
+	// Only upgrading instances need this recovery (an upgrade is the only
+	// operation that awaits confirmation, and the one-at-a-time rule allows
+	// one of them), so the sync runs at most one candidate health check
+	// bounded by UpgradeCheckTimeout. Every other push stays with its
+	// agent_apply job and River's rescue. The normal job remains the primary
+	// poller; every step is idempotent.
+	s.recoverUpgradingApplies(ctx, unfinished, rows)
+	// Automatic package upgrades after an Orglane release that embeds newer
+	// package versions (agent.md "Upgrade"). Only once the agent answers,
+	// and one managed instance at a time.
+	if err := s.planUpgrades(ctx, rows, pushing); err != nil {
+		s.cfg.Logger.WarnContext(ctx, "agent sync: plan upgrades", "error", err)
+	}
 	statuses, err := s.cfg.Agent.Instances(ctx)
 	if err != nil {
 		s.cfg.Logger.WarnContext(ctx, "agent sync: list instances", "error", err)
@@ -91,6 +112,46 @@ func (s *Service) RunAgentSync(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// recoverUpgradingApplies runs one agent_apply attempt of the unfinished
+// pushes of instances in upgrading. It is safe beside the normal job: the
+// operation row says where the push is, the agent answers a repeated PUT
+// with the same operation, and a confirmation or finish is idempotent and
+// conditional on the unfinished row. The sync therefore recovers a
+// confirmation after a core crash even while River still considers the
+// crashed job running.
+//
+// Only upgrading instances are recovered: an upgrade is the one operation
+// that awaits confirmation, and the one-at-a-time rule allows a single
+// upgrading instance, so recovery costs at most one health check. Recovering
+// every unfinished push would multiply UpgradeCheckTimeout by the number of
+// installs, removes and applies waiting for their jobs.
+func (s *Service) recoverUpgradingApplies(ctx context.Context, unfinished []store.ListUnfinishedAppPushOperationsRow, rows []store.AppInstance) {
+	var upgrading map[uuid.UUID]bool
+	for _, row := range rows {
+		if row.State == StateUpgrading {
+			if upgrading == nil {
+				upgrading = make(map[uuid.UUID]bool, 1)
+			}
+			upgrading[row.ID] = true
+		}
+	}
+	if len(upgrading) == 0 {
+		return
+	}
+	for _, u := range unfinished {
+		if !upgrading[u.InstanceID] {
+			continue
+		}
+		err := s.RunAgentApply(ctx, AgentApplyArgs{InstanceID: u.InstanceID, Generation: u.Generation})
+		var snooze *river.JobSnoozeError
+		var cancel *river.JobCancelError
+		if err != nil && !errors.As(err, &snooze) && !errors.As(err, &cancel) {
+			s.cfg.Logger.WarnContext(ctx, "agent sync: recover an unfinished apply",
+				"app_instance", u.InstanceID, "generation", u.Generation, "error", err)
+		}
+	}
 }
 
 func (s *Service) syncInstance(ctx context.Context, row store.AppInstance, st *agentapi.InstanceStatus, pushing bool) error {
@@ -185,8 +246,14 @@ func (s *Service) resyncLost(ctx context.Context, id uuid.UUID, gen int64) error
 			return nil // removed: nothing to bring back
 		}
 		s.cfg.Logger.WarnContext(ctx, "the agent lost an applied generation; pushing it again", "app_instance", id, "generation", gen)
+		// Keep a revert a revert: its version may no longer be embedded, and
+		// only the revert reason may build the minimal acknowledgment spec.
+		reason := ReasonResync
+		if ds.Reason == ReasonRevert {
+			reason = ReasonRevert
+		}
 		_, err = s.recordDesired(ctx, tx, q, audit.System, inst, DesiredChange{
-			RunState: ds.RunState, PackageVersion: ds.PackageVersion, Reason: ReasonResync,
+			RunState: ds.RunState, PackageVersion: ds.PackageVersion, Reason: reason,
 		})
 		return err
 	})
@@ -210,7 +277,7 @@ func (s *Service) recoverInstall(ctx context.Context, id uuid.UUID, desired int6
 		if _, err := s.transition(ctx, tx, q, audit.System, id, StateInstalling, ""); err != nil {
 			return err
 		}
-		return s.enqueueSetup(ctx, tx, id)
+		return s.enqueueSetup(ctx, tx, id, desired)
 	})
 }
 

@@ -457,6 +457,36 @@ func (e AppTeamMappingMode) Valid() bool {
 	}
 }
 
+// Defines values for AppUpgradeStatusState.
+const (
+	AppUpgradeStatusStateAvailable  AppUpgradeStatusState = "available"
+	AppUpgradeStatusStateBlocked    AppUpgradeStatusState = "blocked"
+	AppUpgradeStatusStateFailed     AppUpgradeStatusState = "failed"
+	AppUpgradeStatusStateRolledBack AppUpgradeStatusState = "rolled_back"
+	AppUpgradeStatusStateUpToDate   AppUpgradeStatusState = "up_to_date"
+	AppUpgradeStatusStateUpgrading  AppUpgradeStatusState = "upgrading"
+)
+
+// Valid indicates whether the value is a known member of the AppUpgradeStatusState enum.
+func (e AppUpgradeStatusState) Valid() bool {
+	switch e {
+	case AppUpgradeStatusStateAvailable:
+		return true
+	case AppUpgradeStatusStateBlocked:
+		return true
+	case AppUpgradeStatusStateFailed:
+		return true
+	case AppUpgradeStatusStateRolledBack:
+		return true
+	case AppUpgradeStatusStateUpToDate:
+		return true
+	case AppUpgradeStatusStateUpgrading:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DevicePlatform.
 const (
 	Android DevicePlatform = "android"
@@ -1215,6 +1245,14 @@ type AppInstance struct {
 	State     AppInstanceState       `json:"state"`
 	UpdatedAt time.Time              `json:"updatedAt"`
 
+	// Upgrade Upgrade status of a managed instance (agent.md "Upgrade"), derived
+	// from its running version, the embedded package versions and the
+	// latest upgrade operation. Absent for connected instances,
+	// instances whose provider or running version is not known yet, and
+	// failures the upgrade retry cannot recover (a failed rollback,
+	// setup or install).
+	Upgrade *AppUpgradeStatus `json:"upgrade,omitempty"`
+
 	// WaitingForAgent Set while a change of this managed instance waits for the agent,
 	// with the reason: the agent is not running or not reachable, runs
 	// another Orglane version, or does not prove the shared key.
@@ -1453,6 +1491,41 @@ type AppTeamMappingList struct {
 
 // AppTeamMappingMode `create`: Orglane creates a provider team named after the team slug; `existing`: an existing provider team.
 type AppTeamMappingMode string
+
+// AppUpgradeStatus Upgrade status of a managed instance (agent.md "Upgrade"), derived
+// from its running version, the embedded package versions and the
+// latest upgrade operation. Absent for connected instances,
+// instances whose provider or running version is not known yet, and
+// failures the upgrade retry cannot recover (a failed rollback,
+// setup or install).
+type AppUpgradeStatus struct {
+	// CurrentVersion The package version the instance runs.
+	CurrentVersion string `json:"currentVersion"`
+
+	// RequiredVersion With `blocked`: the version to upgrade to first.
+	RequiredVersion *string `json:"requiredVersion,omitempty"`
+
+	// State `upgrading` while the instance (or its revert, or the final Setup
+	// after the last step) is being applied; `failed` and `rolled_back`
+	// name the result of the latest upgrade to `targetVersion` and can
+	// be retried by an admin. A `failed` instance whose revert apply
+	// failed reports its latest upgrade result here too, so Settings →
+	// Apps can retry the recovery; `blocked` means this Orglane release
+	// embeds no upgrade path yet.
+	State AppUpgradeStatusState `json:"state"`
+
+	// TargetVersion The next version an upgrade would install (the newest embedded one when up to date).
+	TargetVersion string `json:"targetVersion"`
+}
+
+// AppUpgradeStatusState `upgrading` while the instance (or its revert, or the final Setup
+// after the last step) is being applied; `failed` and `rolled_back`
+// name the result of the latest upgrade to `targetVersion` and can
+// be retried by an admin. A `failed` instance whose revert apply
+// failed reports its latest upgrade result here too, so Settings →
+// Apps can retry the recovery; `blocked` means this Orglane release
+// embeds no upgrade path yet.
+type AppUpgradeStatusState string
 
 // ConfirmAppRemovalBatchRequest defines model for ConfirmAppRemovalBatchRequest.
 type ConfirmAppRemovalBatchRequest struct {
@@ -2989,6 +3062,9 @@ type ServerInterface interface {
 	// SetAppTeamMapping Create or change a team mapping
 	// (PUT /api/v1/apps/instances/{instanceId}/team-mappings/{teamId})
 	SetAppTeamMapping(w http.ResponseWriter, r *http.Request, instanceId InstanceId, teamId TeamId)
+	// RetryAppInstanceUpgrade Retry a rolled-back or failed upgrade
+	// (POST /api/v1/apps/instances/{instanceId}/upgrade)
+	RetryAppInstanceUpgrade(w http.ResponseWriter, r *http.Request, instanceId InstanceId)
 	// ListAppProviders Compiled providers
 	// (GET /api/v1/apps/providers)
 	ListAppProviders(w http.ResponseWriter, r *http.Request)
@@ -3991,6 +4067,32 @@ func (siw *ServerInterfaceWrapper) SetAppTeamMapping(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SetAppTeamMapping(w, r, instanceId, teamId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RetryAppInstanceUpgrade operation middleware
+func (siw *ServerInterfaceWrapper) RetryAppInstanceUpgrade(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "instanceId" -------------
+	var instanceId InstanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "instanceId", r.PathValue("instanceId"), &instanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "instanceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RetryAppInstanceUpgrade(w, r, instanceId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5744,6 +5846,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/reinstall", wrapper.ReinstallAppInstance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/operations", wrapper.ListAppInstanceOperations)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/setup", wrapper.RetryAppInstanceSetup)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/upgrade", wrapper.RetryAppInstanceUpgrade)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/open", wrapper.OpenAppInstance)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/credentials/{credentialName}/rotate", wrapper.RotateAppCredential)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/apps/github/connect", wrapper.BeginGitHubConnect)
@@ -8534,6 +8637,108 @@ type SetAppTeamMapping500ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response SetAppTeamMapping500ApplicationProblemPlusJSONResponse) VisitSetAppTeamMappingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RetryAppInstanceUpgradeRequestObject struct {
+	InstanceId InstanceId `json:"instanceId"`
+}
+
+type RetryAppInstanceUpgradeResponseObject interface {
+	VisitRetryAppInstanceUpgradeResponse(w http.ResponseWriter) error
+}
+
+type RetryAppInstanceUpgrade202JSONResponse AppInstance
+
+func (response RetryAppInstanceUpgrade202JSONResponse) VisitRetryAppInstanceUpgradeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RetryAppInstanceUpgrade401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response RetryAppInstanceUpgrade401ApplicationProblemPlusJSONResponse) VisitRetryAppInstanceUpgradeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RetryAppInstanceUpgrade403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response RetryAppInstanceUpgrade403ApplicationProblemPlusJSONResponse) VisitRetryAppInstanceUpgradeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RetryAppInstanceUpgrade404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response RetryAppInstanceUpgrade404ApplicationProblemPlusJSONResponse) VisitRetryAppInstanceUpgradeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RetryAppInstanceUpgrade409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response RetryAppInstanceUpgrade409ApplicationProblemPlusJSONResponse) VisitRetryAppInstanceUpgradeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RetryAppInstanceUpgrade500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response RetryAppInstanceUpgrade500ApplicationProblemPlusJSONResponse) VisitRetryAppInstanceUpgradeResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -14659,6 +14864,9 @@ type StrictServerInterface interface {
 	// SetAppTeamMapping Create or change a team mapping
 	// (PUT /api/v1/apps/instances/{instanceId}/team-mappings/{teamId})
 	SetAppTeamMapping(ctx context.Context, request SetAppTeamMappingRequestObject) (SetAppTeamMappingResponseObject, error)
+	// RetryAppInstanceUpgrade Retry a rolled-back or failed upgrade
+	// (POST /api/v1/apps/instances/{instanceId}/upgrade)
+	RetryAppInstanceUpgrade(ctx context.Context, request RetryAppInstanceUpgradeRequestObject) (RetryAppInstanceUpgradeResponseObject, error)
 	// ListAppProviders Compiled providers
 	// (GET /api/v1/apps/providers)
 	ListAppProviders(ctx context.Context, request ListAppProvidersRequestObject) (ListAppProvidersResponseObject, error)
@@ -15681,6 +15889,32 @@ func (sh *strictHandler) SetAppTeamMapping(w http.ResponseWriter, r *http.Reques
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SetAppTeamMappingResponseObject); ok {
 		if err := validResponse.VisitSetAppTeamMappingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RetryAppInstanceUpgrade operation middleware
+func (sh *strictHandler) RetryAppInstanceUpgrade(w http.ResponseWriter, r *http.Request, instanceId InstanceId) {
+	var request RetryAppInstanceUpgradeRequestObject
+
+	request.InstanceId = instanceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RetryAppInstanceUpgrade(ctx, request.(RetryAppInstanceUpgradeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RetryAppInstanceUpgrade")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RetryAppInstanceUpgradeResponseObject); ok {
+		if err := validResponse.VisitRetryAppInstanceUpgradeResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

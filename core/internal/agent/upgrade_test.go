@@ -362,6 +362,43 @@ func TestSnapshotHousekeeping(t *testing.T) {
 	}
 }
 
+// TestEnterPublishesConfirmByAtomically: a poll must never observe
+// awaiting_confirmation without its confirm_by deadline, or the core would
+// fall back to its own shorter timeout. The state, phase and deadline are
+// published in one operation update.
+func TestEnterPublishesConfirmByAtomically(t *testing.T) {
+	a, _ := newTestAgent(t, time.Now)
+	if err := os.MkdirAll(a.instanceDir("git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	op, err := a.ops.create("git", agentapi.KindUpgrade, 2, testSpec(1).InstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Minute).UTC()
+	var missing []agentapi.Operation
+	a.ops.observed = func(o agentapi.Operation) {
+		if o.State == agentapi.OpAwaitingConfirmation && o.ConfirmBy == nil {
+			missing = append(missing, o)
+		}
+	}
+	in := a.instance("git")
+	j := &journal{
+		Operation: op.ID, Kind: agentapi.KindUpgrade, To: testSpec(2).Package,
+		ToGeneration: 2, ConfirmBy: &deadline, Spec: testSpec(2),
+	}
+	if err := a.enter(in, j, agentapi.PhaseAwaitingConfirmation); err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) > 0 {
+		t.Fatalf("awaiting_confirmation was published without confirm_by: %+v", missing)
+	}
+	got, ok := a.ops.get(op.ID)
+	if !ok || got.State != agentapi.OpAwaitingConfirmation || got.ConfirmBy == nil || !got.ConfirmBy.Equal(deadline) {
+		t.Fatalf("operation = %+v", got)
+	}
+}
+
 // awaitingAgent prepares an instance whose upgrade waits for confirmation.
 func awaitingAgent(t *testing.T, now time.Time) (*Agent, agentapi.Operation) {
 	t.Helper()

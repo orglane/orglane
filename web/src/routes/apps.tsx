@@ -214,6 +214,34 @@ const messages = defineMessages({
     defaultMessage: "Setting up this app failed. Check the service and try again.",
   },
   retrySetup: { id: "appInstance.retrySetup", defaultMessage: "Retry setup" },
+  upgradeInProgress: defineMessage<{ target: string }>({
+    id: "appInstance.upgradeInProgress",
+    defaultMessage:
+      "Upgrade to {target} is running. Orglane checks the new version before it keeps it, and rolls back automatically if the check fails.",
+  }),
+  upgradeAvailable: defineMessage<{ target: string }>({
+    id: "appInstance.upgradeAvailable",
+    defaultMessage: "Version {target} is available and will be installed automatically.",
+  }),
+  upgradeRolledBack: defineMessage<{ target: string; current: string }>({
+    id: "appInstance.upgradeRolledBack",
+    defaultMessage: "The upgrade to {target} was rolled back. The app is running {current}.",
+  }),
+  upgradeFailed: defineMessage<{ target: string; current: string }>({
+    id: "appInstance.upgradeFailed",
+    defaultMessage: "The upgrade to {target} failed. The app is running {current}.",
+  }),
+  upgradeBlocked: defineMessage<{ required: string }>({
+    id: "appInstance.upgradeBlocked",
+    defaultMessage:
+      "This Orglane release cannot upgrade the app yet. Install the release that provides {required} first.",
+  }),
+  upgradeBlockedNoStop: {
+    id: "appInstance.upgradeBlockedNoStop",
+    defaultMessage:
+      "This Orglane release embeds no upgrade path for the app. Install a later Orglane release first.",
+  },
+  retryUpgrade: { id: "appInstance.retryUpgrade", defaultMessage: "Retry upgrade" },
   access: { id: "appInstance.access", defaultMessage: "Access" },
   accessDescription: {
     id: "appInstance.accessDescription",
@@ -1921,6 +1949,18 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
       return queryClient.invalidateQueries({ queryKey: appsKey });
     },
   });
+  const upgrade = useMutation({
+    mutationFn: () =>
+      call(
+        api.client.POST("/api/v1/apps/instances/{instanceId}/upgrade", {
+          params: { path: { instanceId } },
+        }),
+      ),
+    onSuccess: () => {
+      mark();
+      return queryClient.invalidateQueries({ queryKey: appsKey });
+    },
+  });
   const back = (
     <Button asChild variant="ghost" size="sm">
       <Link to="/settings/apps">
@@ -1980,6 +2020,58 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
               </Alert>
             )}
             {setup.isError && <Alert>{errorMessage(intl, setup.error)}</Alert>}
+            {instance.upgrade && instance.upgrade.state !== "up_to_date" && (
+              <Alert
+                variant={
+                  instance.upgrade.state === "failed" ||
+                  instance.upgrade.state === "rolled_back" ||
+                  instance.upgrade.state === "blocked"
+                    ? "error"
+                    : "info"
+                }
+              >
+                <p>
+                  {instance.upgrade.state === "upgrading" &&
+                    intl.formatMessage(messages.upgradeInProgress, {
+                      target: instance.upgrade.targetVersion,
+                    })}
+                  {instance.upgrade.state === "available" &&
+                    intl.formatMessage(messages.upgradeAvailable, {
+                      target: instance.upgrade.targetVersion,
+                    })}
+                  {instance.upgrade.state === "rolled_back" &&
+                    intl.formatMessage(messages.upgradeRolledBack, {
+                      target: instance.upgrade.targetVersion,
+                      current: instance.upgrade.currentVersion,
+                    })}
+                  {instance.upgrade.state === "failed" &&
+                    intl.formatMessage(messages.upgradeFailed, {
+                      target: instance.upgrade.targetVersion,
+                      current: instance.upgrade.currentVersion,
+                    })}
+                  {instance.upgrade.state === "blocked" &&
+                    (instance.upgrade.requiredVersion
+                      ? intl.formatMessage(messages.upgradeBlocked, {
+                          required: instance.upgrade.requiredVersion,
+                        })
+                      : intl.formatMessage(messages.upgradeBlockedNoStop))}
+                </p>
+                {(instance.upgrade.state === "failed" ||
+                  instance.upgrade.state === "rolled_back") &&
+                  (instance.state === "active" ||
+                    instance.state === "degraded" ||
+                    instance.state === "failed") && (
+                    <Button
+                      variant="link"
+                      disabled={upgrade.isPending}
+                      onClick={() => upgrade.mutate()}
+                    >
+                      <FormattedMessage {...messages.retryUpgrade} />
+                    </Button>
+                  )}
+              </Alert>
+            )}
+            {upgrade.isError && <Alert>{errorMessage(intl, upgrade.error)}</Alert>}
             {instance.waitingForAgent && <WaitingForAgent code={instance.waitingForAgent} />}
             {(instance.state === "degraded" ||
               instance.state === "disconnected" ||

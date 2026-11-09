@@ -111,6 +111,13 @@ type Spec struct {
 	Settings map[string]any `json:"settings"`
 	// Secrets maps manifest-declared secret names to their values.
 	Secrets map[string]string `json:"secrets"`
+	// Revert marks the core's acknowledgment of a rollback whose restored
+	// version this release no longer embeds (docs/specs/agent.md "Upgrade").
+	// Package must name the version that runs; the agent resolves the spec
+	// from the running project (current.json) and records this generation.
+	// restored-project.json only supplies rendered files when its spec
+	// matches the running one. It carries no inputs.
+	Revert bool `json:"revert,omitempty"`
 }
 
 // Hash returns the canonical hash of the spec: SHA-256 of its JSON encoding
@@ -283,16 +290,20 @@ type SnapshotList struct {
 
 // Operation is one declarative operation of the agent.
 type Operation struct {
-	ID         uuid.UUID  `json:"id"`
-	Instance   string     `json:"instance"`
-	Kind       string     `json:"kind"`
-	Generation int64      `json:"generation,omitempty"`
-	State      string     `json:"state"`
-	Phase      string     `json:"phase,omitempty"`
-	ErrorCode  string     `json:"error_code,omitempty"`
-	Rule       string     `json:"rule,omitempty"` // the policy rule, with CodePolicyViolation
-	SnapshotID string     `json:"snapshot_id,omitempty"`
-	StartedAt  time.Time  `json:"started_at"`
+	ID         uuid.UUID `json:"id"`
+	Instance   string    `json:"instance"`
+	Kind       string    `json:"kind"`
+	Generation int64     `json:"generation,omitempty"`
+	State      string    `json:"state"`
+	Phase      string    `json:"phase,omitempty"`
+	ErrorCode  string    `json:"error_code,omitempty"`
+	Rule       string    `json:"rule,omitempty"` // the policy rule, with CodePolicyViolation
+	SnapshotID string    `json:"snapshot_id,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
+	// ConfirmBy is the confirmation deadline of an upgrade in
+	// awaiting_confirmation (the agent's clock). The core checks its
+	// candidate before it and never confirms after it.
+	ConfirmBy  *time.Time `json:"confirm_by,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
@@ -405,6 +416,9 @@ func (s *Spec) Check() []string {
 		}
 	case StateAbsent:
 	default:
+		fields = append(fields, "state")
+	}
+	if s.Revert && s.State != StateRunning {
 		fields = append(fields, "state")
 	}
 	if s.Ingress != IngressLocal && s.Ingress != IngressDomain {

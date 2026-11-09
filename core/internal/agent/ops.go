@@ -36,6 +36,9 @@ type opStore struct {
 	dir          string
 	instancesDir string
 	now          func() time.Time
+	// observed, if set, is called with every updated operation. Tests use
+	// it to assert invariants of published states.
+	observed func(agentapi.Operation)
 
 	mu     sync.Mutex
 	ops    map[uuid.UUID]*agentapi.Operation
@@ -213,6 +216,9 @@ func (s *opStore) update(id uuid.UUID, fn func(*agentapi.Operation)) (agentapi.O
 		return *op, err
 	}
 	*op = next
+	if s.observed != nil {
+		s.observed(next)
+	}
 	return next, nil
 }
 

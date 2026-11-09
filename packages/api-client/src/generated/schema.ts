@@ -1389,6 +1389,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/instances/{instanceId}/upgrade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry a rolled-back or failed upgrade
+         * @description Retries the newest upgrade of a managed instance when its latest
+         *     upgrade to the next required stop ended `failed` or `rolled_back`
+         *     (upgrades otherwise start automatically after an Orglane release).
+         *     The next required stop is computed from the embedded package
+         *     versions (`upgrade.min_from`); one step is recorded per request and
+         *     the following steps continue automatically after a success.
+         *
+         *     A `failed` instance whose current desired generation is a revert
+         *     whose apply failed is recovered from that durable revert spec: the
+         *     same version, run state, settings and credential versions are
+         *     recorded as a new generation with reason `revert`, and its
+         *     successful apply runs Setup and activates the instance. A revert
+         *     that could not be assembled or resolved (`package_unavailable`,
+         *     `unknown_package_version`) is instead retried as the next required
+         *     stop from the running version.
+         *
+         *     Refused (409, `invalid_state`) when the instance is not `active`,
+         *     `degraded` or such a failed revert, has an unfinished operation, has
+         *     not applied its current change, is already on the newest version, has
+         *     no failed or rolled-back upgrade to that stop, or while another
+         *     managed instance is upgrading. Requires `apps.manage`.
+         */
+        post: operations["retryAppInstanceUpgrade"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/instances/{instanceId}/open": {
         parameters: {
             query?: never;
@@ -2959,6 +2999,7 @@ export interface components {
             manageExistingMembers: boolean;
             packageId?: string;
             packageVersion?: string;
+            upgrade?: components["schemas"]["AppUpgradeStatus"];
             /** @description Non-secret provider settings. */
             settings: {
                 [key: string]: unknown;
@@ -2982,6 +3023,33 @@ export interface components {
         };
         AppInstanceList: {
             items: components["schemas"]["AppInstance"][];
+        };
+        /**
+         * @description Upgrade status of a managed instance (agent.md "Upgrade"), derived
+         *     from its running version, the embedded package versions and the
+         *     latest upgrade operation. Absent for connected instances,
+         *     instances whose provider or running version is not known yet, and
+         *     failures the upgrade retry cannot recover (a failed rollback,
+         *     setup or install).
+         */
+        AppUpgradeStatus: {
+            /**
+             * @description `upgrading` while the instance (or its revert, or the final Setup
+             *     after the last step) is being applied; `failed` and `rolled_back`
+             *     name the result of the latest upgrade to `targetVersion` and can
+             *     be retried by an admin. A `failed` instance whose revert apply
+             *     failed reports its latest upgrade result here too, so Settings →
+             *     Apps can retry the recovery; `blocked` means this Orglane release
+             *     embeds no upgrade path yet.
+             * @enum {string}
+             */
+            state: "up_to_date" | "available" | "upgrading" | "failed" | "rolled_back" | "blocked";
+            /** @description The package version the instance runs. */
+            currentVersion: string;
+            /** @description The next version an upgrade would install (the newest embedded one when up to date). */
+            targetVersion: string;
+            /** @description With `blocked`: the version to upgrade to first. */
+            requiredVersion?: string;
         };
         AppOperation: {
             /** Format: uuid */
@@ -5388,6 +5456,34 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Setup was queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppInstance"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    retryAppInstanceUpgrade: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An app instance ID. */
+                instanceId: components["parameters"]["InstanceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The upgrade retry was recorded; its operation runs next. */
             202: {
                 headers: {
                     [name: string]: unknown;

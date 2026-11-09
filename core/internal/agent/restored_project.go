@@ -35,34 +35,36 @@ func (a *Agent) saveRestoredProject(key string, id uuid.UUID, spec *agentapi.Spe
 	return writeJSON(filepath.Join(a.instanceDir(key), restoredProjectFile), restoredProject{Spec: spec, Rendered: r, Configured: configured})
 }
 
-// repairRestored converges a rolled-back version absent from this binary.
-// It never runs restore hooks or replaces data, including after exposure and
-// subsequent client writes. New desired inputs require an embedded package.
-func (a *Agent) repairRestored(ctx context.Context, key string, spec *agentapi.Spec) error {
+// readRestoredProject loads the project saved after a rollback or restore.
+func (a *Agent) readRestoredProject(key string) (*restoredProject, error) {
 	data, err := os.ReadFile(filepath.Join(a.instanceDir(key), restoredProjectFile)) //nolint:gosec // agent-owned path
 	if err != nil {
-		return failed(agentapi.CodeUnknownPackageVersion, err)
+		return nil, err
 	}
 	var saved restoredProject
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	if err := dec.Decode(&saved); err != nil {
-		return failed(agentapi.CodeInternal, err)
+		return nil, err
 	}
-	if saved.Spec == nil || saved.Rendered == nil || saved.Spec.Hash() != spec.Hash() {
-		return failed(agentapi.CodeUnknownPackageVersion, fmt.Errorf("no saved project for package %s generation %d", spec.Package, spec.Generation))
+	return &saved, nil
+}
+
+// sameSpecExceptGeneration reports whether two specs differ only in their
+// generation. The saved project and the running project are re-used for the
+// next generation without accepting changed inputs.
+func sameSpecExceptGeneration(a, b *agentapi.Spec) bool {
+	if a == nil || b == nil {
+		return false
 	}
-	if err := writeRendered(a.renderContext(key), saved.Rendered); err != nil {
-		return failed(agentapi.CodeComposeFailed, err)
-	}
-	p := filepath.Join(a.instanceDir(key), configuredFile)
-	if saved.Configured != nil {
-		if err := writeFileAtomic(p, saved.Configured, 0o600); err != nil {
-			return failed(agentapi.CodeInternal, err)
-		}
-	} else if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return failed(agentapi.CodeInternal, err)
-	}
+	ac, bc := *a, *b
+	ac.Generation, bc.Generation = 0, 0
+	return ac.Hash() == bc.Hash()
+}
+
+// startProject starts, stops or takes down the project as spec says, using
+// the deployment files that are already rendered.
+func (a *Agent) startProject(ctx context.Context, key string, spec *agentapi.Spec) error {
 	c := a.compose(key, spec.SecretValues())
 	switch spec.State {
 	case agentapi.StateRunning:
@@ -72,4 +74,62 @@ func (a *Agent) repairRestored(ctx context.Context, key string, spec *agentapi.S
 	default:
 		return c.down(ctx)
 	}
+}
+
+// repairRestored converges a rolled-back version absent from this binary.
+// It never runs restore hooks or replaces data, including after exposure and
+// subsequent client writes. New desired inputs require an embedded package.
+//
+// The running project is authoritative. A saved project is used for its
+// rendered files only when its spec matches the running spec apart from the
+// generation (it repairs missing deployment files after a rollback or
+// restore); an older saved project is never applied. Without one, the
+// running project is kept when the spec is the same apart from its
+// generation: an upgrade that failed before the switch leaves the running
+// deployment untouched, so no re-render is needed to acknowledge its blocked
+// generation.
+func (a *Agent) repairRestored(ctx context.Context, key string, spec *agentapi.Spec) error {
+	saved, err := a.readRestoredProject(key)
+	if err == nil && saved.Spec != nil && saved.Rendered != nil && sameSpecExceptGeneration(saved.Spec, spec) {
+		if err := writeRendered(a.renderContext(key), saved.Rendered); err != nil {
+			return failed(agentapi.CodeComposeFailed, err)
+		}
+		p := filepath.Join(a.instanceDir(key), configuredFile)
+		if saved.Configured != nil {
+			if err := writeFileAtomic(p, saved.Configured, 0o600); err != nil {
+				return failed(agentapi.CodeInternal, err)
+			}
+		} else if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return failed(agentapi.CodeInternal, err)
+		}
+		return a.startProject(ctx, key, spec)
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return failed(agentapi.CodeInternal, err)
+	}
+	st, serr := loadState(a.instanceDir(key))
+	if serr == nil && sameSpecExceptGeneration(st.current, spec) {
+		return a.startProject(ctx, key, spec)
+	}
+	return failed(agentapi.CodeUnknownPackageVersion, fmt.Errorf("no saved project for package %s generation %d", spec.Package, spec.Generation))
+}
+
+// resolveRevert replaces the minimal revert spec with the full spec of the
+// project the agent can apply for it: the running project. current.json is
+// authoritative because it carries the inputs that actually run; the saved
+// restored project may be older than it (a credential rotation or a hosts
+// change after an earlier rollback), so it never resolves the revert.
+// repairRestored may still reuse its rendered files when its spec matches
+// the running one. A revert whose package is not the running version stays
+// minimal and fails as unknown_package_version.
+func (a *Agent) resolveRevert(spec, current *agentapi.Spec) *agentapi.Spec {
+	if spec == nil || !spec.Revert {
+		return spec
+	}
+	if current != nil && current.Package == spec.Package {
+		resolved := *current
+		resolved.Generation = spec.Generation
+		return &resolved
+	}
+	return spec
 }

@@ -76,7 +76,7 @@ var transitions = map[string][]string{
 	StateActive:       {StateDegraded, StateUpgrading, StateDisconnected, StateRemoving},
 	StateDegraded:     {StateActive, StateUpgrading, StateDisconnected, StateRemoving},
 	StateUpgrading:    {StateActive, StateDegraded, StateFailed},
-	StateFailed:       {StateInstalling, StateRemoving},
+	StateFailed:       {StateInstalling, StateUpgrading, StateRemoving},
 	StateDisconnected: {StateActive, StateRemoving, StateRemoved},
 	// A failed removal (remove_failed) can be removed again from failed.
 	StateRemoving: {StateRemoved, StateFailed},
@@ -136,6 +136,10 @@ type Config struct {
 	// operation per instance at a time, so a long upgrade ahead of it is
 	// the only legitimate wait. Defaults to an hour.
 	AgentQueueTimeout time.Duration
+	// UpgradeCheckTimeout bounds Lifecycle.CheckHealth of an upgrade
+	// candidate; an agent confirmation deadline may shorten it. Defaults to
+	// 30s.
+	UpgradeCheckTimeout time.Duration
 	// DomainBase is config domain.base, for installation-dependent setting
 	// defaults (provider.SettingDefaulter).
 	DomainBase string
@@ -205,6 +209,7 @@ func NewService(pool *pgxpool.Pool, reg *Registry, keyring *crypto.Keyring, cfg 
 	cfg.AgentRetryMax = cmp.Or(cfg.AgentRetryMax, defaultAgentRetryMax)
 	cfg.AgentWatchInterval = cmp.Or(cfg.AgentWatchInterval, defaultAgentWatchInterval)
 	cfg.AgentQueueTimeout = cmp.Or(cfg.AgentQueueTimeout, defaultAgentQueueTimeout)
+	cfg.UpgradeCheckTimeout = cmp.Or(cfg.UpgradeCheckTimeout, DefaultUpgradeCheckTimeout)
 	if cfg.Resolver == nil {
 		cfg.Resolver = NewDNSResolver()
 	}
@@ -717,7 +722,7 @@ func (s *Service) RetrySetup(ctx context.Context, actor audit.Actor, id uuid.UUI
 		if out, err = s.transition(ctx, tx, q, actor, id, StateInstalling, ""); err != nil {
 			return err
 		}
-		return s.enqueueSetup(ctx, tx, id)
+		return s.enqueueSetup(ctx, tx, id, current.DesiredGeneration)
 	})
 	return out, err
 }

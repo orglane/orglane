@@ -528,6 +528,30 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
     id: "apps.code.healthTimeout",
     defaultMessage: "The app's services did not become healthy in time. Check the agent's logs.",
   },
+  aborted: {
+    id: "apps.code.aborted",
+    defaultMessage:
+      "Orglane's check of the new version failed, so the previous version was restored.",
+  },
+  confirm_timeout: {
+    id: "apps.code.confirmTimeout",
+    defaultMessage:
+      "The new version was not confirmed in time, so the previous version was restored.",
+  },
+  rollback_failed: {
+    id: "apps.code.rollbackFailed",
+    defaultMessage:
+      "The new version failed and the previous version could not be restored. Restore the app's snapshot to recover it.",
+  },
+  upgrade_failed: {
+    id: "apps.code.upgradeFailed",
+    defaultMessage:
+      "The upgrade failed and the app's previous version is unknown. Check the agent's logs and the operation history.",
+  },
+  upgrade_path_blocked: {
+    id: "apps.code.upgradePathBlocked",
+    defaultMessage: "This Orglane release has no upgrade path for the app yet.",
+  },
   webhook_deleted: {
     id: "apps.code.webhookDeleted",
     defaultMessage:

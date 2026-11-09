@@ -45,12 +45,15 @@ import (
 //     that was pushed is mirrored until the agent reports it terminal.
 
 // AgentClient is what the core needs from the agent (agentclient.Client).
-// Part 2 of #75 (upgrades) adds Confirm and Abort.
+// The client also implements Confirm and Abort for the upgrade
+// confirmation loop (part 2 of #75).
 type AgentClient interface {
 	Health(ctx context.Context) (*agentapi.Health, error)
 	Instances(ctx context.Context) ([]agentapi.InstanceStatus, error)
 	Apply(ctx context.Context, key string, spec *agentapi.Spec) (*agentapi.Operation, bool, error)
 	Operation(ctx context.Context, id uuid.UUID) (*agentapi.Operation, error)
+	Confirm(ctx context.Context, id uuid.UUID) (*agentapi.Operation, error)
+	Abort(ctx context.Context, id uuid.UUID) (*agentapi.Operation, error)
 }
 
 var _ AgentClient = (*agentclient.Client)(nil)
@@ -81,6 +84,9 @@ const (
 	// CodeAgentStalled: the agent kept an operation queued for longer than
 	// Config.AgentQueueTimeout.
 	CodeAgentStalled = "agent_stalled"
+	// CodeUpgradeFailed marks an upgrading instance that cannot be put back
+	// on its running version (an upgrade that rolled back without one).
+	CodeUpgradeFailed = "upgrade_failed"
 	// Health codes the sync owns (and may clear again).
 	CodeAgentUnhealthy       = "agent_unhealthy"
 	CodeAgentInstanceMissing = "agent_instance_missing"
@@ -152,6 +158,12 @@ func (s *Service) RecordDesired(ctx context.Context, tx pgx.Tx, actor audit.Acto
 // install_failed. It is provider-agnostic: the install API (#61) brings the
 // host, DNS, agent health and resource checks as Config.InstallPreflight.
 func (s *Service) Install(ctx context.Context, actor audit.Actor, in NewInstance) (Instance, error) {
+	return s.install(ctx, actor, in, "")
+}
+
+// install creates and installs an instance with version as its first
+// desired package version (empty: the newest embedded one).
+func (s *Service) install(ctx context.Context, actor audit.Actor, in NewInstance, version string) (Instance, error) {
 	adapter, ok := s.reg.Adapter(in.Provider)
 	if !ok {
 		return Instance{}, fmt.Errorf("%w: %s", ErrProviderUnavailable, in.Provider)
@@ -159,7 +171,7 @@ func (s *Service) Install(ctx context.Context, actor audit.Actor, in NewInstance
 	if _, ok := adapter.Lifecycle(); !ok {
 		return Instance{}, fmt.Errorf("%w: %s is not a managed provider", ErrNotSupported, in.Provider)
 	}
-	pkg, ok := s.latestPackage(adapter.Manifest.Package)
+	pkg, ok := s.installPackage(adapter.Manifest.Package, version)
 	if !ok {
 		return Instance{}, fmt.Errorf("%w: the package %s is not embedded in this build", ErrNotSupported, adapter.Manifest.Package)
 	}
@@ -253,6 +265,14 @@ func (s *Service) recordDesired(ctx context.Context, tx pgx.Tx, q *store.Queries
 		return store.AppDesiredSpec{}, fmt.Errorf("apps: encode package settings: %w", err)
 	}
 	rawVersions, _ := json.Marshal(versions) // a map of ints: cannot fail
+	return s.recordDesiredSpec(ctx, tx, q, actor, inst, d, rawSettings, rawVersions)
+}
+
+// recordDesiredSpec records a generation with explicit settings and
+// credential versions. recordDesired resolves them from Inputs; retryRevert
+// passes the failed generation's durable values, so its retry applies the
+// same revert spec instead of a fresh Inputs resolution.
+func (s *Service) recordDesiredSpec(ctx context.Context, tx pgx.Tx, q *store.Queries, actor audit.Actor, inst Instance, d DesiredChange, rawSettings, rawVersions []byte) (store.AppDesiredSpec, error) {
 	gen := inst.DesiredGeneration + 1
 	ds, err := q.InsertAppDesiredSpec(ctx, store.InsertAppDesiredSpecParams{
 		InstanceID: inst.ID, Generation: gen, PackageVersion: d.PackageVersion, RunState: d.RunState,
@@ -304,7 +324,24 @@ func (e *specError) Unwrap() error { return e.err }
 func (s *Service) buildSpec(ctx context.Context, inst Instance, ds store.AppDesiredSpec) (*agentapi.Spec, error) {
 	pkg, ok := s.pkg(inst.PackageID, ds.PackageVersion)
 	if !ok {
-		return nil, &specError{code: CodePackageUnavailable, err: fmt.Errorf("package version %s is not embedded", ds.PackageVersion)}
+		if ds.Reason != ReasonRevert {
+			return nil, &specError{code: CodePackageUnavailable, err: fmt.Errorf("package version %s is not embedded", ds.PackageVersion)}
+		}
+		// The version that still runs after a rollback need not be
+		// embedded in this release (agent.md "Required upgrade stops").
+		// The revert only acknowledges the blocked generation: the agent
+		// resolves the spec from the running project (current.json) and
+		// reuses restored-project.json only for its rendered files when
+		// its spec still matches. The spec therefore carries no hosts,
+		// settings or secrets.
+		return &agentapi.Spec{
+			InstanceID: inst.ID,
+			Generation: ds.Generation,
+			Package:    agentapi.PackageRef{ID: *inst.PackageID, Version: ds.PackageVersion},
+			State:      ds.RunState,
+			Ingress:    s.cfg.IngressMode,
+			Revert:     true,
+		}, nil
 	}
 	settings, err := decodeSettings(ds.Settings)
 	if err != nil {
@@ -415,6 +452,15 @@ func (s *Service) latestPackage(id string) (*packages.Package, bool) {
 		}
 	}
 	return newest, newest != nil
+}
+
+// installPackage returns the embedded package version an install starts
+// with: version when set, else the newest one.
+func (s *Service) installPackage(id, version string) (*packages.Package, bool) {
+	if version == "" {
+		return s.latestPackage(id)
+	}
+	return s.pkg(&id, version)
 }
 
 func actorPerson(a audit.Actor) *uuid.UUID {
