@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -106,6 +107,19 @@ func TestManifestAndUntrustedURLs(t *testing.T) {
 	}
 	if m["hook_attributes"].(map[string]any)["url"] != env.WebhookURL(inst.ID).String() {
 		t.Fatal("webhook not bound to instance")
+	}
+	events := m["default_events"].([]any)
+	if !slices.Contains(events, any("issues")) {
+		t.Fatalf("default events do not include issues: %v", events)
+	}
+	webhooks := false
+	for _, f := range New().Manifest().Features {
+		if f.Feature == provider.FeatureEventsWebhooks {
+			webhooks = f.Support == provider.Supported
+		}
+	}
+	if !webhooks {
+		t.Fatal("events.webhooks is not supported")
 	}
 	for _, bad := range []string{"../evil", "https://evil.test", "a/b", "a?state=bad", "a#bad", "a%2Fb", "-org", "org-", strings.Repeat("a", 40)} {
 		inst.Settings["organization"] = bad

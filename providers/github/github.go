@@ -1,5 +1,6 @@
-// Package github connects GitHub.com organizations through GitHub Apps.
-// Account linking/provisioning and event normalization are separate M2 work.
+// Package github connects GitHub.com organizations through GitHub Apps,
+// links accounts and turns the App's webhook deliveries into normalized
+// events. Provisioning is separate M2 work.
 package github
 
 import (
@@ -50,8 +51,11 @@ func (*Adapter) Manifest() provider.Manifest {
 	features := make([]provider.FeatureSupport, 0, len(provider.Features))
 	for _, f := range provider.Features {
 		support := provider.Unsupported
-		if f == provider.FeatureAccountsLink {
+		switch f {
+		case provider.FeatureAccountsLink:
 			support = provider.Supported // the employee step (OAuth through the App)
+		case provider.FeatureEventsWebhooks:
+			support = provider.Supported // the App's webhook (webhooks.go, events.go)
 		}
 		features = append(features, provider.FeatureSupport{Feature: f, Support: support})
 	}
@@ -112,7 +116,7 @@ func (a *Adapter) BeginConnect(_ context.Context, env provider.Env, inst provide
 		"redirect_url": callback(env), "setup_url": callback(env), "callback_urls": []string{accountCallback(env)},
 		"hook_attributes":     map[string]any{"url": env.WebhookURL(inst.ID).String(), "active": true},
 		"default_permissions": RequiredPermissions(),
-		"default_events":      []string{"pull_request", "pull_request_review", "issue_comment", "pull_request_review_comment", "member", "membership", "organization"},
+		"default_events":      []string{"pull_request", "pull_request_review", "issue_comment", "pull_request_review_comment", "issues", "member", "membership", "organization"},
 	}
 	raw, err := json.Marshal(manifest)
 	if err != nil {

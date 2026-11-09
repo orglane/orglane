@@ -1599,6 +1599,37 @@ func (q *Queries) InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDe
 	return result.RowsAffected(), nil
 }
 
+const insertWebhookEffectMark = `-- name: InsertWebhookEffectMark :execrows
+INSERT INTO webhook_effect_marks (instance_id, body_sha256, effect, code, considered_at)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (instance_id, body_sha256) DO NOTHING
+`
+
+type InsertWebhookEffectMarkParams struct {
+	InstanceID   uuid.UUID
+	BodySha256   []byte
+	Effect       string
+	Code         string
+	ConsideredAt time.Time
+}
+
+// Records that a signed body was considered for delivery effects. A replay
+// after delivery retention finds the mark and applies no effect. Marks live
+// as long as their instance and are never deleted by retention.
+func (q *Queries) InsertWebhookEffectMark(ctx context.Context, arg InsertWebhookEffectMarkParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertWebhookEffectMark,
+		arg.InstanceID,
+		arg.BodySha256,
+		arg.Effect,
+		arg.Code,
+		arg.ConsideredAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const invalidateAppConnectStates = `-- name: InvalidateAppConnectStates :exec
 UPDATE app_oauth_states SET consumed_at = now()
 WHERE instance_id = $1 AND kind = 'connect' AND consumed_at IS NULL

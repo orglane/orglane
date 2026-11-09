@@ -615,6 +615,14 @@ WHERE body IS NOT NULL AND (
 -- name: DeleteOldWebhookDeliveries :execrows
 DELETE FROM webhook_deliveries WHERE received_at < now() - interval '30 days';
 
+-- name: InsertWebhookEffectMark :execrows
+-- Records that a signed body was considered for delivery effects. A replay
+-- after delivery retention finds the mark and applies no effect. Marks live
+-- as long as their instance and are never deleted by retention.
+INSERT INTO webhook_effect_marks (instance_id, body_sha256, effect, code, considered_at)
+VALUES (@instance_id, @body_sha256, @effect, @code, @considered_at)
+ON CONFLICT (instance_id, body_sha256) DO NOTHING;
+
 -- name: InsertEvent :execrows
 INSERT INTO events (type, schema_version, instance_id, provider, delivery_id, dedupe_key, occurred_at, received_at, actor, subject, targets, data)
 VALUES (@type, @schema_version, @instance_id, @provider, @delivery_id, @dedupe_key, @occurred_at, @received_at, @actor, @subject, @targets, @data)

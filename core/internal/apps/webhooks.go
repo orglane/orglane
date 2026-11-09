@@ -166,6 +166,10 @@ const (
 	deliveryFailed    = "failed"
 )
 
+// codeEffectReplayed marks a delivery whose signed body's effects were
+// already considered for this instance, before its delivery row expired.
+const codeEffectReplayed = "effect_replayed"
+
 var (
 	eventTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){2}$`)
 	// maxEventsPerDelivery bounds what one delivery may create.
@@ -176,7 +180,7 @@ var (
 // events, all in one transaction. Normalization errors are permanent;
 // database errors retry.
 func (s *Service) RunProcessDelivery(ctx context.Context, args ProcessDeliveryArgs) error {
-	return s.inTx(ctx, func(_ pgx.Tx, q *store.Queries) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
 		row, err := q.GetWebhookDeliveryForUpdate(ctx, args.DeliveryID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -229,21 +233,44 @@ func (s *Service) RunProcessDelivery(ctx context.Context, args ProcessDeliveryAr
 		for k, v := range stored {
 			h.Set(k, v)
 		}
-		events, err := src.Normalize(inst.View(), provider.Delivery{ID: row.DeliveryID, EventName: row.EventName, Headers: h, Body: body, ReceivedAt: row.ReceivedAt})
+		d := provider.Delivery{ID: row.DeliveryID, EventName: row.EventName, Headers: h, Body: body, ReceivedAt: row.ReceivedAt}
+		effected, replayed := false, false
+		if fx, ok := src.(provider.DeliveryEffects); ok {
+			effect, err := fx.Effects(inst.View(), d)
+			if err != nil {
+				status, code := normalizeFailure(err)
+				return finish(status, code, 0)
+			}
+			// The signed body, not the delivery row, is the durable effect
+			// key: delivery rows expire after 30 days, but a replay must
+			// never reapply a connection effect (docs/specs/providers.md
+			// "Replay and retention").
+			kind, code := effectMark(effect)
+			inserted, err := q.InsertWebhookEffectMark(ctx, store.InsertWebhookEffectMarkParams{
+				InstanceID:   row.InstanceID,
+				BodySha256:   row.BodySha256,
+				Effect:       kind,
+				Code:         code,
+				ConsideredAt: s.cfg.Now().UTC(),
+			})
+			if err != nil {
+				return fmt.Errorf("apps: mark delivery effect: %w", err)
+			}
+			if inserted == 0 {
+				replayed = true
+			} else if effected, err = s.applyEffect(ctx, tx, q, inst, effect); err != nil {
+				return err
+			}
+		}
+		events, err := src.Normalize(inst.View(), d)
 		switch {
-		case errors.Is(err, provider.ErrForeignDelivery):
-			code := "foreign_delivery"
-			var pe *provider.Error
-			if errors.As(err, &pe) && pe.Code != "" {
-				code = pe.Code
-			}
-			return finish(deliveryIgnored, code, 0)
 		case err != nil:
-			code, _, _ := provider.Classify(err)
-			if code == provider.CodeProviderError {
-				code = "normalize_failed"
-			}
-			return finish(deliveryFailed, code, 0)
+			status, code := normalizeFailure(err)
+			return finish(status, code, 0)
+		case events == nil && effected:
+			return finish(deliveryProcessed, "", 0)
+		case events == nil && replayed:
+			return finish(deliveryIgnored, codeEffectReplayed, 0)
 		case events == nil:
 			return finish(deliveryIgnored, "not_normalized", 0)
 		}
@@ -269,6 +296,97 @@ func (s *Service) RunProcessDelivery(ctx context.Context, args ProcessDeliveryAr
 		}
 		return finish(deliveryProcessed, "", n)
 	})
+}
+
+// normalizeFailure maps an error of Normalize or Effects to the delivery's
+// final status and code: a foreign delivery is ignored, anything else
+// failed for good.
+func normalizeFailure(err error) (status, code string) {
+	if errors.Is(err, provider.ErrForeignDelivery) {
+		code = "foreign_delivery"
+		var pe *provider.Error
+		if errors.As(err, &pe) && pe.Code != "" {
+			code = pe.Code
+		}
+		return deliveryIgnored, code
+	}
+	code, _, _ = provider.Classify(err)
+	if code == provider.CodeProviderError {
+		code = "normalize_failed"
+	}
+	return deliveryFailed, code
+}
+
+var effectCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// effectMark names an effect for its durable mark. Every delivery whose
+// effects were evaluated gets a mark, including one that changes nothing:
+// the mark says "considered once", so a replay cannot turn a no-op, an
+// already satisfied state or a skipped transition into a later state change.
+// An effect whose state or code is invalid is skipped by applyEffect and is
+// recorded as no effect (or as only its resync).
+func effectMark(e provider.Effect) (kind, code string) {
+	switch e.State {
+	case provider.EffectDegraded, provider.EffectDisconnected, provider.EffectRestored:
+		if effectCodePattern.MatchString(e.Code) {
+			return e.State, e.Code
+		}
+	}
+	if e.Resync {
+		return "resync", ""
+	}
+	return "none", ""
+}
+
+// applyEffect applies what a delivery changes besides its events, in the
+// transaction that stores them (docs/specs/providers.md "Webhooks" ->
+// "Processing"). State changes are audited as system transitions; a change
+// the instance's current state does not allow is skipped. It reports
+// whether anything was changed or queued.
+func (s *Service) applyEffect(ctx context.Context, tx pgx.Tx, q *store.Queries, inst Instance, e provider.Effect) (bool, error) {
+	changed := false
+	if e.State != "" {
+		if !effectCodePattern.MatchString(e.Code) {
+			return false, nil
+		}
+		current, err := s.loadInstance(ctx, q, inst.ID, true)
+		if err != nil {
+			return false, err
+		}
+		to, code := "", e.Code
+		switch e.State {
+		case provider.EffectDegraded:
+			to = StateDegraded
+		case provider.EffectDisconnected:
+			to = StateDisconnected
+		case provider.EffectRestored:
+			if current.State == StateDegraded && derefString(current.HealthCode) == e.Code {
+				to, code = StateActive, ""
+			}
+		}
+		if to != "" && (current.State != to || derefString(current.HealthCode) != code) {
+			_, err := s.transition(ctx, tx, q, audit.System, inst.ID, to, code)
+			switch {
+			case errors.Is(err, ErrInvalidState):
+			case err != nil:
+				return false, err
+			default:
+				changed = true
+			}
+		}
+		if inst, err = s.loadInstance(ctx, q, inst.ID, false); err != nil {
+			return false, err
+		}
+	}
+	if e.Resync && inst.Provisionable() {
+		if _, ok := inst.Adapter.Provisioner(); ok {
+			if err := s.enqueueInstance(ctx, tx, inst.ID, ReasonDrift); err != nil {
+				return false, err
+			}
+			changed = true
+		}
+	}
+	return changed, nil
 }
 
 func inInstanceStates(inst Instance, states []string) bool {
@@ -339,8 +457,10 @@ type CleanupResult struct {
 // Cleanup is the daily retention job: retired and discarded credential
 // versions, provider call records a day after their lease, expired OAuth
 // state, delivery bodies 7 days after processing
-// (30 for failed ones) and deliveries after 30 days. Events are never
-// touched. It also reports rotations uncertain for a day.
+// (30 for failed ones) and deliveries after 30 days. Events and the
+// durable effect marks are never touched: they outlive delivery retention
+// so a replay cannot reapply an effect. It also reports rotations
+// uncertain for a day.
 func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
 	q := store.New(s.pool)
 	var r CleanupResult

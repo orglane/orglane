@@ -321,6 +321,16 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
     id: "apps.code.setupFailed",
     defaultMessage: "Setting up this app failed. Check the service, then retry the setup.",
   },
+  installation_deleted: {
+    id: "apps.code.installationDeleted",
+    defaultMessage:
+      "The GitHub App was uninstalled from the organization. Orglane no longer receives its events or manages access there; connect GitHub again to resume.",
+  },
+  installation_suspended: {
+    id: "apps.code.installationSuspended",
+    defaultMessage:
+      "The GitHub App's installation is suspended. Unsuspend it in the organization's settings; this clears when GitHub reports it.",
+  },
   agent_unavailable: {
     id: "apps.code.agentUnavailable",
     defaultMessage:
@@ -401,7 +411,8 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
   },
   webhook_deleted: {
     id: "apps.code.webhookDeleted",
-    defaultMessage: "The app no longer sends events to Orglane. Reconnect it to restore them.",
+    defaultMessage:
+      "The app no longer sends events to Orglane: its webhook was deleted. Set the webhook URL and secret again in the app (for GitHub, in the App's settings); the next event it delivers clears this.",
   },
   provider_unavailable: {
     id: "apps.code.providerUnavailable",
