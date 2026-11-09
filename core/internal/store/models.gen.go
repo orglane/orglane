@@ -193,6 +193,19 @@ type Event struct {
 	Data          []byte
 }
 
+type IngressServeState struct {
+	ID  bool
+	Seq int64
+}
+
+type IngressServedRoute struct {
+	InstanceKey string
+	Host        string
+	Upstream    string
+	Maintenance bool
+	ServedSince time.Time
+}
+
 type InstanceSetting struct {
 	Key       string
 	Value     []byte

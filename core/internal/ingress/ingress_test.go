@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -143,7 +144,7 @@ func TestBuildLocalMode(t *testing.T) {
 
 func TestHandler(t *testing.T) {
 	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
-	h, err := NewHandler(cfg, nil, slog.New(slog.DiscardHandler))
+	h, err := NewHandler(cfg, nil, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +209,7 @@ func TestHandlerAllowedPeers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS": tc.allowed})
-			h, err := NewHandler(cfg, nil, slog.New(slog.DiscardHandler))
+			h, err := NewHandler(cfg, nil, nil, slog.New(slog.DiscardHandler))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -324,8 +325,16 @@ func TestBuildAppRoutesRejectsBadRoutes(t *testing.T) {
 func TestHandlerAppRoutes(t *testing.T) {
 	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
 	var routes []AppRoute
-	var fail error
-	h, err := NewHandler(cfg, func(context.Context) ([]AppRoute, error) { return routes, fail }, slog.New(slog.DiscardHandler))
+	var fail, publishFail error
+	var publishing, served [][]AppRoute
+	h, err := NewHandler(cfg, func(context.Context) ([]AppRoute, error) { return routes, fail },
+		func(_ context.Context, r []AppRoute) (func(context.Context), error) {
+			publishing = append(publishing, r)
+			if publishFail != nil {
+				return nil, publishFail
+			}
+			return func(context.Context) { served = append(served, r) }, nil
+		}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,10 +357,35 @@ func TestHandlerAppRoutes(t *testing.T) {
 	if code, d := poll(); code != http.StatusOK || d.HTTP.Routers[AppRouter("git", "web")].Service == "" {
 		t.Fatalf("with an app: %d %v", code, d.HTTP.Routers)
 	}
-	// A failing source is a 503, never a configuration without the apps.
+	// The publisher gets the app routes of each answer before it is
+	// written and again once it was flushed, only those Build included: a
+	// route that would take over the workspace host is not published.
+	routes = append(routes,
+		AppRoute{Key: "evil", Route: "web", Host: cfg.WorkspaceHostname(), Upstream: "http://evil-web:80"},
+		AppRoute{Key: "chat", Route: "web", Host: "chat.acme.com", Maintenance: true})
+	if code, _ := poll(); code != http.StatusOK {
+		t.Fatalf("with apps: %d", code)
+	}
+	want := [][]AppRoute{nil, routes[:1], {routes[2], routes[0]}}
+	if !reflect.DeepEqual(served, want) || !reflect.DeepEqual(publishing, want) {
+		t.Fatalf("served =\n%+v\npublishing =\n%+v\nwant\n%+v", served, publishing, want)
+	}
+	// A publisher that cannot record what is about to be served makes the
+	// answer a 503: Traefik keeps its last configuration.
+	publishFail = errors.New("database down")
+	if code, _ := poll(); code != http.StatusServiceUnavailable {
+		t.Fatalf("failing publisher = %d, want 503", code)
+	}
+	publishFail = nil
+	publishing = publishing[:len(want)]
+	// A failing source is a 503, never a configuration without the apps,
+	// and nothing is reported served.
 	fail = errors.New("database down")
 	if code, _ := poll(); code != http.StatusServiceUnavailable {
 		t.Fatalf("failing source = %d, want 503", code)
+	}
+	if len(served) != len(want) {
+		t.Fatalf("a failed poll was reported served: %+v", served[len(want):])
 	}
 }
 
@@ -383,5 +417,50 @@ func TestMaintenance(t *testing.T) {
 		if tc.want == http.StatusServiceUnavailable && rec.Header().Get("Retry-After") != MaintenanceRetryAfter {
 			t.Errorf("no Retry-After: %v", rec.Header())
 		}
+	}
+}
+
+// TestHandlerCompletesBeforeServed: Traefik has the complete answer before
+// the served hook runs, so a slow hook never holds back (or, past
+// Traefik's timeout, voids) the configuration it records.
+func TestHandlerCompletesBeforeServed(t *testing.T) {
+	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
+	read := make(chan struct{})
+	hookDone := make(chan bool, 1)
+	h, err := NewHandler(cfg, nil, func(context.Context, []AppRoute) (func(context.Context), error) {
+		return func(ctx context.Context) {
+			select {
+			case <-read:
+				hookDone <- true
+			case <-ctx.Done():
+				hookDone <- false
+			}
+		}, nil
+	}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+ConfigPath, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.ContentLength != int64(len(body)) {
+		t.Fatalf("answer: %d bytes, Content-Length %d, %v", len(body), resp.ContentLength, err)
+	}
+	var d Dynamic
+	if err := json.Unmarshal(body, &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	close(read)
+	if !<-hookDone {
+		t.Fatal("the answer was complete only after the served hook returned")
 	}
 }

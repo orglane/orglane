@@ -12,6 +12,10 @@ import (
 	"github.com/orglane/orglane/providers/provider"
 )
 
+// SetupFinishReserve is the part of a setup attempt's deadline kept for
+// recording its outcome.
+const SetupFinishReserve = setupFinishReserve
+
 // EnvForTest returns the Env adapters get for an instance, so tests can read
 // credential plaintext the way an adapter does.
 func (s *Service) EnvForTest(inst Instance) provider.Env { return s.env(inst) }

@@ -67,6 +67,21 @@ func (q *Queries) AppUpgradeInProgress(ctx context.Context, id uuid.UUID) (*bool
 	return column_1, err
 }
 
+const beginRouteServe = `-- name: BeginRouteServe :one
+UPDATE ingress_serve_state SET seq = seq + 1 RETURNING seq
+`
+
+// Starts serving a configuration (with DropUnservedRoutes, in the same
+// transaction): advances the serve sequence under its row lock, so a
+// recording of an earlier serve still in flight finishes first or not at
+// all.
+func (q *Queries) BeginRouteServe(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, beginRouteServe)
+	var seq int64
+	err := row.Scan(&seq)
+	return seq, err
+}
+
 const clearAppInstanceRetained = `-- name: ClearAppInstanceRetained :execrows
 UPDATE app_instances SET data_retained = false, updated_at = now()
 WHERE id = $1 AND state = 'removed' AND data_retained
@@ -477,6 +492,33 @@ func (q *Queries) DropPendingRemovals(ctx context.Context, arg DropPendingRemova
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const dropUnservedRoutes = `-- name: DropUnservedRoutes :exec
+DELETE FROM ingress_served_routes
+WHERE (instance_key, host, upstream, maintenance) NOT IN (
+    SELECT unnest($1::text[]), unnest($2::text[]), unnest($3::text[]),
+        unnest($4::boolean[])
+)
+`
+
+type DropUnservedRoutesParams struct {
+	Keys        []string
+	Hosts       []string
+	Upstreams   []string
+	Maintenance []bool
+}
+
+// Deletes every served route that the configuration about to be served
+// does not contain identically.
+func (q *Queries) DropUnservedRoutes(ctx context.Context, arg DropUnservedRoutesParams) error {
+	_, err := q.db.Exec(ctx, dropUnservedRoutes,
+		arg.Keys,
+		arg.Hosts,
+		arg.Upstreams,
+		arg.Maintenance,
+	)
+	return err
 }
 
 const endAppCredentialCall = `-- name: EndAppCredentialCall :execrows
@@ -1110,6 +1152,40 @@ func (q *Queries) GetRemovalBatchForUpdate(ctx context.Context, arg GetRemovalBa
 		&i.CreatedAt,
 		&i.ConfirmedBy,
 		&i.ConfirmedAt,
+	)
+	return i, err
+}
+
+const getServedRoute = `-- name: GetServedRoute :one
+SELECT host, upstream, maintenance,
+    (served_since <= clock_timestamp() - make_interval(secs => $1::float8))::boolean AS settled
+FROM ingress_served_routes
+WHERE instance_key = $2
+`
+
+type GetServedRouteParams struct {
+	SettleSeconds float64
+	InstanceKey   string
+}
+
+type GetServedRouteRow struct {
+	Host        string
+	Upstream    string
+	Maintenance bool
+	Settled     bool
+}
+
+// The served route of an instance key, and whether it has been served
+// unchanged for at least settle_seconds (on the database's clock, shared
+// by every core process).
+func (q *Queries) GetServedRoute(ctx context.Context, arg GetServedRouteParams) (GetServedRouteRow, error) {
+	row := q.db.QueryRow(ctx, getServedRoute, arg.SettleSeconds, arg.InstanceKey)
+	var i GetServedRouteRow
+	err := row.Scan(
+		&i.Host,
+		&i.Upstream,
+		&i.Maintenance,
+		&i.Settled,
 	)
 	return i, err
 }
@@ -3437,6 +3513,39 @@ func (q *Queries) NextAppCredentialVersion(ctx context.Context, arg NextAppCrede
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const recordServedRoutes = `-- name: RecordServedRoutes :exec
+INSERT INTO ingress_served_routes (instance_key, host, upstream, maintenance, served_since)
+SELECT s.key, s.host, s.upstream, s.maintenance, clock_timestamp()
+FROM (
+    SELECT unnest($1::text[]) AS key, unnest($2::text[]) AS host,
+        unnest($3::text[]) AS upstream, unnest($4::boolean[]) AS maintenance
+) s
+WHERE EXISTS (SELECT 1 FROM ingress_serve_state WHERE seq = $5 FOR SHARE)
+    AND NOT EXISTS (SELECT 1 FROM ingress_served_routes r WHERE r.instance_key = s.key)
+ON CONFLICT (instance_key) DO NOTHING
+`
+
+type RecordServedRoutesParams struct {
+	Keys        []string
+	Hosts       []string
+	Upstreams   []string
+	Maintenance []bool
+	Seq         int64
+}
+
+// Records the routes of a configuration that was served, if no later serve
+// has begun since (seq): routes already recorded keep served_since.
+func (q *Queries) RecordServedRoutes(ctx context.Context, arg RecordServedRoutesParams) error {
+	_, err := q.db.Exec(ctx, recordServedRoutes,
+		arg.Keys,
+		arg.Hosts,
+		arg.Upstreams,
+		arg.Maintenance,
+		arg.Seq,
+	)
+	return err
 }
 
 const refreshAccountLinkLogin = `-- name: RefreshAccountLinkLogin :execrows

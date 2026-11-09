@@ -158,6 +158,9 @@ func NewStack(pool *pgxpool.Pool, cfg *config.Config, logger *slog.Logger, opts 
 		Packages: pkgs, OIDC: svc, IngressMode: cfg.Ingress.Mode, ServiceHost: cfg.ServiceHost, SyncInterval: cfg.Agent.SyncInterval,
 		HTTPClient: opts.AppsHTTPClient,
 		DomainBase: cfg.Domain.Base, CoreVersion: opts.Version,
+		// This process serves Traefik's routes (server.Run), so it knows
+		// when an instance's route is published.
+		AwaitRoutes: cfg.Server.InternalListen != "",
 	}
 	// The production checks of an install (local mode, agent, resources,
 	// DNS) are the service's own; the hook reaches it once it exists.

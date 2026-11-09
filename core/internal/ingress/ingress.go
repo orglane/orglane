@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,6 +78,17 @@ func AppRouter(key, route string) string { return "orglane-app-" + key + "-" + r
 
 // RouteSource returns the app routes at the moment of a poll.
 type RouteSource func(ctx context.Context) ([]AppRoute, error)
+
+// servedTimeout bounds the served callback of a Publisher.
+const servedTimeout = 5 * time.Second
+
+// Publisher observes the configurations the handler serves Traefik
+// (docs/specs/providers.md "Route publication"). It is called with the app
+// routes Build included before the answer is written: an error answers
+// 503, so Traefik keeps its last configuration. Otherwise the answer is
+// written, and served (if not nil) is called once it has been flushed
+// completely.
+type Publisher func(ctx context.Context, routes []AppRoute) (served func(context.Context), err error)
 
 // noopService is Traefik's built-in service for routers that only redirect.
 const noopService = "noop@internal"
@@ -166,6 +178,12 @@ const (
 // route's host, and routes without a valid upstream, are left out: a bad
 // row must never take over another host.
 func Build(cfg *config.Config, apps []AppRoute) Dynamic {
+	d, _ := build(cfg, apps)
+	return d
+}
+
+// build is Build that also returns the app routes it included.
+func build(cfg *config.Config, apps []AppRoute) (Dynamic, []AppRoute) {
 	headers := &Headers{
 		FrameDeny:          true,
 		ContentTypeNosniff: true,
@@ -218,6 +236,7 @@ func Build(cfg *config.Config, apps []AppRoute) Dynamic {
 	route(RouterWorkspace, cfg.WorkspaceHostname(), ServiceCore)
 
 	hosts := map[string]bool{cfg.WorkspaceHostname(): true}
+	var included []AppRoute
 	apps = slices.Clone(apps)
 	slices.SortFunc(apps, func(a, b AppRoute) int {
 		return strings.Compare(a.Key+"\x00"+a.Route, b.Key+"\x00"+b.Route)
@@ -235,6 +254,7 @@ func Build(cfg *config.Config, apps []AppRoute) Dynamic {
 			}
 			hosts[a.Host] = true
 			route(name, a.Host, ServiceCore, MiddlewareMaintenance)
+			included = append(included, a)
 			continue
 		}
 		if !validUpstream(a.Upstream) {
@@ -246,8 +266,9 @@ func Build(cfg *config.Config, apps []AppRoute) Dynamic {
 			PassHostHeader: true,
 		}}
 		route(name, a.Host, name)
+		included = append(included, a)
 	}
-	return d
+	return d, included
 }
 
 var (
@@ -305,11 +326,13 @@ func Maintenance(workspaceHost string, next http.Handler) http.Handler {
 // NewHandler returns the handler of the internal listener: GET ConfigPath
 // returns Build(cfg, routes) as JSON, with the app routes read from source
 // on every request (nil: none). It must never be served on the public
-// listener.
+// listener. publish (if not nil) observes each answer (Publisher); its
+// served callback gets a context bounded by servedTimeout.
 //
-// If source fails, the answer is 503: Traefik then keeps the configuration
-// of its last successful poll instead of dropping the app routes.
-func NewHandler(cfg *config.Config, source RouteSource, logger *slog.Logger) (http.Handler, error) {
+// If source or publish fails, the answer is 503: Traefik then keeps the
+// configuration of its last successful poll instead of dropping the app
+// routes.
+func NewHandler(cfg *config.Config, source RouteSource, publish Publisher, logger *slog.Logger) (http.Handler, error) {
 	if _, err := json.Marshal(Build(cfg, nil)); err != nil {
 		return nil, fmt.Errorf("encode traefik configuration: %w", err)
 	}
@@ -332,15 +355,37 @@ func NewHandler(cfg *config.Config, source RouteSource, logger *slog.Logger) (ht
 				return
 			}
 		}
-		body, err := json.Marshal(Build(cfg, routes))
+		d, included := build(cfg, routes)
+		body, err := json.Marshal(d)
 		if err != nil {
 			logger.ErrorContext(r.Context(), "traefik configuration: encode", "error", err)
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
+		var served func(context.Context)
+		if publish != nil {
+			if served, err = publish(r.Context(), included); err != nil {
+				logger.ErrorContext(r.Context(), "traefik configuration: record the routes to serve", "error", err)
+				http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write(body)
+		// With a length, the flush below completes the answer before served
+		// runs (no chunked encoding waiting for the handler to return).
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		if _, err := w.Write(body); err != nil || served == nil {
+			return
+		}
+		// Only an answer that left the core counts as served: a write into
+		// the response buffer would not fail when Traefik went away.
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), servedTimeout)
+		defer cancel()
+		served(ctx)
 	})
 	if len(allowed) == 0 {
 		return mux, nil
