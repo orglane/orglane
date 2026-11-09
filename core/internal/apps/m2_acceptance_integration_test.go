@@ -460,8 +460,11 @@ func (s *m2Scenario) forgejoStatus(auth managedtest.Auth, method, path string, b
 }
 
 // deliverWebhook posts the delivery Forgejo recorded to the public webhook
-// endpoint, as Traefik would deliver it. Forgejo records the exact signed
-// request; the test process is outside its network.
+// endpoint, as Traefik would deliver it. On CI Forgejo can reach the
+// workspace through Traefik itself and may have delivered the same signed
+// body already, in which case this is a duplicate (200) and the event is
+// already queued; the recorded request still makes the scenario independent
+// of container DNS, and a fresh delivery answers 202.
 func (s *m2Scenario) deliverWebhook(start int) {
 	s.t.Helper()
 	var deliveries []recorded
@@ -494,7 +497,7 @@ func (s *m2Scenario) deliverWebhook(start int) {
 		s.t.Fatalf("deliver webhook: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusAccepted {
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		s.t.Fatalf("webhook = %d %s", resp.StatusCode, body)
 	}
