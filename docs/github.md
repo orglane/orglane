@@ -162,11 +162,16 @@ accounts.
   login's 404 look like removal. A transient confirmation read failure (5xx,
   timeout, rate limit, renewed token) keeps the accepted removal pending too,
   preserving the provider's retry delay; it never loses the acceptance or fails
-  the removal on the job's last attempt. An accepted removal is never moved
-  into a held batch and is never dropped when the desired access changes: it
-  stays on the confirmation path, and while the new plan may restore access
-  the core asks only for a read-only confirmation, so a restored membership or
-  invitation is never removed again.
+  the removal on the job's last attempt. Once GitHub accepted a removal,
+  Orglane never sends that DELETE again: every later check only reads (a
+  repeated DELETE could restart GitHub's processing), and an accepted removal
+  is never moved into a held batch. If the person's desired access changes
+  meanwhile (for example they rejoin the mapped team), one read settles it:
+  gone means the removal completed (applied and audited); still there means
+  it is settled as superseded (`provisioning.removal_superseded` in the audit
+  log), the restored membership or invitation is kept, and the person is
+  planned again, so the additive path runs. A removal GitHub never completes
+  while it is still wanted stays pending and queued.
   A `200` whose
   [`direct_membership`](https://docs.github.com/en/rest/orgs/members#get-organization-membership-for-a-user)
   is false is a membership granted only by an enterprise team; GitHub documents

@@ -212,6 +212,11 @@ const (
 	ProvisioningActionApplied Action = "provisioning.action_applied"
 	// ProvisioningRemovalsConfirmed: an admin released a held removal batch.
 	ProvisioningRemovalsConfirmed Action = "provisioning.removals_confirmed"
+	// ProvisioningRemovalSuperseded: a removal the provider had accepted was
+	// settled unconfirmed because the person's desired access changed while
+	// its target was still there (metadata: instance, action kind, key, the
+	// confirmation's code).
+	ProvisioningRemovalSuperseded Action = "provisioning.removal_superseded"
 	// ProvisioningRemovalsHeld: the removal guard held a batch of removals.
 	ProvisioningRemovalsHeld Action = "provisioning.removals_held"
 	// ProvisioningRetried: an admin retried failed provisioning results.

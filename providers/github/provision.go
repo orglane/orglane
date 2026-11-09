@@ -51,7 +51,10 @@ import (
 // removal guard keeps it pending, so neither its audit entry nor its result
 // claims the removal before GitHub confirms it. A transient confirmation read
 // failure keeps the accepted removal pending too (acceptedButUnconfirmed); a
-// rate limit's delay is preserved. A membership that only an enterprise team
+// rate limit's delay is preserved. Once the core holds that acceptance it
+// sends provider.Action.ConfirmOnly: the action then only reads (it never
+// issues the DELETE again), returns removal_pending only while the target is
+// still there and passes a read failure through as it is. A membership that only an enterprise team
 // grants (direct_membership false) cannot be removed through the organization
 // membership API and is the permanent indirect_membership.
 //
@@ -733,10 +736,12 @@ func (o *org) cancelInvitation(ctx context.Context, u ghUser, confirmOnly bool) 
 	if confirmOnly {
 		// The cancellation was accepted earlier. Only confirm it: access may
 		// have been restored, so a pending invitation now may be the new grant
-		// and must not be canceled.
+		// and must not be canceled. A read failure is returned as it is; the
+		// caller already holds the acceptance, and removal_pending means only
+		// "still there".
 		mem, err := o.membershipAfterRemoval(ctx, strconv.FormatInt(u.ID, 10))
 		if err != nil {
-			return out, acceptedButUnconfirmed(err)
+			return out, err
 		}
 		if mem != nil && mem.State == "pending" {
 			return out, removalPending("invitation")
@@ -785,15 +790,23 @@ func (o *org) removeFromOrg(ctx context.Context, u ghUser, confirmOnly bool) (pr
 	if confirmOnly {
 		// The removal was accepted earlier. Only confirm it: access may have
 		// been restored, so a present membership may be the new grant and must
-		// not be removed again.
+		// not be removed again. A read failure is returned as it is (see
+		// cancelInvitation); an enterprise team's membership stays permanent.
 		after, err := o.membershipAfterRemoval(ctx, strconv.FormatInt(u.ID, 10))
 		if err != nil {
-			return out, acceptedButUnconfirmed(err)
+			return out, err
 		}
-		if after != nil {
+		switch {
+		case after == nil:
+			return out, nil
+		case after.indirectly() && after.State == "active":
+			return provider.ActionOutcome{}, &provider.Error{
+				Code: CodeIndirectMembership,
+				Err:  errors.New("github: an enterprise team grants this organization membership; remove it from that enterprise team"),
+			}
+		default:
 			return out, removalPending("organization membership")
 		}
-		return out, nil
 	}
 	mem, err := o.membership(ctx, u)
 	if err != nil || mem == nil {
@@ -866,9 +879,10 @@ func (o *org) teamMember(ctx context.Context, u ghUser, teamID string, add, conf
 	if !add && confirmOnly {
 		// The removal was accepted earlier. Only confirm it: a present team
 		// membership may be the restored grant and must not be removed again.
+		// A read failure is returned as it is (see cancelInvitation).
 		after, err := o.teamMembershipAfterRemoval(ctx, teamID, strconv.FormatInt(u.ID, 10))
 		if err != nil {
-			return out, acceptedButUnconfirmed(err)
+			return out, err
 		}
 		if after != nil {
 			return out, removalPending("team membership")

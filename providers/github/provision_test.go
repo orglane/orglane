@@ -1116,3 +1116,51 @@ func TestProvisionConfirmOnlyRemovalDoesNotRemove(t *testing.T) {
 		}
 	})
 }
+
+// A read-only confirmation answers removal_pending only while the target is
+// still there. A failed read is passed through as the read's own error, so the
+// core (which already holds the acceptance) can tell "still there" from "not
+// known": only the former may settle a stale accepted removal as superseded.
+// An enterprise team's membership is the permanent indirect_membership, as on
+// the first attempt.
+func TestProvisionConfirmOnlyReadFailures(t *testing.T) {
+	f, env, inst := fakeFixture(t)
+	a := New()
+	team := syncTeam(t, a, env, inst, "platform")
+	teamID := mustInt(team.ExternalRef)
+	f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+	f.AddMember(70, githubfake.RoleMember)
+	f.SetTeamMember(teamID, 70, githubfake.TeamMember)
+	orgPath := "/orgs/" + f.Org().Login + "/memberships/dev"
+	teamPath := "/organizations/" + strconv.FormatInt(f.Org().ID, 10) + "/team/" + team.ExternalRef + "/memberships/dev"
+	cases := []struct {
+		name string
+		act  provider.Action
+		path string
+	}{
+		{"organization membership", plan2(provider.ActionRemoveFromOrg, "70"), orgPath},
+		{"team membership", teamAction(provider.ActionRemoveFromTeam, "70", ghTeam{ID: teamID, Slug: team.Name}), teamPath},
+		{"invitation", accountAction(provider.ActionCancelInvitation, "70", true), orgPath},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			act := tc.act
+			act.ConfirmOnly = true
+			f.Fail(http.MethodGet, tc.path, http.StatusBadGateway, nil)
+			out, err := a.Apply(t.Context(), env, inst, act)
+			if c, retryable, _ := provider.Classify(err); c != CodeUnavailable || !retryable || out.Changed {
+				t.Fatalf("confirm-only read failure = %+v, %v; want retryable %s", out, err, CodeUnavailable)
+			}
+		})
+	}
+	t.Run("enterprise membership", func(t *testing.T) {
+		f.AddUser(githubfake.User{ID: 71, Login: "enterprise-member"})
+		f.AddIndirectMember(71, githubfake.RoleMember, []string{"ent:platform"})
+		act := plan2(provider.ActionRemoveFromOrg, "71")
+		act.ConfirmOnly = true
+		_, err := a.Apply(t.Context(), env, inst, act)
+		if c, retryable, _ := provider.Classify(err); c != CodeIndirectMembership || retryable {
+			t.Fatalf("confirm-only enterprise membership = %v; want permanent %s", err, CodeIndirectMembership)
+		}
+	})
+}

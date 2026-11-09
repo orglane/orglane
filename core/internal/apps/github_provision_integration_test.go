@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -537,10 +538,14 @@ type failAfterDelete struct {
 	getPath        string
 	armAfterDelete bool
 	failNext       bool
+	deletes        int
 }
 
 func (t *failAfterDelete) RoundTrip(r *http.Request) (*http.Response, error) {
 	t.mu.Lock()
+	if r.Method == http.MethodDelete && !strings.HasPrefix(r.URL.Path, "/applications/") {
+		t.deletes++ // provisioning removals, not the link's OAuth grant cleanup
+	}
 	if t.armAfterDelete && r.Method == http.MethodDelete && r.URL.Path == t.deletePath {
 		t.failNext = true
 		t.armAfterDelete = false
@@ -576,6 +581,13 @@ func (t *failAfterDelete) readPath(path string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.getPath = path
+}
+
+// deleteCount is how many provisioning DELETEs reached GitHub.
+func (t *failAfterDelete) deleteCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.deletes
 }
 
 func (t *failAfterDelete) clear() {
@@ -616,22 +628,25 @@ func planGitHubRemoval(t *testing.T, h *linkHarness, p store.Person) {
 }
 
 // exerciseGitHubAcceptedRemoval drives an accepted removal whose confirmation
-// read fails: the acceptance is durable across a restart, a transient failure
-// on the job's last attempt keeps it pending, a desired-state change keeps the
-// row and confirms it read-only (a restored grant is not removed again), and
-// the eventual confirmation writes exactly one audit entry. The removal must
-// already be planned. grant restores the desired access on GitHub, granted
-// reports whether it is still there, and remove completes the accepted removal.
-func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfterDelete, p store.Person, externalID, deletePath, confirmPath string, grant func(), granted func() bool, remove func()) {
+// read fails: the acceptance is durable across the plan's cleanup and a
+// restart, a transient failure on the job's last attempt keeps it pending, the
+// DELETE is never issued again, and the removal ends in exactly one audit
+// entry. With restored, the desired access changes and grant restores it on
+// GitHub: the read-only confirmation still sees it, so the removal is settled
+// as superseded (provisioning.removal_superseded, no action_applied) and the
+// restored grant stays. Without, remove completes the removal on GitHub and the
+// confirmation applies and audits it. The removal must already be planned.
+func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfterDelete, p store.Person, externalID, deletePath, confirmPath string, restored bool, grant func(), granted func() bool, remove func()) {
 	t.Helper()
 	var key string
 	if err := h.pool.QueryRow(h.ctx, `SELECT action_key FROM provisioning_removals WHERE person_id = $1 AND state = 'pending'`, p.ID).Scan(&key); err != nil {
 		t.Fatal(err)
 	}
-	audits := func() int {
-		return h.count(`SELECT count(*) FROM audit_entries WHERE action = $1 AND metadata->>'key' = $2`, string(audit.ProvisioningActionApplied), key)
+	audits := func(action audit.Action) int {
+		return h.count(`SELECT count(*) FROM audit_entries WHERE action = $1 AND metadata->>'key' = $2`, string(action), key)
 	}
 	var snooze *river.JobSnoozeError
+	deletes := fault.deleteCount()
 
 	// The DELETE is accepted, then the confirmation read fails.
 	fault.afterDelete(deletePath, confirmPath)
@@ -642,37 +657,16 @@ func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfte
 	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending' AND error_code = $2`, p.ID, provider.CodeRemovalPending); n != 1 {
 		t.Fatalf("removals with the durable acceptance = %d, want 1", n)
 	}
-	if n := audits(); n != 0 {
+	if n := audits(audit.ProvisioningActionApplied); n != 0 {
 		t.Fatalf("audit entries before the confirmation = %d, want 0", n)
 	}
 
-	// A desired-state change must not drop the accepted row through either
-	// freshness path: the plan's cleanup keeps it, and apply_removals confirms
-	// it instead of dropping it on the hash mismatch.
-	h.exec(`UPDATE provisioning_removals SET desired_hash = decode(repeat('00', 32), 'hex') WHERE person_id = $1 AND state = 'pending'`, p.ID)
+	// The plan's cleanup keeps the accepted row.
 	if _, err := store.New(h.pool).DropPendingRemovals(h.ctx, store.DropPendingRemovalsParams{InstanceID: h.inst.ID, PersonID: p.ID, KeepKeys: []string{}, AcceptedCode: provider.CodeRemovalPending}); err != nil {
 		t.Fatal(err)
 	}
 	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending' AND error_code = $2`, p.ID, provider.CodeRemovalPending); n != 1 {
 		t.Fatalf("accepted removals after the plan cleanup = %d, want 1", n)
-	}
-
-	// Access is restored while the accepted removal is unconfirmed. The
-	// changed desired state keeps the row, but the confirmation must only read:
-	// a membership or invitation the new grant created is never removed again.
-	grant()
-	err = h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 2, 8)
-	if !errors.As(err, &snooze) || snooze.Duration != 5*time.Second {
-		t.Fatalf("read-only confirmation after access returned = %v, want a 5s snooze", err)
-	}
-	if !granted() {
-		t.Fatal("the confirmation removed the restored grant")
-	}
-	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending'`, p.ID); n != 1 {
-		t.Fatalf("removals after the read-only confirmation = %d, want 1 pending", n)
-	}
-	if n := audits(); n != 0 {
-		t.Fatalf("audit entries before the confirmation = %d, want 0", n)
 	}
 
 	// A restart keeps the acceptance; a transient failure on the retry's first
@@ -687,20 +681,46 @@ func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfte
 	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending'`, p.ID); n != 1 {
 		t.Fatalf("removals after the last-attempt read failure = %d, want 1 pending", n)
 	}
-	if n := audits(); n != 0 {
+	if n := audits(audit.ProvisioningActionApplied); n != 0 {
 		t.Fatalf("audit entries before the confirmation = %d, want 0", n)
 	}
-
 	fault.clear()
-	remove()
-	if err := svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 3, 8); err != nil {
-		t.Fatal(err)
+
+	if restored {
+		// Access is restored while the accepted removal is unconfirmed: the
+		// read-only confirmation sees the new grant and settles the removal
+		// as superseded instead of removing the grant or waiting forever.
+		h.exec(`UPDATE provisioning_removals SET desired_hash = decode(repeat('00', 32), 'hex') WHERE person_id = $1 AND state = 'pending'`, p.ID)
+		grant()
+		if err := svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 2, 8); err != nil {
+			t.Fatalf("read-only confirmation after access returned = %v, want settled", err)
+		}
+		if !granted() {
+			t.Fatal("the confirmation removed the restored grant")
+		}
+		if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'dropped' AND error_code = $2`, p.ID, provider.CodeRemovalPending); n != 1 {
+			t.Fatalf("superseded removals = %d, want 1", n)
+		}
+		if n := audits(audit.ProvisioningRemovalSuperseded); n != 1 {
+			t.Fatalf("superseded audit entries = %d, want 1", n)
+		}
+		if n := audits(audit.ProvisioningActionApplied); n != 0 {
+			t.Fatalf("applied audit entries for the superseded removal = %d, want 0", n)
+		}
+	} else {
+		remove()
+		if err := svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 3, 8); err != nil {
+			t.Fatal(err)
+		}
+		if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'applied'`, p.ID); n != 1 {
+			t.Fatalf("applied removals = %d, want 1", n)
+		}
+		if n := audits(audit.ProvisioningActionApplied); n != 1 {
+			t.Fatalf("audit entries after the confirmation = %d, want 1", n)
+		}
 	}
-	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'applied'`, p.ID); n != 1 {
-		t.Fatalf("applied removals = %d, want 1", n)
-	}
-	if n := audits(); n != 1 {
-		t.Fatalf("audit entries after the confirmation = %d, want 1", n)
+	if n := fault.deleteCount() - deletes; n != 1 {
+		t.Fatalf("DELETEs = %d, want exactly 1", n)
 	}
 }
 
@@ -708,61 +728,352 @@ func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfte
 // read fails after GitHub accepted the removal, the accepted state is durable
 // in PostgreSQL. A restart keeps it, a transient failure on the job's last
 // attempt keeps the removal pending instead of failing it, and the eventual
-// confirmation writes exactly one audit entry. Each removal kind goes through
-// the same core guard.
+// confirmation writes exactly one audit entry; with restored access the
+// removal is settled as superseded and the restored grant stays. Each removal
+// kind goes through the same core guard, with exactly one DELETE.
 func TestGitHubRemovalConfirmationFailureKeepsAcceptance(t *testing.T) {
-	t.Run("organization membership", func(t *testing.T) {
-		h, fault := newFaultyGitHubHarness(t)
-		alice := h.person("alice")
-		platform := h.team("platform", alice)
-		h.mapTeam(h.inst, platform)
-		h.linkAs(alice, 1001, "alice-gh")
-		h.drain()
-		h.gh.Accept(1001)
-		h.leave(platform, alice)
-		planGitHubRemoval(t, h, alice)
-		path := "/orgs/" + h.gh.Org().Login + "/memberships/alice-gh"
-		grant := func() { h.gh.AddMember(1001, githubfake.RoleMember) }
-		granted := func() bool { return h.gh.Members()[1001] == githubfake.RoleMember }
-		remove := func() { h.gh.RemoveMember(1001) }
-		exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", path, path, grant, granted, remove)
-	})
-	t.Run("team membership", func(t *testing.T) {
-		h, fault := newFaultyGitHubHarness(t)
-		alice := h.person("alice")
-		platform, backend := h.team("platform", alice), h.team("backend", alice)
-		h.mapTeam(h.inst, platform)
-		h.mapTeam(h.inst, backend)
-		h.linkAs(alice, 1001, "alice-gh")
-		h.drain()
-		h.gh.Accept(1001)
-		platformRef := h.teamRef(platform)
-		h.leave(platform, alice)
-		planGitHubRemoval(t, h, alice)
-		path := "/organizations/" + strconv.FormatInt(h.gh.Org().ID, 10) + "/team/" + strconv.FormatInt(platformRef, 10) + "/memberships/alice-gh"
-		grant := func() { h.gh.SetTeamMember(platformRef, 1001, githubfake.TeamMember) }
-		granted := func() bool { return h.gh.TeamMembers(platformRef)[1001] != "" }
-		remove := func() { h.gh.RemoveTeamMember(platformRef, 1001) }
-		exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", path, path, grant, granted, remove)
-	})
-	t.Run("invitation", func(t *testing.T) {
-		h, fault := newFaultyGitHubHarness(t)
-		alice := h.person("alice")
-		platform := h.team("platform", alice)
-		h.mapTeam(h.inst, platform)
-		h.linkAs(alice, 1001, "alice-gh")
-		h.drain()
-		inv := h.gh.Invitations()
-		if len(inv) != 1 {
-			t.Fatalf("invitations = %+v, want one", inv)
+	for _, restored := range []bool{false, true} {
+		prefix := "confirmed/"
+		if restored {
+			prefix = "restored/"
 		}
-		h.leave(platform, alice)
-		planGitHubRemoval(t, h, alice)
-		deletePath := "/orgs/" + h.gh.Org().Login + "/invitations/" + strconv.FormatInt(inv[0].ID, 10)
-		confirmPath := "/orgs/" + h.gh.Org().Login + "/memberships/alice-gh"
-		grant := func() { h.gh.InviteAs(1001, h.gh.BotLogin()) }
-		granted := func() bool { return len(h.gh.Invitations()) > 0 }
-		remove := func() { h.gh.RemoveMember(1001) }
-		exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", deletePath, confirmPath, grant, granted, remove)
-	})
+		t.Run(prefix+"organization membership", func(t *testing.T) {
+			h, fault := newFaultyGitHubHarness(t)
+			alice := h.person("alice")
+			platform := h.team("platform", alice)
+			h.mapTeam(h.inst, platform)
+			h.linkAs(alice, 1001, "alice-gh")
+			h.drain()
+			h.gh.Accept(1001)
+			h.leave(platform, alice)
+			planGitHubRemoval(t, h, alice)
+			path := "/orgs/" + h.gh.Org().Login + "/memberships/alice-gh"
+			grant := func() { h.gh.AddMember(1001, githubfake.RoleMember) }
+			granted := func() bool { return h.gh.Members()[1001] == githubfake.RoleMember }
+			remove := func() { h.gh.RemoveMember(1001) }
+			exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", path, path, restored, grant, granted, remove)
+		})
+		t.Run(prefix+"team membership", func(t *testing.T) {
+			h, fault := newFaultyGitHubHarness(t)
+			alice := h.person("alice")
+			platform, backend := h.team("platform", alice), h.team("backend", alice)
+			h.mapTeam(h.inst, platform)
+			h.mapTeam(h.inst, backend)
+			h.linkAs(alice, 1001, "alice-gh")
+			h.drain()
+			h.gh.Accept(1001)
+			platformRef := h.teamRef(platform)
+			h.leave(platform, alice)
+			planGitHubRemoval(t, h, alice)
+			path := "/organizations/" + strconv.FormatInt(h.gh.Org().ID, 10) + "/team/" + strconv.FormatInt(platformRef, 10) + "/memberships/alice-gh"
+			grant := func() { h.gh.SetTeamMember(platformRef, 1001, githubfake.TeamMember) }
+			granted := func() bool { return h.gh.TeamMembers(platformRef)[1001] != "" }
+			remove := func() { h.gh.RemoveTeamMember(platformRef, 1001) }
+			exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", path, path, restored, grant, granted, remove)
+		})
+		t.Run(prefix+"invitation", func(t *testing.T) {
+			h, fault := newFaultyGitHubHarness(t)
+			alice := h.person("alice")
+			platform := h.team("platform", alice)
+			h.mapTeam(h.inst, platform)
+			h.linkAs(alice, 1001, "alice-gh")
+			h.drain()
+			inv := h.gh.Invitations()
+			if len(inv) != 1 {
+				t.Fatalf("invitations = %+v, want one", inv)
+			}
+			h.leave(platform, alice)
+			planGitHubRemoval(t, h, alice)
+			deletePath := "/orgs/" + h.gh.Org().Login + "/invitations/" + strconv.FormatInt(inv[0].ID, 10)
+			confirmPath := "/orgs/" + h.gh.Org().Login + "/memberships/alice-gh"
+			grant := func() { h.gh.InviteAs(1001, h.gh.BotLogin()) }
+			granted := func() bool { return len(h.gh.Invitations()) > 0 }
+			remove := func() { h.gh.RemoveMember(1001) }
+			exerciseGitHubAcceptedRemoval(t, h, fault, alice, "1001", deletePath, confirmPath, restored, grant, granted, remove)
+		})
+	}
+}
+
+// acceptedOrgRemoval is a GitHub organization removal that GitHub accepted
+// but keeps serving (the "removal state machine" of the PR, state accepted):
+// alice left her only mapped team, the guard sent one DELETE, and the row is
+// pending with removal_pending.
+type acceptedOrgRemoval struct {
+	h        *linkHarness
+	fault    *failAfterDelete
+	alice    store.Person
+	platform store.Team
+	key      string
+}
+
+func newAcceptedOrgRemoval(t *testing.T, readbacks int) *acceptedOrgRemoval {
+	t.Helper()
+	h, fault := newFaultyGitHubHarness(t)
+	alice := h.person("alice")
+	platform := h.team("platform", alice)
+	h.mapTeam(h.inst, platform)
+	h.linkAs(alice, 1001, "alice-gh")
+	h.drain()
+	h.gh.Accept(1001)
+	h.gh.QueueOrgRemovals(readbacks)
+	h.leave(platform, alice)
+	planGitHubRemoval(t, h, alice)
+	a := &acceptedOrgRemoval{h: h, fault: fault, alice: alice, platform: platform}
+	if err := h.pool.QueryRow(h.ctx, `SELECT action_key FROM provisioning_removals WHERE person_id = $1 AND state = 'pending'`, alice.ID).Scan(&a.key); err != nil {
+		t.Fatal(err)
+	}
+	// pending --DELETE accepted, still served--> accepted
+	err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 1, 8)
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) || snooze.Duration != 5*time.Second {
+		t.Fatalf("accepted removal = %v, want a 5s snooze", err)
+	}
+	if state, code := a.row(t); state != "pending" || code != provider.CodeRemovalPending {
+		t.Fatalf("accepted removal row = %s/%s, want pending/%s", state, code, provider.CodeRemovalPending)
+	}
+	if n := fault.deleteCount(); n != 1 {
+		t.Fatalf("DELETEs = %d, want 1", n)
+	}
+	if n := a.audits(audit.ProvisioningActionApplied); n != 0 {
+		t.Fatalf("audit entries before the confirmation = %d, want 0", n)
+	}
+	return a
+}
+
+// row is the state and error code of alice's latest removal row.
+func (a *acceptedOrgRemoval) row(t *testing.T) (state, code string) {
+	t.Helper()
+	if err := a.h.pool.QueryRow(a.h.ctx, `SELECT state, coalesce(error_code, '') FROM provisioning_removals WHERE person_id = $1 AND action_key = $2 ORDER BY created_at DESC, id DESC LIMIT 1`, a.alice.ID, a.key).Scan(&state, &code); err != nil {
+		t.Fatal(err)
+	}
+	return state, code
+}
+
+func (a *acceptedOrgRemoval) audits(action audit.Action) int {
+	return a.h.count(`SELECT count(*) FROM audit_entries WHERE action = $1 AND metadata->>'key' = $2`, string(action), a.key)
+}
+
+func (a *acceptedOrgRemoval) restore(t *testing.T) {
+	t.Helper()
+	if _, err := a.h.ids.SetTeamMember(a.h.ctx, audit.System, a.platform.ID, a.alice.ID, identity.TeamRoleMember); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestGitHubAcceptedRemovalStateMachine walks every transition out of the
+// accepted state against PostgreSQL, the real guard and adapter and the fake
+// GitHub: a removal GitHub accepted is only ever confirmed read-only (one
+// DELETE in total), confirmed absence applies and audits it once, a read
+// failure keeps it accepted (also on the last attempt and across a restart),
+// and restored access settles it as superseded while the restored grant stays
+// and the additive path runs.
+func TestGitHubAcceptedRemovalStateMachine(t *testing.T) {
+	const pending, applied, dropped, failed = "pending", "applied", "dropped", "failed"
+	cases := []struct {
+		name string
+		// event happens between the acceptance and the checked guard run; it
+		// may return a restarted core to run it with.
+		event   func(t *testing.T, a *acceptedOrgRemoval) *apps.Service
+		attempt int
+		// snooze is the guard run's expected snooze; 0 expects no error (a
+		// failed removal is recorded on its row, not returned).
+		snooze                 time.Duration
+		state, code            string
+		appliedAudits          int
+		supersededAudits       int
+		member, invited, drain bool
+	}{
+		{
+			name:   "fresh, still served: stays accepted, no DELETE",
+			event:  func(*testing.T, *acceptedOrgRemoval) *apps.Service { return nil },
+			snooze: 5 * time.Second, state: pending, code: provider.CodeRemovalPending, member: true,
+		},
+		{
+			name: "fresh, gone: applied and audited once",
+			event: func(_ *testing.T, a *acceptedOrgRemoval) *apps.Service {
+				a.h.gh.RemoveMember(1001)
+				return nil
+			},
+			state: applied, appliedAudits: 1,
+		},
+		{
+			name: "fresh, read fails on the last attempt: stays accepted",
+			event: func(_ *testing.T, a *acceptedOrgRemoval) *apps.Service {
+				a.fault.readPath("/user/1001")
+				a.fault.failTheNextRead()
+				return nil
+			},
+			attempt: 8, snooze: 5 * time.Second, state: pending, code: provider.CodeRemovalPending, member: true,
+		},
+		{
+			name: "fresh, an enterprise team keeps the membership: failed, no audit",
+			event: func(_ *testing.T, a *acceptedOrgRemoval) *apps.Service {
+				a.h.gh.AddIndirectMember(1001, githubfake.RoleMember, []string{"ent:platform"})
+				return nil
+			},
+			state: failed, code: "indirect_membership", member: true,
+		},
+		{
+			name: "restart, still served: stays accepted",
+			event: func(_ *testing.T, a *acceptedOrgRemoval) *apps.Service {
+				return a.h.restartCore()
+			},
+			snooze: 5 * time.Second, state: pending, code: provider.CodeRemovalPending, member: true,
+		},
+		{
+			name: "replanned while the removal is still wanted: stays accepted",
+			event: func(t *testing.T, a *acceptedOrgRemoval) *apps.Service {
+				if _, err := a.h.ids.SetPersonStatus(a.h.ctx, audit.System, a.alice.ID, identity.StatusSuspended); err != nil {
+					t.Fatal(err)
+				}
+				if err := a.h.svc.RunProvisionPerson(a.h.ctx, apps.ProvisionPersonArgs{InstanceID: a.h.inst.ID, PersonID: a.alice.ID}, 1, 8); err != nil {
+					t.Fatal(err)
+				}
+				return nil
+			},
+			snooze: 5 * time.Second, state: pending, code: provider.CodeRemovalPending, member: true,
+		},
+		{
+			name: "restored, still served: superseded, membership kept",
+			event: func(t *testing.T, a *acceptedOrgRemoval) *apps.Service {
+				a.restore(t)
+				return nil
+			},
+			state: dropped, code: provider.CodeRemovalPending, supersededAudits: 1, member: true, drain: true,
+		},
+		{
+			name: "restored after GitHub finished: applied, then invited again",
+			event: func(t *testing.T, a *acceptedOrgRemoval) *apps.Service {
+				a.h.gh.RemoveMember(1001)
+				a.restore(t)
+				return nil
+			},
+			state: applied, appliedAudits: 1, invited: true, drain: true,
+		},
+		{
+			name: "restored with a new invitation: superseded, invitation kept",
+			event: func(t *testing.T, a *acceptedOrgRemoval) *apps.Service {
+				a.h.gh.RemoveMember(1001)
+				a.restore(t)
+				if err := a.h.svc.RunProvisionPerson(a.h.ctx, apps.ProvisionPersonArgs{InstanceID: a.h.inst.ID, PersonID: a.alice.ID}, 1, 8); err != nil {
+					t.Fatal(err)
+				}
+				if len(a.h.gh.Invitations()) != 1 {
+					t.Fatalf("invitations = %+v, want the restored one", a.h.gh.Invitations())
+				}
+				return nil
+			},
+			state: dropped, code: provider.CodeRemovalPending, supersededAudits: 1, invited: true, drain: true,
+		},
+		{
+			name: "restored, an enterprise team keeps the membership: superseded",
+			event: func(t *testing.T, a *acceptedOrgRemoval) *apps.Service {
+				a.h.gh.AddIndirectMember(1001, githubfake.RoleMember, []string{"ent:platform"})
+				a.restore(t)
+				return nil
+			},
+			state: dropped, code: "indirect_membership", supersededAudits: 1, member: true,
+		},
+		{
+			name: "restored, the membership read fails: stays accepted",
+			event: func(t *testing.T, a *acceptedOrgRemoval) *apps.Service {
+				a.restore(t)
+				// Not "still served": an unknown answer never supersedes.
+				a.fault.readPath("/orgs/" + a.h.gh.Org().Login + "/memberships/alice-gh")
+				a.fault.failTheNextRead()
+				return nil
+			},
+			snooze: 5 * time.Second, state: pending, code: provider.CodeRemovalPending, member: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// GitHub keeps serving the removed membership far longer than
+			// the test reads it.
+			a := newAcceptedOrgRemoval(t, 1000)
+			h := a.h
+			svc := tc.event(t, a)
+			if svc == nil {
+				svc = h.svc
+			}
+			attempt := tc.attempt
+			if attempt == 0 {
+				attempt = 2
+			}
+			err := svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, attempt, 8)
+			var snooze *river.JobSnoozeError
+			switch {
+			case tc.snooze > 0:
+				if !errors.As(err, &snooze) || snooze.Duration != tc.snooze {
+					t.Fatalf("guard run = %v, want a %s snooze", err, tc.snooze)
+				}
+			case err != nil:
+				t.Fatalf("guard run = %v, want settled", err)
+			}
+			a.fault.clear()
+			if state, code := a.row(t); state != tc.state || code != tc.code {
+				t.Fatalf("removal row = %s/%q, want %s/%q", state, code, tc.state, tc.code)
+			}
+			if n := a.audits(audit.ProvisioningActionApplied); n != tc.appliedAudits {
+				t.Fatalf("applied audit entries = %d, want %d", n, tc.appliedAudits)
+			}
+			if n := a.audits(audit.ProvisioningRemovalSuperseded); n != tc.supersededAudits {
+				t.Fatalf("superseded audit entries = %d, want %d", n, tc.supersededAudits)
+			}
+			if tc.drain {
+				// The additive path runs for the restored access and leaves
+				// nothing open.
+				h.drain()
+				if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state IN ('pending', 'held')`, a.alice.ID); n != 0 {
+					t.Fatalf("open removals after the replan = %d, want 0", n)
+				}
+			}
+			if _, ok := h.gh.Members()[1001]; ok != tc.member {
+				t.Fatalf("organization member = %v, want %v", ok, tc.member)
+			}
+			if got := len(h.gh.Invitations()) > 0; got != tc.invited {
+				t.Fatalf("invited = %v, want %v (%+v)", got, tc.invited, h.gh.Invitations())
+			}
+			if n := a.fault.deleteCount(); n != 1 {
+				t.Fatalf("DELETEs = %d, want exactly the accepted one", n)
+			}
+		})
+	}
+}
+
+// TestGitHubAcceptedRemovalIsNeverReissued: GitHub serves a removed
+// membership for a few reads. Every guard run after the acceptance only
+// reads; a repeated DELETE would restart GitHub's processing and never let
+// the removal settle. It settles once GitHub stops serving the membership,
+// with one DELETE and one audit entry.
+func TestGitHubAcceptedRemovalIsNeverReissued(t *testing.T) {
+	a := newAcceptedOrgRemoval(t, 3)
+	h := a.h
+	settled := 0
+	for attempt := 2; attempt <= 8; attempt++ {
+		err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, attempt, 8)
+		if err == nil {
+			settled = attempt
+			break
+		}
+		var snooze *river.JobSnoozeError
+		if !errors.As(err, &snooze) || snooze.Duration != 5*time.Second {
+			t.Fatalf("confirmation attempt %d = %v, want a 5s snooze", attempt, err)
+		}
+	}
+	if settled == 0 {
+		t.Fatal("the accepted removal never settled")
+	}
+	if state, _ := a.row(t); state != "applied" {
+		t.Fatalf("removal = %s, want applied", state)
+	}
+	if n := a.fault.deleteCount(); n != 1 {
+		t.Fatalf("DELETEs = %d, want 1", n)
+	}
+	if n := a.audits(audit.ProvisioningActionApplied); n != 1 {
+		t.Fatalf("audit entries = %d, want 1", n)
+	}
+	if _, ok := h.gh.Members()[1001]; ok {
+		t.Fatal("alice is still a member")
+	}
 }

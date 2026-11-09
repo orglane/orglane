@@ -1130,11 +1130,12 @@ var errRemovalFailed = errors.New("apps: the removal failed")
 // in, the instance is provisionable and the person's desired access still
 // hashes to what planned the removal. A stale removal is dropped and the
 // person replanned, in one transaction; so is an applied removal and its
-// person's follow-up job (and audit entry). A stale removal the provider has
-// already accepted (removal_pending) is not dropped: the provider may still
-// complete it, so it is confirmed and audited instead, read-only
-// (Action.ConfirmOnly) because a changed desired state may have restored the
-// access. A retryable provider error that asks for a delay (a rate limit, or a
+// person's follow-up job (and audit entry). A removal the provider has
+// already accepted (removal_pending) is only confirmed, read-only
+// (Action.ConfirmOnly), never issued again. When it is stale, its confirmed
+// absence still applies and audits it, while a target that is still there
+// settles it as dropped with a provisioning.removal_superseded entry (the
+// changed desired state may have restored the access). A retryable provider error that asks for a delay (a rate limit, or a
 // removal the provider accepted but has not confirmed) snoozes the job;
 // provider.CodeRemovalPending is remembered on the pending row so the later
 // attempt that confirms the removal audits the earlier accepted change even
@@ -1182,12 +1183,13 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 	if err := json.Unmarshal(cur.Action, &a); err != nil {
 		return nil, fmt.Errorf("apps: decode removal: %w", err)
 	}
-	// A removal the provider already accepted is confirmed and audited even if
-	// the desired access changed: dropping it would lose the acceptance while
-	// the provider may still complete the removal. A changed desired state also
-	// means the target may be a new grant (access restored): the confirmation
-	// may only read, never issue the removal again. It is never reported as
-	// applied before the confirmation.
+	// A removal the provider already accepted is only ever confirmed, read-only
+	// (Action.ConfirmOnly): issuing it again would restart the provider's
+	// processing, and after a desired-state change the target may be a new
+	// grant. It is never reported as applied before the confirmation. A stale
+	// accepted removal is not dropped unread: the target being gone completes
+	// it (and audits it); the target still being there settles it as
+	// superseded, so restored access is neither removed nor waited on forever.
 	acceptedEarlier := cur.ErrorCode != nil && *cur.ErrorCode == provider.CodeRemovalPending
 	stale := !bytes.Equal(d.hash, cur.DesiredHash) || !removalManaged(inst, d, a)
 	if !acceptedEarlier && stale {
@@ -1199,12 +1201,35 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 			return s.enqueuePerson(ctx, tx, q, inst.ID, r.PersonID, false)
 		})
 	}
-	if acceptedEarlier && stale {
-		a.ConfirmOnly = true
-	}
+	a.ConfirmOnly = acceptedEarlier
 	out, applyErr := prov.Apply(ctx, held.env(inst), inst.View(), a)
 	if applyErr != nil {
 		code, retryable, retryAfter := provider.Classify(applyErr)
+		if acceptedEarlier && stale && (code == provider.CodeRemovalPending || !retryable) {
+			// The read-only confirmation still sees the target (or cannot ever
+			// confirm it) while the desired access no longer asks for this
+			// removal: settle it unconfirmed instead of waiting on access the
+			// new plan may have restored. The person is replanned; a removal
+			// the new plan still wants is planned again through the guard.
+			return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+				q := store.New(tx)
+				n, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalDropped, ErrorCode: &code})
+				if err != nil {
+					return fmt.Errorf("apps: supersede removal: %w", err)
+				}
+				if n > 0 {
+					if _, err := audit.Record(ctx, q, audit.Entry{
+						Actor:    audit.System,
+						Action:   audit.ProvisioningRemovalSuperseded,
+						Target:   audit.Target{Kind: audit.TargetPerson, ID: r.PersonID.String()},
+						Metadata: map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key, "code": code},
+					}); err != nil {
+						return err
+					}
+				}
+				return s.enqueuePerson(ctx, tx, q, inst.ID, r.PersonID, false)
+			})
+		}
 		if retryable && acceptedEarlier && retryAfter == 0 {
 			// The provider accepted this removal earlier. A transient failure
 			// on a later check must neither fail it on the last attempt nor
