@@ -114,9 +114,12 @@ accounts.
 - Every action re-reads the account by its numeric ID and uses its current
   login only for that call. Immediately before a team membership change, an
   organization removal or an invitation cancellation it resolves the login
-  from the ID again: if a rename released the login and another account took
-  it, the action stops as retryable (`login_changed`) and changes nothing for
-  the new holder. A rename refreshes the link's login.
+  from the ID again: if a rename released the login before that check and
+  another account took it, the action stops as retryable (`login_changed`)
+  and changes nothing for the new holder. GitHub has no ID-addressed
+  membership endpoint, so a rename between that last re-read and the call
+  can still reach the new holder; the next plan starts from the bound ID
+  again. A rename refreshes the link's login.
 - **Team mappings** support both modes. `create` gives the Orglane team a
   GitHub team named after its slug and marked in the description with the
   instance ID; Orglane never takes over a team of that name that lacks its mark.

@@ -23,7 +23,8 @@ import (
 // GitHub's membership mutations take a login, so immediately before one the
 // action resolves the login from the ID again: a rename that released the
 // login to another account is the retryable login_changed, and nothing is
-// added or removed for the new holder.
+// added or removed for the new holder. There is no ID-addressed membership
+// endpoint, so this re-read is the last call before the mutation.
 //
 // Access: an organization invitation by user ID (POST /orgs/{org}/invitations
 // with invitee_id), then team memberships. Removal: canceling the
