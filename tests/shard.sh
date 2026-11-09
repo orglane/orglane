@@ -36,7 +36,13 @@ if [ "$shard" -lt 1 ] || [ "$shard" -gt "$count" ]; then
 fi
 
 tags=${GO_TEST_TAGS:-integration}
-names=$(go test -tags "$tags" -list '^Test' "$pkg" | grep '^Test' | sort || true)
+# Check the listing itself: a compile error must not look like "no tests",
+# and its output is the useful part of the failure.
+listing=$(go test -tags "$tags" -list '^Test' "$pkg") || {
+	echo "error: listing the tests of $pkg failed" >&2
+	exit 1
+}
+names=$(printf '%s\n' "$listing" | grep '^Test' | sort || true)
 # GO_TEST_ONLY narrows the shard to a regex of test names (the heavy Docker
 # tests of a package, for example), so both tiers shard their own tests.
 if [ -n "${GO_TEST_ONLY:-}" ]; then

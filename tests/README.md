@@ -57,7 +57,7 @@ in `APPS_E2E`; add a new Docker test to that list (and `AGENT_E2E` for the
 agent) so it runs in the heavy tier.
 
 The `core/internal/apps`, identity, profile, peopleimport, jobs and demomode
-integration tests use `pgtest.MainTemplate`: the migrations run once into a
-template database in `TestMain`, and every test still gets its own fresh
-database (`CREATE DATABASE ... TEMPLATE`). Packages that test migrations
-themselves use `pgtest.Main` without a template.
+integration tests use `dbtest.Main` (`pgtest.RunWithTemplate`): the migrations
+run once into a template database in `TestMain`, and every test still gets its
+own fresh database (`CREATE DATABASE ... TEMPLATE`). Packages that test
+migrations themselves use `pgtest.Main` without a template.
