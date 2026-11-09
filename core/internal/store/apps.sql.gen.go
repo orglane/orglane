@@ -1114,6 +1114,40 @@ func (q *Queries) GetRemovalBatchForUpdate(ctx context.Context, arg GetRemovalBa
 	return i, err
 }
 
+const getServedRoute = `-- name: GetServedRoute :one
+SELECT host, upstream, maintenance,
+    (served_since <= clock_timestamp() - make_interval(secs => $1::float8))::boolean AS settled
+FROM ingress_served_routes
+WHERE instance_key = $2
+`
+
+type GetServedRouteParams struct {
+	SettleSeconds float64
+	InstanceKey   string
+}
+
+type GetServedRouteRow struct {
+	Host        string
+	Upstream    string
+	Maintenance bool
+	Settled     bool
+}
+
+// The served route of an instance key, and whether it has been served
+// unchanged for at least settle_seconds (on the database's clock, shared
+// by every core process).
+func (q *Queries) GetServedRoute(ctx context.Context, arg GetServedRouteParams) (GetServedRouteRow, error) {
+	row := q.db.QueryRow(ctx, getServedRoute, arg.SettleSeconds, arg.InstanceKey)
+	var i GetServedRouteRow
+	err := row.Scan(
+		&i.Host,
+		&i.Upstream,
+		&i.Maintenance,
+		&i.Settled,
+	)
+	return i, err
+}
+
 const getVerifiedAccountLink = `-- name: GetVerifiedAccountLink :one
 
 SELECT id, person_id, provider, realm, external_id, login, method, instance_id, state, evidence, verified_at, revoked_at, created_at, updated_at FROM account_links
@@ -3437,6 +3471,40 @@ func (q *Queries) NextAppCredentialVersion(ctx context.Context, arg NextAppCrede
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const recordServedRoutes = `-- name: RecordServedRoutes :exec
+WITH dropped AS (
+    DELETE FROM ingress_served_routes
+    WHERE instance_key <> ALL($1::text[])
+)
+INSERT INTO ingress_served_routes AS r (instance_key, host, upstream, maintenance, served_since)
+SELECT unnest($1::text[]), unnest($2::text[]), unnest($3::text[]),
+    unnest($4::boolean[]), clock_timestamp()
+ON CONFLICT (instance_key) DO UPDATE
+SET host = excluded.host, upstream = excluded.upstream, maintenance = excluded.maintenance,
+    served_since = excluded.served_since
+WHERE (r.host, r.upstream, r.maintenance) IS DISTINCT FROM (excluded.host, excluded.upstream, excluded.maintenance)
+`
+
+type RecordServedRoutesParams struct {
+	Keys        []string
+	Hosts       []string
+	Upstreams   []string
+	Maintenance []bool
+}
+
+// Replaces the served routes with those of a configuration just served:
+// keys no longer served are dropped, new or changed routes start their
+// served_since, unchanged ones keep it (and are not written).
+func (q *Queries) RecordServedRoutes(ctx context.Context, arg RecordServedRoutesParams) error {
+	_, err := q.db.Exec(ctx, recordServedRoutes,
+		arg.Keys,
+		arg.Hosts,
+		arg.Upstreams,
+		arg.Maintenance,
+	)
+	return err
 }
 
 const refreshAccountLinkLogin = `-- name: RefreshAccountLinkLogin :execrows

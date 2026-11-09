@@ -803,3 +803,28 @@ WHERE instance_id = @instance_id AND person_id = @person_id AND state IN ('pendi
 -- Orglane polls for its confirmation).
 UPDATE provisioning_results SET error_code = @error_code, actions = @actions, updated_at = now()
 WHERE instance_id = @instance_id AND person_id = @person_id AND status = 'queued';
+
+-- name: RecordServedRoutes :exec
+-- Replaces the served routes with those of a configuration just served:
+-- keys no longer served are dropped, new or changed routes start their
+-- served_since, unchanged ones keep it (and are not written).
+WITH dropped AS (
+    DELETE FROM ingress_served_routes
+    WHERE instance_key <> ALL(@keys::text[])
+)
+INSERT INTO ingress_served_routes AS r (instance_key, host, upstream, maintenance, served_since)
+SELECT unnest(@keys::text[]), unnest(@hosts::text[]), unnest(@upstreams::text[]),
+    unnest(@maintenance::boolean[]), clock_timestamp()
+ON CONFLICT (instance_key) DO UPDATE
+SET host = excluded.host, upstream = excluded.upstream, maintenance = excluded.maintenance,
+    served_since = excluded.served_since
+WHERE (r.host, r.upstream, r.maintenance) IS DISTINCT FROM (excluded.host, excluded.upstream, excluded.maintenance);
+
+-- name: GetServedRoute :one
+-- The served route of an instance key, and whether it has been served
+-- unchanged for at least settle_seconds (on the database's clock, shared
+-- by every core process).
+SELECT host, upstream, maintenance,
+    (served_since <= clock_timestamp() - make_interval(secs => @settle_seconds::float8))::boolean AS settled
+FROM ingress_served_routes
+WHERE instance_key = @instance_key;

@@ -3,6 +3,8 @@
 package apps_test
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/orglane/orglane/core/internal/apps"
 	"github.com/orglane/orglane/core/internal/audit"
@@ -85,9 +89,11 @@ func TestIngressRoutes(t *testing.T) {
 // TestActivationWaitsForPublishedRoute: with Config.AwaitRoutes, the setup
 // job activates an installing instance only after the internal handler has
 // served Traefik a configuration with its route and the settle time has
-// passed (docs/specs/providers.md "Route publication"). An unpublished
-// route fails the attempt (retryable), exhausted attempts fail the instance
-// with setup_failed, and a reinstall waits for its route again.
+// passed (docs/specs/providers.md "Route publication"). The evidence is in
+// the database: here one core process answers Traefik's polls and another
+// runs the setup job. An unpublished route fails the attempt (retryable),
+// exhausted attempts fail the instance with setup_failed, and a reinstall
+// waits for its route again.
 func TestActivationWaitsForPublishedRoute(t *testing.T) {
 	pkgs, err := packages.NewRegistry(agenttest.FS)
 	if err != nil {
@@ -106,7 +112,10 @@ func TestActivationWaitsForPublishedRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := ingress.NewHandler(cfg, h.svc.IngressRoutes, h.svc.RoutesServed, slog.New(slog.DiscardHandler))
+	// The process Traefik polls, and another core process on the same
+	// database that runs the setup jobs.
+	poller, worker := h.svc, h.restartCore()
+	handler, err := ingress.NewHandler(cfg, poller.IngressRoutes, poller.RoutesServed, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +144,7 @@ func TestActivationWaitsForPublishedRoute(t *testing.T) {
 		return h.reload(inst.ID)
 	}
 	setup := func(inst apps.Instance, attempt int) error {
-		return h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID}, attempt, 8)
+		return worker.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID}, attempt, 8)
 	}
 
 	// Never served: Setup succeeds, but the attempt fails after the bounded
@@ -211,5 +220,104 @@ func TestActivationWaitsForPublishedRoute(t *testing.T) {
 	}
 	if got := h.reload(inst.ID); got.State != apps.StateActive {
 		t.Fatalf("the other instance: %s", got.State)
+	}
+}
+
+// TestRouteWaitFitsTheSetupDeadline: the route wait never outlasts the
+// setup attempt's deadline (River's job timeout), and the last attempt
+// records setup_failed even when a slow Setup left (almost) nothing of it,
+// instead of leaving the instance installing for good.
+func TestRouteWaitFitsTheSetupDeadline(t *testing.T) {
+	pkgs, err := packages.NewRegistry(agenttest.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wait = 30 * time.Second
+	h := newHarnessWith(t, apps.Config{Packages: pkgs, AwaitRoutes: true, RouteSettle: time.Millisecond, RouteWait: wait})
+	for name, left := range map[string]time.Duration{
+		// Setup took most of the attempt: what is left after the reserve
+		// for the outcome is shorter than the route wait.
+		"slow setup": apps.SetupFinishReserve + 500*time.Millisecond,
+		// Setup took (almost) all of it.
+		"no time left": 50 * time.Millisecond,
+	} {
+		t.Run(name, func(t *testing.T) {
+			key := strings.ReplaceAll(name, " ", "")
+			inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+				Provider: "testmanaged", Key: key, BaseURL: "https://" + key + ".acme.test",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.exec(`UPDATE app_instances SET package_id = 'agenttest', package_version = $2,
+				desired_generation = 1, observed_generation = 1, state = 'installing' WHERE id = $1`, inst.ID, agenttest.Version)
+			ctx, cancel := context.WithTimeout(h.ctx, left)
+			defer cancel()
+			start := time.Now()
+			// The route is never served (no Traefik poll).
+			if err := h.svc.RunSetup(ctx, apps.SetupArgs{InstanceID: inst.ID}, 8, 8); err != nil {
+				t.Fatalf("last attempt: %v", err)
+			}
+			if d := time.Since(start); d > left {
+				t.Fatalf("the attempt took %v, longer than its deadline %v", d, left)
+			}
+			if got := h.reload(inst.ID); got.State != apps.StateFailed || derefS(got.HealthCode) != apps.CodeSetupFailed {
+				t.Fatalf("after the last attempt: %s %s, want failed setup_failed", got.State, derefS(got.HealthCode))
+			}
+		})
+	}
+}
+
+// TestRoutesServedRecord: each served configuration replaces the record in
+// the database. An unchanged route keeps the time it was first served, a
+// changed one starts again, and a route left out is dropped (also when no
+// route is served at all).
+func TestRoutesServedRecord(t *testing.T) {
+	h := newHarnessWith(t, apps.Config{AwaitRoutes: true})
+	git := ingress.AppRoute{Key: "git", Route: "web", Host: "git.acme.test", Upstream: "http://git-web:3000"}
+	chat := ingress.AppRoute{Key: "chat", Route: "web", Host: "chat.acme.test", Maintenance: true}
+	since := func(key string) (time.Time, bool) {
+		t.Helper()
+		var at time.Time
+		err := h.pool.QueryRow(h.ctx, `SELECT served_since FROM ingress_served_routes WHERE instance_key = $1`, key).Scan(&at)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, false
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return at, true
+	}
+
+	h.svc.RoutesServed(h.ctx, []ingress.AppRoute{git})
+	first, ok := since("git")
+	if !ok {
+		t.Fatal("a served route is not recorded")
+	}
+	h.svc.RoutesServed(h.ctx, []ingress.AppRoute{git, chat})
+	if at, _ := since("git"); !at.Equal(first) {
+		t.Fatalf("an unchanged route restarted: %v, want %v", at, first)
+	}
+	if _, ok := since("chat"); !ok {
+		t.Fatal("a maintenance route is not recorded")
+	}
+	moved := git
+	moved.Upstream = "http://git-web:4000"
+	h.svc.RoutesServed(h.ctx, []ingress.AppRoute{moved, chat})
+	if at, _ := since("git"); !at.After(first) {
+		t.Fatalf("a changed route kept its time %v", at)
+	}
+	h.svc.RoutesServed(h.ctx, []ingress.AppRoute{chat})
+	if _, ok := since("git"); ok {
+		t.Fatal("a route left out is still recorded")
+	}
+	h.svc.RoutesServed(h.ctx, nil)
+	if _, ok := since("chat"); ok {
+		t.Fatal("a configuration without app routes kept a route")
+	}
+
+	// A deployment without Traefik records nothing.
+	h.restartCore(func(c *apps.Config) { c.AwaitRoutes = false }).RoutesServed(h.ctx, []ingress.AppRoute{git})
+	if _, ok := since("git"); ok {
+		t.Fatal("recorded without AwaitRoutes")
 	}
 }

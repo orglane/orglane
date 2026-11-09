@@ -568,5 +568,10 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 	case retryable && attempt < maxAttempts:
 		return fmt.Errorf("apps: setup failed (%s)", code)
 	}
-	return s.finishSetup(ctx, inst.ID, args.Generation, setupErr)
+	// The last attempt must record setup_failed even when its deadline has
+	// passed (a slow Setup): River would otherwise discard the job and
+	// leave the instance installing, which no admin action can retry.
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), setupFinishReserve)
+	defer cancel()
+	return s.finishSetup(fctx, inst.ID, args.Generation, setupErr)
 }

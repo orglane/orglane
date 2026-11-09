@@ -153,10 +153,12 @@ type Config struct {
 	// returned by Install. The budget it returns (the host's resources) is
 	// checked again in the install transaction, under the install lock.
 	InstallPreflight func(ctx context.Context, plan InstallPlan) (InstallBudget, error)
-	// AwaitRoutes is set when this process serves Traefik's configuration
-	// (server.internal_listen): an installed instance then becomes active
-	// only once RoutesServed has published its route
-	// (docs/specs/providers.md "Route publication").
+	// AwaitRoutes is set when the deployment routes through Traefik
+	// (server.internal_listen, part of the configuration every core
+	// process of a deployment shares): RoutesServed records the routes
+	// served to Traefik, and an installed instance becomes active only
+	// once its route is published (docs/specs/providers.md "Route
+	// publication").
 	AwaitRoutes bool
 	// RouteSettle is how long a served route must stay in Traefik's
 	// configuration before it counts as applied. Defaults to 2s.
@@ -189,10 +191,6 @@ type Service struct {
 
 	// bootID is the agent boot ID seen last (uuid.UUID), for WatchAgent.
 	bootID atomic.Value
-
-	// served records the routes served to Traefik; nil unless
-	// Config.AwaitRoutes.
-	served *servedRoutes
 }
 
 // NewService returns a Service.
@@ -230,12 +228,7 @@ func NewService(pool *pgxpool.Pool, reg *Registry, keyring *crypto.Keyring, cfg 
 	if cfg.Resolver == nil {
 		cfg.Resolver = NewDNSResolver()
 	}
-	var served *servedRoutes
-	if cfg.AwaitRoutes {
-		served = newServedRoutes()
-	}
 	return &Service{
-		served:        served,
 		pool:          pool,
 		reg:           reg,
 		creds:         keyring.Sealer(crypto.PurposeAppCredentials),

@@ -81,7 +81,7 @@ type RouteSource func(ctx context.Context) ([]AppRoute, error)
 // ServedFunc is told the app routes of every configuration the handler
 // served Traefik completely: the routes Build included, in its order
 // (docs/specs/providers.md "Route publication").
-type ServedFunc func(routes []AppRoute)
+type ServedFunc func(ctx context.Context, routes []AppRoute)
 
 // noopService is Traefik's built-in service for routers that only redirect.
 const noopService = "noop@internal"
@@ -359,7 +359,7 @@ func NewHandler(cfg *config.Config, source RouteSource, served ServedFunc, logge
 		if _, err := w.Write(body); err != nil || served == nil {
 			return
 		}
-		served(included)
+		served(context.WithoutCancel(r.Context()), included)
 	})
 	if len(allowed) == 0 {
 		return mux, nil

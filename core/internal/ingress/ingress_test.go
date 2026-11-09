@@ -328,7 +328,7 @@ func TestHandlerAppRoutes(t *testing.T) {
 	var fail error
 	var served [][]AppRoute
 	h, err := NewHandler(cfg, func(context.Context) ([]AppRoute, error) { return routes, fail },
-		func(r []AppRoute) { served = append(served, r) }, slog.New(slog.DiscardHandler))
+		func(_ context.Context, r []AppRoute) { served = append(served, r) }, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
