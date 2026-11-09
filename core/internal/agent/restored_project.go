@@ -80,11 +80,14 @@ func (a *Agent) startProject(ctx context.Context, key string, spec *agentapi.Spe
 // It never runs restore hooks or replaces data, including after exposure and
 // subsequent client writes. New desired inputs require an embedded package.
 //
-// The saved project is preferred (it repairs missing deployment files after
-// a rollback or restore). Without one, the running project is kept when the
-// spec is the same apart from its generation: an upgrade that failed before
-// the switch leaves the running deployment untouched, so no re-render is
-// needed to acknowledge its blocked generation.
+// The running project is authoritative. A saved project is used for its
+// rendered files only when its spec matches the running spec apart from the
+// generation (it repairs missing deployment files after a rollback or
+// restore); an older saved project is never applied. Without one, the
+// running project is kept when the spec is the same apart from its
+// generation: an upgrade that failed before the switch leaves the running
+// deployment untouched, so no re-render is needed to acknowledge its blocked
+// generation.
 func (a *Agent) repairRestored(ctx context.Context, key string, spec *agentapi.Spec) error {
 	saved, err := a.readRestoredProject(key)
 	if err == nil && saved.Spec != nil && saved.Rendered != nil && sameSpecExceptGeneration(saved.Spec, spec) {
