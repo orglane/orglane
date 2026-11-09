@@ -146,6 +146,41 @@ accounts.
   removed; team removals only target the instance's mapped teams. Deleting a
   mapping stops managing its team (its members stay) and cancels any pending or
   held removal from that team.
+- **Removal confirmation.** GitHub answers the
+  [membership](https://docs.github.com/en/rest/orgs/members#remove-organization-membership-for-a-user),
+  team-membership and invitation cancellations with `204` and no resulting
+  state, and it may process the change asynchronously: the following read can
+  still serve the old membership (GitHub documents `202` "being processed
+  asynchronously" for
+  [accepting an invitation](https://docs.github.com/en/rest/orgs/members#update-an-organization-membership-for-the-authenticated-user)).
+  Orglane therefore re-reads every removal and keeps it pending with the
+  retryable `removal_pending` (a 5 s check interval) until GitHub confirms it;
+  only the confirmed absence counts as `changed`, so the removal guard, the
+  audit entry and the person's result do not report the removal early. The
+  confirmation resolves the account's current login from its bound immutable
+  ID, so a rename after the DELETE (or a reused old login) cannot make the old
+  login's 404 look like removal. A transient confirmation read failure (5xx,
+  timeout, rate limit, renewed token) keeps the accepted removal pending too,
+  preserving the provider's retry delay; it never loses the acceptance or fails
+  the removal on the job's last attempt. Once GitHub accepted a removal,
+  Orglane never sends that DELETE again: every later check only reads (a
+  repeated DELETE could restart GitHub's processing), and an accepted removal
+  is never moved into a held batch. If the person's desired access changes
+  meanwhile (for example they rejoin the mapped team), Orglane keeps watching:
+  a membership GitHub still serves may be the old one its queued DELETE has
+  not reached yet. The person's grants wait (the result is queued with
+  `removal_pending`, explained in Settings → Apps) until GitHub stops serving
+  the target; then the removal is applied and audited and the person is
+  planned again, so the restored access comes back right away. Only a
+  confirmation that fails permanently settles a no-longer-wanted removal as
+  superseded (`provisioning.removal_superseded`). A removal GitHub never
+  completes stays pending and queued.
+  A `200` whose
+  [`direct_membership`](https://docs.github.com/en/rest/orgs/members#get-organization-membership-for-a-user)
+  is false is a membership granted only by an enterprise team; GitHub documents
+  that removing the direct membership leaves it in place, so Orglane reports
+  the permanent `indirect_membership` and an admin removes the enterprise team
+  membership instead.
 
 ## Minimal App permissions
 
@@ -367,7 +402,15 @@ the bot from the organization, cancels an invitation and restores the bot's
 membership; it also re-runs the invitation ensure and requires GitHub to
 attribute the invitation to the App's bot (`<app-slug>[bot]`). Tests use real
 GitHub with no API mocks; temporary teams follow the naming convention above and
-are deleted by the test. The workflow runs the same two commands as
+are deleted by the test. Post-removal reads wait up to 60 seconds for GitHub to
+finish a queued removal or cancellation and, on timeout, report the last HTTP
+status plus the non-secret membership `state`, `role`, `direct_membership` and
+enterprise-team fields. Cleanup waits for an accepted removal to finish before
+restoring the bot, so a removal that lands late cannot undo the restoration.
+The test also repairs the bot at startup if a previous run's late removal left
+it out of the organization, and waits for GitHub's member list to reflect the
+restored membership.
+The workflow runs the same two commands as
 `make test-github-live` (provider live tests without the janitor, then the M2
 acceptance test), followed by the janitor as a separate final step; see the
 [live test operations guide](github-live.md#workflow-steps).

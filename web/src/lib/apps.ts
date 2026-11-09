@@ -643,6 +643,16 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
     defaultMessage:
       "This person maintains the team in the app, so Orglane never removes them from it. Change their team role in the app if they should go.",
   },
+  removal_pending: {
+    id: "apps.code.removalPending",
+    defaultMessage:
+      "GitHub accepted the removal and is still processing it. Orglane checks again automatically and records the removal once GitHub confirms it.",
+  },
+  indirect_membership: {
+    id: "apps.code.indirectMembership",
+    defaultMessage:
+      "This person is still a member of the GitHub organization through an enterprise team. Remove them from that enterprise team on GitHub; Orglane cannot remove enterprise team membership.",
+  },
   invite_refused: {
     id: "apps.code.inviteRefused",
     defaultMessage:

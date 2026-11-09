@@ -33,9 +33,21 @@ type linkHarness struct {
 
 func newLinkHarness(t *testing.T) *linkHarness {
 	t.Helper()
+	return newLinkHarnessWithTransport(t, nil)
+}
+
+// newLinkHarnessWithTransport wraps the fake GitHub's transport, so a test can
+// inject a fault or observe requests without changing the adapter.
+func newLinkHarnessWithTransport(t *testing.T, wrap func(http.RoundTripper) http.RoundTripper) *linkHarness {
+	t.Helper()
 	gh := githubfake.New(func(err error) { t.Error(err) })
 	t.Cleanup(gh.Close)
-	h := newHarnessWith(t, apps.Config{HTTPClient: gh.Client()}, githubprovider.New())
+	var transport = gh.Transport()
+	if wrap != nil {
+		transport = wrap(transport)
+	}
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	h := newHarnessWith(t, apps.Config{HTTPClient: client}, githubprovider.New())
 	app, org := gh.App(), gh.Org()
 	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{Provider: "github", Key: "github", State: apps.StateActive, Settings: map[string]any{
 		"organization": org.Login, "organization_id": strconv.FormatInt(org.ID, 10), "app_id": strconv.FormatInt(app.ID, 10),

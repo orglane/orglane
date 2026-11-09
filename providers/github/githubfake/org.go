@@ -60,10 +60,18 @@ type orgState struct {
 	invitations map[int64]*Invitation
 	teams       map[int64]*teamState
 	nextID      int64
+	// removals holds the reads left before a queued organization removal
+	// completes: GitHub accepted the removal but still serves the
+	// membership for a moment (QueueOrgRemovals).
+	removals map[int64]int
+	// indirect names the enterprise teams that grant a member's membership
+	// instead of a direct one (GitHub keeps such a membership when the
+	// direct one is removed).
+	indirect map[int64][]string
 }
 
 func newOrgState() orgState {
-	return orgState{members: map[int64]string{}, invitations: map[int64]*Invitation{}, teams: map[int64]*teamState{}, nextID: 5000}
+	return orgState{members: map[int64]string{}, invitations: map[int64]*Invitation{}, teams: map[int64]*teamState{}, nextID: 5000, removals: map[int64]int{}, indirect: map[int64][]string{}}
 }
 
 // BotLogin is the login GitHub shows for the App's own actions.
@@ -79,6 +87,17 @@ func (f *Fake) AddMember(userID int64, role string) {
 
 // SetRole changes a member's role.
 func (f *Fake) SetRole(userID int64, role string) { f.AddMember(userID, role) }
+
+// AddIndirectMember makes an organization member whose membership is granted
+// by enterprise teams instead of directly. GitHub reports direct_membership
+// false and keeps the membership when the organization membership is
+// removed (docs: "Remove organization membership for a user").
+func (f *Fake) AddIndirectMember(userID int64, role string, enterpriseTeams []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.state.members[userID] = role
+	f.state.indirect[userID] = append([]string(nil), enterpriseTeams...)
+}
 
 // Members returns the organization's members and their roles.
 func (f *Fake) Members() map[int64]string {
@@ -229,9 +248,42 @@ func (f *Fake) DeleteUser(id int64) {
 	f.leave(id)
 }
 
+// RemoveMember ends a user's organization membership (and its invitations and
+// team memberships) without deleting the account, as if GitHub completed an
+// accepted removal.
+func (f *Fake) RemoveMember(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.leave(id)
+}
+
+// RemoveTeamMember removes a user's membership of a team without touching the
+// account or the organization.
+func (f *Fake) RemoveTeamMember(teamID, userID int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t := f.state.teams[teamID]; t != nil {
+		delete(t.members, userID)
+	}
+}
+
+// QueueOrgRemovals makes organization membership removals asynchronous for
+// tests: the DELETE still answers 204, but the membership (and its team
+// memberships) remains visible for the next readbacks membership reads. The
+// read that consumes the last readback writes the 200 response and then ends
+// the membership, so later reads get GitHub's 404. readbacks <= 0 restores
+// synchronous removal.
+func (f *Fake) QueueOrgRemovals(readbacks int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.orgRemovalReadbacks = max(readbacks, 0)
+}
+
 // leave ends a user's membership, invitations and team memberships.
 func (f *Fake) leave(id int64) {
 	delete(f.state.members, id)
+	delete(f.state.removals, id)
+	delete(f.state.indirect, id)
 	for k, inv := range f.state.invitations {
 		if inv.Invitee == id {
 			delete(f.state.invitations, k)
@@ -378,12 +430,27 @@ func (f *Fake) membership(w http.ResponseWriter, r *http.Request, p map[string]s
 		}
 		body := example("org-membership-response-if-user-has-an-active-admin-membership-with-organization")
 		body["state"], body["role"] = state, role
+		body["direct_membership"] = true
+		body["enterprise_teams_providing_indirect_membership"] = []string{}
+		if teams, ok := f.state.indirect[u.ID]; ok {
+			body["direct_membership"] = false
+			body["enterprise_teams_providing_indirect_membership"] = teams
+		}
 		body["url"] = "https://api.github.com/orgs/" + f.org.Login + "/memberships/" + u.Login
 		body["organization_url"] = "https://api.github.com/orgs/" + f.org.Login
 		org, _ := body["organization"].(map[string]any)
 		org["id"], org["login"] = f.org.ID, f.org.Login
 		body["user"] = f.userObject(u, "simple")
 		writeJSON(w, http.StatusOK, body)
+		// A queued removal finishes after the last read that still sees the
+		// membership; later reads get GitHub's 404.
+		if n := f.state.removals[u.ID]; n > 0 {
+			if n == 1 {
+				f.leave(u.ID)
+			} else {
+				f.state.removals[u.ID] = n - 1
+			}
+		}
 	case http.MethodDelete:
 		if !member && inv == nil {
 			basicError(w, http.StatusNotFound, "Not Found")
@@ -393,7 +460,17 @@ func (f *Fake) membership(w http.ResponseWriter, r *http.Request, p map[string]s
 			basicError(w, http.StatusForbidden, "You cannot remove the last owner of an organization.")
 			return
 		}
-		f.leave(u.ID)
+		if _, indirect := f.state.indirect[u.ID]; indirect {
+			// GitHub removes only the direct membership; the enterprise
+			// teams keep the membership.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if f.orgRemovalReadbacks > 0 {
+			f.state.removals[u.ID] = f.orgRemovalReadbacks
+		} else {
+			f.leave(u.ID)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

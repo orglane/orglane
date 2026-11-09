@@ -546,10 +546,13 @@ SET action = EXCLUDED.action, desired_hash = EXCLUDED.desired_hash, updated_at =
 WHERE provisioning_removals.state = 'pending';
 
 -- name: DropPendingRemovals :execrows
--- Pending removals of a person that the current plan no longer contains.
+-- Pending removals of a person that the current plan no longer contains. An
+-- accepted removal (error_code = accepted_code) is kept: the provider may
+-- already have acted, so it must be confirmed and audited instead of dropped.
 UPDATE provisioning_removals SET state = 'dropped', updated_at = now()
 WHERE instance_id = @instance_id AND person_id = @person_id AND state = 'pending'
-  AND NOT (action_key = ANY(@keep_keys::text[]));
+  AND NOT (action_key = ANY(@keep_keys::text[]))
+  AND (error_code IS NULL OR error_code <> sqlc.arg(accepted_code)::text);
 
 -- name: ListPendingRemovals :many
 SELECT * FROM provisioning_removals WHERE instance_id = @instance_id AND state = 'pending'
@@ -571,9 +574,12 @@ SELECT count(*) FROM provisioning_removals WHERE instance_id = @instance_id AND 
 SELECT count(*) FROM provisioning_removals WHERE batch_id = @batch_id AND state = 'held';
 
 -- name: DropOpenRemovals :exec
--- After a person's removal failed, their later removals do not run.
+-- After a person's removal failed, their later removals do not run. An
+-- accepted removal is not a later removal: keep it so its completion is still
+-- confirmed and audited.
 UPDATE provisioning_removals SET state = 'dropped', updated_at = now()
-WHERE instance_id = @instance_id AND person_id = @person_id AND state IN ('pending', 'held');
+WHERE instance_id = @instance_id AND person_id = @person_id AND state IN ('pending', 'held')
+  AND (error_code IS NULL OR error_code <> sqlc.arg(accepted_code)::text);
 
 -- name: GetRemoval :one
 SELECT * FROM provisioning_removals WHERE id = @id;
@@ -781,3 +787,19 @@ WHERE id = @id AND state = 'removed' AND data_retained;
 -- deleted (a failed purge leaves it failed; removing it again retains it).
 UPDATE app_instances SET data_retained = false, updated_at = now()
 WHERE id = @id AND state = 'removed' AND data_retained;
+
+-- name: CountAcceptedRemovals :one
+-- A person's open removals the provider accepted but has not confirmed
+-- (error_code = accepted_code): pending ones, and held ones released by a
+-- confirmed batch (their row stays held until settled). While one is open,
+-- the person's grants wait: the accepted removal may still land on access a
+-- grant would restore.
+SELECT count(*) FROM provisioning_removals
+WHERE instance_id = @instance_id AND person_id = @person_id AND state IN ('pending', 'held')
+  AND error_code = sqlc.arg(accepted_code)::text;
+
+-- name: MarkProvisioningResultWaiting :exec
+-- A queued result shows why it waits (the provider accepted a removal and
+-- Orglane polls for its confirmation).
+UPDATE provisioning_results SET error_code = @error_code, actions = @actions, updated_at = now()
+WHERE instance_id = @instance_id AND person_id = @person_id AND status = 'queued';

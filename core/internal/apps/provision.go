@@ -49,6 +49,11 @@ const (
 	removalFailed  = "failed"
 )
 
+// removalConfirmationDelay is how long a removal whose provider accepted it
+// but whose later confirmation failed waits before the next check. It keeps an
+// accepted removal pending instead of failing it on the job's last attempt.
+const removalConfirmationDelay = 5 * time.Second
+
 // Removal batch states.
 const (
 	batchHeld       = "held"
@@ -183,7 +188,7 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 	}
 	if plan.EmployeeStep != "" {
 		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-			_, err := store.New(tx).DropPendingRemovals(ctx, store.DropPendingRemovalsParams{InstanceID: inst.ID, PersonID: d.person.ID, KeepKeys: []string{}})
+			_, err := store.New(tx).DropPendingRemovals(ctx, store.DropPendingRemovalsParams{InstanceID: inst.ID, PersonID: d.person.ID, KeepKeys: []string{}, AcceptedCode: provider.CodeRemovalPending})
 			return err
 		}); err != nil {
 			return fmt.Errorf("apps: drop removals: %w", err)
@@ -203,6 +208,16 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 	granted := !verifies && d.access.Link != nil && d.access.Link.Method == provider.LinkProvisioned && d.access.Managed
 	results := make([]ActionResult, 0, len(recovered)+len(plan.Actions))
 	results = append(results, recovered...)
+	// A removal the provider accepted but has not confirmed may still land
+	// (GitHub queues them). A grant now could restore access that the late
+	// removal then takes away again, with nothing left to notice it. The
+	// grants wait instead; apply_removals queues this person again once the
+	// removal is confirmed, and the grants run then.
+	accepted, err := store.New(conn).CountAcceptedRemovals(ctx, store.CountAcceptedRemovalsParams{InstanceID: inst.ID, PersonID: d.person.ID, AcceptedCode: provider.CodeRemovalPending})
+	if err != nil {
+		return fmt.Errorf("apps: count accepted removals: %w", err)
+	}
+	waiting := accepted > 0
 	var removals []provider.Action
 	var applyErr error
 	for _, a := range plan.Actions {
@@ -213,6 +228,8 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 			// included (they would take away access the failed step was
 			// to replace).
 			ar.Outcome = OutcomeNotAttempted
+		case waiting && !a.Removal:
+			ar.Outcome, ar.Error = OutcomeHeld, provider.CodeRemovalPending
 		case a.Removal:
 			if !d.access.Managed {
 				// Adapters plan removals only for managed accounts; refuse
@@ -275,12 +292,17 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 		return s.failed(ctx, conn, inst, d, actions, applyErr, attempt, maxAttempts, startedAt, granted)
 	}
 	status, applied := StatusDone, d.hash
-	if len(removals) > 0 {
-		// Not done until the guard applied the removals; apply_removals
-		// queues the person again afterwards.
+	var code *string
+	if len(removals) > 0 || waiting {
+		// Not done until the guard applied the removals (and confirmed the
+		// accepted ones); apply_removals queues the person again afterwards.
 		status, applied = StatusQueued, nil
 	}
-	err = s.writeResult(ctx, conn, inst, d, status, nil, actions, nil, granted, applied, 0, startedAt)
+	if waiting {
+		c := provider.CodeRemovalPending
+		code = &c // the admin sees why it waits
+	}
+	err = s.writeResult(ctx, conn, inst, d, status, nil, actions, code, granted, applied, 0, startedAt)
 	return s.followUp(err, conn, inst.ID, args.PersonID, startedAt)
 }
 
@@ -575,7 +597,7 @@ func (s *Service) planRemovals(ctx context.Context, conn *pgxpool.Conn, inst Ins
 			}
 			keep = append(keep, a.Key)
 		}
-		if _, err := q.DropPendingRemovals(ctx, store.DropPendingRemovalsParams{InstanceID: inst.ID, PersonID: d.person.ID, KeepKeys: keep}); err != nil {
+		if _, err := q.DropPendingRemovals(ctx, store.DropPendingRemovalsParams{InstanceID: inst.ID, PersonID: d.person.ID, KeepKeys: keep, AcceptedCode: provider.CodeRemovalPending}); err != nil {
 			return fmt.Errorf("apps: drop removals: %w", err)
 		}
 		if len(removals) == 0 {
@@ -856,7 +878,10 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs, 
 	var snooze time.Duration
 	// A person's removals apply in plan order and stop at their first
 	// failure; other people go on independently, so one person's broken
-	// removal never blocks everyone after it.
+	// removal never blocks everyone after it. A removal the provider accepted
+	// but has not confirmed is not a failure: the run continues and the job
+	// snoozes for the next confirmation, so a queued removal never blocks the
+	// instance.
 	stopped := map[uuid.UUID]bool{}
 apply:
 	for _, item := range toApply {
@@ -877,11 +902,21 @@ apply:
 		case errors.Is(retryErr, errInstanceInactive):
 			break apply // the rest waits until the instance is provisionable again (activation queues this job)
 		case retryErr != nil:
-			stopped[item.removal.PersonID] = true
+			code, _, after := provider.Classify(retryErr)
 			if retry == nil {
 				retry = retryErr
 			}
-			if _, _, after := provider.Classify(retryErr); after > 0 {
+			if code == provider.CodeRemovalPending {
+				// Accepted, not confirmed: keep it pending, check again after
+				// the provider's delay, and let this person's later removals
+				// and everyone else's run meanwhile.
+				if after > 0 && snooze == 0 {
+					snooze = after
+				}
+				continue
+			}
+			stopped[item.removal.PersonID] = true
+			if after > 0 {
 				snooze = after
 				break apply
 			}
@@ -947,7 +982,11 @@ func (s *Service) selectRemovals(ctx context.Context, q *store.Queries, inst Ins
 		} else if err != nil {
 			return false, err
 		}
-		if bytes.Equal(d.hash, r.DesiredHash) && removalRowManaged(inst, d, r.Action) {
+		// A removal the provider already accepted is confirmed and audited
+		// even if the desired access changed meanwhile: dropping the row
+		// would lose the acceptance while the provider may still complete it.
+		accepted := r.ErrorCode != nil && *r.ErrorCode == provider.CodeRemovalPending
+		if accepted || (bytes.Equal(d.hash, r.DesiredHash) && removalRowManaged(inst, d, r.Action)) {
 			return true, nil
 		}
 		replan[r.PersonID] = true
@@ -982,15 +1021,25 @@ func (s *Service) selectRemovals(ctx context.Context, q *store.Queries, inst Ins
 	if err != nil {
 		return nil, nil, fmt.Errorf("apps: list removals: %w", err)
 	}
-	var freshPending []store.ProvisioningRemoval
+	var freshPending, acceptedPending []store.ProvisioningRemoval
 	for _, r := range pending {
 		ok, err := fresh(r)
 		if err != nil {
 			return nil, nil, err
 		}
-		if ok {
+		if !ok {
+			continue
+		}
+		if r.ErrorCode != nil && *r.ErrorCode == provider.CodeRemovalPending {
+			acceptedPending = append(acceptedPending, r)
+		} else {
 			freshPending = append(freshPending, r)
 		}
+	}
+	// A removal the provider already accepted is in flight: confirm it now,
+	// never move it into a held batch that an admin would have to release.
+	for _, r := range acceptedPending {
+		toApply = append(toApply, queuedRemoval{removal: r, state: removalPending})
 	}
 	if len(freshPending) == 0 {
 		return toApply, batches, nil
@@ -1098,11 +1147,22 @@ var errRemovalFailed = errors.New("apps: the removal failed")
 // in, the instance is provisionable and the person's desired access still
 // hashes to what planned the removal. A stale removal is dropped and the
 // person replanned, in one transaction; so is an applied removal and its
-// person's follow-up job (and audit entry). A permanent failure (or the last
-// attempt's retryable one without RetryAfter) fails the person's result,
-// which then waits for a desired-state change or an admin's retry. It
-// returns the retryable provider error to retry the job with (the removal
-// stays open), or errInstanceInactive.
+// person's follow-up job (and audit entry). A removal the provider has
+// already accepted (removal_pending) is only confirmed, read-only
+// (Action.ConfirmOnly), never issued again, and stays pending until the
+// target is gone, stale or not (the person's grants wait meanwhile); only a
+// stale one whose confirmation fails permanently is settled as dropped with a
+// provisioning.removal_superseded entry. A retryable provider error that asks for a delay (a rate limit, or a
+// removal the provider accepted but has not confirmed) snoozes the job;
+// provider.CodeRemovalPending is remembered on the pending row so the later
+// attempt that confirms the removal audits the earlier accepted change even
+// though it changes nothing itself. A transient failure on a later check of
+// such an accepted removal keeps it pending with the confirmation delay, even
+// on the job's last attempt. A permanent failure (or the last attempt's
+// retryable one without RetryAfter and without an earlier acceptance) fails
+// the person's result, which then waits for a desired-state change or an
+// admin's retry. It returns the retryable provider error to retry the job with
+// (the removal stays open), or errInstanceInactive.
 //
 // The person's lock is taken on held, the removals lock's connection (lock
 // order: removals, then person), so the guard never waits for a second pool
@@ -1140,7 +1200,17 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 	if err := json.Unmarshal(cur.Action, &a); err != nil {
 		return nil, fmt.Errorf("apps: decode removal: %w", err)
 	}
-	if !bytes.Equal(d.hash, cur.DesiredHash) || !removalManaged(inst, d, a) {
+	// A removal the provider already accepted is only ever confirmed, read-only
+	// (Action.ConfirmOnly): issuing it again would restart the provider's
+	// processing. It is never reported as applied before the confirmation, and
+	// never dropped while the provider may still complete it, stale or not: a
+	// target that is still there may be the old access the queued removal has
+	// not reached yet. The person's grants wait meanwhile (RunProvisionPerson),
+	// so a restored grant cannot be mistaken for the old access, and the
+	// confirmation queues the person to restore what the desired access wants.
+	acceptedEarlier := cur.ErrorCode != nil && *cur.ErrorCode == provider.CodeRemovalPending
+	stale := !bytes.Equal(d.hash, cur.DesiredHash) || !removalManaged(inst, d, a)
+	if !acceptedEarlier && stale {
 		return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			q := store.New(tx)
 			if _, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalDropped}); err != nil {
@@ -1149,10 +1219,57 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 			return s.enqueuePerson(ctx, tx, q, inst.ID, r.PersonID, false)
 		})
 	}
+	a.ConfirmOnly = acceptedEarlier
 	out, applyErr := prov.Apply(ctx, held.env(inst), inst.View(), a)
 	if applyErr != nil {
 		code, retryable, retryAfter := provider.Classify(applyErr)
+		if acceptedEarlier && stale && !retryable {
+			// The confirmation can never succeed (for example an enterprise
+			// team keeps the membership) while the desired access no longer
+			// asks for this removal: settle it unconfirmed. The person is
+			// replanned; a removal the new plan still wants is planned again
+			// through the guard.
+			return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+				q := store.New(tx)
+				n, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalDropped, ErrorCode: &code})
+				if err != nil {
+					return fmt.Errorf("apps: supersede removal: %w", err)
+				}
+				if n > 0 {
+					if _, err := audit.Record(ctx, q, audit.Entry{
+						Actor:    audit.System,
+						Action:   audit.ProvisioningRemovalSuperseded,
+						Target:   audit.Target{Kind: audit.TargetPerson, ID: r.PersonID.String()},
+						Metadata: map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key, "code": code},
+					}); err != nil {
+						return err
+					}
+				}
+				return s.enqueuePerson(ctx, tx, q, inst.ID, r.PersonID, false)
+			})
+		}
+		if retryable && acceptedEarlier && retryAfter == 0 {
+			// The provider accepted this removal earlier. A transient failure
+			// on a later check must neither fail it on the last attempt nor
+			// lose the acceptance: keep it pending with the confirmation
+			// delay, whatever the provider's specific error was.
+			code = provider.CodeRemovalPending
+			retryAfter = removalConfirmationDelay
+			applyErr = &provider.Error{Code: code, Retryable: true, RetryAfter: retryAfter, Err: applyErr}
+		}
 		if retryable && (retryAfter > 0 || !final) {
+			if code == provider.CodeRemovalPending {
+				// The provider accepted the removal but has not confirmed it
+				// yet. Remember that, so the attempt that later confirms it
+				// (which changes nothing itself) still records the audit
+				// entry the accepted change deserves.
+				if _, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: item.state, ErrorCode: &code}); err != nil {
+					return nil, fmt.Errorf("apps: record the accepted removal: %w", err)
+				}
+				if err := waitResult(ctx, q, inst, d, a); err != nil {
+					return nil, err
+				}
+			}
 			return applyErr, nil // stays as it is; the job retries or snoozes
 		}
 		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
@@ -1162,7 +1279,7 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 				return err
 			}
 			// The rest of this person's plan does not run after a failure.
-			if err := q.DropOpenRemovals(ctx, store.DropOpenRemovalsParams{InstanceID: r.InstanceID, PersonID: r.PersonID}); err != nil {
+			if err := q.DropOpenRemovals(ctx, store.DropOpenRemovalsParams{InstanceID: r.InstanceID, PersonID: r.PersonID, AcceptedCode: provider.CodeRemovalPending}); err != nil {
 				return fmt.Errorf("apps: drop later removals: %w", err)
 			}
 			return s.failResult(ctx, q, inst, d, a, code)
@@ -1172,18 +1289,25 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 		}
 		return nil, errRemovalFailed
 	}
+	// A removal the provider accepted in an earlier attempt is confirmed by
+	// this one: the target is gone now, so this attempt reports no change of
+	// its own, but the earlier acceptance was the change to audit.
 	return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		n, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalApplied})
 		if err != nil {
 			return fmt.Errorf("apps: record removal: %w", err)
 		}
-		if n > 0 && out.Changed {
+		if n > 0 && (out.Changed || acceptedEarlier) {
+			meta := map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key}
+			if acceptedEarlier && !out.Changed {
+				meta["confirmed"] = true
+			}
 			if _, err := audit.Record(ctx, q, audit.Entry{
 				Actor:    audit.System,
 				Action:   audit.ProvisioningActionApplied,
 				Target:   audit.Target{Kind: audit.TargetPerson, ID: r.PersonID.String()},
-				Metadata: map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key},
+				Metadata: meta,
 			}); err != nil {
 				return err
 			}
@@ -1217,6 +1341,29 @@ func (s *Service) failResult(ctx context.Context, q *store.Queries, inst Instanc
 		return fmt.Errorf("apps: fail result: %w", err)
 	}
 	s.env(inst).Logger().WarnContext(ctx, "removal failed", "person_id", d.person.ID, "kind", a.Kind, "code", code)
+	return nil
+}
+
+// waitResult shows on a queued result that a removal waits for the
+// provider's confirmation: the action keeps its held outcome with the code,
+// and the result carries it, so the admin sees why the person stays queued.
+func waitResult(ctx context.Context, q *store.Queries, inst Instance, d desired, a provider.Action) error {
+	if d.result == nil {
+		return nil
+	}
+	var results []ActionResult
+	_ = json.Unmarshal(d.result.Actions, &results) // written by the framework
+	if i := slices.IndexFunc(results, func(r ActionResult) bool { return r.Key == a.Key }); i >= 0 {
+		results[i].Outcome, results[i].Error = OutcomeHeld, provider.CodeRemovalPending
+	}
+	raw, err := json.Marshal(results)
+	if err != nil {
+		return fmt.Errorf("apps: encode actions: %w", err)
+	}
+	code := provider.CodeRemovalPending
+	if err := q.MarkProvisioningResultWaiting(ctx, store.MarkProvisioningResultWaitingParams{InstanceID: inst.ID, PersonID: d.person.ID, ErrorCode: &code, Actions: raw}); err != nil {
+		return fmt.Errorf("apps: mark result waiting: %w", err)
+	}
 	return nil
 }
 

@@ -20,6 +20,13 @@ var (
 // CodeProviderError is the code of failures that are not an *Error.
 const CodeProviderError = "provider_error"
 
+// CodeRemovalPending is the code of a removal a provider accepted but has not
+// confirmed yet, for example GitHub's asynchronous organization membership
+// removal. It must be retryable; RetryAfter is the next confirmation delay.
+// The core keeps such a removal pending and audits it when a later attempt
+// confirms it, even though that attempt itself changes nothing.
+const CodeRemovalPending = "removal_pending"
+
 // Error classifies provider failures for retries and results. Adapters
 // return *Error for anything the user or admin should see; any other error
 // is treated as retryable with code CodeProviderError. Provider response
@@ -30,7 +37,9 @@ type Error struct {
 	// "owner_protected", ...
 	Code      string
 	Retryable bool
-	// RetryAfter is from Retry-After / rate limit reset, if known.
+	// RetryAfter asks the core to retry no earlier than this delay: a rate
+	// limit's reset, or a provider that accepted a change (for example an
+	// asynchronous removal) it has not finished processing yet.
 	RetryAfter time.Duration
 	// Err is the wrapped cause; it must not contain secrets or response
 	// bodies.

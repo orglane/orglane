@@ -669,6 +669,49 @@ describe("Team mappings", () => {
       await screen.findByText(/Waiting for this person to link their GitHub account/),
     ).toBeInTheDocument();
   });
+
+  it("explains a result waiting for the provider to confirm a removal", async () => {
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: { status: 200, body: detailWith([]) },
+      [`GET /api/v1/apps/instances/${instanceId}/team-mappings`]: {
+        status: 200,
+        body: { items: [] },
+      },
+      "GET /api/v1/teams": { status: 200, body: { items: [] } },
+      [`GET /api/v1/apps/instances/${instanceId}/provisioning`]: {
+        status: 200,
+        body: {
+          items: [
+            {
+              person: person("0190a1b2-0000-7000-8000-0000000000b2", "Alice"),
+              status: "queued",
+              access: false,
+              grantedByOrglane: true,
+              errorCode: "removal_pending",
+              actions: [
+                {
+                  kind: "remove_from_org",
+                  key: "remove_from_org",
+                  removal: true,
+                  outcome: "held",
+                  errorCode: "removal_pending",
+                },
+              ],
+              attempts: 0,
+              updatedAt: "2026-11-01T10:00:00Z",
+            },
+          ],
+          counts: { queued: 1, done: 0, pendingEmployeeAction: 0, failed: 0 },
+          unmanagedAccounts: [],
+        },
+      },
+    });
+    expect(
+      await screen.findByText(/GitHub accepted the removal and is still processing it/),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("Apps guidance", () => {
