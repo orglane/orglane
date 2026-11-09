@@ -238,8 +238,9 @@ func TestRouteWaitFitsTheSetupDeadline(t *testing.T) {
 		// Setup took most of the attempt: what is left after the reserve
 		// for the outcome is shorter than the route wait.
 		"slow setup": apps.SetupFinishReserve + 500*time.Millisecond,
-		// Setup took (almost) all of it.
-		"no time left": 50 * time.Millisecond,
+		// Setup took (almost) all of it: less than the reserve is left, so
+		// the route wait has no budget at all.
+		"no time left": time.Second,
 	} {
 		t.Run(name, func(t *testing.T) {
 			key := strings.ReplaceAll(name, " ", "")

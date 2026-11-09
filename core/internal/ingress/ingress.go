@@ -78,6 +78,9 @@ func AppRouter(key, route string) string { return "orglane-app-" + key + "-" + r
 // RouteSource returns the app routes at the moment of a poll.
 type RouteSource func(ctx context.Context) ([]AppRoute, error)
 
+// servedTimeout bounds a ServedFunc call.
+const servedTimeout = 5 * time.Second
+
 // ServedFunc is told the app routes of every configuration the handler
 // served Traefik completely: the routes Build included, in its order
 // (docs/specs/providers.md "Route publication").
@@ -319,8 +322,9 @@ func Maintenance(workspaceHost string, next http.Handler) http.Handler {
 // NewHandler returns the handler of the internal listener: GET ConfigPath
 // returns Build(cfg, routes) as JSON, with the app routes read from source
 // on every request (nil: none). It must never be served on the public
-// listener. After an answer was written completely, served (if not nil)
-// gets the app routes it contained.
+// listener. After an answer was written and flushed, served (if not nil)
+// gets the app routes it contained, with a context bounded by
+// servedTimeout.
 //
 // If source fails, the answer is 503: Traefik then keeps the configuration
 // of its last successful poll instead of dropping the app routes.
@@ -359,7 +363,14 @@ func NewHandler(cfg *config.Config, source RouteSource, served ServedFunc, logge
 		if _, err := w.Write(body); err != nil || served == nil {
 			return
 		}
-		served(context.WithoutCancel(r.Context()), included)
+		// Only an answer that left the core counts as served: a write into
+		// the response buffer would not fail when Traefik went away.
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), servedTimeout)
+		defer cancel()
+		served(ctx, included)
 	})
 	if len(allowed) == 0 {
 		return mux, nil
