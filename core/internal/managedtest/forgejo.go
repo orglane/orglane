@@ -83,10 +83,11 @@ type Env struct {
 	Client *http.Client
 }
 
-// Credential implements provider.Env.
+// Credential implements provider.Env. It returns a copy: adapters may clear
+// the value they receive, and a test's fixture must stay usable.
 func (e *Env) Credential(_ context.Context, name string) ([]byte, error) {
 	if v, ok := e.Creds[name]; ok {
-		return v, nil
+		return append([]byte(nil), v...), nil
 	}
 	return nil, provider.ErrNotFound
 }

@@ -56,6 +56,7 @@ const m2Password = "correct horse battery staple 42" //nolint:gosec // a test pa
 // testLogWriter sends the core's log to the test log, shown on failure.
 type testLogWriter struct{ t *testing.T }
 
+// Write implements io.Writer for slog.
 func (w testLogWriter) Write(p []byte) (int, error) {
 	w.t.Helper()
 	w.t.Logf("%s", bytes.TrimSpace(p))
@@ -454,6 +455,8 @@ func (s *m2Scenario) forgejoCall(auth managedtest.Auth, method, path string, bod
 	return out
 }
 
+// forgejoStatus sends an authenticated request to Forgejo and returns its
+// status and body, for assertions that expect a non-2xx answer.
 func (s *m2Scenario) forgejoStatus(auth managedtest.Auth, method, path string, body any) (int, []byte) {
 	s.t.Helper()
 	return managedtest.Request(s.t, s.b.Client(), method, managedtest.ForgejoHost, path, auth, body)
@@ -635,17 +638,29 @@ func (s *m2Scenario) count(query string, args ...any) int {
 
 // forgejoCandidateFS builds a test-only Forgejo package version in a
 // temporary directory. It is the real manifest and template, with a newer
-// version that accepts 15.0.11-1 and a Forgejo that listens on another
-// port, so its health check fails and the agent rolls back.
+// version that accepts the embedded current version and a Forgejo that
+// listens on another port, so its health check fails and the agent rolls
+// back. Every rewrite is checked, so a change to the real package fails the
+// candidate at the replacement site, not as a mysterious successful upgrade.
 func forgejoCandidateFS(t *testing.T) fs.FS {
 	t.Helper()
+	from, err := packages.ParseVersion(forgejopkg.Current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, err := packages.ParseVersion(forgejoCandidateVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if to.Compare(from) <= 0 {
+		t.Fatalf("the candidate version %s must be newer than the embedded %s", to, from)
+	}
 	root := t.TempDir()
-	from := forgejopkg.Current
-	err := fs.WalkDir(forgejopkg.FS, from, func(path string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(forgejopkg.FS, forgejopkg.Current, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel := strings.TrimPrefix(strings.TrimPrefix(path, from), "/")
+		rel := strings.TrimPrefix(strings.TrimPrefix(path, forgejopkg.Current), "/")
 		data := []byte(nil)
 		if !d.IsDir() {
 			data, err = fs.ReadFile(forgejopkg.FS, path)
@@ -654,9 +669,9 @@ func forgejoCandidateFS(t *testing.T) fs.FS {
 			}
 			switch rel {
 			case "manifest.yaml":
-				data = forgejoCandidateManifest(data)
+				data = forgejoCandidateManifest(t, data)
 			case "compose.yaml.tmpl":
-				data = forgejoCandidateCompose(data)
+				data = forgejoCandidateCompose(t, data)
 			}
 		}
 		dst := filepath.Join(root, forgejoCandidateVersion, filepath.FromSlash(rel))
@@ -674,13 +689,30 @@ func forgejoCandidateFS(t *testing.T) fs.FS {
 	return os.DirFS(root)
 }
 
-func forgejoCandidateManifest(raw []byte) []byte {
-	manifest := strings.Replace(string(raw), "version: "+forgejopkg.Current, "version: "+forgejoCandidateVersion, 1)
-	return []byte(strings.Replace(manifest, "upgrade:\n", "upgrade:\n  min_from: "+forgejopkg.Current+"\n", 1))
+// forgejoCandidateManifest rewrites the real manifest: the candidate
+// version, and the current version as the oldest version it upgrades from.
+func forgejoCandidateManifest(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	manifest := mustReplace(t, string(raw), "version: "+forgejopkg.Current, "version: "+forgejoCandidateVersion)
+	return []byte(mustReplace(t, manifest, "upgrade:\n", "upgrade:\n  min_from: "+forgejopkg.Current+"\n"))
 }
 
-func forgejoCandidateCompose(raw []byte) []byte {
-	compose := strings.Replace(string(raw), `FORGEJO__server__HTTP_PORT: "3000"`, `FORGEJO__server__HTTP_PORT: "3001"`, 1)
-	compose = strings.Replace(compose, "start_period: 5m", "start_period: 5s", 1)
-	return []byte(strings.Replace(compose, "retries: 3", "retries: 1", 1))
+// forgejoCandidateCompose makes the candidate's health check fail: Forgejo
+// listens on 3001 while the package health check probes 3000, and the
+// shortened start period and retries make the failure quick.
+func forgejoCandidateCompose(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	compose := mustReplace(t, string(raw), `FORGEJO__server__HTTP_PORT: "3000"`, `FORGEJO__server__HTTP_PORT: "3001"`)
+	compose = mustReplace(t, compose, "start_period: 5m", "start_period: 5s")
+	return []byte(mustReplace(t, compose, "retries: 3", "retries: 1"))
+}
+
+// mustReplace replaces old exactly once and fails the test when the real
+// package no longer contains it.
+func mustReplace(t *testing.T, s, old, replacement string) string {
+	t.Helper()
+	if !strings.Contains(s, old) {
+		t.Fatalf("candidate package: %q not found in the real package", old)
+	}
+	return strings.Replace(s, old, replacement, 1)
 }

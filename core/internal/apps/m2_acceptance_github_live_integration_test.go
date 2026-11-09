@@ -79,11 +79,12 @@ func TestM2AcceptanceGitHubLive(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("link the bot account: %v", err)
 	}
-	teamSlug := m2GitHubTeamSlug()
+	teamSlug, teamID := m2GitHubTeamSlug(), ""
 	team := h.team(teamSlug, person)
 	// The team is Orglane's until the mapping sync creates it at GitHub;
-	// deleting a team that was never created is a 404 and fine.
-	t.Cleanup(func() { m2DeleteGitHubTeam(t, client, env, inst, org, teamSlug) })
+	// deleting a team that was never created is a 404 and fine. Cleanup
+	// checks the provider team's description and ID before deleting it.
+	t.Cleanup(func() { m2DeleteGitHubTeam(t, client, env, inst, org, teamSlug, teamID) })
 	h.mapTeam(inst, team)
 	h.drain()
 	result := h.result(inst, person)
@@ -96,8 +97,8 @@ func TestM2AcceptanceGitHubLive(t *testing.T) {
 		t.Fatalf("mapped team = %+v, %v", mapping, err)
 	}
 	// GitHub may have normalized the slug; the cleanup closes over the
-	// actual one once the mapping is known.
-	teamSlug = *mapping.ExternalName
+	// actual one and the numeric ID once the mapping is known.
+	teamSlug, teamID = *mapping.ExternalName, *mapping.ExternalRef
 
 	// The real API confirms the access: the bot is an active member of the
 	// team Orglane created for the mapped team.
@@ -139,6 +140,8 @@ func requireGitHubLiveScenario(t *testing.T) {
 	t.Skipf("%s; missing: %s. Run it with the github-live workflow or the same environment locally.", message, strings.Join(missing, ", "))
 }
 
+// m2GitHubTeamSlug names the temporary team after the run and attempt, as
+// the live-test conventions require.
 func m2GitHubTeamSlug() string {
 	suffix := os.Getenv("GITHUB_RUN_ID")
 	if attempt := os.Getenv("GITHUB_RUN_ATTEMPT"); attempt != "" {
@@ -163,8 +166,10 @@ func m2GitHubRequest(t *testing.T, client *http.Client, method, path, token stri
 }
 
 // m2DeleteGitHubTeam removes the temporary team after the test; a 404 is
-// fine (it may have been removed already).
-func m2DeleteGitHubTeam(t *testing.T, client *http.Client, env *managedtest.Env, inst apps.Instance, org, slug string) {
+// fine (it may have been removed already). It deletes only a team whose
+// description carries this instance's marker and, once known, whose numeric
+// ID is the mapping's: a foreign team at the same slug is never touched.
+func m2DeleteGitHubTeam(t *testing.T, client *http.Client, env *managedtest.Env, inst apps.Instance, org, slug, teamID string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
 	defer cancel()
@@ -173,12 +178,34 @@ func m2DeleteGitHubTeam(t *testing.T, client *http.Client, env *managedtest.Env,
 		t.Errorf("cleanup: installation token: %v", err)
 		return
 	}
-	status, body := m2GitHubRequestWithContext(ctx, t, client, http.MethodDelete, "/orgs/"+url.PathEscape(org)+"/teams/"+url.PathEscape(slug), token, nil)
+	status, body := m2GitHubRequestWithContext(ctx, t, client, http.MethodGet, "/orgs/"+url.PathEscape(org)+"/teams/"+url.PathEscape(slug), token, nil)
+	if status == http.StatusNotFound {
+		return
+	}
+	var team struct {
+		ID          int64  `json:"id"`
+		Description string `json:"description"`
+	}
+	if status != http.StatusOK || json.Unmarshal(body, &team) != nil {
+		t.Errorf("cleanup: read team %s = %d %s", slug, status, body)
+		return
+	}
+	if want := "Managed by Orglane (" + inst.ID.String() + ")"; !strings.HasPrefix(team.Description, want) {
+		t.Errorf("cleanup: team %s is not this instance's (%q)", slug, team.Description)
+		return
+	}
+	if teamID != "" && strconv.FormatInt(team.ID, 10) != teamID {
+		t.Errorf("cleanup: team %s has ID %d, mapping has %s", slug, team.ID, teamID)
+		return
+	}
+	status, body = m2GitHubRequestWithContext(ctx, t, client, http.MethodDelete, "/orgs/"+url.PathEscape(org)+"/teams/"+url.PathEscape(slug), token, nil)
 	if status != http.StatusNoContent && status != http.StatusNotFound {
 		t.Errorf("cleanup: delete team %s = %d %s", slug, status, body)
 	}
 }
 
+// m2GitHubRequestWithContext is m2GitHubRequest with an explicit context,
+// for the cleanup that must outlive the test.
 func m2GitHubRequestWithContext(ctx context.Context, t *testing.T, client *http.Client, method, path, token string, body any) (int, []byte) {
 	t.Helper()
 	var in io.Reader
