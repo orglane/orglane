@@ -63,7 +63,7 @@ make help              # list targets
 
 Run `make fmt && make lint && make test` before committing. Language-specific sub-targets exist too (`lint-go`, `test-ts`, ...).
 
-CI (`.github/workflows/ci.yml`) runs the same targets: `make lint`, `make test`, `make build` and `make security`. The trusted Policy workflow (`.github/workflows/policy.yml`, default branch only) then labels the pull request with its `risk/*` tier and sets a `merge-gate` status that says whether it may be merged without a maintainer (ADR 0017). An AI approval must name the head commit SHA (`Codex review: APPROVE for <sha>`). Before merging, verify with `go run ./tools/ci policy -pr <number>` from an up-to-date `main`. See [tools/ci/README.md](tools/ci/README.md). The OpenID Conformance Suite runs in its own workflow (`.github/workflows/conformance.yml`): by hand with `gh workflow run conformance.yml --ref <branch>` and weekly on main (see [tests/conformance/README.md](tests/conformance/README.md)).
+CI (`.github/workflows/ci.yml`) runs the same targets: `make lint`, `make test`, `make build` and `make security`. The trusted Policy workflow (`.github/workflows/policy.yml`, default branch only) then labels the pull request with its `risk/*` tier and reports whether it may be merged without a maintainer (ADR 0017, amended by [ADR 0020](docs/adr/0020-merge-checklist.md)); it no longer publishes a `merge-gate` commit status. An AI approval must name the head commit SHA (`Codex review: APPROVE for <sha>`). Before merging, run the merge checklist with `go run ./tools/ci policy -pr <number>` from an up-to-date `main`; it reports the same checks (same-repository branch, green checks, risk tier, approval naming the head SHA, no unresolved threads). See [tools/ci/README.md](tools/ci/README.md). The OpenID Conformance Suite runs in its own workflow (`.github/workflows/conformance.yml`): by hand with `gh workflow run conformance.yml --ref <branch>` and weekly on main (see [tests/conformance/README.md](tests/conformance/README.md)).
 
 Releases are prepared by release-please from the Conventional Commits on `main` (`.github/workflows/release.yml`): it keeps a release pull request with the version bump and the `CHANGELOG.md` entry. Merging it is a maintainer's decision; the tag it creates publishes multi-arch images to `ghcr.io/orglane/orglane` (`.github/workflows/images.yml`). See [docs/releasing.md](docs/releasing.md).
 
@@ -142,7 +142,7 @@ orglane/
 ├── deploy/               # Compose bundle (compose/), dev database (dev/), install script
 ├── demo/                 # "Acme" demo dataset
 ├── tests/                # integration and end-to-end tests
-├── tools/ci/             # CI tooling: risk labeler, merge gate, license check (Go)
+├── tools/ci/             # CI tooling: risk labeler, merge checklist, license check (Go)
 └── docs/                 # brief, architecture, ADRs, specs
 ```
 

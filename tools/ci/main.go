@@ -1,5 +1,5 @@
 // Command ci holds the repository's CI tooling: the ADR 0017 risk labeler,
-// the merge gate, the dependency license check and the release image tags.
+// the merge checklist, the dependency license check and the release image tags.
 //
 // It uses only the standard library. The policy command is the trusted part:
 // the Policy workflow runs it from the default branch, and it reads pull

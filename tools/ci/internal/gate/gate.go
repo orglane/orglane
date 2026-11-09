@@ -1,5 +1,5 @@
 // Package gate decides whether a pull request may be merged without a
-// maintainer, following ADR 0017:
+// maintainer, following ADR 0017 as amended by ADR 0020:
 //
 //   - the pull request comes from a branch of this repository (external
 //     contributions are never merged automatically);
@@ -301,7 +301,7 @@ func reviewRequirement(comments []Comment, headSHA string) Requirement {
 func (r Result) Markdown() string {
 	var b strings.Builder
 	icon := map[Verdict]string{Eligible: "✅", MaintainerRequired: "👤", NotEligible: "❌"}[r.Verdict]
-	fmt.Fprintf(&b, "## Merge gate: %s %s\n\n", icon, r.Verdict)
+	fmt.Fprintf(&b, "## Merge checklist: %s %s\n\n", icon, r.Verdict)
 	switch r.Verdict {
 	case Eligible:
 		b.WriteString("All ADR 0017 requirements are met: this pull request may be merged without a maintainer.\n\n")
@@ -320,7 +320,7 @@ func (r Result) Markdown() string {
 // Text renders the result as plain text.
 func (r Result) Text() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "merge gate: %s\n", r.Verdict)
+	fmt.Fprintf(&b, "merge checklist: %s\n", r.Verdict)
 	for _, req := range r.Requirements {
 		fmt.Fprintf(&b, "  [%s] %s: %s\n", ifElse(req.OK, "ok", "--"), req.Name, req.Detail)
 	}

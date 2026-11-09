@@ -5,7 +5,7 @@
 | Command | Used by | What it does |
 |---|---|---|
 | `risk` | CI `changes` job | Classifies a change and reports whether code changed, so docs-only pull requests skip the heavy jobs |
-| `policy` | `Policy` workflow, orchestrator | **Trusted:** computes the risk tier, sets exactly one `risk/*` label and the `merge-gate` status, and decides whether the pull request may be merged without a maintainer |
+| `policy` | `Policy` workflow, orchestrator | **Trusted:** computes the risk tier, applies exactly one `risk/*` label and reports the merge checklist; it does not publish a commit status |
 | `licenses` | `make licenses` | Checks dependency licenses against the [ADR 0016](../../docs/adr/0016-licensing.md) policy |
 | `release-version` | `Images` workflow (build) | Validates a release tag (`vX.Y.Z[-pre]`) and prints its image version |
 | `release-aliases` | `Images` workflow (promote) | Lists the tags of the images released together (core and agent) and computes one plan from the versions published for all of them: where `latest` and every `X.Y` alias must point, see [docs/releasing.md](../../docs/releasing.md) |
@@ -16,8 +16,8 @@ CI (`.github/workflows/ci.yml`) runs on `pull_request`, so it executes the pull 
 
 The decision is made by `policy`, run from code the pull request cannot change:
 
-- the **Policy workflow** (`.github/workflows/policy.yml`) runs on `workflow_run` (CI completed), `issue_comment` and `workflow_dispatch`. These triggers always use the default branch's workflow file. The job checks out the default branch, builds `tools/ci` from it, fetches the pull request's commits (`refs/pull/N/head`) **as data** and diffs them against the merge base. Nothing from the pull request is checked out or executed. It sets the label and the `merge-gate` commit status;
-- the **orchestrator** verifies before merging, because a pull request's own workflow could post a status with the same name. From an up-to-date checkout of `main`:
+- the **Policy workflow** (`.github/workflows/policy.yml`) runs on `workflow_run` (CI completed), `issue_comment` and `workflow_dispatch`. These triggers always use the default branch's workflow file. The job checks out the default branch, builds `tools/ci` from it, fetches the pull request's commits (`refs/pull/N/head`) **as data** and diffs them against the merge base. Nothing from the pull request is checked out or executed. It applies the `risk/*` label and writes the checklist to the job summary; it does not publish a commit status ([ADR 0020](../../docs/adr/0020-merge-checklist.md));
+- the **orchestrator** runs the same checklist before merging, from an up-to-date checkout of `main`, because CI executes the pull request's own code:
 
   ```sh
   GITHUB_TOKEN="$(gh auth token)" GITHUB_REPOSITORY=orglane/orglane go run ./tools/ci policy -pr <number>
@@ -51,12 +51,12 @@ Test files are `*_test.go`, `*.test.*` and `*.spec.*` (JS/TS), everything under 
 
 When only documentation and license texts change (both paths of a rename), `code=false` and CI skips lint, tests, builds and the security scan.
 
-## Merge gate
+## Merge checklist
 
-`policy` reports **eligible** only when **all** of these hold:
+`policy` reports **eligible** only when **all** of these hold. The checklist is advisory: no commit status is published, so a maintainer or the orchestrator must run it before merging.
 
 1. The pull request comes from a branch of this repository. Pull requests from forks are never eligible.
-2. The required CI checks (`changes`, `lint`, `test`, `build`, `security`) are reported for the head commit, and every check and commit status is green (`success`, `neutral`, or `skipped`). `skipped` is accepted only when the policy itself found that no code changed.
+2. The required CI checks (`changes`, `lint`, `test`, `build`, `security`) are reported for the head commit, and every check and commit status is green (`success`, `neutral`, or `skipped`). `skipped` is accepted only when the policy itself found that no code changed. The retired `merge-gate` status on older commits is ignored.
 3. The risk tier is not high: the higher of the computed tier and any `risk/*` label (a maintainer can raise the tier with a label, never lower it). High reports **maintainer required**.
 4. The latest `Codex review:` comment by a user with write access says `APPROVE` (or `APPROVED`) on its first line and **names the head commit SHA** (full, or at least 7 hex digits), for example:
 
@@ -71,7 +71,7 @@ When only documentation and license texts change (both paths of a rename), `code
 
 The `Policy` workflow re-evaluates when CI completes and when a `Codex review:` comment is posted or edited. Run it on demand with `gh workflow run policy.yml -f pr=<number>` (for example after resolving a thread or changing a label).
 
-GitHub Free private repositories have no branch protection or auto-merge, so the gate is advisory until the repository goes public (see issue #14).
+Nothing enables auto-merge yet, so the checklist stays advisory: a maintainer runs it and merges the pull request. The `main` ruleset requires the CI checks themselves (`lint`, `test`, `build`, `security`).
 
 ## License policy
 

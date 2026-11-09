@@ -7,7 +7,7 @@
 #   - caches are saved on main only and restored by every pull request.
 #
 # This workflow runs the pull request's own code and is therefore not trusted
-# to judge it: the risk label and the merge-gate status come from the Policy
+# to judge it: the risk label and the merge checklist come from the Policy
 # workflow (policy.yml), which runs on the default branch after CI completes
 # and also verifies that skipped jobs were allowed to skip.
 #
