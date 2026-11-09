@@ -188,7 +188,7 @@ func (s *Service) RunProvisionPerson(ctx context.Context, args ProvisionPersonAr
 	}
 	if plan.EmployeeStep != "" {
 		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-			_, err := store.New(tx).DropPendingRemovals(ctx, store.DropPendingRemovalsParams{InstanceID: inst.ID, PersonID: d.person.ID, KeepKeys: []string{}})
+			_, err := store.New(tx).DropPendingRemovals(ctx, store.DropPendingRemovalsParams{InstanceID: inst.ID, PersonID: d.person.ID, KeepKeys: []string{}, AcceptedCode: provider.CodeRemovalPending})
 			return err
 		}); err != nil {
 			return fmt.Errorf("apps: drop removals: %w", err)
@@ -580,7 +580,7 @@ func (s *Service) planRemovals(ctx context.Context, conn *pgxpool.Conn, inst Ins
 			}
 			keep = append(keep, a.Key)
 		}
-		if _, err := q.DropPendingRemovals(ctx, store.DropPendingRemovalsParams{InstanceID: inst.ID, PersonID: d.person.ID, KeepKeys: keep}); err != nil {
+		if _, err := q.DropPendingRemovals(ctx, store.DropPendingRemovalsParams{InstanceID: inst.ID, PersonID: d.person.ID, KeepKeys: keep, AcceptedCode: provider.CodeRemovalPending}); err != nil {
 			return fmt.Errorf("apps: drop removals: %w", err)
 		}
 		if len(removals) == 0 {
@@ -965,7 +965,11 @@ func (s *Service) selectRemovals(ctx context.Context, q *store.Queries, inst Ins
 		} else if err != nil {
 			return false, err
 		}
-		if bytes.Equal(d.hash, r.DesiredHash) && removalRowManaged(inst, d, r.Action) {
+		// A removal the provider already accepted is confirmed and audited
+		// even if the desired access changed meanwhile: dropping the row
+		// would lose the acceptance while the provider may still complete it.
+		accepted := r.ErrorCode != nil && *r.ErrorCode == provider.CodeRemovalPending
+		if accepted || (bytes.Equal(d.hash, r.DesiredHash) && removalRowManaged(inst, d, r.Action)) {
 			return true, nil
 		}
 		replan[r.PersonID] = true
@@ -1116,18 +1120,20 @@ var errRemovalFailed = errors.New("apps: the removal failed")
 // in, the instance is provisionable and the person's desired access still
 // hashes to what planned the removal. A stale removal is dropped and the
 // person replanned, in one transaction; so is an applied removal and its
-// person's follow-up job (and audit entry). A retryable provider error that
-// asks for a delay (a rate limit, or a removal the provider accepted but has
-// not confirmed) snoozes the job; provider.CodeRemovalPending is remembered
-// on the pending row so the later attempt that confirms the removal audits
-// the earlier accepted change even though it changes nothing itself. A
-// transient failure on a later check of such an accepted removal keeps it
-// pending with the confirmation delay, even on the job's last attempt. A
-// permanent failure (or the last attempt's retryable one without RetryAfter
-// and without an earlier acceptance) fails the person's result, which then
-// waits for a desired-state change or an admin's retry. It returns the
-// retryable provider error to retry the job with (the removal stays open), or
-// errInstanceInactive.
+// person's follow-up job (and audit entry). A stale removal the provider has
+// already accepted (removal_pending) is not dropped: the provider may still
+// complete it, so it is confirmed and audited instead. A retryable provider
+// error that asks for a delay (a rate limit, or a removal the provider
+// accepted but has not confirmed) snoozes the job; provider.CodeRemovalPending
+// is remembered on the pending row so the later attempt that confirms the
+// removal audits the earlier accepted change even though it changes nothing
+// itself. A transient failure on a later check of such an accepted removal
+// keeps it pending with the confirmation delay, even on the job's last
+// attempt. A permanent failure (or the last attempt's retryable one without
+// RetryAfter and without an earlier acceptance) fails the person's result,
+// which then waits for a desired-state change or an admin's retry. It returns
+// the retryable provider error to retry the job with (the removal stays
+// open), or errInstanceInactive.
 //
 // The person's lock is taken on held, the removals lock's connection (lock
 // order: removals, then person), so the guard never waits for a second pool
@@ -1165,7 +1171,12 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 	if err := json.Unmarshal(cur.Action, &a); err != nil {
 		return nil, fmt.Errorf("apps: decode removal: %w", err)
 	}
-	if !bytes.Equal(d.hash, cur.DesiredHash) || !removalManaged(inst, d, a) {
+	// A removal the provider already accepted is confirmed and audited even if
+	// the desired access changed: dropping it would lose the acceptance while
+	// the provider may still complete the removal. It is never reported as
+	// applied before the confirmation.
+	acceptedEarlier := cur.ErrorCode != nil && *cur.ErrorCode == provider.CodeRemovalPending
+	if !acceptedEarlier && (!bytes.Equal(d.hash, cur.DesiredHash) || !removalManaged(inst, d, a)) {
 		return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			q := store.New(tx)
 			if _, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalDropped}); err != nil {
@@ -1174,7 +1185,6 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 			return s.enqueuePerson(ctx, tx, q, inst.ID, r.PersonID, false)
 		})
 	}
-	acceptedEarlier := cur.ErrorCode != nil && *cur.ErrorCode == provider.CodeRemovalPending
 	out, applyErr := prov.Apply(ctx, held.env(inst), inst.View(), a)
 	if applyErr != nil {
 		code, retryable, retryAfter := provider.Classify(applyErr)
@@ -1206,7 +1216,7 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 				return err
 			}
 			// The rest of this person's plan does not run after a failure.
-			if err := q.DropOpenRemovals(ctx, store.DropOpenRemovalsParams{InstanceID: r.InstanceID, PersonID: r.PersonID}); err != nil {
+			if err := q.DropOpenRemovals(ctx, store.DropOpenRemovalsParams{InstanceID: r.InstanceID, PersonID: r.PersonID, AcceptedCode: provider.CodeRemovalPending}); err != nil {
 				return fmt.Errorf("apps: drop later removals: %w", err)
 			}
 			return s.failResult(ctx, q, inst, d, a, code)

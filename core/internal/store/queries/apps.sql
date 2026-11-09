@@ -546,10 +546,13 @@ SET action = EXCLUDED.action, desired_hash = EXCLUDED.desired_hash, updated_at =
 WHERE provisioning_removals.state = 'pending';
 
 -- name: DropPendingRemovals :execrows
--- Pending removals of a person that the current plan no longer contains.
+-- Pending removals of a person that the current plan no longer contains. An
+-- accepted removal (error_code = accepted_code) is kept: the provider may
+-- already have acted, so it must be confirmed and audited instead of dropped.
 UPDATE provisioning_removals SET state = 'dropped', updated_at = now()
 WHERE instance_id = @instance_id AND person_id = @person_id AND state = 'pending'
-  AND NOT (action_key = ANY(@keep_keys::text[]));
+  AND NOT (action_key = ANY(@keep_keys::text[]))
+  AND (error_code IS NULL OR error_code <> sqlc.arg(accepted_code)::text);
 
 -- name: ListPendingRemovals :many
 SELECT * FROM provisioning_removals WHERE instance_id = @instance_id AND state = 'pending'
@@ -571,9 +574,12 @@ SELECT count(*) FROM provisioning_removals WHERE instance_id = @instance_id AND 
 SELECT count(*) FROM provisioning_removals WHERE batch_id = @batch_id AND state = 'held';
 
 -- name: DropOpenRemovals :exec
--- After a person's removal failed, their later removals do not run.
+-- After a person's removal failed, their later removals do not run. An
+-- accepted removal is not a later removal: keep it so its completion is still
+-- confirmed and audited.
 UPDATE provisioning_removals SET state = 'dropped', updated_at = now()
-WHERE instance_id = @instance_id AND person_id = @person_id AND state IN ('pending', 'held');
+WHERE instance_id = @instance_id AND person_id = @person_id AND state IN ('pending', 'held')
+  AND (error_code IS NULL OR error_code <> sqlc.arg(accepted_code)::text);
 
 -- name: GetRemoval :one
 SELECT * FROM provisioning_removals WHERE id = @id;

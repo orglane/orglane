@@ -408,16 +408,20 @@ func (q *Queries) DeleteUnmanagedAccounts(ctx context.Context, instanceID uuid.U
 const dropOpenRemovals = `-- name: DropOpenRemovals :exec
 UPDATE provisioning_removals SET state = 'dropped', updated_at = now()
 WHERE instance_id = $1 AND person_id = $2 AND state IN ('pending', 'held')
+  AND (error_code IS NULL OR error_code <> $3::text)
 `
 
 type DropOpenRemovalsParams struct {
-	InstanceID uuid.UUID
-	PersonID   uuid.UUID
+	InstanceID   uuid.UUID
+	PersonID     uuid.UUID
+	AcceptedCode string
 }
 
-// After a person's removal failed, their later removals do not run.
+// After a person's removal failed, their later removals do not run. An
+// accepted removal is not a later removal: keep it so its completion is still
+// confirmed and audited.
 func (q *Queries) DropOpenRemovals(ctx context.Context, arg DropOpenRemovalsParams) error {
-	_, err := q.db.Exec(ctx, dropOpenRemovals, arg.InstanceID, arg.PersonID)
+	_, err := q.db.Exec(ctx, dropOpenRemovals, arg.InstanceID, arg.PersonID, arg.AcceptedCode)
 	return err
 }
 
@@ -425,17 +429,26 @@ const dropPendingRemovals = `-- name: DropPendingRemovals :execrows
 UPDATE provisioning_removals SET state = 'dropped', updated_at = now()
 WHERE instance_id = $1 AND person_id = $2 AND state = 'pending'
   AND NOT (action_key = ANY($3::text[]))
+  AND (error_code IS NULL OR error_code <> $4::text)
 `
 
 type DropPendingRemovalsParams struct {
-	InstanceID uuid.UUID
-	PersonID   uuid.UUID
-	KeepKeys   []string
+	InstanceID   uuid.UUID
+	PersonID     uuid.UUID
+	KeepKeys     []string
+	AcceptedCode string
 }
 
-// Pending removals of a person that the current plan no longer contains.
+// Pending removals of a person that the current plan no longer contains. An
+// accepted removal (error_code = accepted_code) is kept: the provider may
+// already have acted, so it must be confirmed and audited instead of dropped.
 func (q *Queries) DropPendingRemovals(ctx context.Context, arg DropPendingRemovalsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, dropPendingRemovals, arg.InstanceID, arg.PersonID, arg.KeepKeys)
+	result, err := q.db.Exec(ctx, dropPendingRemovals,
+		arg.InstanceID,
+		arg.PersonID,
+		arg.KeepKeys,
+		arg.AcceptedCode,
+	)
 	if err != nil {
 		return 0, err
 	}

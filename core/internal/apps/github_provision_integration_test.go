@@ -643,6 +643,17 @@ func exerciseGitHubAcceptedRemoval(t *testing.T, h *linkHarness, fault *failAfte
 		t.Fatalf("audit entries before the confirmation = %d, want 0", n)
 	}
 
+	// A desired-state change must not drop the accepted row through either
+	// freshness path: the plan's cleanup keeps it, and apply_removals confirms
+	// it instead of dropping it on the hash mismatch.
+	h.exec(`UPDATE provisioning_removals SET desired_hash = decode(repeat('00', 32), 'hex') WHERE person_id = $1 AND state = 'pending'`, p.ID)
+	if _, err := store.New(h.pool).DropPendingRemovals(h.ctx, store.DropPendingRemovalsParams{InstanceID: h.inst.ID, PersonID: p.ID, KeepKeys: []string{}, AcceptedCode: provider.CodeRemovalPending}); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending' AND error_code = $2`, p.ID, provider.CodeRemovalPending); n != 1 {
+		t.Fatalf("accepted removals after the plan cleanup = %d, want 1", n)
+	}
+
 	// A restart keeps the acceptance; a transient failure on the retry's first
 	// read must not fail the removal on the job's last attempt.
 	svc := h.restartCore()
