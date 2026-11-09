@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -135,14 +135,14 @@ func TestM2AcceptanceScenario(t *testing.T) {
 		t.Fatal("the Orglane team disappeared")
 	}
 
-	// 5. A mention in a pull request is a normalized event for that person,
-	// through a real Forgejo signature and the public webhook endpoint.
+	// 5. The product configured Forgejo's webhook at the core's ingestion
+	// URL. A mention in a pull request must arrive through that destination
+	// and become a normalized event: there is no test-side relay, so a
+	// wrong URL or secret fails the scenario.
+	s.assertWebhookConfigured()
 	start := forgejoLastTask(t, s.b)
 	s.pullRequestWithMention(person)
-	s.deliverWebhook(start)
-	managedtest.Eventually(t, time.Minute, "the mention is a normalized event", func() bool {
-		return s.hasMentionEvent(person.Username)
-	})
+	s.waitForMentionEvent(person.Username, start)
 
 	// 6. The pull request opens through the deep link with the person's
 	// existing Orglane session: Forgejo signs them in silently.
@@ -462,47 +462,92 @@ func (s *m2Scenario) forgejoStatus(auth managedtest.Auth, method, path string, b
 	return managedtest.Request(s.t, s.b.Client(), method, managedtest.ForgejoHost, path, auth, body)
 }
 
-// deliverWebhook posts the delivery Forgejo recorded to the public webhook
-// endpoint, as Traefik would deliver it. On CI Forgejo can reach the
-// workspace through Traefik itself and may have delivered the same signed
-// body already, in which case this is a duplicate (200) and the event is
-// already queued; the recorded request still makes the scenario independent
-// of container DNS, and a fresh delivery answers 202.
-func (s *m2Scenario) deliverWebhook(start int) {
+// assertWebhookConfigured checks the hook the product created in Forgejo:
+// it must be active, JSON, subscribed to pull requests and comments, and
+// deliver to this instance's core ingestion URL. A misconfigured destination
+// or secret then fails here or at the event wait, never silently.
+func (s *m2Scenario) assertWebhookConfigured() {
 	s.t.Helper()
-	var deliveries []recorded
-	managedtest.Eventually(s.t, time.Minute, "Forgejo records the pull request delivery", func() bool {
-		deliveries = forgejoRecorded(s.t, s.b, start)
-		for _, d := range deliveries {
-			if d.event == "pull_request" {
-				return true
+	code, body := s.forgejoStatus(s.admin, http.MethodGet, "/api/v1/orgs/acme/hooks", nil)
+	if code != http.StatusOK {
+		s.t.Fatalf("read Forgejo hooks = %d %s", code, body)
+	}
+	var hooks []orgHook
+	if err := json.Unmarshal(body, &hooks); err != nil {
+		s.t.Fatalf("decode Forgejo hooks: %v", err)
+	}
+	want := s.workspace + "/api/v1/webhooks/" + s.inst.ID.String()
+	for _, hook := range hooks {
+		base, _, _ := strings.Cut(hook.Config["url"], "?") // the secret's mark
+		if base != want {
+			continue
+		}
+		if !hook.Active || hook.Config["content_type"] != "json" {
+			s.t.Fatalf("Forgejo hook %d is not active JSON: %+v", hook.ID, hook)
+		}
+		for _, event := range []string{"pull_request", "issue_comment"} {
+			found := false
+			for _, subscribed := range hook.Events {
+				if subscribed == event {
+					found = true
+					break
+				}
+			}
+			if !found {
+				s.t.Fatalf("Forgejo hook %d is not subscribed to %s: %v", hook.ID, event, hook.Events)
 			}
 		}
-		return false
-	})
-	var mention *recorded
-	for i := range deliveries {
-		if deliveries[i].event == "pull_request" {
-			mention = &deliveries[i]
+		return
+	}
+	s.t.Fatalf("Forgejo has no hook to %s; hooks: %s", want, body)
+}
+
+// waitForMentionEvent waits for the real Forgejo delivery to create the
+// normalized mention. On timeout it prints the configured hooks, Forgejo's
+// delivery attempts and the core's deliveries, so a broken destination or
+// secret is visible instead of hidden by a test-side replay.
+func (s *m2Scenario) waitForMentionEvent(login string, start int) {
+	s.t.Helper()
+	deadline := time.Now().Add(2 * time.Minute)
+	for !s.hasMentionEvent(login) {
+		if time.Now().After(deadline) {
+			s.diagnoseWebhook(start)
+			s.t.Fatalf("no normalized mention for %s arrived through Forgejo's configured webhook", login)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// diagnoseWebhook logs what happened after a webhook did not arrive.
+func (s *m2Scenario) diagnoseWebhook(start int) {
+	s.t.Helper()
+	if code, body := s.forgejoStatus(s.admin, http.MethodGet, "/api/v1/orgs/acme/hooks", nil); code == http.StatusOK {
+		s.t.Logf("Forgejo hooks: %s", body)
+	}
+	rows := s.b.Psql(s.t, "svc_git", "select row_to_json(t) from (select id, event_type, is_delivered, left(coalesce(response_content, ''), 200) as response from hook_task where id > "+
+		strconv.Itoa(start)+" order by id) t")
+	s.t.Logf("Forgejo hook tasks: %s", rows)
+	deliveries, err := s.pool.Query(s.ctx, `SELECT status, coalesce(error_code, ''), count(*) FROM webhook_deliveries WHERE instance_id = $1 GROUP BY 1, 2`, s.inst.ID)
+	if err == nil {
+		defer deliveries.Close()
+		for deliveries.Next() {
+			var status, code string
+			var n int
+			if err := deliveries.Scan(&status, &code, &n); err == nil {
+				s.t.Logf("core webhook deliveries: status=%s code=%s count=%d", status, code, n)
+			}
 		}
 	}
-	req, err := http.NewRequestWithContext(s.ctx, http.MethodPost, s.workspace+"/api/v1/webhooks/"+s.inst.ID.String(), bytes.NewReader(mention.body))
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	for name, values := range mention.headers {
-		for _, value := range values {
-			req.Header.Add(name, value)
+	eventRows, err := s.pool.Query(s.ctx, `SELECT type, count(*) FROM events WHERE instance_id = $1 GROUP BY 1`, s.inst.ID)
+	if err == nil {
+		defer eventRows.Close()
+		for eventRows.Next() {
+			var typ string
+			var n int
+			if err := eventRows.Scan(&typ, &n); err == nil {
+				s.t.Logf("core events: %s=%d", typ, n)
+			}
 		}
-	}
-	resp, err := s.b.Client().Do(req)
-	if err != nil {
-		s.t.Fatalf("deliver webhook: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		s.t.Fatalf("webhook = %d %s", resp.StatusCode, body)
 	}
 }
 

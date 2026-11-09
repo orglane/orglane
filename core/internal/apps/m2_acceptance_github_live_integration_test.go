@@ -3,10 +3,8 @@
 package apps_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -81,10 +79,21 @@ func TestM2AcceptanceGitHubLive(t *testing.T) {
 	}
 	teamSlug, teamID := m2GitHubTeamSlug(), ""
 	team := h.team(teamSlug, person)
+	marker := "Managed by Orglane (" + inst.ID.String() + ")"
 	// The team is Orglane's until the mapping sync creates it at GitHub;
 	// deleting a team that was never created is a 404 and fine. Cleanup
-	// checks the provider team's description and ID before deleting it.
-	t.Cleanup(func() { m2DeleteGitHubTeam(t, client, env, inst, org, teamSlug, teamID) })
+	// discovers it by marker if the mapping is not recorded yet and deletes
+	// it only by immutable organization and team IDs.
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
+		defer cancel()
+		token, err := githubprovider.New().InstallationToken(cleanupCtx, env, inst.View())
+		if err != nil {
+			t.Errorf("cleanup: installation token: %v", err)
+			return
+		}
+		m2DeleteGitHubTeam(cleanupCtx, t, client, m2GitHubAPI, token, org, orgID, teamSlug, teamID, marker)
+	})
 	h.mapTeam(inst, team)
 	h.drain()
 	result := h.result(inst, person)
@@ -157,81 +166,4 @@ func m2GitHubTeamSlug() string {
 		}
 	}
 	return "orglane-test-" + strings.Trim(b.String(), "-") + "-m2"
-}
-
-// m2GitHubRequest sends a request to the real GitHub.com API.
-func m2GitHubRequest(t *testing.T, client *http.Client, method, path, token string, body any) (int, []byte) {
-	t.Helper()
-	return m2GitHubRequestWithContext(t.Context(), t, client, method, path, token, body)
-}
-
-// m2DeleteGitHubTeam removes the temporary team after the test; a 404 is
-// fine (it may have been removed already). It deletes only a team whose
-// description carries this instance's marker and, once known, whose numeric
-// ID is the mapping's: a foreign team at the same slug is never touched.
-func m2DeleteGitHubTeam(t *testing.T, client *http.Client, env *managedtest.Env, inst apps.Instance, org, slug, teamID string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
-	defer cancel()
-	token, err := githubprovider.New().InstallationToken(ctx, env, inst.View())
-	if err != nil {
-		t.Errorf("cleanup: installation token: %v", err)
-		return
-	}
-	status, body := m2GitHubRequestWithContext(ctx, t, client, http.MethodGet, "/orgs/"+url.PathEscape(org)+"/teams/"+url.PathEscape(slug), token, nil)
-	if status == http.StatusNotFound {
-		return
-	}
-	var team struct {
-		ID          int64  `json:"id"`
-		Description string `json:"description"`
-	}
-	if status != http.StatusOK || json.Unmarshal(body, &team) != nil {
-		t.Errorf("cleanup: read team %s = %d %s", slug, status, body)
-		return
-	}
-	if want := "Managed by Orglane (" + inst.ID.String() + ")"; !strings.HasPrefix(team.Description, want) {
-		t.Errorf("cleanup: team %s is not this instance's (%q)", slug, team.Description)
-		return
-	}
-	if teamID != "" && strconv.FormatInt(team.ID, 10) != teamID {
-		t.Errorf("cleanup: team %s has ID %d, mapping has %s", slug, team.ID, teamID)
-		return
-	}
-	status, body = m2GitHubRequestWithContext(ctx, t, client, http.MethodDelete, "/orgs/"+url.PathEscape(org)+"/teams/"+url.PathEscape(slug), token, nil)
-	if status != http.StatusNoContent && status != http.StatusNotFound {
-		t.Errorf("cleanup: delete team %s = %d %s", slug, status, body)
-	}
-}
-
-// m2GitHubRequestWithContext is m2GitHubRequest with an explicit context,
-// for the cleanup that must outlive the test.
-func m2GitHubRequestWithContext(ctx context.Context, t *testing.T, client *http.Client, method, path, token string, body any) (int, []byte) {
-	t.Helper()
-	var in io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		in = bytes.NewReader(raw)
-	}
-	// The host is the fixed GitHub.com API; only the path is a test
-	// constant or a provider team name, never user input.
-	req, err := http.NewRequestWithContext(ctx, method, "https://api.github.com"+path, in) //nolint:gosec // fixed host
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "token "+token)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := client.Do(req) //nolint:gosec // fixed GitHub.com host
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode, out
 }
