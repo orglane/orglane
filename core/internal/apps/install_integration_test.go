@@ -122,8 +122,8 @@ func TestManagedRemoval(t *testing.T) {
 	if got.RemovedAt != nil {
 		t.Fatal("removed_at is still set")
 	}
-	if op := h.operation(id, gen); op.Kind != agentapi.KindApply || *op.ToVersion != agenttest.Version {
-		t.Fatalf("reinstall operation %+v", op)
+	if op := h.operation(id, gen); op.Kind != agentapi.KindApply || *op.ToVersion != newestAgenttest(t, registry) {
+		t.Fatalf("reinstall operation %+v (want version %s)", op, newestAgenttest(t, registry))
 	}
 	h.exec(`DELETE FROM river_job WHERE kind = $1`, apps.SetupArgs{}.Kind())
 	finish(gen, agentapi.OpSucceeded, "")
