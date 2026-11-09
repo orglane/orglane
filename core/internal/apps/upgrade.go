@@ -441,6 +441,11 @@ func (s *Service) finishSetup(ctx context.Context, id uuid.UUID, generation int6
 		if inst.State != StateInstalling && inst.State != StateUpgrading {
 			return nil
 		}
+		if inst.DesiredGeneration != inst.ObservedGeneration {
+			// The current generation was not applied: a setup must neither
+			// activate nor fail the instance while it is pending.
+			return nil
+		}
 		if setupErr != nil {
 			_, err := s.transition(ctx, tx, q, audit.System, id, StateFailed, CodeSetupFailed)
 			return err

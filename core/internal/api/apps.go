@@ -187,6 +187,7 @@ func (s *server) appInstance(ctx context.Context, svc *apps.Service, inst apps.I
 	return out, nil
 }
 
+// nilIfEmptyString returns nil for an empty optional string.
 func nilIfEmptyString(s string) *string {
 	if s == "" {
 		return nil

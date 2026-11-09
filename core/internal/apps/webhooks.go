@@ -524,6 +524,12 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 		// their own setup.
 		return nil
 	}
+	if inst.DesiredGeneration != inst.ObservedGeneration {
+		// The agent has not applied the current generation yet (for example
+		// a resync after it lost the state). Running Setup now would
+		// activate the instance before that apply can fail it.
+		return nil
+	}
 	state := inst.State
 	lc, ok := inst.Adapter.Lifecycle()
 	if !ok {

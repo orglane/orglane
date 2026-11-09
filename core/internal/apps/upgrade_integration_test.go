@@ -80,6 +80,7 @@ func upgradeStatus(t *testing.T, h *harness, id uuid.UUID) (apps.UpgradeStatus, 
 	return status, ok
 }
 
+// hasFencedUpstream reports whether a CheckHealth call used a fenced alias.
 func hasFencedUpstream(upstreams []string) bool {
 	for _, u := range upstreams {
 		if strings.HasSuffix(u, "-fenced:8080") {
@@ -316,6 +317,43 @@ func TestLegacySetupJobCannotActivateAnUpgrade(t *testing.T) {
 	}
 	if got := h.reload(inst.ID); got.State != apps.StateActive || h.agentProv.Setups(inst.ID) != 1 {
 		t.Fatalf("a legacy install setup did not finish: %+v, setups %d", got.AppInstance, h.agentProv.Setups(inst.ID))
+	}
+}
+
+// TestSetupWaitsForAppliedGeneration: an admin's setup retry while a resync
+// is still pending must not activate the instance against the old service;
+// the setup queued after the resync applies finishes it.
+func TestSetupWaitsForAppliedGeneration(t *testing.T) {
+	h := newHarness(t)
+	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+		Provider: "agenttest", BaseURL: "https://agenttest.work.acme.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.exec(`UPDATE app_instances SET state = 'failed', health = 'unhealthy', health_code = 'setup_failed',
+		package_version = $2, desired_generation = 2, observed_generation = 1 WHERE id = $1`, inst.ID, agenttest.Version)
+	retried, err := h.svc.RetrySetup(h.ctx, audit.System, inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.State != apps.StateInstalling || retried.DesiredGeneration != 2 {
+		t.Fatalf("after the setup retry: %+v", retried.AppInstance)
+	}
+	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID, Generation: 2}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.reload(inst.ID); got.State != apps.StateInstalling || h.agentProv.Setups(inst.ID) != 0 {
+		t.Fatalf("setup ran before the generation was applied: %+v, setups %d", got.AppInstance, h.agentProv.Setups(inst.ID))
+	}
+
+	// The resync applied: the setup job that its operation queues finishes.
+	h.exec(`UPDATE app_instances SET observed_generation = 2 WHERE id = $1`, inst.ID)
+	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID, Generation: 2}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.reload(inst.ID); got.State != apps.StateActive || h.agentProv.Setups(inst.ID) != 1 {
+		t.Fatalf("setup after the apply: %+v, setups %d", got.AppInstance, h.agentProv.Setups(inst.ID))
 	}
 }
 
