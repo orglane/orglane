@@ -4,8 +4,8 @@
 // (testcontainers-go). Tests using it carry the "integration" build tag and
 // need Docker.
 //
-// Usage: call Main (or Run) from TestMain, then NewDatabase in each test for a fresh,
-// empty database.
+// Usage: call Main (or Run, or RunWithTemplate) from TestMain, then
+// NewDatabase in each test for a fresh, empty database.
 package pgtest
 
 import (
@@ -28,6 +28,8 @@ const Image = "postgres:18-alpine"
 
 var (
 	adminURL string
+	// template is the name of the prepared template database, or "".
+	template string
 	counter  atomic.Int64
 )
 
@@ -39,6 +41,25 @@ func Main(m *testing.M) {
 // Run starts the container, runs the tests, removes the container and
 // returns the exit code.
 func Run(m *testing.M) int {
+	return run(m, nil)
+}
+
+// RunWithTemplate is Run with a template database: prepare runs once against
+// a fresh, empty database before the tests, and NewDatabase creates every
+// test's database from it with CREATE DATABASE ... TEMPLATE. Applying the
+// migrations once per process instead of once per test is much faster; the
+// databases stay independent, so tests keep their isolation.
+//
+// prepare must close every connection it opened: PostgreSQL refuses to copy a
+// template database that another session is connected to.
+func RunWithTemplate(m *testing.M, prepare func(ctx context.Context, databaseURL string) error) int {
+	if prepare == nil {
+		panic("pgtest: RunWithTemplate needs a prepare function")
+	}
+	return run(m, prepare)
+}
+
+func run(m *testing.M, prepare func(ctx context.Context, databaseURL string) error) int {
 	ctx := context.Background()
 	ctr, err := start(ctx)
 	defer func() {
@@ -54,6 +75,24 @@ func Run(m *testing.M) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pgtest: connection string: %v\n", err)
 		return 1
+	}
+	if prepare != nil {
+		const name = "orglane_template"
+		if err := execSQL(ctx, "CREATE DATABASE "+name); err != nil {
+			fmt.Fprintf(os.Stderr, "pgtest: create the template database: %v\n", err)
+			return 1
+		}
+		if err := prepare(ctx, databaseURL(name)); err != nil {
+			fmt.Fprintf(os.Stderr, "pgtest: prepare the template database: %v\n", err)
+			return 1
+		}
+		// prepare closed its pool, but make sure nothing lingers: CREATE
+		// DATABASE ... TEMPLATE fails while any session uses the template.
+		if err := execSQL(ctx, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '"+name+"' AND pid <> pg_backend_pid()"); err != nil {
+			fmt.Fprintf(os.Stderr, "pgtest: close the template's connections: %v\n", err)
+			return 1
+		}
+		template = name
 	}
 	return m.Run()
 }
@@ -88,29 +127,43 @@ func start(ctx context.Context) (*postgres.PostgresContainer, error) {
 func NewDatabase(t testing.TB) string {
 	t.Helper()
 	if adminURL == "" {
-		t.Fatal("pgtest: call pgtest.Main from TestMain")
+		t.Fatal("pgtest: call pgtest.Main, pgtest.Run or pgtest.RunWithTemplate from TestMain")
 	}
 	ctx := context.Background()
 	name := fmt.Sprintf("test_%d_%d", os.Getpid(), counter.Add(1))
-
-	exec := func(sql string) {
-		t.Helper()
-		conn, err := pgx.Connect(ctx, adminURL)
-		if err != nil {
-			t.Fatalf("pgtest: connect: %v", err)
-		}
-		defer func() { _ = conn.Close(ctx) }()
-		if _, err := conn.Exec(ctx, sql); err != nil {
-			t.Fatalf("pgtest: %s: %v", sql, err)
-		}
+	sql := "CREATE DATABASE " + name
+	if template != "" {
+		sql += " TEMPLATE " + template
 	}
-	exec("CREATE DATABASE " + name)
-	t.Cleanup(func() { exec("DROP DATABASE " + name + " WITH (FORCE)") })
+	if err := execSQL(ctx, sql); err != nil {
+		t.Fatalf("pgtest: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := execSQL(ctx, "DROP DATABASE "+name+" WITH (FORCE)"); err != nil {
+			t.Logf("pgtest: dropping %s: %v", name, err)
+		}
+	})
+	return databaseURL(name)
+}
 
+// databaseURL returns the connection URL of a database in the container.
+func databaseURL(name string) string {
 	u, err := url.Parse(adminURL)
 	if err != nil {
-		t.Fatal(err)
+		panic("pgtest: " + err.Error())
 	}
 	u.Path = "/" + name
 	return u.String()
+}
+
+func execSQL(ctx context.Context, sql string) error {
+	conn, err := pgx.Connect(ctx, adminURL)
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	if _, err := conn.Exec(ctx, sql); err != nil {
+		return fmt.Errorf("%s: %w", sql, err)
+	}
+	return nil
 }

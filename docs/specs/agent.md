@@ -641,7 +641,7 @@ Details of the Forgejo package (`providers/forgejo/managed/15.0.11-1`) that the 
 - **Hardening:** read-only root file system with a `/tmp` tmpfs, `user: 1000:1000`, all capabilities dropped, `no-new-privileges`, log rotation (3 × 10 MB).
 - **Health:** the container healthcheck is `GET /api/healthz` (start period 5 minutes for the first schema creation); `Lifecycle.CheckHealth` calls the same endpoint through the upstream.
 - **Resources:** hints 256 MiB minimum, 512 MiB recommended, 2 GiB disk. Measured idle: about 100 MiB for the Forgejo container after install and setup (the integration test logs it).
-- **Data directory owner:** `1000:1000` is applied only when the agent runs as root (the bundle). The integration tests with real Forgejo (`core/internal/agent` `TestForgejoPackage`, `core/internal/apps` `TestForgejoAdminTokenRotation`) run their agent as root like the bundle: on Linux without root they run themselves again as root through passwordless sudo (`managedtest.RunAsRoot`; CI runners have it) and skip only when that is unavailable. On macOS Docker Desktop maps ownership, so they run as the user.
+- **Data directory owner:** `1000:1000` is applied only when the agent runs as root (the bundle). The integration tests with real Forgejo (`core/internal/agent` `TestForgejoPackage`, `core/internal/apps` `TestForgejoInstall`) run their agent as root like the bundle: on Linux without root they run themselves again as root through passwordless sudo (`managedtest.RunAsRoot`; CI runners have it) and skip only when that is unavailable. On macOS Docker Desktop maps ownership, so they run as the user.
 
 ## Implementation notes (#75, part 1: apply and sync)
 

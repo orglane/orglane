@@ -1,4 +1,17 @@
-# CI for pull requests and main (ADR 0017).
+# CI for pull requests, main and the nightly full run (ADR 0017).
+#
+# Pull requests get a merge verdict in about 8-10 minutes: the fast tier
+# (lint, build, security, unit and TS tests, the Postgres-only Go integration
+# tests and the apps shards) always runs, while the heavy tier (the Docker
+# end-to-end tests of core/internal/apps and core/internal/agent, the Compose
+# bundle and installer tests, and the web end-to-end tests) is skipped only
+# when every changed file is documentation, the website or a license text
+# (tests/ci has the selector and its regression cases). The `full-ci` label
+# forces it. Pushes to main and the nightly schedule run everything. The final
+# `test` job is the required check: it runs with `always()` and fails when one
+# of the jobs this event selected failed, was cancelled or was unexpectedly
+# skipped; the only accepted skip is a heavy tier the changes job explicitly
+# left out.
 #
 # Minutes are scarce in the private phase, so:
 #   - superseded pull request runs are cancelled;
@@ -19,14 +32,26 @@ name: CI
 
 on:
   pull_request:
+    # `labeled`/`unlabeled` re-run CI so adding or removing the `full-ci`
+    # label takes effect immediately. Every label change starts a run (the
+    # Policy workflow adds a `risk/*` label after CI, which costs one extra
+    # run); the tier selection below reads the event's current label snapshot.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
     paths-ignore:
       - "**.md"
       - "docs/**"
   schedule:
-    # Weekly vulnerability and license scan of main for newly published advisories.
-    - cron: "17 4 * * 1"
+    # Nightly full run on main (every tier, including the Docker e2e tests).
+    # The weekly vulnerability and license scan is part of it.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      full-ci:
+        description: Run the heavy tier too (a pull request without the label runs the fast tier only)
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -36,30 +61,73 @@ concurrency:
 
 jobs:
   changes:
-    if: github.event_name == 'pull_request'
+    # Runs on every event: on pull requests it classifies the change, on push,
+    # schedule and workflow_dispatch it selects every tier (or follows the
+    # full-ci input). Its outputs are the single source of truth for the tier
+    # conditions below and for the aggregate's expected results.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
     outputs:
-      code: ${{ steps.classify.outputs.code }}
+      code: ${{ steps.paths.outputs.code || steps.classify.outputs.code || steps.plan.outputs.code }}
+      heavy: ${{ steps.paths.outputs.heavy || steps.plan.outputs.heavy }}
+      web: ${{ steps.paths.outputs.web || steps.plan.outputs.web }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
         with:
           fetch-depth: 2 # the merge commit and its base parent
           persist-credentials: false
       - id: tool
+        if: github.event_name == 'pull_request'
         uses: ./.github/actions/ci-tool
       - id: classify
         name: Classify the change
+        if: github.event_name == 'pull_request'
         env:
           CI_TOOL: ${{ steps.tool.outputs.path }}
         run: '"$CI_TOOL" risk -base HEAD^1 -head HEAD'
+      - id: paths
+        name: Decide the heavy tiers
+        if: github.event_name == 'pull_request'
+        env:
+          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          # The selector's skip allowlist is deliberately narrow (docs,
+          # Markdown, website, license texts): every other path runs the heavy
+          # tiers, so a new dependency of an e2e test cannot silently stop
+          # running it. Rename detection is off in tests/ci, so both sides of
+          # a move are considered (moving code into docs/ still runs them).
+          # The full-ci label forces both tiers and the code gate (so it also
+          # runs on a docs-only pull request); removing it is honoured on the
+          # unlabeled run. tests/ci has the regression cases.
+          go run ./tests/ci paths -base HEAD^1 -head HEAD -full-ci="$FULL_CI" >> "$GITHUB_OUTPUT"
+      - name: Select the tiers outside pull requests
+        id: plan
+        if: github.event_name != 'pull_request'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FULL_CI: ${{ inputs.full-ci }}
+        run: |
+          # Push and the nightly schedule run everything; a manual dispatch
+          # follows its full-ci input (the fast tier when false).
+          echo "code=true" >> "$GITHUB_OUTPUT"
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              echo "heavy=$FULL_CI" >> "$GITHUB_OUTPUT"
+              echo "web=$FULL_CI" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "heavy=true" >> "$GITHUB_OUTPUT"
+              echo "web=true" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
   lint:
     needs: changes
-    # On push and schedule the changes job is skipped and `code` is empty.
-    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -74,14 +142,115 @@ jobs:
           save-cache: ${{ github.event_name == 'push' }}
       - run: make lint
 
-  test:
+  # The fast Go and TypeScript tests. `make test-root` runs the agent's
+  # *AsRoot tests with sudo; a Linux runner has passwordless sudo.
+  unit:
     needs: changes
-    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
-    # The M2 acceptance scenario (#67) runs a real Forgejo, agent, Traefik
-    # and Playwright suite; with that integration the job no longer fits in
-    # 30 minutes. Tests are not weakened: this only gives the same steps
-    # time to finish.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: go-test
+          save-cache: false
+      - run: make test-unit test-ts
+      - run: make test-root
+
+  # All integration tests that only need PostgreSQL, with -race.
+  integration:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: go-test
+          save-cache: ${{ github.event_name == 'push' }}
+      - run: make test-integration-fast
+
+  # The apps package's PostgreSQL tests, sharded by test name. The package
+  # applies its migrations once per process (tests/pgtest template) and every
+  # test still gets its own database; -race stays on.
+  apps:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: go-test-apps
+          # One shard saves the compiled test binary; every shard and pull
+          # request restores it.
+          save-cache: ${{ github.event_name == 'push' && matrix.shard == 1 }}
+      - run: make test-apps SHARD=${{ matrix.shard }} SHARDS=3
+
+  # The agent's tests that do not start Docker projects. Its Docker e2e tests
+  # are in the heavy tier below.
+  agent:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: go-test
+          save-cache: false
+      - run: make test-agent
+
+  # Heavy tier: real Forgejo, the real agent and Traefik, without -race.
+  apps-e2e:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && needs.changes.outputs.heavy == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: go-test-apps-e2e
+          save-cache: ${{ github.event_name == 'push' && matrix.shard == 1 }}
+      - run: make test-apps-e2e SHARD=${{ matrix.shard }} SHARDS=3
+
+  agent-e2e:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && needs.changes.outputs.heavy == 'true' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
       contents: read
@@ -91,12 +260,48 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
         with:
-          cache-key: test
+          cache-key: go-test-agent-e2e
           save-cache: ${{ github.event_name == 'push' }}
-      # The web end-to-end tests (part of make test) drive Playwright's
-      # Chromium. Its version is the @playwright/test pinned in the lockfile;
-      # the browser is cached per version (saved on main only, like the other
-      # caches), the system libraries are installed every run.
+      - run: make test-agent-e2e
+
+  # The Compose bundle and the installer build and start the real bundle;
+  # no -race. They share the image layer cache of this runner.
+  compose:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && needs.changes.outputs.heavy == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: go-test
+          save-cache: false
+      - run: make test-compose
+      - run: make test-install
+
+  # Playwright's Chromium version is the @playwright/test pinned in the
+  # lockfile; the browser is cached per version (saved on main only, like the
+  # other caches), the system libraries are installed every run.
+  web-e2e:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && needs.changes.outputs.web == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: web
+          save-cache: ${{ github.event_name == 'push' }}
       - name: Playwright version
         id: playwright
         run: echo "version=$(pnpm --silent --filter @orglane/web exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
@@ -114,11 +319,38 @@ jobs:
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install Chromium for the web end-to-end tests
         run: pnpm --filter @orglane/web exec playwright install --with-deps chromium
-      - run: make test
+      - run: make test-e2e
+
+  website:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: web
+          save-cache: false
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(pnpm --silent --filter @orglane/website exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      - name: Restore the Playwright browser cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Chromium for the website end-to-end tests
+        run: pnpm --filter @orglane/website exec playwright install --with-deps chromium
+      - run: make test-website
 
   build:
     needs: changes
-    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -152,3 +384,44 @@ jobs:
         run: make vulncheck
       - name: Dependency licenses
         run: make licenses
+
+  # The ruleset requires a check named exactly `test`, and this job is it: it
+  # needs every test job, so a verdict only appears when they all settled.
+  # `always()` makes it run even when a dependency failed or the run was
+  # cancelled, so cancelled required work reports a failed check instead of
+  # disappearing. The script (tests/ci, with its own regression tests) requires
+  # success for every job that this event selected, and accepts `skipped` only
+  # for a heavy tier the changes job explicitly did not select. A docs-only
+  # pull request skips the whole aggregate, as before (the Policy workflow
+  # allows that when `code` is false).
+  test:
+    needs:
+      - changes
+      - unit
+      - integration
+      - apps
+      - agent
+      - apps-e2e
+      - agent-e2e
+      - compose
+      - web-e2e
+      - website
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check every test job
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+          WEB: ${{ needs.changes.outputs.web }}
+        run: go run ./tests/ci aggregate
