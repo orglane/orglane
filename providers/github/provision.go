@@ -24,7 +24,8 @@ import (
 // action resolves the login from the ID again: a rename that released the
 // login to another account is the retryable login_changed, and nothing is
 // added or removed for the new holder. There is no ID-addressed membership
-// endpoint, so this re-read is the last call before the mutation.
+// endpoint, so this re-read is the last call before the mutation; a rename
+// after it can go undetected.
 //
 // Access: an organization invitation by user ID (POST /orgs/{org}/invitations
 // with invitee_id), then team memberships. Removal: canceling the
