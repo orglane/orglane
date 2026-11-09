@@ -254,6 +254,18 @@ func (p *Provider) AddMember(instanceID uuid.UUID, login string) Account {
 	return *a
 }
 
+// RemoveMember makes an account a non-member, as if the provider completed a
+// removal Orglane requested (or someone else removed it) between attempts.
+func (p *Provider) RemoveMember(instanceID uuid.UUID, login string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, a := range p.org(provider.Instance{ID: instanceID}).accounts {
+		if a.Login == login {
+			a.Member, a.Teams, a.TeamsFor = false, map[string]bool{}, nil
+		}
+	}
+}
+
 // AddTeam adds a provider-side team (for "existing" mappings).
 func (p *Provider) AddTeam(instanceID uuid.UUID, ref, name string) {
 	p.mu.Lock()

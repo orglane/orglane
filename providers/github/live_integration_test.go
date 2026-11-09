@@ -5,6 +5,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -134,7 +135,8 @@ func TestGitHubLiveProvisioning(t *testing.T) {
 	inst := provider.Instance{ID: uuid.New(), Provider: "github", Settings: map[string]any{"organization": org, "app_id": os.Getenv("ORGLANE_TEST_GITHUB_APP_ID"), "app_client_id": os.Getenv("ORGLANE_TEST_GITHUB_APP_CLIENT_ID"), "installation_id": os.Getenv("ORGLANE_TEST_GITHUB_INSTALLATION_ID")}}
 	a := New()
 	var ref provider.TeamRef
-	liveProvisioningCleanups(t, a, env, inst, botToken, org, botID, botLogin, &ref)
+	removal := &liveRemoval{}
+	liveProvisioningCleanups(t, a, env, inst, botToken, org, botID, botLogin, &ref, removal)
 	// The App slug names the bot that GitHub attributes installation-token
 	// invitations to; read it rather than adding another required setting.
 	jwt, err := jwtFor(ctx, env, inst)
@@ -216,13 +218,11 @@ func TestGitHubLiveProvisioning(t *testing.T) {
 	}
 	for _, act := range plan.Actions {
 		if act.Kind == provider.ActionRemoveFromTeam {
-			if out, err := a.Apply(ctx, env, inst, act); err != nil || !out.Changed {
-				t.Fatalf("remove from team = %+v, %v", out, err)
-			}
+			liveApplyRemoval(ctx, t, a, env, inst, act, nil)
 		}
 	}
-	if status, err := liveStatus(ctx, env, http.MethodGet, "/orgs/"+url.PathEscape(org)+"/teams/"+url.PathEscape(ref.Name)+"/memberships/"+url.PathEscape(botLogin), token); status != http.StatusNotFound {
-		t.Fatalf("team membership after removal = %d, %v", status, err)
+	if err := liveAwaitTeamMembershipGone(ctx, env, token, org, ref.Name, botLogin); err != nil {
+		t.Fatal(err)
 	}
 
 	// Organization removal, invitation and its cancellation, then restore.
@@ -233,14 +233,16 @@ func TestGitHubLiveProvisioning(t *testing.T) {
 	}
 	for _, act := range plan.Actions {
 		if act.Kind == provider.ActionRemoveFromOrg {
-			if out, err := a.Apply(ctx, env, inst, act); err != nil || !out.Changed {
-				t.Fatalf("remove from organization = %+v, %v", out, err)
-			}
+			liveApplyRemoval(ctx, t, a, env, inst, act, removal)
 		}
 	}
-	if status, err := liveStatus(ctx, env, http.MethodGet, "/orgs/"+url.PathEscape(org)+"/memberships/"+url.PathEscape(botLogin), token); status != http.StatusNotFound {
-		t.Fatalf("membership after removal = %d, %v", status, err)
+	// GitHub may process the removal after its 204, so the membership is
+	// awaited rather than read once; on failure the read's non-secret state
+	// says what GitHub still serves.
+	if err := liveAwaitMembershipGone(ctx, env, token, org, botLogin); err != nil {
+		t.Fatal(err)
 	}
+	removal.pending = false
 	invite := accountAction(provider.ActionInvite, botID, false)
 	out, err := a.Apply(ctx, env, inst, invite)
 	if err != nil || out.Proof == nil || out.Proof.Kind != provider.ProofResponse {
@@ -256,20 +258,20 @@ func TestGitHubLiveProvisioning(t *testing.T) {
 	if err != nil || out.Changed || out.Proof == nil || out.Proof.Kind != provider.ProofMarker {
 		t.Fatalf("invite ensure (bot inviter) = %+v, %v", out, err)
 	}
-	out, err = a.Apply(ctx, env, inst, accountAction(provider.ActionCancelInvitation, botID, true))
-	if err != nil || !out.Changed {
-		t.Fatalf("cancel invitation = %+v, %v", out, err)
+	liveApplyRemoval(ctx, t, a, env, inst, accountAction(provider.ActionCancelInvitation, botID, true), nil)
+	if err := liveAwaitMembershipGone(ctx, env, token, org, botLogin); err != nil {
+		t.Fatal(err)
 	}
-	if status, err := liveStatus(ctx, env, http.MethodGet, "/orgs/"+url.PathEscape(org)+"/memberships/"+url.PathEscape(botLogin), token); status != http.StatusNotFound {
-		t.Fatalf("membership after cancellation = %d, %v", status, err)
-	}
-	// Orglane's invitation by ID, accepted by the bot itself.
+	// Orglane's invitation by ID, accepted by the bot itself. GitHub may
+	// answer the acceptance synchronously (200) or process it asynchronously
+	// (202), so the active membership is awaited too.
 	if _, err := a.Apply(ctx, env, inst, invite); err != nil {
 		t.Fatal("re-invite:", err)
 	}
 	liveAcceptInvitation(ctx, t, env, botToken, org)
-	if role, state, err := liveMembership(ctx, env, token, org, botLogin); err != nil || role != "member" || state != "active" {
-		t.Fatalf("restored membership = %q/%q, %v", role, state, err)
+	role, err = liveAwaitMembershipActive(ctx, env, token, org, botLogin)
+	if err != nil || role != "member" {
+		t.Fatalf("restored membership role = %q, %v", role, err)
 	}
 	t.Log("Invited, team-synced, removed and restored the dedicated bot against real GitHub; the interactive OAuth authorization stays manual acceptance.")
 }
@@ -342,13 +344,207 @@ func liveStatus(ctx context.Context, env *liveEnv, method, path, token string) (
 	return 0, err
 }
 
+// liveMutationTimeout bounds every wait for GitHub to finish a queued
+// membership change. GitHub accepts the mutation before it propagates it, so
+// a single read right after it is not proof.
+const liveMutationTimeout = 60 * time.Second
+
+// liveMembershipInfo is the non-secret membership state a diagnostic shows:
+// enough to tell a queued removal from an indirect (enterprise team)
+// membership without ever logging a token or a response body.
+type liveMembershipInfo struct {
+	State            string   `json:"state"`
+	Role             string   `json:"role"`
+	DirectMembership *bool    `json:"direct_membership"`
+	EnterpriseTeams  []string `json:"enterprise_teams_providing_indirect_membership"`
+}
+
+func (m liveMembershipInfo) detail() string {
+	direct := "absent"
+	if m.DirectMembership != nil {
+		direct = strconv.FormatBool(*m.DirectMembership)
+	}
+	return fmt.Sprintf("state=%q role=%q direct_membership=%s enterprise_teams=%v", m.State, m.Role, direct, m.EnterpriseTeams)
+}
+
+// liveMembershipRead reads a membership and keeps GitHub's status, so a test
+// can tell the documented 404 (gone) from a still-served membership. Only a
+// 200 carries a membership to show.
+func liveMembershipRead(ctx context.Context, env *liveEnv, token, org, login string) (int, liveMembershipInfo, error) {
+	var m liveMembershipInfo
+	err := request(ctx, env, http.MethodGet, "/orgs/"+url.PathEscape(org)+"/memberships/"+url.PathEscape(login), token, nil, &m)
+	if err == nil {
+		return http.StatusOK, m, nil
+	}
+	var api *APIError
+	if errors.As(err, &api) {
+		return api.Status, liveMembershipInfo{}, nil
+	}
+	return 0, liveMembershipInfo{}, err
+}
+
+type liveTeamMembershipInfo struct {
+	State string `json:"state"`
+	Role  string `json:"role"`
+}
+
+func (m liveTeamMembershipInfo) detail() string {
+	return fmt.Sprintf("state=%q role=%q", m.State, m.Role)
+}
+
+func liveTeamMembershipRead(ctx context.Context, env *liveEnv, token, org, team, login string) (int, liveTeamMembershipInfo, error) {
+	var m liveTeamMembershipInfo
+	path := "/orgs/" + url.PathEscape(org) + "/teams/" + url.PathEscape(team) + "/memberships/" + url.PathEscape(login)
+	err := request(ctx, env, http.MethodGet, path, token, nil, &m)
+	if err == nil {
+		return http.StatusOK, m, nil
+	}
+	var api *APIError
+	if errors.As(err, &api) {
+		return api.Status, liveTeamMembershipInfo{}, nil
+	}
+	return 0, liveTeamMembershipInfo{}, err
+}
+
+// liveAwaitGone waits until read reports 404. GitHub may serve a membership
+// for a moment after the mutation that removed it; a failure names the last
+// status and non-secret membership state rather than hiding the lag.
+func liveAwaitGone(ctx context.Context, what string, read func(context.Context) (int, string, error)) error {
+	deadline := time.Now().Add(liveMutationTimeout)
+	delay := 500 * time.Millisecond
+	for {
+		status, detail, err := read(ctx)
+		switch {
+		case err != nil:
+			detail = "read failed: " + err.Error()
+		case status == http.StatusNotFound:
+			return nil
+		case status == http.StatusOK:
+			detail = "status 200, " + detail
+		case status == http.StatusTooManyRequests || status >= 500:
+			detail = fmt.Sprintf("status %d", status)
+		default:
+			return fmt.Errorf("%s: GitHub answered %d (%s)", what, status, detail)
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%s did not disappear within %s; last read: %s", what, liveMutationTimeout, detail)
+		}
+		timer := time.NewTimer(min(delay, time.Until(deadline)))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(2*delay, 5*time.Second)
+	}
+}
+
+func liveAwaitMembershipGone(ctx context.Context, env *liveEnv, token, org, login string) error {
+	return liveAwaitGone(ctx, fmt.Sprintf("the organization membership of @%s", login), func(ctx context.Context) (int, string, error) {
+		status, m, err := liveMembershipRead(ctx, env, token, org, login)
+		return status, m.detail(), err
+	})
+}
+
+func liveAwaitTeamMembershipGone(ctx context.Context, env *liveEnv, token, org, team, login string) error {
+	return liveAwaitGone(ctx, fmt.Sprintf("@%s's membership of team %s", login, team), func(ctx context.Context) (int, string, error) {
+		status, m, err := liveTeamMembershipRead(ctx, env, token, org, team, login)
+		return status, m.detail(), err
+	})
+}
+
+// liveAwaitMembershipActive waits for an accepted invitation to become an
+// active membership: GitHub documents a 200 answer for a synchronous
+// acceptance and a 202 when it is processed asynchronously.
+func liveAwaitMembershipActive(ctx context.Context, env *liveEnv, token, org, login string) (string, error) {
+	deadline := time.Now().Add(liveMutationTimeout)
+	delay := 500 * time.Millisecond
+	for {
+		status, m, err := liveMembershipRead(ctx, env, token, org, login)
+		switch {
+		case err != nil:
+		case status == http.StatusOK && m.State == "active":
+			return m.Role, nil
+		case status != http.StatusOK && status != http.StatusNotFound && status != http.StatusTooManyRequests && status < 500:
+			return "", fmt.Errorf("the organization membership of @%s: GitHub answered %d", login, status)
+		}
+		detail := "read failed"
+		if err != nil {
+			detail += ": " + err.Error()
+		} else {
+			detail = fmt.Sprintf("status %d, %s", status, m.detail())
+		}
+		if !time.Now().Before(deadline) {
+			return "", fmt.Errorf("the organization membership of @%s did not become active within %s; last read: %s", login, liveMutationTimeout, detail)
+		}
+		timer := time.NewTimer(min(delay, time.Until(deadline)))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(2*delay, 5*time.Second)
+	}
+}
+
+// liveRemoval tracks an organization removal whose DELETE GitHub accepted
+// but whose completion the test has not observed yet. A queued removal can
+// still land after a failed test, so cleanup lets it finish before restoring
+// the bot; restoring first would let the late removal remove the bot again.
+type liveRemoval struct{ pending bool }
+
+// liveApplyRemoval applies a removal action until GitHub confirms it. The
+// adapter answers the retryable removal_pending while GitHub still serves the
+// membership its DELETE accepted; the test retries like the core's guard.
+func liveApplyRemoval(ctx context.Context, t *testing.T, a *Adapter, env *liveEnv, inst provider.Instance, act provider.Action, removal *liveRemoval) provider.ActionOutcome {
+	t.Helper()
+	if removal != nil {
+		removal.pending = true
+	}
+	deadline := time.Now().Add(liveMutationTimeout)
+	delay := time.Second
+	for {
+		out, err := a.Apply(ctx, env, inst, act)
+		if err == nil {
+			return out
+		}
+		code, retryable, retryAfter := provider.Classify(err)
+		if !retryable {
+			if removal != nil {
+				removal.pending = false
+			}
+			t.Fatalf("%s failed: %v", act.Kind, err)
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("%s is still retryable (%s) after %s: %v", act.Kind, code, liveMutationTimeout, err)
+		}
+		wait := delay
+		if retryAfter > 0 {
+			wait = min(retryAfter, time.Until(deadline))
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			t.Fatalf("%s: %v", act.Kind, ctx.Err())
+		case <-timer.C:
+		}
+		delay = min(2*delay, 5*time.Second)
+	}
+}
+
 func liveAcceptInvitation(ctx context.Context, t *testing.T, env *liveEnv, token, org string) {
 	t.Helper()
+	// GitHub answers 200 for a synchronous acceptance and 202 while the
+	// acceptance is processed asynchronously; both carry the membership, and
+	// the caller awaits its active state.
 	var res struct {
 		State string `json:"state"`
 	}
-	if err := request(ctx, env, http.MethodPatch, "/user/memberships/orgs/"+url.PathEscape(org), token, map[string]any{"state": "active"}, &res); err != nil || res.State != "active" {
-		t.Fatalf("accept invitation = %+v, %v", res, err)
+	if err := request(ctx, env, http.MethodPatch, "/user/memberships/orgs/"+url.PathEscape(org), token, map[string]any{"state": "active"}, &res); err != nil {
+		t.Fatalf("accept invitation = %v", err)
 	}
 }
 
@@ -356,8 +552,8 @@ func liveAcceptInvitation(ctx context.Context, t *testing.T, env *liveEnv, token
 // t.Cleanup runs last-in-first-out, so clearing the App key is registered
 // first: the bot restoration and the team deletion still mint installation
 // tokens after a failed test. team is filled in once the temporary team
-// exists.
-func liveProvisioningCleanups(t *testing.T, a *Adapter, env *liveEnv, inst provider.Instance, botToken, org, botID, botLogin string, team *provider.TeamRef) {
+// exists; removal records an accepted organization removal still in flight.
+func liveProvisioningCleanups(t *testing.T, a *Adapter, env *liveEnv, inst provider.Instance, botToken, org, botID, botLogin string, team *provider.TeamRef, removal *liveRemoval) {
 	t.Helper()
 	t.Cleanup(func() { clear(env.key) })
 	t.Cleanup(func() {
@@ -368,6 +564,14 @@ func liveProvisioningCleanups(t *testing.T, a *Adapter, env *liveEnv, inst provi
 			t.Errorf("cleanup: installation token: %v", err)
 			return
 		}
+		if removal != nil && removal.pending {
+			// The test failed while GitHub was still processing its removal;
+			// wait for it to settle, or it could remove the restored bot.
+			if err := liveAwaitMembershipGone(ctx, env, token, org, botLogin); err != nil {
+				t.Errorf("cleanup: wait for the accepted organization removal: %v", err)
+			}
+			removal.pending = false
+		}
 		if team.Name != "" {
 			liveDeleteTeam(ctx, t, env, token, org, team.Name)
 		}
@@ -376,10 +580,10 @@ func liveProvisioningCleanups(t *testing.T, a *Adapter, env *liveEnv, inst provi
 }
 
 // liveEnsureMember restores the bot's organization membership if a failed
-// test left it removed.
+// test left it removed; the bot is an ordinary member again when it returns.
 func liveEnsureMember(ctx context.Context, t *testing.T, a *Adapter, env *liveEnv, inst provider.Instance, token, botToken, org, botID, botLogin string) {
 	t.Helper()
-	if _, state, err := liveMembership(ctx, env, token, org, botLogin); err == nil && state == "active" {
+	if status, m, err := liveMembershipRead(ctx, env, token, org, botLogin); err == nil && status == http.StatusOK && m.State == "active" {
 		return
 	}
 	if _, err := a.Apply(ctx, env, inst, accountAction(provider.ActionInvite, botID, false)); err != nil {
@@ -389,7 +593,18 @@ func liveEnsureMember(ctx context.Context, t *testing.T, a *Adapter, env *liveEn
 			return
 		}
 	}
+	// The invite ensure may have found the bot already active (someone
+	// accepted meanwhile); do not send an acceptance without an invitation.
+	if status, m, err := liveMembershipRead(ctx, env, token, org, botLogin); err == nil && status == http.StatusOK && m.State == "active" {
+		return
+	}
 	liveAcceptInvitation(ctx, t, env, botToken, org)
+	role, err := liveAwaitMembershipActive(ctx, env, token, org, botLogin)
+	if err != nil {
+		t.Errorf("cleanup: restore the bot's membership: %v", err)
+	} else if role != "member" {
+		t.Errorf("cleanup: restored bot role = %q, want an ordinary member", role)
+	}
 }
 
 // liveDeleteTeam deletes a temporary team; a 404 is fine (already gone).

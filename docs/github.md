@@ -146,6 +146,23 @@ accounts.
   removed; team removals only target the instance's mapped teams. Deleting a
   mapping stops managing its team (its members stay) and cancels any pending or
   held removal from that team.
+- **Removal confirmation.** GitHub answers the
+  [membership](https://docs.github.com/en/rest/orgs/members#remove-organization-membership-for-a-user),
+  team-membership and invitation cancellations with `204` and no resulting
+  state, and it may process the change asynchronously: the following read can
+  still serve the old membership (GitHub documents `202` "being processed
+  asynchronously" for
+  [accepting an invitation](https://docs.github.com/en/rest/orgs/members#update-an-organization-membership-for-the-authenticated-user)).
+  Orglane therefore re-reads every removal and keeps it pending with the
+  retryable `removal_pending` (a 5 s check interval) until GitHub confirms it;
+  only the confirmed absence counts as `changed`, so the removal guard, the
+  audit entry and the person's result do not report the removal early.
+  A `200` whose
+  [`direct_membership`](https://docs.github.com/en/rest/orgs/members#get-organization-membership-for-a-user)
+  is false is a membership granted only by an enterprise team; GitHub documents
+  that removing the direct membership leaves it in place, so Orglane reports
+  the permanent `indirect_membership` and an admin removes the enterprise team
+  membership instead.
 
 ## Minimal App permissions
 
@@ -367,7 +384,12 @@ the bot from the organization, cancels an invitation and restores the bot's
 membership; it also re-runs the invitation ensure and requires GitHub to
 attribute the invitation to the App's bot (`<app-slug>[bot]`). Tests use real
 GitHub with no API mocks; temporary teams follow the naming convention above and
-are deleted by the test. The workflow runs the same two commands as
+are deleted by the test. Post-removal reads wait up to 60 seconds for GitHub to
+finish a queued removal or cancellation and, on timeout, report the last HTTP
+status plus the non-secret membership `state`, `role`, `direct_membership` and
+enterprise-team fields. Cleanup waits for an accepted removal to finish before
+restoring the bot, so a removal that lands late cannot undo the restoration.
+The workflow runs the same two commands as
 `make test-github-live` (provider live tests without the janitor, then the M2
 acceptance test), followed by the janitor as a separate final step; see the
 [live test operations guide](github-live.md#workflow-steps).

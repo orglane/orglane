@@ -77,6 +77,10 @@ type Fake struct {
 	installationTokens map[string]bool
 	state              orgState
 	seats              int // 0: unlimited
+	// orgRemovalReadbacks is how many membership reads after an organization
+	// removal still serve the removed membership (0: the removal is
+	// synchronous).
+	orgRemovalReadbacks int
 }
 
 type grant struct {

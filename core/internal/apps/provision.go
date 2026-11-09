@@ -1098,11 +1098,15 @@ var errRemovalFailed = errors.New("apps: the removal failed")
 // in, the instance is provisionable and the person's desired access still
 // hashes to what planned the removal. A stale removal is dropped and the
 // person replanned, in one transaction; so is an applied removal and its
-// person's follow-up job (and audit entry). A permanent failure (or the last
-// attempt's retryable one without RetryAfter) fails the person's result,
-// which then waits for a desired-state change or an admin's retry. It
-// returns the retryable provider error to retry the job with (the removal
-// stays open), or errInstanceInactive.
+// person's follow-up job (and audit entry). A retryable provider error that
+// asks for a delay (a rate limit, or a removal the provider accepted but has
+// not confirmed) snoozes the job; provider.CodeRemovalPending is remembered
+// on the pending row so the later attempt that confirms the removal audits
+// the earlier accepted change even though it changes nothing itself. A
+// permanent failure (or the last attempt's retryable one without RetryAfter)
+// fails the person's result, which then waits for a desired-state change or
+// an admin's retry. It returns the retryable provider error to retry the job
+// with (the removal stays open), or errInstanceInactive.
 //
 // The person's lock is taken on held, the removals lock's connection (lock
 // order: removals, then person), so the guard never waits for a second pool
@@ -1153,6 +1157,15 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 	if applyErr != nil {
 		code, retryable, retryAfter := provider.Classify(applyErr)
 		if retryable && (retryAfter > 0 || !final) {
+			if code == provider.CodeRemovalPending {
+				// The provider accepted the removal but has not confirmed it
+				// yet. Remember that, so the attempt that later confirms it
+				// (which changes nothing itself) still records the audit
+				// entry the accepted change deserves.
+				if _, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: item.state, ErrorCode: &code}); err != nil {
+					return nil, fmt.Errorf("apps: record the accepted removal: %w", err)
+				}
+			}
 			return applyErr, nil // stays as it is; the job retries or snoozes
 		}
 		err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
@@ -1172,18 +1185,26 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 		}
 		return nil, errRemovalFailed
 	}
+	// A removal the provider accepted in an earlier attempt is confirmed by
+	// this one: the membership is gone now, so this attempt reports no change
+	// of its own, but the earlier acceptance was the change to audit.
+	acceptedEarlier := cur.ErrorCode != nil && *cur.ErrorCode == provider.CodeRemovalPending
 	return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		n, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalApplied})
 		if err != nil {
 			return fmt.Errorf("apps: record removal: %w", err)
 		}
-		if n > 0 && out.Changed {
+		if n > 0 && (out.Changed || acceptedEarlier) {
+			meta := map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key}
+			if acceptedEarlier && !out.Changed {
+				meta["confirmed"] = true
+			}
 			if _, err := audit.Record(ctx, q, audit.Entry{
 				Actor:    audit.System,
 				Action:   audit.ProvisioningActionApplied,
 				Target:   audit.Target{Kind: audit.TargetPerson, ID: r.PersonID.String()},
-				Metadata: map[string]any{"provider": inst.Provider, "instance_id": inst.ID, "kind": a.Kind, "key": a.Key},
+				Metadata: meta,
 			}); err != nil {
 				return err
 			}

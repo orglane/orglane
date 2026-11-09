@@ -47,7 +47,7 @@ func TestGitHubLiveCleanupRestoresBotBeforeClearingKey(t *testing.T) {
 	})}}
 	var team provider.TeamRef
 	t.Run("the run fails after removing the bot", func(t *testing.T) {
-		liveProvisioningCleanups(t, a, env, inst, "ghu_test", org.Login, strconv.FormatInt(botID, 10), botLogin, &team)
+		liveProvisioningCleanups(t, a, env, inst, "ghu_test", org.Login, strconv.FormatInt(botID, 10), botLogin, &team, nil)
 		// The test body removed the bot and then failed before its own
 		// restoration, the state the cleanup has to repair.
 		if _, err := a.Apply(t.Context(), env, inst, accountAction(provider.ActionRemoveFromOrg, strconv.FormatInt(botID, 10), true)); err != nil {

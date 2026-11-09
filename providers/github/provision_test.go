@@ -208,6 +208,52 @@ func TestProvisionRemovesManagedAccessOnly(t *testing.T) {
 	}
 }
 
+// GitHub may accept an organization removal before it finishes: the
+// membership read still serves it for a moment. The removal is not reported
+// as changed until a later read confirms it, so the guard keeps it pending
+// and the audit entry waits.
+func TestProvisionOrgRemovalWaitsForGitHub(t *testing.T) {
+	f, env, inst := fakeFixture(t)
+	a := New()
+	f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+	f.AddMember(70, githubfake.RoleMember)
+	f.QueueOrgRemovals(2)
+	act := plan2(provider.ActionRemoveFromOrg, "70")
+	out, err := a.Apply(t.Context(), env, inst, act)
+	if c, retryable, after := provider.Classify(err); c != CodeRemovalPending || !retryable || after != removalPoll || out.Changed {
+		t.Fatalf("first removal = %+v, %v; want retryable %s after %s", out, err, CodeRemovalPending, removalPoll)
+	}
+	if _, ok := f.Members()[70]; !ok {
+		t.Fatal("the membership was reported removed while GitHub still served it")
+	}
+	// The next read is the last stale one and completes the queued removal;
+	// the action then sees the membership gone and changes nothing.
+	out, err = a.Apply(t.Context(), env, inst, act)
+	if err != nil || out.Changed {
+		t.Fatalf("confirmed removal = %+v, %v", out, err)
+	}
+	if _, ok := f.Members()[70]; ok {
+		t.Fatal("the membership was not removed")
+	}
+}
+
+// A membership that only enterprise teams grant cannot be removed through
+// the organization membership API; GitHub keeps it and the action reports a
+// permanent error instead of retrying or claiming the removal.
+func TestProvisionOrgRemovalOfAnEnterpriseMembership(t *testing.T) {
+	f, env, inst := fakeFixture(t)
+	a := New()
+	f.AddUser(githubfake.User{ID: 71, Login: "enterprise-member"})
+	f.AddIndirectMember(71, githubfake.RoleMember, []string{"ent:platform"})
+	_, err := a.Apply(t.Context(), env, inst, plan2(provider.ActionRemoveFromOrg, "71"))
+	if c, retryable, _ := provider.Classify(err); c != CodeIndirectMembership || retryable {
+		t.Fatalf("enterprise membership removal = %v; want permanent %s", err, CodeIndirectMembership)
+	}
+	if f.Members()[71] != githubfake.RoleMember {
+		t.Fatal("the membership was removed")
+	}
+}
+
 // Team removals only from the instance's mapped teams, only for managed
 // accounts, never of a maintainer; grants come before removals.
 func TestProvisionTeamRemovals(t *testing.T) {

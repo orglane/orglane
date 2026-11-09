@@ -80,6 +80,55 @@ func TestProvisionAllPeople(t *testing.T) {
 	}
 }
 
+// TestRemovalPendingWaitsForTheProvider: a provider that accepted a removal
+// but has not finished it (GitHub's queued removal) keeps the guard's removal
+// pending, its audit entry unwritten and the person queued; the retry applies
+// and audits it once the provider confirms.
+func TestRemovalPendingWaitsForTheProvider(t *testing.T) {
+	h := newHarness(t)
+	alice := h.person("alice")
+	inst := h.instance(nil)
+	h.drain()
+	if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, alice.ID, identity.StatusSuspended); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: alice.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	h.tp.Fail("apply:remove_from_org", &provider.Error{Code: provider.CodeRemovalPending, Retryable: true, RetryAfter: 5 * time.Second})
+	err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8)
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) || snooze.Duration != 5*time.Second {
+		t.Fatalf("pending removal = %v, want a 5s snooze", err)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending'`, alice.ID); n != 1 {
+		t.Fatalf("pending removals = %d, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'pending' AND error_code = $2`, alice.ID, provider.CodeRemovalPending); n != 1 {
+		t.Fatalf("removals marked accepted = %d, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM audit_entries WHERE action = $1 AND metadata->>'key' = 'remove_from_org'`, string(audit.ProvisioningActionApplied)); n != 0 {
+		t.Fatalf("audit entries for the unconfirmed removal = %d, want 0", n)
+	}
+	if r := h.result(inst, alice); r.Status != apps.StatusQueued {
+		t.Fatalf("result while the removal is pending = %+v, want queued", r)
+	}
+
+	// GitHub finishes the removal between attempts: the confirming run
+	// itself changes nothing (the provider reports no change), but the
+	// earlier accepted removal is audited now.
+	h.tp.RemoveMember(inst.ID, "alice")
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 2, 8); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'applied'`, alice.ID); n != 1 {
+		t.Fatalf("applied removals = %d, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM audit_entries WHERE action = $1 AND metadata->>'key' = 'remove_from_org'`, string(audit.ProvisioningActionApplied)); n != 1 {
+		t.Fatalf("audit entries for the confirmed removal = %d, want 1", n)
+	}
+}
+
 // TestProvisionMappedTeams: mapped_teams instances give access through
 // mapped teams only; membership changes queue provisioning in the same
 // transaction; a small removal applies without confirmation.
