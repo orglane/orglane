@@ -151,9 +151,11 @@ type Config struct {
 	InstallPreflight func(ctx context.Context, plan InstallPlan) (InstallBudget, error)
 }
 
-// OIDCClients registers OIDC clients in the caller's transaction.
+// OIDCClients registers and deletes OIDC clients in the caller's
+// transaction.
 type OIDCClients interface {
 	CreateOIDCClientTx(ctx context.Context, q *store.Queries, actor audit.Actor, in identity.NewOIDCClient) (store.OidcClient, string, error)
+	DeleteOIDCClientTx(ctx context.Context, q *store.Queries, actor audit.Actor, id string) error
 }
 
 // Service changes and reads everything the provider framework owns.

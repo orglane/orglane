@@ -171,6 +171,15 @@ func TestForgejoInstall(t *testing.T) {
 	if n := b.Psql(t, "orglane", "select count(*) from pg_database where datname = 'svc_git'"); n != "0" {
 		t.Fatalf("the service database still exists: %s", n)
 	}
+	// The key is free, its OIDC client included: a fresh install under it
+	// registers its own client and is accepted.
+	fresh, err := svc.Install(ctx, audit.System, apps.NewInstance{Provider: forgejo.ID, Key: inst.Key})
+	if err != nil {
+		t.Fatalf("a fresh install after the purge: %v", err)
+	}
+	if fresh.ID == inst.ID {
+		t.Fatalf("a fresh install reused the purged instance: %+v", fresh.AppInstance)
+	}
 }
 
 func mustAdapter(t *testing.T, svc *apps.Service, id provider.ID) *apps.Adapter {

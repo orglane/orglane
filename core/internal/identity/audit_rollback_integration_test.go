@@ -549,6 +549,16 @@ func auditRollbackCases() []auditRollbackCase {
 				}
 			},
 		},
+		{
+			name:   "delete OIDC client",
+			reject: rejectAction(audit.OIDCClientDeleted),
+			prepare: func(t *testing.T, f *rollbackFixture) func() error {
+				if _, _, err := f.svc.CreateOIDCClient(f.ctx, admin, identity.NewOIDCClient{ID: "forgejo", Name: "Forgejo", RedirectURIs: []string{"https://git.acme.test/callback"}}); err != nil {
+					t.Fatal(err)
+				}
+				return func() error { return f.svc.DeleteOIDCClient(f.ctx, admin, "forgejo") }
+			},
+		},
 	}
 }
 

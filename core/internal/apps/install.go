@@ -14,6 +14,7 @@ import (
 	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/agentclient"
 	"github.com/orglane/orglane/core/internal/audit"
+	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/packages"
 	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/providers/provider"
@@ -417,10 +418,18 @@ func (s *Service) removalFinished(ctx context.Context, tx pgx.Tx, q *store.Queri
 		return nil
 	}
 	// Purged: the agent deleted the data, database and role; the
-	// credentials go too, and the key is free again.
+	// credentials go too, and the key is free again. The key's OIDC client
+	// goes with it (with its grants and tokens, in this transaction), or a
+	// fresh install under the same key could not register its own. A
+	// retained removal and a reinstall keep the client.
 	creds, err := q.DeleteAppInstanceCredentials(ctx, inst.ID)
 	if err != nil {
 		return fmt.Errorf("apps: delete credentials: %w", err)
+	}
+	if s.cfg.OIDC != nil {
+		if err := s.cfg.OIDC.DeleteOIDCClientTx(ctx, q, audit.System, provider.OIDCClientID(inst.Key)); err != nil && !errors.Is(err, identity.ErrNotFound) {
+			return fmt.Errorf("apps: delete the OIDC client: %w", err)
+		}
 	}
 	_, err = audit.Record(ctx, q, audit.Entry{
 		Actor: audit.System, Action: audit.AppInstancePurged, Target: instanceTarget(inst.ID),
