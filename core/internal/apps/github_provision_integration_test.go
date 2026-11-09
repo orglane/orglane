@@ -407,7 +407,12 @@ type heldTeamRemovals struct {
 // their removal batch.
 func newHeldTeamRemovals(t *testing.T) *heldTeamRemovals {
 	t.Helper()
-	h := newGitHubHarness(t)
+	return holdTeamRemovals(t, newGitHubHarness(t))
+}
+
+// holdTeamRemovals is newHeldTeamRemovals on a given GitHub harness.
+func holdTeamRemovals(t *testing.T, h *linkHarness) *heldTeamRemovals {
+	t.Helper()
 	f := &heldTeamRemovals{h: h, ids: []int64{1001, 1002, 1003, 1004}}
 	for _, name := range []string{"p0", "p1", "p2", "p3"} {
 		f.people = append(f.people, h.person(name))
@@ -1136,5 +1141,59 @@ func TestGitHubLateRemovalAfterRestorationIsReconciled(t *testing.T) {
 	}
 	if n := a.fault.deleteCount(); n != 1 {
 		t.Fatalf("DELETEs = %d, want 1", n)
+	}
+}
+
+// TestGitHubAcceptedRemovalFromAConfirmedBatchHoldsGrants: an accepted
+// removal released through a confirmed batch keeps its held row state. It
+// must hold the person's grants like an accepted pending removal: a person
+// restored before GitHub confirms is not re-added (the late removal could
+// land on the new grant, or the grant could be mistaken for the old access)
+// and their result says why it waits; the confirmation then re-adds them.
+func TestGitHubAcceptedRemovalFromAConfirmedBatchHoldsGrants(t *testing.T) {
+	h, fault := newFaultyGitHubHarness(t)
+	f := holdTeamRemovals(t, h)
+	p0, id0 := f.people[0], f.ids[0]
+	path := "/organizations/" + strconv.FormatInt(h.gh.Org().ID, 10) + "/team/" + strconv.FormatInt(f.crew.ID, 10) + "/memberships/" + p0.Username + "-gh"
+	fault.afterDelete(path, path)
+	if err := h.svc.ConfirmRemovals(h.ctx, audit.System, h.inst.ID, f.held.Batch.ID, f.held.Batch.ItemsHash); err != nil {
+		t.Fatal(err)
+	}
+	err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 1, 8)
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) || snooze.Duration != 5*time.Second {
+		t.Fatalf("confirmed batch with an unconfirmed removal = %v, want a 5s snooze", err)
+	}
+	fault.clear()
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'held' AND error_code = $2`, p0.ID, provider.CodeRemovalPending); n != 1 {
+		t.Fatalf("accepted held removals = %d, want 1", n)
+	}
+
+	// p0 gets the access back before GitHub's removal is confirmed.
+	if _, err := h.ids.SetTeamMember(h.ctx, audit.System, f.release.ID, p0.ID, identity.TeamRoleMember); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: h.inst.ID, PersonID: p0.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if m := h.gh.TeamMembers(f.crew.ID)[id0]; m != "" {
+		t.Fatalf("p0 was re-added (%s) before the accepted removal was confirmed", m)
+	}
+	var status, code string
+	if err := h.pool.QueryRow(h.ctx, `SELECT status, coalesce(error_code, '') FROM provisioning_results WHERE instance_id = $1 AND person_id = $2`, h.inst.ID, p0.ID).Scan(&status, &code); err != nil {
+		t.Fatal(err)
+	}
+	if status != apps.StatusQueued || code != provider.CodeRemovalPending {
+		t.Fatalf("result while the removal is unconfirmed = %s/%q, want %s/%q", status, code, apps.StatusQueued, provider.CodeRemovalPending)
+	}
+
+	// The confirmation sees the membership gone, audits the removal and
+	// replans p0, who is added again.
+	h.drain()
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE person_id = $1 AND state = 'applied' AND error_code IS NULL`, p0.ID); n != 1 {
+		t.Fatalf("applied removals = %d, want 1", n)
+	}
+	if m := h.gh.TeamMembers(f.crew.ID)[id0]; m != "member/active" {
+		t.Fatalf("p0 after the confirmation = %q, want member/active", m)
 	}
 }

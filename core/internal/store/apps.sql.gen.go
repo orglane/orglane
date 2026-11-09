@@ -199,7 +199,7 @@ func (q *Queries) ConsumeAppOAuthState(ctx context.Context, arg ConsumeAppOAuthS
 
 const countAcceptedRemovals = `-- name: CountAcceptedRemovals :one
 SELECT count(*) FROM provisioning_removals
-WHERE instance_id = $1 AND person_id = $2 AND state = 'pending'
+WHERE instance_id = $1 AND person_id = $2 AND state IN ('pending', 'held')
   AND error_code = $3::text
 `
 
@@ -210,8 +210,10 @@ type CountAcceptedRemovalsParams struct {
 }
 
 // A person's open removals the provider accepted but has not confirmed
-// (error_code = accepted_code). While one is open, the person's grants wait:
-// the accepted removal may still land on access a grant would restore.
+// (error_code = accepted_code): pending ones, and held ones released by a
+// confirmed batch (their row stays held until settled). While one is open,
+// the person's grants wait: the accepted removal may still land on access a
+// grant would restore.
 func (q *Queries) CountAcceptedRemovals(ctx context.Context, arg CountAcceptedRemovalsParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countAcceptedRemovals, arg.InstanceID, arg.PersonID, arg.AcceptedCode)
 	var count int64

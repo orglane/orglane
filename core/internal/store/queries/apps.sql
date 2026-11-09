@@ -790,10 +790,12 @@ WHERE id = @id AND state = 'removed' AND data_retained;
 
 -- name: CountAcceptedRemovals :one
 -- A person's open removals the provider accepted but has not confirmed
--- (error_code = accepted_code). While one is open, the person's grants wait:
--- the accepted removal may still land on access a grant would restore.
+-- (error_code = accepted_code): pending ones, and held ones released by a
+-- confirmed batch (their row stays held until settled). While one is open,
+-- the person's grants wait: the accepted removal may still land on access a
+-- grant would restore.
 SELECT count(*) FROM provisioning_removals
-WHERE instance_id = @instance_id AND person_id = @person_id AND state = 'pending'
+WHERE instance_id = @instance_id AND person_id = @person_id AND state IN ('pending', 'held')
   AND error_code = sqlc.arg(accepted_code)::text;
 
 -- name: MarkProvisioningResultWaiting :exec
