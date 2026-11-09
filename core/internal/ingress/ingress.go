@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -360,6 +361,9 @@ func NewHandler(cfg *config.Config, source RouteSource, served ServedFunc, logge
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
+		// With a length, the flush below completes the answer before served
+		// runs (no chunked encoding waiting for the handler to return).
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		if _, err := w.Write(body); err != nil || served == nil {
 			return
 		}

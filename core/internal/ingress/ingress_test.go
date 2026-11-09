@@ -405,3 +405,42 @@ func TestMaintenance(t *testing.T) {
 		}
 	}
 }
+
+// TestHandlerCompletesBeforeServed: Traefik has the complete answer before
+// the served hook runs, so a slow hook never holds back (or, past
+// Traefik's timeout, voids) the configuration it records.
+func TestHandlerCompletesBeforeServed(t *testing.T) {
+	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
+	read := make(chan struct{})
+	hookDone := make(chan bool, 1)
+	h, err := NewHandler(cfg, nil, func(ctx context.Context, _ []AppRoute) {
+		select {
+		case <-read:
+			hookDone <- true
+		case <-ctx.Done():
+			hookDone <- false
+		}
+	}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	resp, err := srv.Client().Get(srv.URL + ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.ContentLength != int64(len(body)) {
+		t.Fatalf("answer: %d bytes, Content-Length %d, %v", len(body), resp.ContentLength, err)
+	}
+	var d Dynamic
+	if err := json.Unmarshal(body, &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	close(read)
+	if !<-hookDone {
+		t.Fatal("the answer was complete only after the served hook returned")
+	}
+}
