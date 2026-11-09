@@ -43,13 +43,17 @@ import (
 // may process them asynchronously: a following read can still serve the old
 // membership. Every removal is therefore re-read before it counts (a team
 // membership or invitation through its own read, an organization membership
-// through the membership). While the removal is still visible, the action
-// returns the retryable removal_pending (with the poll delay in RetryAfter)
-// and the core's removal guard keeps it pending, so neither its audit entry
-// nor its result claims the removal before GitHub confirms it. A membership
-// that only an enterprise team grants (direct_membership false) cannot be
-// removed through the organization membership API and is the permanent
-// indirect_membership.
+// through the membership). The read resolves the account's current login from
+// the bound immutable ID, not the login captured before the DELETE: a rename
+// after GitHub accepted the removal must not make the old login's 404 look
+// like absence. While the removal is still visible, the action returns the
+// retryable removal_pending (with the poll delay in RetryAfter) and the core's
+// removal guard keeps it pending, so neither its audit entry nor its result
+// claims the removal before GitHub confirms it. A transient confirmation read
+// failure keeps the accepted removal pending too (acceptedButUnconfirmed); a
+// rate limit's delay is preserved. A membership that only an enterprise team
+// grants (direct_membership false) cannot be removed through the organization
+// membership API and is the permanent indirect_membership.
 //
 // Ownership (provider.ActionOutcome.Proof): the confirmed answer to
 // Orglane's invitation, or a pending invitation whose inviter is the App's
@@ -326,6 +330,78 @@ func removalPending(what string) error {
 		Code: CodeRemovalPending, Retryable: true, RetryAfter: removalPoll,
 		Err: fmt.Errorf("github: the %s removal is still being processed", what),
 	}
+}
+
+// acceptedButUnconfirmed keeps a removal pending when GitHub accepted the
+// DELETE but the following confirmation read failed. The read may be
+// transient (5xx, timeout, rate limit, an authorization token that is being
+// renewed), and the removal may already have happened; failing the action
+// would lose that acceptance, and a later run would see no change and could
+// not audit it. A retryable failure becomes removal_pending with at least the
+// normal confirmation delay (a rate limit's longer reset is kept); a definite
+// refusal is returned unchanged.
+func acceptedButUnconfirmed(err error) error {
+	_, retryable, after := provider.Classify(err)
+	if !retryable {
+		return err
+	}
+	if after < removalPoll {
+		after = removalPoll
+	}
+	return &provider.Error{Code: CodeRemovalPending, Retryable: true, RetryAfter: after, Err: err}
+}
+
+// confirmAfterRemoval reads a removal's target after GitHub accepted it. The
+// mutation was addressed by a login, and the account can be renamed after
+// GitHub accepted it: a read under the old login would 404 while the bound ID
+// still has the target under its new login. The helper resolves the login
+// from the bound ID for every read and, after a 404, resolves it again: only a
+// 404 under the same current login confirms absence. A login that keeps moving
+// is the retryable login_changed. A nil result means the target (or the whole
+// account) is gone.
+func confirmAfterRemoval[T any](ctx context.Context, o *org, id string, read func(context.Context, ghUser) (*T, error)) (*T, error) {
+	for range 3 {
+		u, err := o.user(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if u == nil {
+			return nil, nil // the account is deleted and has no access left
+		}
+		got, err := read(ctx, *u)
+		if err != nil {
+			return nil, err
+		}
+		if got != nil {
+			return got, nil
+		}
+		again, err := o.user(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if again == nil || strings.EqualFold(again.Login, u.Login) {
+			return nil, nil // the same current login answered 404: really gone
+		}
+		// Renamed between the read and the check: read again under the new
+		// login instead of mistaking the old login's 404 for absence.
+	}
+	return nil, &provider.Error{Code: CodeLoginChanged, Retryable: true, Err: errors.New("github: the account's login moved while the removal was confirmed")}
+}
+
+// membershipAfterRemoval confirms an organization membership or invitation
+// removal by the bound account ID.
+func (o *org) membershipAfterRemoval(ctx context.Context, id string) (*membership, error) {
+	return confirmAfterRemoval(ctx, o, id, func(ctx context.Context, u ghUser) (*membership, error) {
+		return o.membership(ctx, u)
+	})
+}
+
+// teamMembershipAfterRemoval confirms a team membership removal by the bound
+// account ID; the team is addressed by its immutable ID.
+func (o *org) teamMembershipAfterRemoval(ctx context.Context, teamID, id string) (*teamMembership, error) {
+	return confirmAfterRemoval(ctx, o, id, func(ctx context.Context, u ghUser) (*teamMembership, error) {
+		return o.teamMembership(ctx, teamID, u)
+	})
 }
 
 // membership reads u's organization membership; nil if there is neither a
@@ -674,10 +750,13 @@ func (o *org) cancelInvitation(ctx context.Context, u ghUser) (provider.ActionOu
 	}
 	// GitHub answers 204 without the resulting state and may still serve the
 	// pending membership while it processes the cancellation; only its
-	// absence confirms the change.
-	mem, err := o.membership(ctx, *fresh)
+	// absence confirms the change. The read follows the bound ID's current
+	// login (a rename after the DELETE must not make the old login's 404 look
+	// like cancellation), and a transient read failure keeps the accepted
+	// cancellation pending.
+	mem, err := o.membershipAfterRemoval(ctx, strconv.FormatInt(u.ID, 10))
 	if err != nil {
-		return provider.ActionOutcome{}, err
+		return out, acceptedButUnconfirmed(err)
 	}
 	if mem != nil && mem.State == "pending" {
 		return out, removalPending("invitation")
@@ -693,6 +772,12 @@ func (o *org) removeFromOrg(ctx context.Context, u ghUser) (provider.ActionOutco
 	mem, err := o.membership(ctx, u)
 	if err != nil || mem == nil {
 		return out, err
+	}
+	if mem.indirectly() && mem.State == "active" {
+		return provider.ActionOutcome{}, &provider.Error{
+			Code: CodeIndirectMembership,
+			Err:  errors.New("github: an enterprise team grants this organization membership; remove it from that enterprise team"),
+		}
 	}
 	switch mem.Role {
 	case "member":
@@ -720,15 +805,18 @@ func (o *org) removeFromOrg(ctx context.Context, u ghUser) (provider.ActionOutco
 	// process the removal asynchronously and still serve the membership for
 	// a moment (docs.github.com "Remove organization membership for a user";
 	// accepting an invitation documents the same asynchronous processing
-	// with 202). Only a gone membership confirms the removal; until then the
+	// with 202). The confirmation follows the bound ID's current login (a
+	// rename after the DELETE must not make the old login's 404 look like
+	// absence), and a transient read failure keeps the accepted removal
+	// pending. Only a gone membership confirms the removal; until then the
 	// action is the retryable removal_pending, so the guard keeps it pending
 	// and records the audit entry only when GitHub confirms it. A 200 whose
 	// direct_membership is false is a membership an enterprise team grants:
 	// GitHub documents that the organization membership API leaves it in
 	// place, so it is a permanent error instead of a retry.
-	after, err := o.membership(ctx, *fresh)
+	after, err := o.membershipAfterRemoval(ctx, strconv.FormatInt(u.ID, 10))
 	if err != nil {
-		return provider.ActionOutcome{}, err
+		return out, acceptedButUnconfirmed(err)
 	}
 	switch {
 	case after == nil:
@@ -809,10 +897,12 @@ func (o *org) teamMember(ctx context.Context, u ghUser, teamID string, add bool)
 	if !add {
 		// GitHub answers the team membership DELETE with 204 and no state.
 		// Like an organization removal it may be processed asynchronously;
-		// only an absent team membership confirms it.
-		after, err := o.teamMembership(ctx, teamID, *fresh)
+		// only an absent team membership under the bound ID's current login
+		// confirms it, and a transient read failure keeps the accepted
+		// removal pending.
+		after, err := o.teamMembershipAfterRemoval(ctx, teamID, strconv.FormatInt(u.ID, 10))
 		if err != nil {
-			return provider.ActionOutcome{}, err
+			return out, acceptedButUnconfirmed(err)
 		}
 		if after != nil {
 			return out, removalPending("team membership")

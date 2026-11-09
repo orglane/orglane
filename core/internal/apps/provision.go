@@ -49,6 +49,11 @@ const (
 	removalFailed  = "failed"
 )
 
+// removalConfirmationDelay is how long a removal whose provider accepted it
+// but whose later confirmation failed waits before the next check. It keeps an
+// accepted removal pending instead of failing it on the job's last attempt.
+const removalConfirmationDelay = 5 * time.Second
+
 // Removal batch states.
 const (
 	batchHeld       = "held"
@@ -1116,10 +1121,13 @@ var errRemovalFailed = errors.New("apps: the removal failed")
 // not confirmed) snoozes the job; provider.CodeRemovalPending is remembered
 // on the pending row so the later attempt that confirms the removal audits
 // the earlier accepted change even though it changes nothing itself. A
-// permanent failure (or the last attempt's retryable one without RetryAfter)
-// fails the person's result, which then waits for a desired-state change or
-// an admin's retry. It returns the retryable provider error to retry the job
-// with (the removal stays open), or errInstanceInactive.
+// transient failure on a later check of such an accepted removal keeps it
+// pending with the confirmation delay, even on the job's last attempt. A
+// permanent failure (or the last attempt's retryable one without RetryAfter
+// and without an earlier acceptance) fails the person's result, which then
+// waits for a desired-state change or an admin's retry. It returns the
+// retryable provider error to retry the job with (the removal stays open), or
+// errInstanceInactive.
 //
 // The person's lock is taken on held, the removals lock's connection (lock
 // order: removals, then person), so the guard never waits for a second pool
@@ -1166,9 +1174,19 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 			return s.enqueuePerson(ctx, tx, q, inst.ID, r.PersonID, false)
 		})
 	}
+	acceptedEarlier := cur.ErrorCode != nil && *cur.ErrorCode == provider.CodeRemovalPending
 	out, applyErr := prov.Apply(ctx, held.env(inst), inst.View(), a)
 	if applyErr != nil {
 		code, retryable, retryAfter := provider.Classify(applyErr)
+		if retryable && acceptedEarlier && retryAfter == 0 {
+			// The provider accepted this removal earlier. A transient failure
+			// on a later check must neither fail it on the last attempt nor
+			// lose the acceptance: keep it pending with the confirmation
+			// delay, whatever the provider's specific error was.
+			code = provider.CodeRemovalPending
+			retryAfter = removalConfirmationDelay
+			applyErr = &provider.Error{Code: code, Retryable: true, RetryAfter: retryAfter, Err: applyErr}
+		}
 		if retryable && (retryAfter > 0 || !final) {
 			if code == provider.CodeRemovalPending {
 				// The provider accepted the removal but has not confirmed it
@@ -1201,7 +1219,6 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 	// A removal the provider accepted in an earlier attempt is confirmed by
 	// this one: the target is gone now, so this attempt reports no change of
 	// its own, but the earlier acceptance was the change to audit.
-	acceptedEarlier := cur.ErrorCode != nil && *cur.ErrorCode == provider.CodeRemovalPending
 	return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)
 		n, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalApplied})

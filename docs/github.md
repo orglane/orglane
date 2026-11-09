@@ -156,7 +156,13 @@ accounts.
   Orglane therefore re-reads every removal and keeps it pending with the
   retryable `removal_pending` (a 5 s check interval) until GitHub confirms it;
   only the confirmed absence counts as `changed`, so the removal guard, the
-  audit entry and the person's result do not report the removal early.
+  audit entry and the person's result do not report the removal early. The
+  confirmation resolves the account's current login from its bound immutable
+  ID, so a rename after the DELETE (or a reused old login) cannot make the old
+  login's 404 look like removal. A transient confirmation read failure (5xx,
+  timeout, rate limit, renewed token) keeps the accepted removal pending too,
+  preserving the provider's retry delay; it never loses the acceptance or fails
+  the removal on the job's last attempt.
   A `200` whose
   [`direct_membership`](https://docs.github.com/en/rest/orgs/members#get-organization-membership-for-a-user)
   is false is a membership granted only by an enterprise team; GitHub documents

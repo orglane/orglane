@@ -254,6 +254,197 @@ func TestProvisionOrgRemovalOfAnEnterpriseMembership(t *testing.T) {
 	}
 }
 
+// A rename (or reuse of the old login) after GitHub accepted a removal must
+// not make the confirmation read mistake the old login's 404 for the bound
+// account's absence: the confirmation follows the numeric ID's current login,
+// so the removal stays pending until the bound account is really gone.
+func TestProvisionRemovalConfirmationFollowsTheBoundID(t *testing.T) {
+	t.Run("organization membership", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+		f.AddMember(70, githubfake.RoleMember)
+		f.QueueOrgRemovals(2)
+		base, path := env.client.Transport, "/orgs/"+f.Org().Login+"/memberships/dev"
+		env.client.Transport = &interleave{base: base, method: http.MethodDelete, path: path, after: true, fn: func() {
+			f.RenameUser(70, "dev-renamed")
+			f.AddUser(githubfake.User{ID: 71, Login: "dev"}) // the old login, reused without a membership
+		}}
+		out, err := a.Apply(t.Context(), env, inst, plan2(provider.ActionRemoveFromOrg, "70"))
+		if c, retryable, _ := provider.Classify(err); c != CodeRemovalPending || !retryable || out.Changed {
+			t.Fatalf("removal after the rename = %+v, %v; want retryable %s", out, err, CodeRemovalPending)
+		}
+		if f.Members()[70] != githubfake.RoleMember {
+			t.Fatal("the bound account was reported removed while GitHub still had it as a member")
+		}
+		env.client.Transport = base
+		if out, err := a.Apply(t.Context(), env, inst, plan2(provider.ActionRemoveFromOrg, "70")); err != nil || out.Changed {
+			t.Fatalf("confirmed removal = %+v, %v", out, err)
+		}
+		if _, ok := f.Members()[70]; ok {
+			t.Fatal("the bound account was not removed")
+		}
+	})
+	t.Run("team membership", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		team := syncTeam(t, a, env, inst, "platform")
+		teamID := mustInt(team.ExternalRef)
+		f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+		f.AddMember(70, githubfake.RoleMember)
+		f.SetTeamMember(teamID, 70, githubfake.TeamMember)
+		base := env.client.Transport
+		path := "/organizations/" + strconv.FormatInt(f.Org().ID, 10) + "/team/" + team.ExternalRef + "/memberships/dev"
+		env.client.Transport = &interleave{base: base, method: http.MethodDelete, path: path, after: true, fn: func() {
+			f.RenameUser(70, "dev-renamed")
+			f.AddUser(githubfake.User{ID: 71, Login: "dev"}) // the old login, reused without the team
+			// GitHub accepted the removal but has not finished it yet: the
+			// bound account still has the team membership under its new login.
+			f.SetTeamMember(teamID, 70, githubfake.TeamMember)
+		}}
+		act := teamAction(provider.ActionRemoveFromTeam, "70", ghTeam{ID: teamID, Slug: team.Name})
+		out, err := a.Apply(t.Context(), env, inst, act)
+		if c, retryable, _ := provider.Classify(err); c != CodeRemovalPending || !retryable || out.Changed {
+			t.Fatalf("team removal after the rename = %+v, %v; want retryable %s", out, err, CodeRemovalPending)
+		}
+		if f.TeamMembers(teamID)[70] == "" {
+			t.Fatal("the bound account's team membership was reported removed")
+		}
+		env.client.Transport = base
+		if out, err := a.Apply(t.Context(), env, inst, act); err != nil || !out.Changed {
+			t.Fatalf("confirmed team removal = %+v, %v", out, err)
+		}
+		if f.TeamMembers(teamID)[70] != "" {
+			t.Fatal("the bound account was not removed from the team")
+		}
+	})
+	t.Run("invitation", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+		inv := f.InviteAs(70, f.BotLogin())
+		base := env.client.Transport
+		path := "/orgs/" + f.Org().Login + "/invitations/" + strconv.FormatInt(inv.ID, 10)
+		env.client.Transport = &interleave{base: base, method: http.MethodDelete, path: path, after: true, fn: func() {
+			f.RenameUser(70, "dev-renamed")
+			f.AddUser(githubfake.User{ID: 71, Login: "dev"}) // the old login, reused without an invitation
+			// The cancellation has not propagated yet: the bound account still
+			// has a pending invitation under its new login.
+			f.InviteAs(70, f.BotLogin())
+		}}
+		act := accountAction(provider.ActionCancelInvitation, "70", true)
+		out, err := a.Apply(t.Context(), env, inst, act)
+		if c, retryable, _ := provider.Classify(err); c != CodeRemovalPending || !retryable || out.Changed {
+			t.Fatalf("cancellation after the rename = %+v, %v; want retryable %s", out, err, CodeRemovalPending)
+		}
+		if len(f.Invitations()) != 1 {
+			t.Fatalf("invitations = %+v, want the bound account's pending invitation", f.Invitations())
+		}
+		env.client.Transport = base
+		if out, err := a.Apply(t.Context(), env, inst, act); err != nil || !out.Changed {
+			t.Fatalf("confirmed cancellation = %+v, %v", out, err)
+		}
+		if len(f.Invitations()) != 0 {
+			t.Fatalf("invitations after the confirmed cancellation = %+v", f.Invitations())
+		}
+	})
+}
+
+// A transient failure of the confirmation read after GitHub accepted a removal
+// must not lose the acceptance: the action stays pending with the provider's
+// retry delay (at least the confirmation poll), and the next call confirms it.
+func TestProvisionRemovalConfirmationReadFails(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		header http.Header
+		after  time.Duration
+	}{
+		{name: "server error", status: http.StatusBadGateway, after: removalPoll},
+		{name: "rate limit", status: http.StatusTooManyRequests, header: http.Header{"Retry-After": {"120"}}, after: 2 * time.Minute},
+	}
+	assertPending := func(t *testing.T, out provider.ActionOutcome, err error, after time.Duration) {
+		t.Helper()
+		if c, retryable, got := provider.Classify(err); c != CodeRemovalPending || !retryable || got != after || out.Changed {
+			t.Fatalf("removal with a failed confirmation = %+v, %v; want retryable %s after %s", out, err, CodeRemovalPending, after)
+		}
+	}
+	t.Run("organization membership", func(t *testing.T) {
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				f, env, inst := fakeFixture(t)
+				a := New()
+				f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+				f.AddMember(70, githubfake.RoleMember)
+				base, path := env.client.Transport, "/orgs/"+f.Org().Login+"/memberships/dev"
+				env.client.Transport = &interleave{base: base, method: http.MethodDelete, path: path, after: true, fn: func() {
+					f.Fail(http.MethodGet, path, tc.status, tc.header)
+				}}
+				out, err := a.Apply(t.Context(), env, inst, plan2(provider.ActionRemoveFromOrg, "70"))
+				assertPending(t, out, err, tc.after)
+				env.client.Transport = base
+				if out, err := a.Apply(t.Context(), env, inst, plan2(provider.ActionRemoveFromOrg, "70")); err != nil || out.Changed {
+					t.Fatalf("confirmed removal = %+v, %v", out, err)
+				}
+			})
+		}
+	})
+	t.Run("team membership", func(t *testing.T) {
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				f, env, inst := fakeFixture(t)
+				a := New()
+				team := syncTeam(t, a, env, inst, "platform")
+				teamID := mustInt(team.ExternalRef)
+				f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+				f.AddMember(70, githubfake.RoleMember)
+				f.SetTeamMember(teamID, 70, githubfake.TeamMember)
+				base := env.client.Transport
+				path := "/organizations/" + strconv.FormatInt(f.Org().ID, 10) + "/team/" + team.ExternalRef + "/memberships/dev"
+				env.client.Transport = &interleave{base: base, method: http.MethodDelete, path: path, after: true, fn: func() {
+					f.Fail(http.MethodGet, path, tc.status, tc.header)
+				}}
+				act := teamAction(provider.ActionRemoveFromTeam, "70", ghTeam{ID: teamID, Slug: team.Name})
+				out, err := a.Apply(t.Context(), env, inst, act)
+				assertPending(t, out, err, tc.after)
+				env.client.Transport = base
+				if out, err := a.Apply(t.Context(), env, inst, act); err != nil {
+					t.Fatalf("confirmed team removal = %+v, %v", out, err)
+				}
+				if f.TeamMembers(teamID)[70] != "" {
+					t.Fatal("the bound account was not removed from the team")
+				}
+			})
+		}
+	})
+	t.Run("invitation", func(t *testing.T) {
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				f, env, inst := fakeFixture(t)
+				a := New()
+				f.AddUser(githubfake.User{ID: 70, Login: "dev"})
+				inv := f.InviteAs(70, f.BotLogin())
+				base := env.client.Transport
+				deletePath := "/orgs/" + f.Org().Login + "/invitations/" + strconv.FormatInt(inv.ID, 10)
+				readPath := "/orgs/" + f.Org().Login + "/memberships/dev"
+				env.client.Transport = &interleave{base: base, method: http.MethodDelete, path: deletePath, after: true, fn: func() {
+					f.Fail(http.MethodGet, readPath, tc.status, tc.header)
+				}}
+				act := accountAction(provider.ActionCancelInvitation, "70", true)
+				out, err := a.Apply(t.Context(), env, inst, act)
+				assertPending(t, out, err, tc.after)
+				env.client.Transport = base
+				if out, err := a.Apply(t.Context(), env, inst, act); err != nil {
+					t.Fatalf("confirmed cancellation = %+v, %v", out, err)
+				}
+				if len(f.Invitations()) != 0 {
+					t.Fatalf("invitations after the confirmed cancellation = %+v", f.Invitations())
+				}
+			})
+		}
+	})
+}
+
 // Team removals only from the instance's mapped teams, only for managed
 // accounts, never of a maintainer; grants come before removals.
 func TestProvisionTeamRemovals(t *testing.T) {
