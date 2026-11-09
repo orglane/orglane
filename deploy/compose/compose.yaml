@@ -176,7 +176,11 @@ services:
       # Managed services reach their databases here (svc_<key>).
       services: {}
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "orglane", "-d", "orglane"]
+      # Over TCP: while the image initializes a new data directory its
+      # temporary server listens only on the Unix socket, so a socket probe
+      # would report healthy before the restart that installs the real
+      # server, and the agent could run its database step into the gap (#78).
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "orglane", "-d", "orglane"]
       interval: 10s
       timeout: 5s
       retries: 5

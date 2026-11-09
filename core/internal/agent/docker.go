@@ -266,9 +266,29 @@ type postgres struct {
 	project string // the bundle's Compose project
 	service string
 	user    string
+	// timeout bounds the wait for the server to accept connections, wait is
+	// the pause between attempts; zero means postgresReadyTimeout and
+	// postgresRetryWait.
+	timeout, wait time.Duration
 }
 
-var errNoPostgres = errors.New("the bundle's PostgreSQL container is not running")
+// The server may not accept connections yet, or for a moment: the image
+// initializes a new data directory with a temporary server on the socket
+// and restarts it, and the bundle may restart its container. The agent waits
+// that long for it before the step fails.
+const (
+	postgresReadyTimeout = 2 * time.Minute
+	postgresRetryWait    = 500 * time.Millisecond
+)
+
+// psql's exit status when the connection to the server failed or went bad;
+// 3 is an error in the script (ON_ERROR_STOP).
+const psqlConnectionFailed = 2
+
+var (
+	errNoPostgres       = errors.New("the bundle's PostgreSQL container is not running")
+	errPostgresNotReady = errors.New("the bundle's PostgreSQL does not accept connections")
+)
 
 func (p postgres) container(ctx context.Context) (string, error) {
 	out, stderr, err := p.r.run(ctx, nil, "ps", "--quiet", "--no-trunc",
@@ -285,39 +305,160 @@ func (p postgres) container(ctx context.Context) (string, error) {
 	return ids[0], nil
 }
 
+// accepting reports whether the server in container id accepts TCP
+// connections (pg_isready exits 0; it needs no valid role). The probe goes
+// over TCP on purpose: while the image initializes a new data directory its
+// temporary server listens only on the Unix socket, so a socket probe would
+// pass before the restart that installs the real server (#78).
+func (p postgres) accepting(ctx context.Context, id string) bool {
+	_, _, err := p.r.run(ctx, nil, "exec", id, "pg_isready", "-q", "-h", "127.0.0.1", "-U", p.user, "-d", "postgres")
+	return err == nil
+}
+
+// deadline returns the time the wait for the server ends.
+func (p postgres) deadline() time.Time {
+	if p.timeout > 0 {
+		return time.Now().Add(p.timeout)
+	}
+	return time.Now().Add(postgresReadyTimeout)
+}
+
+// pause waits before the next attempt; it fails with cause once the
+// deadline has passed or ctx ended.
+func (p postgres) pause(ctx context.Context, deadline time.Time, cause error) error {
+	if !time.Now().Before(deadline) {
+		return cause
+	}
+	wait := p.wait
+	if wait <= 0 {
+		wait = postgresRetryWait
+	}
+	t := time.NewTimer(min(wait, time.Until(deadline)))
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return errors.Join(cause, context.Cause(ctx))
+	case <-t.C:
+		return nil
+	}
+}
+
+// ready waits until the container runs and its server accepts connections,
+// and returns the container. Other errors fail at once. Its Docker probes are
+// bounded by deadline, so a stalled daemon or container command cannot hold
+// the step past its readiness budget; a probe that succeeds only after the
+// deadline is not accepted.
+func (p postgres) ready(ctx context.Context, deadline time.Time) (string, error) {
+	probe, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	var cause error
+	for {
+		id, err := p.container(probe)
+		switch {
+		case err != nil && !errors.Is(err, errNoPostgres):
+			if probe.Err() != nil {
+				return "", errors.Join(err, context.Cause(probe))
+			}
+			return "", err
+		case err != nil:
+			cause = err
+		case !p.accepting(probe, id):
+			cause = errPostgresNotReady
+		case probe.Err() == nil:
+			return id, nil
+		default:
+			cause = errPostgresNotReady // succeeded too late
+		}
+		if err := p.pause(probe, deadline, cause); err != nil {
+			return "", err
+		}
+	}
+}
+
+// stillReady reports whether container id is still the running container and
+// its server accepts connections. Its Docker probes are bounded by deadline
+// like those of ready.
+func (p postgres) stillReady(ctx context.Context, deadline time.Time, id string) (same, ready bool) {
+	probe, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	cur, err := p.container(probe)
+	if err != nil || cur != id {
+		return false, false
+	}
+	accepting := p.accepting(probe, id)
+	return true, accepting && probe.Err() == nil
+}
+
+// script runs psql with args on SQL from standard input once the server
+// accepts connections. A connection that fails or breaks while the server
+// does not accept connections (it is starting or restarting), or because
+// its container stopped, is tried again until the deadline; every script
+// the agent runs is safe to repeat. An error in the SQL fails at once, and
+// so does a connection the ready server refuses twice (a role or database
+// that does not exist). secrets are redacted from errors.
+func (p postgres) script(ctx context.Context, args []string, sql string, secrets []string) ([]byte, error) {
+	deadline := p.deadline()
+	refused := 0
+	for {
+		id, err := p.ready(ctx, deadline)
+		if err != nil {
+			return nil, err
+		}
+		out, stderr, err := p.r.run(ctx, []byte(sql), append([]string{"exec", "-i", id, "psql"}, args...)...)
+		if err == nil {
+			return out, nil
+		}
+		cerr := &commandError{args: "exec psql", err: err, stderr: truncate(redact(stderr, secrets))}
+		if ctx.Err() != nil {
+			return nil, cerr
+		}
+		// A container that stopped or was replaced under the command is
+		// waited for; otherwise only a connection failure is. These probes
+		// are bounded by the readiness deadline too.
+		if same, accepts := p.stillReady(ctx, deadline, id); same {
+			if !exitedWith(err, psqlConnectionFailed) {
+				return nil, cerr
+			}
+			if accepts {
+				if refused++; refused == 2 {
+					return nil, cerr
+				}
+				continue // the server may have come up just after the attempt
+			}
+		}
+		if err := p.pause(ctx, deadline, cerr); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// exitedWith reports whether err is a command that exited with code.
+func exitedWith(err error, code int) bool {
+	var ee interface{ ExitCode() int }
+	return errors.As(err, &ee) && ee.ExitCode() == code
+}
+
 // exec runs SQL from standard input, never on the command line. secrets are
 // redacted from errors.
 func (p postgres) exec(ctx context.Context, sql string, secrets []string) error {
-	id, err := p.container(ctx)
-	if err != nil {
-		return err
-	}
-	_, stderr, err := p.r.run(ctx, []byte(sql), "exec", "-i", id,
-		"psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", p.user, "-d", "postgres", "-f", "-")
-	if err != nil {
-		return &commandError{args: "exec psql", err: err, stderr: truncate(redact(stderr, secrets))}
-	}
-	return nil
+	_, err := p.script(ctx, []string{"-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", p.user, "-d", "postgres", "-f", "-"}, sql, secrets)
+	return err
 }
 
 // query runs one SQL statement from standard input and returns its
 // unaligned, tuples-only output.
 func (p postgres) query(ctx context.Context, sql string) (string, error) {
-	id, err := p.container(ctx)
+	out, err := p.script(ctx, []string{"-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-U", p.user, "-d", "postgres", "-f", "-"}, sql, nil)
 	if err != nil {
 		return "", err
-	}
-	out, stderr, err := p.r.run(ctx, []byte(sql), "exec", "-i", id,
-		"psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-U", p.user, "-d", "postgres", "-f", "-")
-	if err != nil {
-		return "", &commandError{args: "exec psql", err: err, stderr: truncate(stderr)}
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
-// dump writes a custom-format pg_dump of a database to w.
+// dump writes a custom-format pg_dump of a database to w. It waits for the
+// server but is not repeated: w may hold part of the output.
 func (p postgres) dump(ctx context.Context, database string, w io.Writer) error {
-	id, err := p.container(ctx)
+	id, err := p.ready(ctx, p.deadline())
 	if err != nil {
 		return err
 	}
@@ -329,9 +470,10 @@ func (p postgres) dump(ctx context.Context, database string, w io.Writer) error 
 }
 
 // restore runs pg_restore of a custom-format dump from r into an empty
-// database, as role, so every restored object is owned by it.
+// database, as role, so every restored object is owned by it. It waits for
+// the server but is not repeated: r has been read.
 func (p postgres) restore(ctx context.Context, database, role string, r io.Reader) error {
-	id, err := p.container(ctx)
+	id, err := p.ready(ctx, p.deadline())
 	if err != nil {
 		return err
 	}

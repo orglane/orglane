@@ -71,7 +71,10 @@ services:
     environment: {POSTGRES_USER: orglane, POSTGRES_DB: orglane, POSTGRES_PASSWORD: bundle-test}
     networks: [database, services]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U orglane -d orglane"]
+      # Over TCP: the image's temporary server during initialization only
+      # listens on the socket, and a socket check would pass before the
+      # restart that follows it (#78).
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U orglane -d orglane"]
       interval: 1s
       retries: 60
   traefik:
@@ -218,6 +221,17 @@ func applyUntilDone(t *testing.T, svc *apps.Service, args apps.AgentApplyArgs) i
 		if time.Now().After(deadline) {
 			t.Fatalf("generation %d did not finish", args.Generation)
 		}
+	}
+}
+
+// applySucceeded is applyUntilDone for a generation that must apply: a
+// failed operation fails the test here, with its error code, not later as a
+// missing file or an unexpected state.
+func (h *harness) applySucceeded(args apps.AgentApplyArgs) {
+	h.t.Helper()
+	applyUntilDone(h.t, h.svc, args)
+	if op := h.operation(args.InstanceID, args.Generation); op.State != agentapi.OpSucceeded {
+		h.t.Fatalf("generation %d: operation %s, error code %q", args.Generation, op.State, derefS(op.ErrorCode))
 	}
 }
 
@@ -417,7 +431,7 @@ func TestAgentWiring(t *testing.T) {
 	if op, got := h.operation(inst.ID, gen3), h.reload(inst.ID); op.State != agentapi.OpFailed || derefS(op.ErrorCode) != agentapi.CodeGenerationConflict || got.DesiredGeneration != gen3+1 {
 		t.Fatalf("conflict: %+v, %+v", op, got.AppInstance)
 	}
-	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: gen3 + 1})
+	h.applySucceeded(apps.AgentApplyArgs{InstanceID: inst.ID, Generation: gen3 + 1})
 
 	// A generation replaced before it was pushed ends superseded; the
 	// newer one is applied.
@@ -430,7 +444,7 @@ func TestAgentWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: older})
-	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: newer})
+	h.applySucceeded(apps.AgentApplyArgs{InstanceID: inst.ID, Generation: newer})
 	if op := h.operation(inst.ID, older); op.State != agentapi.OpFailed || derefS(op.ErrorCode) != agentapi.CodeSuperseded || op.AgentOperationID != nil {
 		t.Fatalf("superseded operation %+v", op)
 	}

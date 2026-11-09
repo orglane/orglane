@@ -76,16 +76,28 @@ func holdDockerSlot(t *testing.T) {
 // Compose like the bundle's.
 func startBundle(t *testing.T) string {
 	t.Helper()
+	return startBundleWith(t, 0)
+}
+
+// startBundleWith starts the bundle; with a delay its PostgreSQL starts
+// initializing that long after its container runs, and it returns without
+// waiting for PostgreSQL.
+func startBundleWith(t *testing.T, delay time.Duration) string {
+	t.Helper()
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
 	project := "agt" + hex.EncodeToString(b)
 	dir := t.TempDir()
 	file := filepath.Join(dir, "compose.yaml")
+	entrypoint := ""
+	if delay > 0 {
+		entrypoint = fmt.Sprintf("    entrypoint: [\"sh\", \"-c\", \"sleep %d && exec docker-entrypoint.sh postgres\"]\n", int(delay.Seconds()))
+	}
 	bundle := fmt.Sprintf(`name: %s
 services:
   postgres:
     image: %s
-    environment: {POSTGRES_USER: orglane, POSTGRES_DB: orglane, POSTGRES_PASSWORD: bundle-test}
+%s    environment: {POSTGRES_USER: orglane, POSTGRES_DB: orglane, POSTGRES_PASSWORD: bundle-test}
     networks: [services]
     healthcheck:
       # Over TCP: the image's temporary server during initialization only
@@ -102,7 +114,7 @@ services:
 networks:
   edge: {}
   services: {internal: true}
-`, project, postgresImage, busyboxImage)
+`, project, postgresImage, entrypoint, busyboxImage)
 	if err := os.WriteFile(file, []byte(bundle), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +124,11 @@ networks:
 			t.Logf("bundle down: %v\n%s", err, out)
 		}
 	})
-	docker(t, "compose", "-p", project, "-f", file, "up", "--detach", "--wait")
+	if delay > 0 {
+		docker(t, "compose", "-p", project, "-f", file, "up", "--detach")
+	} else {
+		docker(t, "compose", "-p", project, "-f", file, "up", "--detach", "--wait")
+	}
 	return project
 }
 
@@ -485,6 +501,33 @@ func TestAgentWithDocker(t *testing.T) {
 	e.checkAudit(map[string]bool{key: true})
 }
 
+// TestDatabaseStepWaitsForPostgres starts an apply while the bundle's
+// PostgreSQL is still starting (#78): its container runs, but the server
+// initializes its data directory with a temporary server only a few seconds
+// later and then restarts. The database step waits for it instead of
+// failing with database_failed.
+func TestDatabaseStepWaitsForPostgres(t *testing.T) {
+	t.Parallel()
+	holdDockerSlot(t)
+	project := startBundleWith(t, 10*time.Second)
+	id := docker(t, "ps", "--quiet", "--filter", "label=com.docker.compose.project="+project, "--filter", "label=com.docker.compose.service=postgres")
+	if out, err := exec.CommandContext(t.Context(), "docker", "exec", id, "pg_isready", "-q").CombinedOutput(); err == nil { //nolint:gosec // test commands
+		t.Fatalf("PostgreSQL accepts connections before the apply: %s", out)
+	}
+	registry, err := packages.NewRegistry(agenttest.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "at1"
+	cleanupProject(t, project, key)
+	e := startAgent(t, project, registry)
+	e.mustApply(integrationSpec(uuid.Must(uuid.NewV7()), 1, freePort(t), "waited", agentapi.StateRunning))
+	if got := e.psql("svc_at1", "select message from agenttest_config where id = 1"); got != "waited" {
+		t.Fatalf("database row = %q", got)
+	}
+	e.checkAudit(map[string]bool{key: true})
+}
+
 // checkAudit asserts that every Docker invocation of the agent has one of
 // the fixed shapes, for the instance keys of the test, and carries no input
 // value: the core cannot make the agent run anything else.
@@ -532,6 +575,7 @@ func (e *testEnv) checkAudit(keys map[string]bool) {
 			switch {
 			case len(call) == 3+len(psql) && call[1] == "-i" && slices.Equal(call[3:], psql):
 			case len(call) == 3+len(psqlQuery) && call[1] == "-i" && slices.Equal(call[3:], psqlQuery):
+			case len(call) == 10 && slices.Equal(call[2:], []string{"pg_isready", "-q", "-h", "127.0.0.1", "-U", "orglane", "-d", "postgres"}):
 			case len(call) == 8 && slices.Equal(call[2:7], []string{"pg_dump", "-U", "orglane", "-Fc", "-d"}) && dbKeys[call[7]]:
 			case len(call) == 12 && call[1] == "-i" && slices.Equal(call[3:7], []string{"pg_restore", "-U", "orglane", "-d"}) && dbKeys[call[7]] &&
 				slices.Equal(call[8:], []string{"--no-owner", "--role=" + call[7], "--exit-on-error", "--single-transaction"}):

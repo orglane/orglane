@@ -51,7 +51,7 @@ func TestStaleHealthCannotDegradeNewerGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
+	h.applySucceeded(apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
 	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID}, 1, 8); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestStaleHealthCannotDegradeNewerGeneration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: gen})
+		h.applySucceeded(apps.AgentApplyArgs{InstanceID: inst.ID, Generation: gen})
 	}
 	if err := h.svc.RunAgentSync(h.ctx); err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestStaleRecoveryCannotRunSetupForNewerGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
+	h.applySucceeded(apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
 	h.exec(`DELETE FROM river_job WHERE kind = $1`, apps.SetupArgs{}.Kind())
 	// The core recorded generation 1 as failed; the agent's own retry has
 	// brought it up since.
@@ -149,7 +149,7 @@ func TestInstallFailedRecoversWhenTheAgentRunsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
+	h.applySucceeded(apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
 	h.exec(`UPDATE river_job SET state = 'running', attempted_at = now() WHERE kind = $1`, apps.SetupArgs{}.Kind())
 	h.exec(`UPDATE app_instances SET state = 'failed', health = 'unhealthy', health_code = 'install_failed', observed_generation = 0 WHERE id = $1`, inst.ID)
 	h.exec(`UPDATE app_operations SET state = 'failed', error_code = 'compose_failed' WHERE instance_id = $1 AND generation = 1`, inst.ID)
@@ -191,7 +191,7 @@ func TestLostAgentOperationReplaysCurrentGeneration(t *testing.T) {
 	if reset := h.operation(inst.ID, 1); reset.AgentOperationID != nil || reset.State != agentapi.OpQueued || reset.FinishedAt != nil {
 		t.Fatalf("operation not reset: %+v", reset)
 	}
-	applyUntilDone(t, h.svc, args)
+	h.applySucceeded(args)
 	if got := h.operation(inst.ID, 1); got.State != agentapi.OpSucceeded || got.AgentOperationID == nil || *got.AgentOperationID == *first.AgentOperationID {
 		t.Fatalf("replayed operation = %+v", got)
 	}
@@ -216,7 +216,7 @@ func resyncedTo(t *testing.T, h *harness, host *agentHost, inst apps.Instance, b
 	if op := h.operation(inst.ID, got.DesiredGeneration); op.Kind != agentapi.KindApply {
 		t.Fatalf("resync operation %+v", op)
 	}
-	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: got.DesiredGeneration})
+	h.applySucceeded(apps.AgentApplyArgs{InstanceID: inst.ID, Generation: got.DesiredGeneration})
 	status, err := host.client().Instance(h.ctx, inst.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestAgentRetainingAnOlderGenerationIsResynced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
+	h.applySucceeded(apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
 	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID}, 1, 8); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestAgentRetainingAnOlderGenerationIsResynced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: gen})
+	h.applySucceeded(apps.AgentApplyArgs{InstanceID: inst.ID, Generation: gen})
 	host.stop()
 	for name, data := range old {
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
@@ -289,7 +289,7 @@ func TestAgentWithIdentityButLostSpecsIsResynced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
+	h.applySucceeded(apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 1})
 	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID}, 1, 8); err != nil {
 		t.Fatal(err)
 	}
