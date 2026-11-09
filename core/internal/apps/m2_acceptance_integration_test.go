@@ -317,6 +317,17 @@ installed:
 		s.t.Fatalf("installed instance = %+v", inst)
 	}
 	s.inst = inst
+	// Active means Setup succeeded through the core's upstream alias; the
+	// public host reaches Forgejo through the core's ingress route, which
+	// Traefik polls. Wait for Forgejo's own health on the public URL before
+	// any test-side admin call, so a route or service that is still coming
+	// up is not mistaken for a failed account lookup.
+	s.waitForForgejoHealth()
+	// The activation queued the first provisioning run while the default
+	// all_people policy is still in effect: wait for the owner's result to be
+	// done before changing the policy, so the adapter's admin calls through
+	// the upstream are proven settled before the test-side admin checks.
+	s.waitForProvisioningSettled()
 	env := s.stack.Apps.EnvForTest(inst)
 	lifecycle, _ := inst.Adapter.Lifecycle()
 	inputs, err := lifecycle.Inputs(s.ctx, env, inst.View())
@@ -387,15 +398,79 @@ func (s *m2Scenario) mapTeam(slug string) store.Team {
 	if resp.StatusCode != http.StatusOK {
 		s.t.Fatalf("team mapping = %d %s", resp.StatusCode, body)
 	}
+	// The provisioning page must still answer after the policy and mapping
+	// changes; its counts are not asserted here because the owner may have no
+	// access under mapped teams.
 	resp, body = s.owner.do(s.t, http.MethodGet, s.workspace+"/api/v1/apps/instances/"+s.inst.ID.String()+"/provisioning", nil)
 	if resp.StatusCode != http.StatusOK {
-		s.t.Fatalf("provisioning status = %d %s", resp.StatusCode, body)
+		s.t.Fatalf("provisioning status after mapping = %d %s", resp.StatusCode, body)
 	}
 	team, err := store.New(s.pool).GetTeamBySlug(s.ctx, slug)
 	if err != nil {
 		s.t.Fatal(err)
 	}
 	return team
+}
+
+// waitForForgejoHealth waits for Forgejo's own health endpoint on the
+// configured public URL, through Traefik. Instance state alone can precede
+// Traefik's next poll of the core's dynamic configuration.
+func (s *m2Scenario) waitForForgejoHealth() {
+	s.t.Helper()
+	deadline := time.Now().Add(time.Minute)
+	var lastCode int
+	var lastBody []byte
+	for {
+		lastCode, lastBody = managedtest.Request(s.t, s.b.Client(), http.MethodGet, managedtest.ForgejoHost, "/api/healthz", managedtest.Auth{}, nil)
+		if lastCode == http.StatusOK {
+			var health struct{ Status string }
+			if json.Unmarshal(lastBody, &health) == nil && (health.Status == "pass" || health.Status == "warn") {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			s.diagnoseInstall(s.inst.ID)
+			s.t.Fatalf("Forgejo's public health endpoint did not become ready: last %d %s", lastCode, lastBody)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// waitForProvisioningSettled waits until the instance's provisioning page
+// reports the owner's result done and nothing queued or failed. It runs
+// while the install's default all_people policy is still in effect; the
+// owner is the only active person before the invitation is accepted.
+func (s *m2Scenario) waitForProvisioningSettled() {
+	s.t.Helper()
+	deadline := time.Now().Add(2 * time.Minute)
+	var last []byte
+	for {
+		resp, body := s.owner.do(s.t, http.MethodGet, s.workspace+"/api/v1/apps/instances/"+s.inst.ID.String()+"/provisioning", nil)
+		last = body
+		if resp.StatusCode == http.StatusOK {
+			var page struct {
+				Counts struct {
+					Queued int `json:"queued"`
+					Done   int `json:"done"`
+					Failed int `json:"failed"`
+				} `json:"counts"`
+			}
+			if json.Unmarshal(body, &page) == nil {
+				if page.Counts.Failed > 0 {
+					s.diagnoseInstall(s.inst.ID)
+					s.t.Fatalf("provisioning failed before the invitation: %s", body)
+				}
+				if page.Counts.Queued == 0 && page.Counts.Done > 0 {
+					return
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			s.diagnoseInstall(s.inst.ID)
+			s.t.Fatalf("provisioning did not settle: last %s", last)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // acceptInvitation accepts the invitation as the person, which signs them
