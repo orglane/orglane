@@ -158,8 +158,7 @@ janitor keeps preserving them until a future policy can prove the authorization.
 ### Bootstrap
 
 GitHub registers `workflow_dispatch` only for workflows present on the default
-branch. The workflow was merged to `main` before its first dispatch, and the
-first `main` run passed
+branch. The workflow is on `main`, and a run on `main` passed
 ([run 42684360151](https://github.com/orglane/orglane/actions/runs/42684360151)),
 so `gh workflow run github-live.yml` works from `main`. A pre-merge run uses the
 temporary exact-branch rule described above: the workflow is already on `main`,
