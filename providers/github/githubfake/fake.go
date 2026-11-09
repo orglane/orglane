@@ -320,6 +320,10 @@ func (f *Fake) handle(w http.ResponseWriter, r *http.Request, h, route string, p
 		f.teams(w, r, params, body)
 	case route == "/orgs/{org}/teams/{team_slug}/memberships/{username}":
 		f.teamMembership(w, r, params, body)
+	case op == "GET /organizations/{org_id}/team/{team_id}":
+		f.getTeamByID(w, r, params)
+	case route == "/organizations/{org_id}/team/{team_id}/memberships/{username}":
+		f.teamMembershipByID(w, r, params, body)
 	case op == "GET /app":
 		if f.appAuth(w, r) {
 			writeJSON(w, http.StatusOK, f.integration())

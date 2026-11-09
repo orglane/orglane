@@ -20,12 +20,15 @@ import (
 // on that account's immutable numeric user ID. Every action resolves the
 // account's current login from the ID when it runs (GET /user/{id}) and
 // checks that the organization membership it reads belongs to that ID.
-// GitHub's membership mutations take a login, so immediately before one the
-// action resolves the login from the ID again: a rename that released the
-// login to another account is the retryable login_changed, and nothing is
-// added or removed for the new holder. There is no ID-addressed membership
-// endpoint, so this re-read is the last call before the mutation; a rename
-// after it can go undetected.
+// GitHub's membership mutations take a username, so immediately before one
+// the action resolves the login from the ID again: a rename that released
+// the login to another account is the retryable login_changed, and nothing
+// is added or removed for the new holder. The team is addressed by the
+// organization's and the team's immutable IDs (the documented
+// /organizations/{org_id}/team/{team_id}/memberships/{username} routes), so
+// a renamed team whose old slug another team takes is never reached. There
+// is no user-ID-addressed membership mutation, so for the user this re-read
+// is the last call before the mutation; a rename after it can go undetected.
 //
 // Access: an organization invitation by user ID (POST /orgs/{org}/invitations
 // with invitee_id), then team memberships. Removal: canceling the
@@ -43,12 +46,18 @@ import (
 // Orglane team slug and marked by its description (teamMarker plus the
 // instance ID); "existing" mappings name a team the admin picked by its
 // numeric ID. A team with the mapped name that does not carry the instance's
-// mark is never taken over. Team removals happen only from the instance's
-// mapped teams (DesiredAccess.Mapped) and only for managed accounts; team
-// maintainers are never removed from their team (maintainer_protected).
-// Additions to a team only run for people with an organization membership or
-// a pending invitation, because GitHub invites anyone else who is added to a
-// team, which would grant without the invitation's proof.
+// mark is never taken over. Team membership reads and changes address the
+// team by the organization ID and the mapping's team ID, never by its slug:
+// a rename releases the old slug to another team, which must never receive
+// an add or a removal meant for the mapped team. A mapped team ID that no
+// longer exists is the retryable team_not_synced (a mapping error), not a
+// reason to look the team up by slug. Team removals happen only from the
+// instance's mapped teams (DesiredAccess.Mapped) and only for managed
+// accounts; team maintainers are never removed from their team
+// (maintainer_protected). Additions to a team only run for people with an
+// organization membership or a pending invitation, because GitHub invites
+// anyone else who is added to a team, which would grant without the
+// invitation's proof.
 
 // Action parameters.
 const (
@@ -76,7 +85,8 @@ const (
 	// membership or invitation. Retryable: the next plan invites first.
 	CodeNotInvited = "not_invited"
 	// CodeTeamNotSynced: a mapped team does not exist on GitHub (yet).
-	// Retryable: the next team sync creates "create" teams.
+	// Retryable: the next team sync creates "create" teams, or an admin
+	// fixes the mapping of an "existing" team.
 	CodeTeamNotSynced = "team_not_synced"
 	// CodeTeamNameTaken: a team with a "create" mapping's name exists but is
 	// not Orglane's (logged by SyncTeams; the mapping stays unsynced).
@@ -113,6 +123,7 @@ type org struct {
 	env   provider.Env
 	inst  provider.Instance
 	login string
+	id    string // immutable organization ID
 	token string
 }
 
@@ -121,11 +132,22 @@ func (a *Adapter) org(ctx context.Context, env provider.Env, inst provider.Insta
 	if !loginPattern.MatchString(login) {
 		return nil, protocolError("invalid_organization")
 	}
+	id := setting(inst, "organization_id")
+	if !idPattern.MatchString(id) {
+		// Connections store the organization's immutable ID. Resolve it for
+		// settings written before that was recorded (or by hand); never
+		// address a team through a possibly reused login.
+		_, resolved, err := ResolveOrganization(ctx, env, login)
+		if err != nil {
+			return nil, classify(err)
+		}
+		id = resolved
+	}
 	token, err := a.InstallationToken(ctx, env, inst)
 	if err != nil {
 		return nil, classify(err)
 	}
-	return &org{env: env, inst: inst, login: login, token: token}, nil
+	return &org{env: env, inst: inst, login: login, id: id, token: token}, nil
 }
 
 func (o *org) do(ctx context.Context, method, path string, body, out any) error {
@@ -134,6 +156,17 @@ func (o *org) do(ctx context.Context, method, path string, body, out any) error 
 
 func (o *org) path(parts ...string) string {
 	p := "/orgs/" + url.PathEscape(o.login)
+	for _, s := range parts {
+		p += "/" + url.PathEscape(s)
+	}
+	return p
+}
+
+// teamPath is the documented legacy route that addresses a team by the
+// organization's and the team's immutable IDs instead of the team slug.
+// GitHub's REST reference lists these as alternates of the slug routes.
+func (o *org) teamPath(teamID string, parts ...string) string {
+	p := "/organizations/" + url.PathEscape(o.id) + "/team/" + url.PathEscape(teamID)
 	for _, s := range parts {
 		p += "/" + url.PathEscape(s)
 	}
@@ -218,11 +251,12 @@ func (o *org) user(ctx context.Context, id string) (*ghUser, error) {
 }
 
 // current reads the account with the ID now, immediately before a mutation
-// addressed by login: GitHub's organization and team membership endpoints
-// take a login, and a rename can release a login to another account while an
-// action runs. The fresh login must still be the one the action's reads used,
-// else the action is retryable (login_changed) and nothing is changed. A nil
-// user means the account is gone.
+// addressed by username: GitHub's organization and team membership routes
+// take a login (the team route names the team by ID), and a rename can
+// release a login to another account while an action runs. The fresh login
+// must still be the one the action's reads used, else the action is
+// retryable (login_changed) and nothing is changed. A nil user means the
+// account is gone.
 func (o *org) current(ctx context.Context, u ghUser) (*ghUser, error) {
 	v, err := o.user(ctx, strconv.FormatInt(u.ID, 10))
 	if err != nil || v == nil {
@@ -306,18 +340,23 @@ func (o *org) teams(ctx context.Context) ([]ghTeam, error) {
 	return slices.DeleteFunc(list, func(t ghTeam) bool { return t.Type != "organization" || t.ID <= 0 || !slugPattern.MatchString(t.Slug) }), nil
 }
 
-// team finds an organization team by its ID now; nil if it is gone.
+// team reads the organization team with the immutable ID now; nil if it is
+// gone. It never resolves a team by slug: a rename releases the slug and
+// another team can take it.
 func (o *org) team(ctx context.Context, id string) (*ghTeam, error) {
-	teams, err := o.teams(ctx)
-	if err != nil {
-		return nil, err
+	if !idPattern.MatchString(id) {
+		return nil, protocolError("invalid_team")
 	}
-	for _, t := range teams {
-		if t.id() == id {
-			return &t, nil
-		}
+	var t ghTeam
+	if err := o.do(ctx, http.MethodGet, o.teamPath(id), nil, &t); notFound(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, classify(err)
 	}
-	return nil, nil
+	if t.id() != id || t.Type != "organization" || !slugPattern.MatchString(t.Slug) {
+		return nil, protocolError("invalid_response")
+	}
+	return &t, nil
 }
 
 // teamMembership is a team membership (pending until the invitation is
@@ -327,9 +366,14 @@ type teamMembership struct {
 	State string `json:"state"`
 }
 
-func (o *org) teamMembership(ctx context.Context, t ghTeam, u ghUser) (*teamMembership, error) {
+// teamMembership reads u's membership of the team with the immutable ID;
+// nil if there is none.
+func (o *org) teamMembership(ctx context.Context, teamID string, u ghUser) (*teamMembership, error) {
+	if !idPattern.MatchString(teamID) {
+		return nil, protocolError("invalid_team")
+	}
 	var m teamMembership
-	if err := o.do(ctx, http.MethodGet, o.path("teams", t.Slug, "memberships", u.Login), nil, &m); notFound(err) {
+	if err := o.do(ctx, http.MethodGet, o.teamPath(teamID, "memberships", u.Login), nil, &m); notFound(err) {
 		return nil, nil
 	} else if err != nil {
 		return nil, classify(err)
@@ -421,7 +465,7 @@ func (a *Adapter) Plan(ctx context.Context, env provider.Env, inst provider.Inst
 	}
 	var removals []provider.Action
 	for _, t := range mapped {
-		tm, err := o.teamMembership(ctx, t, *u)
+		tm, err := o.teamMembership(ctx, t.id(), *u)
 		if err != nil {
 			return provider.Plan{}, err
 		}
@@ -627,21 +671,21 @@ func (o *org) teamMember(ctx context.Context, u ghUser, teamID string, add bool)
 		}
 	}
 	t, err := o.team(ctx, teamID)
-	switch {
-	case err != nil:
-		return provider.ActionOutcome{}, err
-	case t == nil && add:
-		return provider.ActionOutcome{}, &provider.Error{Code: CodeTeamNotSynced, Retryable: true, Err: fmt.Errorf("github: team %s does not exist", teamID)}
-	case t == nil:
-		return out, nil // the team is gone, and the membership with it
-	}
-	tm, err := o.teamMembership(ctx, *t, u)
 	if err != nil {
 		return provider.ActionOutcome{}, err
 	}
-	// Team membership mutations take a login: re-resolve the bound ID now,
+	if t == nil {
+		// The mapped team ID is gone. That is a mapping error, not a
+		// reason to look for a team that took the slug.
+		return provider.ActionOutcome{}, &provider.Error{Code: CodeTeamNotSynced, Retryable: true, Err: fmt.Errorf("github: team %s does not exist", teamID)}
+	}
+	tm, err := o.teamMembership(ctx, teamID, u)
+	if err != nil {
+		return provider.ActionOutcome{}, err
+	}
+	// Team membership mutations take a username: re-resolve the bound ID now,
 	// after the reads above, so a login released and reused meanwhile cannot
-	// add or remove the new holder.
+	// add or remove the new holder. The team itself is addressed by its ID.
 	fresh, err := o.current(ctx, u)
 	if err != nil {
 		return provider.ActionOutcome{}, err
@@ -655,9 +699,13 @@ func (o *org) teamMember(ctx context.Context, u ghUser, teamID string, add bool)
 	if (tm != nil) == add {
 		return out, nil
 	}
-	path := o.path("teams", t.Slug, "memberships", fresh.Login)
+	path := o.teamPath(teamID, "memberships", fresh.Login)
 	if add {
 		err = o.do(ctx, http.MethodPut, path, map[string]string{"role": "member"}, nil)
+		if notFound(err) {
+			// The team was deleted after the read above: a mapping error.
+			return provider.ActionOutcome{}, &provider.Error{Code: CodeTeamNotSynced, Retryable: true, Err: fmt.Errorf("github: team %s does not exist", teamID)}
+		}
 	} else {
 		if tm.Role == "maintainer" {
 			return provider.ActionOutcome{}, &provider.Error{Code: CodeMaintainerProtected, Err: errors.New("github: team maintainers are never removed")}

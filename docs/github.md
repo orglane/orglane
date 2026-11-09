@@ -116,12 +116,20 @@ accounts.
   organization removal or an invitation cancellation it resolves the login
   from the ID again: if a rename released the login before that check and
   another account took it, the action stops as retryable (`login_changed`)
-  and changes nothing for the new holder. GitHub has no ID-addressed
-  membership endpoint, so a rename between that last re-read and the call
-  can still reach the new holder; if GitHub accepts it, the action may be
-  reported as applied and not retried. Only a detected mismatch returns the
-  retryable `login_changed`, and its retry starts from the bound ID. A rename
-  refreshes the link's login.
+  and changes nothing for the new holder. GitHub has no user-ID-addressed
+  organization membership mutation, so a rename between that last re-read
+  and the call can still reach the new holder; if GitHub accepts it, the
+  action may be reported as applied and not retried. Only a detected
+  mismatch returns the retryable `login_changed`, and its retry starts from
+  the bound ID. A rename refreshes the link's login.
+- Team membership reads and changes address the team by the connection's
+  immutable organization ID and the mapping's numeric team ID
+  (`/organizations/{org_id}/team/{team_id}/memberships/{username}`), never
+  by its slug. Renaming the mapped team and letting another team take its
+  old slug therefore cannot add or remove anyone on the other team. A mapped
+  team ID that no longer exists is a mapping error (`team_not_synced`,
+  retryable): the team is never looked up by slug, so an admin fixes the
+  mapping or the next sync creates a `create` team.
 - **Team mappings** support both modes. `create` gives the Orglane team a
   GitHub team named after its slug and marked in the description with the
   instance ID; Orglane never takes over a team of that name that lacks its mark.

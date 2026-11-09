@@ -502,20 +502,128 @@ func TestProvisionDelayedRemovalsUseTheBoundAccount(t *testing.T) {
 	}
 }
 
+// A team's slug is not a stable identifier: renaming the mapped team releases
+// it, and an unrelated team can take it while an action runs. Team membership
+// reads and changes are addressed by the organization's and the mapped team's
+// immutable IDs, so an add or a removal never reaches the team that took the
+// slug.
+func TestProvisionTeamMembershipsUseTheMappedTeamID(t *testing.T) {
+	// reuseSlug renames the mapped team and gives the unrelated team the
+	// released slug immediately before the membership read.
+	reuseSlug := func(f *githubfake.Fake, mappedID int64) func(*http.Request) bool {
+		renamed := false
+		return func(r *http.Request) bool {
+			if renamed || r.Method != http.MethodGet {
+				return false
+			}
+			if r.URL.Path == "/orgs/"+f.Org().Login+"/teams" || r.URL.Path == "/organizations/"+strconv.FormatInt(f.Org().ID, 10)+"/team/"+strconv.FormatInt(mappedID, 10) {
+				renamed = true
+				return true
+			}
+			return false
+		}
+	}
+	rename := func(f *githubfake.Fake, mappedID, otherID int64) func() {
+		return func() {
+			f.RenameTeam(mappedID, "platform-renamed")
+			f.RenameTeam(otherID, "platform")
+		}
+	}
+	t.Run("removal", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		team := syncTeam(t, a, env, inst, "platform")
+		teamID := mustInt(team.ExternalRef)
+		other := f.AddTeam("unrelated", "not Orglane's")
+		f.AddUser(githubfake.User{ID: 60, Login: "dev"})
+		f.AddMember(60, githubfake.RoleMember)
+		f.SetTeamMember(teamID, 60, githubfake.TeamMember)
+		f.SetTeamMember(other.ID, 60, githubfake.TeamMember)
+		d := desired(60, "dev", true, true)
+		d.Teams, d.Mapped = nil, []provider.TeamRef{team}
+		plan, err := a.Plan(t.Context(), env, inst, d)
+		if err != nil || !slices.Equal(kinds(plan), []string{"remove_from_team:" + team.ExternalRef + "!"}) {
+			t.Fatalf("plan = %v, %v", kinds(plan), err)
+		}
+		base := env.client.Transport
+		match := reuseSlug(f, teamID)
+		env.client.Transport = &interleave{base: base, match: match, after: true, fn: rename(f, teamID, other.ID)}
+		out, err := a.Apply(t.Context(), env, inst, plan.Actions[0])
+		if err != nil || !out.Changed {
+			t.Fatalf("removal = %+v, %v", out, err)
+		}
+		if m := f.TeamMembers(teamID); m[60] != "" {
+			t.Fatalf("the mapped team kept the user: %v", m)
+		}
+		if m := f.TeamMembers(other.ID); m[60] != "member/active" {
+			t.Fatalf("the team that took the slug was changed: %v", m)
+		}
+	})
+	t.Run("addition", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		team := syncTeam(t, a, env, inst, "platform")
+		teamID := mustInt(team.ExternalRef)
+		other := f.AddTeam("unrelated", "not Orglane's")
+		f.AddUser(githubfake.User{ID: 61, Login: "newbie"})
+		f.AddMember(61, githubfake.RoleMember)
+		base := env.client.Transport
+		match := reuseSlug(f, teamID)
+		env.client.Transport = &interleave{base: base, match: match, after: true, fn: rename(f, teamID, other.ID)}
+		out, err := a.Apply(t.Context(), env, inst, teamAction(provider.ActionAddToTeam, "61", ghTeam{ID: teamID, Slug: "platform"}))
+		if err != nil || !out.Changed {
+			t.Fatalf("addition = %+v, %v", out, err)
+		}
+		if m := f.TeamMembers(teamID); m[61] != "member/active" {
+			t.Fatalf("the mapped team did not get the user: %v", m)
+		}
+		if m := f.TeamMembers(other.ID); len(m) != 0 {
+			t.Fatalf("the team that took the slug was changed: %v", m)
+		}
+	})
+	t.Run("deleted mapped team", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		team := syncTeam(t, a, env, inst, "platform")
+		teamID := mustInt(team.ExternalRef)
+		f.AddUser(githubfake.User{ID: 62, Login: "dev"})
+		f.AddMember(62, githubfake.RoleMember)
+		f.SetTeamMember(teamID, 62, githubfake.TeamMember)
+		f.DeleteTeam(teamID)
+		// Another team takes the deleted team's slug: the mapped ID must not
+		// be resolved through it.
+		other := f.AddTeam("platform", "not Orglane's")
+		for _, act := range []provider.Action{
+			teamAction(provider.ActionRemoveFromTeam, "62", ghTeam{ID: teamID, Slug: "platform"}),
+			teamAction(provider.ActionAddToTeam, "62", ghTeam{ID: teamID, Slug: "platform"}),
+		} {
+			_, err := a.Apply(t.Context(), env, inst, act)
+			if c, retryable, _ := provider.Classify(err); c != CodeTeamNotSynced || !retryable {
+				t.Fatalf("%s = %v, want retryable %s", act.Kind, err, CodeTeamNotSynced)
+			}
+		}
+		if m := f.TeamMembers(other.ID); len(m) != 0 {
+			t.Fatalf("the team that took the slug was changed: %v", m)
+		}
+	})
+}
+
 // interleave runs fn once while the adapter is sending the request that
-// matches method and path (before GitHub answers it), or just after GitHub
-// answered it. It simulates an external account rename racing an action.
+// matches (method and path, or a custom match), before GitHub answers it, or
+// just after GitHub answered it. It simulates an external rename racing an
+// action.
 type interleave struct {
 	base   http.RoundTripper
 	method string
 	path   string
+	match  func(*http.Request) bool
 	after  bool
 	once   sync.Once
 	fn     func()
 }
 
 func (i *interleave) RoundTrip(r *http.Request) (*http.Response, error) {
-	match := r.Method == i.method && r.URL.Path == i.path
+	match := i.match != nil && i.match(r) || i.match == nil && r.Method == i.method && r.URL.Path == i.path
 	if match && !i.after {
 		i.once.Do(i.fn)
 	}
@@ -554,9 +662,9 @@ func TestProvisionRechecksTheBoundAccountBeforeActing(t *testing.T) {
 		if err != nil || !slices.Equal(kinds(plan), []string{"remove_from_team:" + team.ExternalRef + "!"}) {
 			t.Fatalf("plan = %v, %v", kinds(plan), err)
 		}
-		// The rename happens while the team listing is in flight.
+		// The rename happens while the team read is in flight.
 		base := env.client.Transport
-		env.client.Transport = &interleave{base: base, method: http.MethodGet, path: "/orgs/" + f.Org().Login + "/teams", fn: rename(f)}
+		env.client.Transport = &interleave{base: base, method: http.MethodGet, path: "/organizations/" + strconv.FormatInt(f.Org().ID, 10) + "/team/" + team.ExternalRef, fn: rename(f)}
 		_, err = a.Apply(t.Context(), env, inst, plan.Actions[0])
 		if c, retryable, _ := provider.Classify(err); err == nil || c != CodeLoginChanged || !retryable {
 			t.Fatalf("removal = %v, want retryable %s", err, CodeLoginChanged)
@@ -646,7 +754,7 @@ func TestProvisionRechecksTheBoundAccountBeforeActing(t *testing.T) {
 		}
 		// The rename happens after the team membership read, before the PUT.
 		base := env.client.Transport
-		env.client.Transport = &interleave{base: base, method: http.MethodGet, path: "/orgs/" + f.Org().Login + "/teams/platform/memberships/dev", after: true, fn: rename(f)}
+		env.client.Transport = &interleave{base: base, method: http.MethodGet, path: "/organizations/" + strconv.FormatInt(f.Org().ID, 10) + "/team/" + team.ExternalRef + "/memberships/dev", after: true, fn: rename(f)}
 		_, err := a.Apply(t.Context(), env, inst, teamAction(provider.ActionAddToTeam, "40", ghTeam{ID: teamID, Slug: "platform"}))
 		if c, retryable, _ := provider.Classify(err); err == nil || c != CodeLoginChanged || !retryable {
 			t.Fatalf("addition = %v, want retryable %s", err, CodeLoginChanged)

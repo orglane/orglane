@@ -203,6 +203,24 @@ func (f *Fake) SetTeamMember(teamID, userID int64, role string) {
 	}
 }
 
+// RenameTeam renames a team, as a person can on GitHub. Its slug follows the
+// name, so a rename releases the old slug for another team to take.
+func (f *Fake) RenameTeam(teamID int64, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t := f.state.teams[teamID]; t != nil {
+		t.Name = name
+		t.Slug = strings.Trim(slugChars.ReplaceAllString(strings.ToLower(name), "-"), "-")
+	}
+}
+
+// DeleteTeam deletes a team and its memberships.
+func (f *Fake) DeleteTeam(teamID int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.state.teams, teamID)
+}
+
 // DeleteUser deletes a user account (and everything it had).
 func (f *Fake) DeleteUser(id int64) {
 	f.mu.Lock()
@@ -254,12 +272,33 @@ func (f *Fake) teamBySlug(slug string) *teamState {
 // orgRoute checks that a request under /orgs/{org}/... is for the fake's
 // organization and is made with an installation token.
 func (f *Fake) orgRoute(w http.ResponseWriter, r *http.Request, org string) bool {
-	if !strings.HasPrefix(bearer(r), "ghs_") || !f.installationTokens[bearer(r)] {
-		basicError(w, http.StatusUnauthorized, "Bad credentials")
+	if !f.installationAuth(w, r) {
 		return false
 	}
 	if !strings.EqualFold(org, f.org.Login) {
 		basicError(w, http.StatusNotFound, "Not Found")
+		return false
+	}
+	return true
+}
+
+// orgIDRoute checks that a request under /organizations/{org_id}/... is for
+// the fake's organization (by its immutable ID) and is made with an
+// installation token.
+func (f *Fake) orgIDRoute(w http.ResponseWriter, r *http.Request, orgID string) bool {
+	if !f.installationAuth(w, r) {
+		return false
+	}
+	if orgID != strconv.FormatInt(f.org.ID, 10) {
+		basicError(w, http.StatusNotFound, "Not Found")
+		return false
+	}
+	return true
+}
+
+func (f *Fake) installationAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasPrefix(bearer(r), "ghs_") || !f.installationTokens[bearer(r)] {
+		basicError(w, http.StatusUnauthorized, "Bad credentials")
 		return false
 	}
 	return true
@@ -488,6 +527,20 @@ func (f *Fake) teamObject(t *teamState, full bool) map[string]any {
 	return body
 }
 
+// getTeamByID serves the documented team-ID alternate of the slug team read.
+func (f *Fake) getTeamByID(w http.ResponseWriter, r *http.Request, p map[string]string) {
+	if !f.orgIDRoute(w, r, p["org_id"]) {
+		return
+	}
+	id, _ := strconv.ParseInt(p["team_id"], 10, 64)
+	t := f.state.teams[id]
+	if t == nil || t.Enterprise {
+		basicError(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	writeJSON(w, http.StatusOK, f.teamObject(t, true))
+}
+
 func (f *Fake) teams(w http.ResponseWriter, r *http.Request, p map[string]string, body []byte) {
 	if !f.orgRoute(w, r, p["org"]) {
 		return
@@ -526,9 +579,23 @@ func (f *Fake) teamMembership(w http.ResponseWriter, r *http.Request, p map[stri
 	if !f.orgRoute(w, r, p["org"]) {
 		return
 	}
-	t := f.teamBySlug(p["team_slug"])
-	u, ok := f.userByLogin(p["username"])
-	if t == nil || !ok {
+	f.teamMembershipFor(w, r, f.teamBySlug(p["team_slug"]), p["username"], body)
+}
+
+// teamMembershipByID serves the documented team-ID alternate of the slug
+// membership route: the organization and team are named by their immutable
+// IDs, so a renamed team whose old slug another team took is not confused.
+func (f *Fake) teamMembershipByID(w http.ResponseWriter, r *http.Request, p map[string]string, body []byte) {
+	if !f.orgIDRoute(w, r, p["org_id"]) {
+		return
+	}
+	id, _ := strconv.ParseInt(p["team_id"], 10, 64)
+	f.teamMembershipFor(w, r, f.state.teams[id], p["username"], body)
+}
+
+func (f *Fake) teamMembershipFor(w http.ResponseWriter, r *http.Request, t *teamState, username string, body []byte) {
+	u, ok := f.userByLogin(username)
+	if t == nil || t.Enterprise || !ok {
 		basicError(w, http.StatusNotFound, "Not Found")
 		return
 	}

@@ -4585,6 +4585,268 @@
         }
       }
     },
+    "/organizations/{org_id}/team/{team_id}": {
+      "get": {
+        "description": "Gets a team using the team's `slug`. To create the `slug`, GitHub replaces special characters in the `name` string, changes all words to lowercase, and replaces spaces with a `-` separator. For example, `\"My TEam Näme\"` would become `my-team-name`.\n\n\u003e [!NOTE]\n\u003e You can also specify a team by `org_id` and `team_id` using the route `GET /organizations/{org_id}/team/{team_id}`.",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/teams/teams#get-a-team-by-name"
+        },
+        "operationId": "teams/get-by-name-by-id",
+        "parameters": [
+          {
+            "description": "The unique identifier of the organization.",
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The unique identifier of the team.",
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "default": {
+                    "$ref": "#/components/examples/team-full"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/team-full"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          }
+        },
+        "summary": "Get a team by name",
+        "tags": ["teams"],
+        "x-github": {
+          "category": "teams",
+          "enabledForGitHubApps": true,
+          "githubCloudOnly": false,
+          "subcategory": "teams"
+        }
+      }
+    },
+    "/organizations/{org_id}/team/{team_id}/memberships/{username}": {
+      "delete": {
+        "description": "To remove a membership between a user and a team, the authenticated user must have 'admin' permissions to the team or be an owner of the organization that the team is associated with. Removing team membership does not delete the user, it just removes their membership from the team.\n\nTeam synchronization is available for organizations using GitHub Enterprise Cloud. For more information, see [GitHub's products](https://docs.github.com/github/getting-started-with-github/githubs-products) in the GitHub Help documentation.\n\n\u003e [!NOTE]\n\u003e When you have team synchronization set up for a team with your organization's identity provider (IdP), you will see an error if you attempt to use the API for making changes to the team's membership. If you have access to manage group membership in your IdP, you can manage GitHub team membership through your identity provider, which automatically adds and removes team members in an organization. For more information, see \"[Synchronizing teams between your identity provider and GitHub](https://docs.github.com/articles/synchronizing-teams-between-your-identity-provider-and-github/).\"\n\n\u003e [!NOTE]\n\u003e You can also specify a team by `org_id` and `team_id` using the route `DELETE /organizations/{org_id}/team/{team_id}/memberships/{username}`.",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/teams/members#remove-team-membership-for-a-user"
+        },
+        "operationId": "teams/remove-membership-for-user-in-org-by-id",
+        "parameters": [
+          {
+            "description": "The unique identifier of the organization.",
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The unique identifier of the team.",
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/username"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Response"
+          },
+          "403": {
+            "description": "Forbidden if team synchronization is set up"
+          }
+        },
+        "summary": "Remove team membership for a user",
+        "tags": ["teams"],
+        "x-github": {
+          "category": "teams",
+          "enabledForGitHubApps": true,
+          "githubCloudOnly": false,
+          "subcategory": "members"
+        }
+      },
+      "get": {
+        "description": "Team members will include the members of child teams.\n\nTo get a user's membership with a team, the team must be visible to the authenticated user.\n\n\u003e [!NOTE]\n\u003e You can also specify a team by `org_id` and `team_id` using the route `GET /organizations/{org_id}/team/{team_id}/memberships/{username}`.\n\n\u003e [!NOTE]\n\u003e The response contains the `state` of the membership and the member's `role`.\n\nThe `role` for organization owners is set to `maintainer`. For more information about `maintainer` roles, see [Create a team](https://docs.github.com/rest/teams/teams#create-a-team).",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/teams/members#get-team-membership-for-a-user"
+        },
+        "operationId": "teams/get-membership-for-user-in-org-by-id",
+        "parameters": [
+          {
+            "description": "The unique identifier of the organization.",
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The unique identifier of the team.",
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/username"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "response-if-user-is-a-team-maintainer": {
+                    "$ref": "#/components/examples/team-membership-response-if-user-is-a-team-maintainer"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/team-membership"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "404": {
+            "description": "if user has no team membership"
+          }
+        },
+        "summary": "Get team membership for a user",
+        "tags": ["teams"],
+        "x-github": {
+          "category": "teams",
+          "enabledForGitHubApps": true,
+          "githubCloudOnly": false,
+          "subcategory": "members"
+        }
+      },
+      "put": {
+        "description": "Adds an organization member to a team. An authenticated organization owner or team maintainer can add organization members to a team.\n\nTeam synchronization is available for organizations using GitHub Enterprise Cloud. For more information, see [GitHub's products](https://docs.github.com/github/getting-started-with-github/githubs-products) in the GitHub Help documentation.\n\n\u003e [!NOTE]\n\u003e When you have team synchronization set up for a team with your organization's identity provider (IdP), you will see an error if you attempt to use the API for making changes to the team's membership. If you have access to manage group membership in your IdP, you can manage GitHub team membership through your identity provider, which automatically adds and removes team members in an organization. For more information, see \"[Synchronizing teams between your identity provider and GitHub](https://docs.github.com/articles/synchronizing-teams-between-your-identity-provider-and-github/).\"\n\nAn organization owner can add someone who is not part of the team's organization to a team. When an organization owner adds someone to a team who is not an organization member, this endpoint will send an invitation to the person via email. This newly-created membership will be in the \"pending\" state until the person accepts the invitation, at which point the membership will transition to the \"active\" state and the user will be added as a member of the team.\n\nIf the user is already a member of the team, this endpoint will update the role of the team member's role. To update the membership of a team member, the authenticated user must be an organization owner or a team maintainer.\n\n\u003e [!NOTE]\n\u003e You can also specify a team by `org_id` and `team_id` using the route `PUT /organizations/{org_id}/team/{team_id}/memberships/{username}`.",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/teams/members#add-or-update-team-membership-for-a-user"
+        },
+        "operationId": "teams/add-or-update-membership-for-user-in-org-by-id",
+        "parameters": [
+          {
+            "description": "The unique identifier of the organization.",
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The unique identifier of the team.",
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/username"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "default": {
+                  "summary": "Add or update team membership for an organization member",
+                  "value": {
+                    "role": "maintainer"
+                  }
+                }
+              },
+              "schema": {
+                "properties": {
+                  "role": {
+                    "default": "member",
+                    "description": "The role that this user should have in the team.",
+                    "enum": ["member", "maintainer"],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "response-if-users-membership-with-team-is-now-pending": {
+                    "$ref": "#/components/examples/team-membership-response-if-users-membership-with-team-is-now-pending"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/team-membership"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "403": {
+            "description": "Forbidden if team synchronization is set up"
+          },
+          "422": {
+            "description": "Unprocessable Entity if you attempt to add an organization to a team"
+          }
+        },
+        "summary": "Add or update team membership for a user",
+        "tags": ["teams"],
+        "x-github": {
+          "category": "teams",
+          "enabledForGitHubApps": true,
+          "githubCloudOnly": false,
+          "subcategory": "members"
+        }
+      }
+    },
     "/orgs/{org}": {
       "get": {
         "description": "Gets information about an organization.\n\nWhen the value of `two_factor_requirement_enabled` is `true`, the organization requires all members, billing managers, outside collaborators, guest collaborators, repository collaborators, or everyone with access to any repository within the organization to enable [two-factor authentication](https://docs.github.com/articles/securing-your-account-with-two-factor-authentication-2fa/).\n\nTo see the full details about an organization, the authenticated user must be an organization owner.\n\nOAuth app tokens and personal access tokens (classic) need the `admin:org` scope to see the full details about an organization.\n\nTo see information about an organization's GitHub plan, GitHub Apps need the `Organization plan` permission.",
