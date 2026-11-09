@@ -596,6 +596,10 @@ func (a *Agent) decide(id uuid.UUID, confirm bool) (agentapi.Operation, string) 
 // unfenced (real aliases and ports), started, recorded. A failure leaves
 // the journal in committing; the next reconcile finishes the commit (the
 // candidate may have been reachable already, so it never rolls back).
+// The cleanup of earlier rollbacks runs before the operation's result, so a
+// successful upgrade (observed by a poll or after a restart) never leaves
+// moved-aside data behind. A crash before finalize repeats the commit from
+// the journal, including the idempotent cleanup.
 func (a *Agent) commit(ctx context.Context, in *instance, j *journal) string {
 	if err := a.enter(in, j, agentapi.PhaseCommitting); err != nil {
 		if !interrupted(ctx, err) {
@@ -611,19 +615,30 @@ func (a *Agent) commit(ctx context.Context, in *instance, j *journal) string {
 		a.log.Error("commit failed; it is retried", "instance", in.key, "code", code, "error", err)
 		return code
 	}
-	if err := a.finalize(in, j, j.Spec, false, agentapi.OpSucceeded, "", ""); err != nil {
-		a.log.Error("record the commit", "instance", in.key, "error", err)
-		return agentapi.CodeInternal
-	}
+	return a.recordCommit(in, j)
+}
+
+// recordCommit deletes what earlier rollbacks moved aside, prunes snapshots
+// and records the operation's success. The cleanup runs before the result:
+// when it fails, the journal stays in committing and the operation keeps
+// running, so the next reconcile repeats the commit (which never rolls
+// back) instead of reporting a success that left moved-aside data behind.
+func (a *Agent) recordCommit(in *instance, j *journal) string {
 	if err := a.pruneSnapshots(in.key); err != nil {
 		a.log.Warn("prune snapshots", "instance", in.key, "error", err)
 	}
 	if err := a.cleanMovedAside(in.key, true); err != nil {
-		a.log.Warn("remove moved-aside data", "instance", in.key, "error", err)
+		a.log.Error("remove moved-aside data; the commit is retried", "instance", in.key, "error", err)
+		return agentapi.CodeInternal
 	}
 	if err := a.cleanRestoreStaging(in.key); err != nil {
 		a.log.Warn("remove restore staging", "instance", in.key, "error", err)
 	}
+	if err := a.finalize(in, j, j.Spec, false, agentapi.OpSucceeded, "", ""); err != nil {
+		a.log.Error("record the commit", "instance", in.key, "error", err)
+		return agentapi.CodeInternal
+	}
+	a.at("committed")
 	a.log.Info("upgrade committed", "instance", in.key, "package", j.To.String(), "generation", j.ToGeneration)
 	return ""
 }

@@ -792,7 +792,7 @@ func (a *Agent) cleanMovedAside(key string, all bool) error {
 		}
 		sec, nsec := id.Time().UnixTime()
 		if all || a.now().Sub(time.Unix(sec, nsec)) > movedAsideRetention {
-			errs = append(errs, os.RemoveAll(filepath.Join(root, name)))
+			errs = append(errs, a.removeAll(filepath.Join(root, name)))
 		}
 	}
 	return errors.Join(errs...)

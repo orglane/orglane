@@ -62,6 +62,9 @@ type Options struct {
 	// syncDir replaces directory syncing in tests, to inject writeback
 	// failures.
 	syncDir func(string) error
+	// removeAll replaces recursive deletion in tests, to inject cleanup
+	// failures.
+	removeAll func(string) error
 }
 
 // Agent is a running agent.
@@ -79,6 +82,7 @@ type Agent struct {
 	instancesDir string
 	stateDir     string
 	diskFree     func(path string) uint64
+	removeAll    func(string) error
 	crashAt      string
 	crashed      atomic.Bool
 
@@ -138,6 +142,9 @@ func New(opts Options) (*Agent, error) {
 	if opts.diskFree == nil {
 		opts.diskFree = diskFree
 	}
+	if opts.removeAll == nil {
+		opts.removeAll = os.RemoveAll
+	}
 	if opts.crashAt == "" {
 		opts.crashAt = testCrashAt()
 	}
@@ -167,6 +174,7 @@ func New(opts Options) (*Agent, error) {
 		bootID:       bootID,
 		now:          opts.Now,
 		diskFree:     opts.diskFree,
+		removeAll:    opts.removeAll,
 		crashAt:      opts.crashAt,
 		instancesDir: filepath.Join(dataDir, "instances"),
 		instances:    map[string]*instance{},
