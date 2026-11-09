@@ -112,18 +112,16 @@ func (a *Agent) repairRestored(ctx context.Context, key string, spec *agentapi.S
 }
 
 // resolveRevert replaces the minimal revert spec with the full spec of the
-// project the agent can apply for it: the saved restored project when it
-// names the same instance and package, else the running spec. A revert that
-// matches neither stays minimal and fails as unknown_package_version.
-func (a *Agent) resolveRevert(key string, spec, current *agentapi.Spec) *agentapi.Spec {
+// project the agent can apply for it: the running project. current.json is
+// authoritative because it carries the inputs that actually run; the saved
+// restored project may be older than it (a credential rotation or a hosts
+// change after an earlier rollback), so it never resolves the revert.
+// repairRestored may still reuse its rendered files when its spec matches
+// the running one. A revert whose package is not the running version stays
+// minimal and fails as unknown_package_version.
+func (a *Agent) resolveRevert(spec, current *agentapi.Spec) *agentapi.Spec {
 	if spec == nil || !spec.Revert {
 		return spec
-	}
-	if saved, err := a.readRestoredProject(key); err == nil && saved.Spec != nil &&
-		saved.Spec.InstanceID == spec.InstanceID && saved.Spec.Package == spec.Package {
-		resolved := *saved.Spec
-		resolved.Generation = spec.Generation
-		return &resolved
 	}
 	if current != nil && current.Package == spec.Package {
 		resolved := *current

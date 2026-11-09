@@ -109,9 +109,9 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 	}
 
 	// A revert generation only acknowledges the rollback. Its full spec
-	// comes from the project saved for the running version (or from the
-	// running spec), so the version need not be embedded in this release.
-	st.desired = a.resolveRevert(in.key, st.desired, st.current)
+	// comes from the running project (current.json), so the version need
+	// not be embedded in this release.
+	st.desired = a.resolveRevert(st.desired, st.current)
 
 	var target *agentapi.Spec
 	var op *agentapi.Operation

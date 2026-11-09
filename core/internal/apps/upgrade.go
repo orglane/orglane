@@ -257,16 +257,25 @@ func (s *Service) planUpgrade(ctx context.Context, id uuid.UUID) (planResult, er
 		upgrading, err := s.transition(ctx, tx, q, audit.System, id, StateUpgrading, "")
 		if err != nil {
 			if isUpgradingConflict(err) {
-				result = planBusy
-				return nil
+				// The row update already aborted the transaction; rolling
+				// it back with a sentinel lets the caller report busy
+				// instead of a commit failure.
+				return errPlanBusy
 			}
 			return err
 		}
 		result = planRecorded
 		return s.recordUpgradeStep(ctx, tx, q, audit.System, upgrading, target, ReasonUpgrade, false)
 	})
+	if errors.Is(err, errPlanBusy) {
+		return planBusy, nil
+	}
 	return result, err
 }
+
+// errPlanBusy rolls back a plan whose transition lost to the partial unique
+// index of a concurrent plan or admin retry (app_instances_upgrading_key).
+var errPlanBusy = errors.New("apps: another managed instance is upgrading")
 
 // recordUpgradeStep records the next desired generation of an upgrade with
 // its operation and job, and audits the start.
@@ -293,6 +302,14 @@ func (s *Service) recordUpgradeStep(ctx context.Context, tx pgx.Tx, q *store.Que
 // the next required stop as the reason retry; the agent never retries by
 // itself. Only a settled, active or degraded instance whose latest upgrade
 // to that stop ended failed or rolled back can be retried.
+//
+// A failed instance is retried when its durable desired generation is a
+// revert whose apply failed (`failedRevertState`): a failure while applying the
+// revert re-applies that generation's spec, so a transient Docker failure
+// is recoverable once its cause is gone. A revert that could not be
+// assembled or resolved (package_unavailable, unknown_package_version) is
+// instead replaced by the next upgrade step from the running version, as
+// older releases recorded it. A failed rollback is never retried here.
 func (s *Service) RetryUpgrade(ctx context.Context, actor audit.Actor, id uuid.UUID) (Instance, error) {
 	err := s.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
 		inst, err := s.loadInstance(ctx, q, id, true)
@@ -305,9 +322,15 @@ func (s *Service) RetryUpgrade(ctx context.Context, actor audit.Actor, id uuid.U
 		if _, ok := inst.Adapter.Lifecycle(); !ok {
 			return ErrNotSupported
 		}
-		failedRevert := inst.State == StateFailed && recoverableRevertFailure(inst)
+		revertSpec, revertOp, failedRevert, err := failedRevertState(ctx, q, inst)
+		if err != nil {
+			return err
+		}
 		if inst.State != StateActive && inst.State != StateDegraded && !failedRevert {
 			return fmt.Errorf("%w: only an active, degraded or failed-revert instance can retry an upgrade", ErrInvalidState)
+		}
+		if failedRevert && retryRevertApply(revertOp) {
+			return s.retryRevert(ctx, tx, q, actor, inst, revertSpec)
 		}
 		if !failedRevert && inst.DesiredGeneration != inst.ObservedGeneration {
 			return fmt.Errorf("%w: the instance has not applied its current change", ErrInvalidState)
@@ -349,17 +372,67 @@ func (s *Service) RetryUpgrade(ctx context.Context, actor audit.Actor, id uuid.U
 	return s.Instance(ctx, id)
 }
 
-// recoverableRevertFailure reports whether a failed instance failed while
-// acknowledging a rollback (the revert generation could not be applied).
-// The running version is known, so an admin can retry the upgrade from it.
-// A failed rollback (rollback_failed) is never recovered this way: only an
-// agent restore can recover it.
-func recoverableRevertFailure(inst Instance) bool {
-	switch derefString(inst.HealthCode) {
-	case CodePackageUnavailable, agentapi.CodeUnknownPackageVersion:
-		return inst.PackageVersion != nil
+// failedRevertState reports the durable desired spec and operation of an instance
+// that failed while acknowledging a rollback: the current desired reason is
+// revert and that generation's operation is failed. It never covers a failed
+// rollback (rollback_failed), which only an agent restore can recover, or a
+// setup that failed after a successful revert (RetrySetup handles that).
+func failedRevertState(ctx context.Context, q *store.Queries, inst Instance) (store.AppDesiredSpec, store.AppOperation, bool, error) {
+	if inst.State != StateFailed || inst.PackageVersion == nil ||
+		derefString(inst.HealthCode) == agentapi.CodeRollbackFailed {
+		return store.AppDesiredSpec{}, store.AppOperation{}, false, nil
 	}
-	return false
+	gen := inst.DesiredGeneration
+	ds, err := q.GetAppDesiredSpec(ctx, store.GetAppDesiredSpecParams{InstanceID: inst.ID, Generation: gen})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.AppDesiredSpec{}, store.AppOperation{}, false, nil
+	} else if err != nil {
+		return store.AppDesiredSpec{}, store.AppOperation{}, false, fmt.Errorf("load desired spec: %w", err)
+	}
+	if ds.Reason != ReasonRevert {
+		return store.AppDesiredSpec{}, store.AppOperation{}, false, nil
+	}
+	op, err := q.GetAppPushOperation(ctx, store.GetAppPushOperationParams{InstanceID: inst.ID, Generation: &gen})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.AppDesiredSpec{}, store.AppOperation{}, false, nil
+	} else if err != nil {
+		return store.AppDesiredSpec{}, store.AppOperation{}, false, fmt.Errorf("load revert operation: %w", err)
+	}
+	if op.State != agentapi.OpFailed {
+		return store.AppDesiredSpec{}, store.AppOperation{}, false, nil
+	}
+	return ds, op, true, nil
+}
+
+// retryRevertApply reports whether a failed revert got as far as applying
+// its spec. package_unavailable and unknown_package_version mean the revert
+// could not be assembled or resolved; re-applying the same durable spec
+// would fail again, so the retry starts the next upgrade step instead.
+func retryRevertApply(op store.AppOperation) bool {
+	switch derefString(op.ErrorCode) {
+	case CodePackageUnavailable, agentapi.CodeUnknownPackageVersion:
+		return false
+	}
+	return true
+}
+
+// retryRevert re-applies the durable revert spec of a failed instance. It
+// records the same version, run state, settings and credential versions as
+// a new generation (the agent answers a repeated PUT of an accepted
+// generation with the operation that failed) and moves the instance back to
+// upgrading; the successful apply runs Setup and activates it.
+func (s *Service) retryRevert(ctx context.Context, tx pgx.Tx, q *store.Queries, actor audit.Actor, inst Instance, ds store.AppDesiredSpec) error {
+	upgrading, err := s.transition(ctx, tx, q, actor, inst.ID, StateUpgrading, "")
+	if err != nil {
+		if isUpgradingConflict(err) {
+			return fmt.Errorf("%w: another managed instance is upgrading", ErrInvalidState)
+		}
+		return err
+	}
+	_, err = s.recordDesiredSpec(ctx, tx, q, actor, upgrading, DesiredChange{
+		RunState: ds.RunState, Purge: ds.Purge, PackageVersion: ds.PackageVersion, Reason: ReasonRevert,
+	}, ds.Settings, ds.CredentialVersions)
+	return err
 }
 
 // isUpgradingConflict reports the partial unique index that allows only one

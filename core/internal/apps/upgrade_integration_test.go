@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -98,9 +100,30 @@ func (a *staticAgent) Abort(context.Context, uuid.UUID) (*agentapi.Operation, er
 	return nil, errors.New("static agent: abort is not used")
 }
 
+// countingAgent counts agent operation polls, so a test can assert which
+// unfinished pushes agent_sync recovers.
+type countingAgent struct {
+	*staticAgent
+	mu         sync.Mutex
+	operations int
+}
+
+func (a *countingAgent) Operation(context.Context, uuid.UUID) (*agentapi.Operation, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.operations++
+	return nil, errors.New("counting agent: operation is not used")
+}
+
+func (a *countingAgent) operationCalls() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.operations
+}
+
 // plannedInstance creates an active managed instance on a chosen key whose
 // running generation is already applied, without touching Docker.
-func plannedInstance(t *testing.T, h *harness, key string) {
+func plannedInstance(t *testing.T, h *harness, key string) apps.Instance {
 	t.Helper()
 	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
 		Provider: "agenttest", Key: key, BaseURL: "https://" + key + ".work.acme.test",
@@ -112,6 +135,7 @@ func plannedInstance(t *testing.T, h *harness, key string) {
 	h.exec(`UPDATE app_instances
 		SET package_version = $2, desired_generation = 1, observed_generation = 1, health = 'healthy'
 		WHERE id = $1`, inst.ID, agenttest.Version)
+	return h.reload(inst.ID)
 }
 
 // upgradeStatus is the API's upgrade status of an instance.
@@ -560,6 +584,162 @@ func TestAgentUpgradeRetryRecoversFailedRevert(t *testing.T) {
 	}
 }
 
+// TestAgentUpgradeRetryRecoversTransientRevertFailure: a revert apply that
+// fails for a transient reason (a real Docker port conflict) leaves the
+// instance failed/compose_failed. Once the conflict is gone, RetryUpgrade
+// re-applies the durable revert spec, Setup activates the running version,
+// and the upgrade can be retried afterwards.
+func TestAgentUpgradeRetryRecoversTransientRevertFailure(t *testing.T) {
+	host := newAgentHost(t)
+	host.start()
+	first := registryWithVersions(t, agenttest.Version)
+	h := newHarness(t, host.agentConfig, func(c *apps.Config) { c.Packages = first })
+	port := freePort(t)
+	h.agentProv.SetPackageSettings(map[string]any{"http_port": port, "message": "transient revert"})
+	inst := runningOn(t, h)
+
+	// A new release embeds only 2.0.0-1: the candidate fails its check and
+	// the agent rolls back to 1.0.0-1, which this release cannot run itself.
+	release := registryWithVersions(t, agenttest.Version2)
+	host.restart(release)
+	next := h.restartCore(func(c *apps.Config) { c.Packages = release })
+	if err := next.RunAgentSync(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.agentProv.Fail("health", errors.New("candidate is unhealthy"))
+	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 2})
+	if op := h.operation(inst.ID, 2); op.State != agentapi.OpRolledBack {
+		t.Fatalf("upgrade: %+v", op)
+	}
+	if reason := desiredReason(t, h, inst.ID, 3); reason != apps.ReasonRevert {
+		t.Fatalf("revert generation reason = %q", reason)
+	}
+
+	// Stop the restored web container and occupy its published port from
+	// another container. The agent is stopped meanwhile so no reconcile can
+	// restart it before the port is taken.
+	project := packages.InstanceProject(host.project, inst.Key)
+	host.stop()
+	web := dockerContainer(t, project, "web")
+	if out, err := exec.CommandContext(h.ctx, "docker", "stop", web).CombinedOutput(); err != nil { //nolint:gosec // test commands
+		t.Fatalf("stop the restored web container: %v\n%s", err, out)
+	}
+	blocker := "orglane-revert-blocker-" + strings.ToLower(uuid.Must(uuid.NewV7()).String()[:8])
+	if out, err := exec.CommandContext(h.ctx, "docker", "run", "-d", "--name", blocker,
+		"-p", strconv.Itoa(port)+":8080", bundleBusyboxImage, "sleep", "3600").CombinedOutput(); err != nil { //nolint:gosec // test commands
+		t.Fatalf("occupy port %d: %v\n%s", port, err, out)
+	}
+	t.Cleanup(func() {
+		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "rm", "-f", blocker).Run() //nolint:gosec // test commands
+	})
+	host.start()
+
+	// The revert cannot start the restored project: the agent reports
+	// compose_failed and the core fails the instance.
+	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 3})
+	op3 := h.operation(inst.ID, 3)
+	if op3.State != agentapi.OpFailed || derefS(op3.ErrorCode) != agentapi.CodeComposeFailed {
+		t.Fatalf("revert with a port conflict: %+v", op3)
+	}
+	got := h.reload(inst.ID)
+	if got.State != apps.StateFailed || derefS(got.HealthCode) != agentapi.CodeComposeFailed {
+		t.Fatalf("failed revert: %+v", got.AppInstance)
+	}
+	routes, err := next.IngressRoutes(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range routes {
+		if r.Key == inst.Key {
+			t.Fatalf("the failed instance is still routed: %+v", r)
+		}
+	}
+
+	// The conflict is gone: the admin retry re-applies the durable revert
+	// spec as a new generation (the agent answers a repeated generation
+	// with the failed operation), and Setup activates the running version.
+	if out, err := exec.CommandContext(h.ctx, "docker", "rm", "-f", blocker).CombinedOutput(); err != nil { //nolint:gosec // test commands
+		t.Fatalf("release the port: %v\n%s", err, out)
+	}
+	retried, err := next.RetryUpgrade(h.ctx, audit.System, inst.ID)
+	if err != nil {
+		t.Fatalf("retry a transient failed revert: %v", err)
+	}
+	if retried.State != apps.StateUpgrading || retried.DesiredGeneration != 4 ||
+		desiredReason(t, h, inst.ID, 4) != apps.ReasonRevert {
+		t.Fatalf("after the retry: %+v", retried.AppInstance)
+	}
+	op4 := h.operation(inst.ID, 4)
+	if op4.Kind != agentapi.KindApply || derefS(op4.ToVersion) != agenttest.Version {
+		t.Fatalf("the retry is not the durable revert: %+v", op4)
+	}
+	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 4})
+	if op := h.operation(inst.ID, 4); op.State != agentapi.OpSucceeded {
+		t.Fatalf("retried revert: %+v", op)
+	}
+	if err := next.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID, Generation: 4}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	got = h.reload(inst.ID)
+	if got.State != apps.StateActive || derefS(got.PackageVersion) != agenttest.Version ||
+		got.ObservedGeneration != 4 {
+		t.Fatalf("after the recovered revert: %+v", got.AppInstance)
+	}
+	routes, err = next.IngressRoutes(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routed bool
+	for _, r := range routes {
+		if r.Key == inst.Key {
+			routed = true
+			if r.Maintenance || r.Upstream == "" {
+				t.Fatalf("the recovered instance is not routed: %+v", r)
+			}
+		}
+	}
+	if !routed {
+		t.Fatalf("the recovered instance has no route: %+v", routes)
+	}
+
+	// The recovered instance can retry the upgrade again.
+	retried, err = next.RetryUpgrade(h.ctx, audit.System, inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.State != apps.StateUpgrading || retried.DesiredGeneration != 5 ||
+		desiredReason(t, h, inst.ID, 5) != apps.ReasonRetry {
+		t.Fatalf("after the second retry: %+v", retried.AppInstance)
+	}
+	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 5})
+	if op := h.operation(inst.ID, 5); op.State != agentapi.OpSucceeded {
+		t.Fatalf("retried upgrade: %+v", op)
+	}
+	if err := next.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID, Generation: 5}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.reload(inst.ID); got.State != apps.StateActive || derefS(got.PackageVersion) != agenttest.Version2 {
+		t.Fatalf("after the retried upgrade: %+v", got.AppInstance)
+	}
+}
+
+// dockerContainer returns the ID of one service's container in a Compose
+// project.
+func dockerContainer(t *testing.T, project, service string) string {
+	t.Helper()
+	out, err := exec.CommandContext(t.Context(), "docker", "ps", "-q", //nolint:gosec // test commands
+		"--filter", "label=com.docker.compose.project="+project,
+		"--filter", "label=com.docker.compose.service="+service).Output()
+	if err != nil {
+		t.Fatalf("list %s containers: %v", service, err)
+	}
+	id := strings.TrimSpace(string(out))
+	if id == "" {
+		t.Fatalf("no %s container in project %s", service, project)
+	}
+	return id
+}
+
 // TestAgentUpgradePlannerOneInstanceAtATime: the planner records at most one
 // upgrade, even when two syncs race and two instances are eligible.
 func TestAgentUpgradePlannerOneInstanceAtATime(t *testing.T) {
@@ -603,6 +783,54 @@ func TestAgentUpgradePlannerOneInstanceAtATime(t *testing.T) {
 	}
 	if n := h.count(`SELECT count(*) FROM app_operations WHERE kind = 'upgrade'`); n != 1 {
 		t.Fatalf("%d upgrade operations recorded after the next sync, want 1", n)
+	}
+}
+
+// TestAgentUpgradePlannerIndexConflictIsBusy: when two plans race and the
+// partial unique index rejects the second transition, the planner reports
+// busy without an error. The transition aborts the transaction, so the
+// callback must roll it back rather than let the commit fail.
+func TestAgentUpgradePlannerIndexConflictIsBusy(t *testing.T) {
+	h := newHarness(t, func(c *apps.Config) {
+		c.Agent = &staticAgent{boot: uuid.Must(uuid.NewV7())}
+		c.Packages = registryWithVersions(t, agenttest.Version, agenttest.Version2, agenttest.Version3)
+	})
+	candidate := plannedInstance(t, h, "candidate")
+	other := plannedInstance(t, h, "other")
+
+	rows, err := store.New(h.pool).ListAppInstances(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another plan won the index but has not committed yet: `other` is still
+	// active in every snapshot the planner reads.
+	tx, err := h.pool.Begin(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(h.ctx) }()
+	if _, err := tx.Exec(h.ctx, `UPDATE app_instances SET state = 'upgrading' WHERE id = $1`, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	committed := make(chan struct{})
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_ = tx.Commit(h.ctx)
+		close(committed)
+	}()
+	err = h.svc.PlanUpgradesForTest(h.ctx, rows, nil)
+	<-committed
+	if err != nil {
+		t.Fatalf("the losing plan reported an error instead of busy: %v", err)
+	}
+	if got := h.reload(candidate.ID); got.State != apps.StateActive {
+		t.Fatalf("the candidate was planned despite the index conflict: %+v", got.AppInstance)
+	}
+	if n := h.count(`SELECT count(*) FROM app_operations WHERE instance_id = $1`, candidate.ID); n != 0 {
+		t.Fatalf("the candidate recorded %d operations", n)
+	}
+	if got := h.reload(other.ID); got.State != apps.StateUpgrading {
+		t.Fatalf("the winning plan was lost: %+v", got.AppInstance)
 	}
 }
 
@@ -710,6 +938,34 @@ func TestAgentSyncRecoversConfirmationAfterCrash(t *testing.T) {
 	}
 	if !hasFencedUpstream(h.agentProv.HealthUpstreams()) {
 		t.Fatalf("the recovered confirmation did not use the fenced alias: %v", h.agentProv.HealthUpstreams())
+	}
+}
+
+// TestAgentSyncRecoversOnlyUpgradingPushes: confirmation recovery is bounded
+// to the one instance in upgrading (the only state in which an operation
+// awaits confirmation), so the sync never runs a candidate health check for
+// every unfinished push. Other unfinished pushes stay with their jobs.
+func TestAgentSyncRecoversOnlyUpgradingPushes(t *testing.T) {
+	agent := &countingAgent{staticAgent: &staticAgent{boot: uuid.Must(uuid.NewV7())}}
+	h := newHarness(t, func(c *apps.Config) {
+		c.Agent = agent
+		c.Packages = registryWithVersions(t, agenttest.Version)
+	})
+	idle := plannedInstance(t, h, "idle")
+	upgrading := plannedInstance(t, h, "upgrading")
+	h.exec(`UPDATE app_instances SET state = 'upgrading' WHERE id = $1`, upgrading.ID)
+	agentOp := uuid.Must(uuid.NewV7())
+	for _, id := range []uuid.UUID{idle.ID, upgrading.ID} {
+		h.exec(`INSERT INTO app_desired_specs (instance_id, generation, package_version, run_state, settings, credential_versions, reason)
+			VALUES ($1, 1, $2, 'running', '{}', '{}', 'resync')`, id, agenttest.Version)
+		h.exec(`INSERT INTO app_operations (instance_id, generation, kind, state, agent_operation_id)
+			VALUES ($1, 1, 'apply', 'running', $2)`, id, agentOp)
+	}
+	if err := h.svc.RunAgentSync(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := agent.operationCalls(); n != 1 {
+		t.Fatalf("the sync polled %d unfinished pushes, want only the upgrading one", n)
 	}
 }
 

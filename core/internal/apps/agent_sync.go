@@ -76,12 +76,17 @@ func (s *Service) RunAgentSync(ctx context.Context) error {
 		return s.markStale(ctx)
 	}
 	s.noteBoot(h.BootID)
-	// Drive one attempt of every unfinished push here, independently of
-	// River's stuck-job rescue (one hour by default): a confirmation the
-	// core was about to send when it crashed is recovered at the next sync
-	// instead of being lost to the agent's confirm_timeout. The normal
-	// agent_apply job remains the primary poller; every step is idempotent.
-	s.recoverUnfinishedApplies(ctx, unfinished)
+	// Drive one attempt of the unfinished pushes of an upgrading instance
+	// here, independently of River's stuck-job rescue (one hour by default):
+	// a confirmation the core was about to send when it crashed is recovered
+	// at the next sync instead of being lost to the agent's confirm_timeout.
+	// Only upgrading instances need this recovery (an upgrade is the only
+	// operation that awaits confirmation, and the one-at-a-time rule allows
+	// one of them), so the sync runs at most one candidate health check
+	// bounded by UpgradeCheckTimeout. Every other push stays with its
+	// agent_apply job and River's rescue. The normal job remains the primary
+	// poller; every step is idempotent.
+	s.recoverUpgradingApplies(ctx, unfinished, rows)
 	// Automatic package upgrades after an Orglane release that embeds newer
 	// package versions (agent.md "Upgrade"). Only once the agent answers,
 	// and one managed instance at a time.
@@ -109,14 +114,36 @@ func (s *Service) RunAgentSync(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// recoverUnfinishedApplies runs one agent_apply attempt of every unfinished
-// push. It is safe beside the normal job: the operation row says where the
-// push is, the agent answers a repeated PUT with the same operation, and a
-// confirmation or finish is idempotent and conditional on the unfinished
-// row. The sync therefore recovers a confirmation after a core crash even
-// while River still considers the crashed job running.
-func (s *Service) recoverUnfinishedApplies(ctx context.Context, unfinished []store.ListUnfinishedAppPushOperationsRow) {
+// recoverUpgradingApplies runs one agent_apply attempt of the unfinished
+// pushes of instances in upgrading. It is safe beside the normal job: the
+// operation row says where the push is, the agent answers a repeated PUT
+// with the same operation, and a confirmation or finish is idempotent and
+// conditional on the unfinished row. The sync therefore recovers a
+// confirmation after a core crash even while River still considers the
+// crashed job running.
+//
+// Only upgrading instances are recovered: an upgrade is the one operation
+// that awaits confirmation, and the one-at-a-time rule allows a single
+// upgrading instance, so recovery costs at most one health check. Recovering
+// every unfinished push would multiply UpgradeCheckTimeout by the number of
+// installs, removes and applies waiting for their jobs.
+func (s *Service) recoverUpgradingApplies(ctx context.Context, unfinished []store.ListUnfinishedAppPushOperationsRow, rows []store.AppInstance) {
+	var upgrading map[uuid.UUID]bool
+	for _, row := range rows {
+		if row.State == StateUpgrading {
+			if upgrading == nil {
+				upgrading = make(map[uuid.UUID]bool, 1)
+			}
+			upgrading[row.ID] = true
+		}
+	}
+	if len(upgrading) == 0 {
+		return
+	}
 	for _, u := range unfinished {
+		if !upgrading[u.InstanceID] {
+			continue
+		}
 		err := s.RunAgentApply(ctx, AgentApplyArgs{InstanceID: u.InstanceID, Generation: u.Generation})
 		var snooze *river.JobSnoozeError
 		var cancel *river.JobCancelError

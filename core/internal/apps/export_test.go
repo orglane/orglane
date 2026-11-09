@@ -47,6 +47,12 @@ func (s *Service) InstallVersionForTest(ctx context.Context, actor audit.Actor, 
 // CheckBootForTest runs one WatchAgent tick.
 func (s *Service) CheckBootForTest(ctx context.Context) { s.checkBoot(ctx) }
 
+// PlanUpgradesForTest runs the automatic upgrade planner over a snapshot of
+// instances, as agent_sync does.
+func (s *Service) PlanUpgradesForTest(ctx context.Context, rows []store.AppInstance, pushing map[uuid.UUID]bool) error {
+	return s.planUpgrades(ctx, rows, pushing)
+}
+
 // SpecForTest assembles the spec of a desired generation, as a push does.
 func (s *Service) SpecForTest(ctx context.Context, id uuid.UUID, generation int64) (*agentapi.Spec, error) {
 	inst, err := s.Instance(ctx, id)

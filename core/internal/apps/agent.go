@@ -265,6 +265,14 @@ func (s *Service) recordDesired(ctx context.Context, tx pgx.Tx, q *store.Queries
 		return store.AppDesiredSpec{}, fmt.Errorf("apps: encode package settings: %w", err)
 	}
 	rawVersions, _ := json.Marshal(versions) // a map of ints: cannot fail
+	return s.recordDesiredSpec(ctx, tx, q, actor, inst, d, rawSettings, rawVersions)
+}
+
+// recordDesiredSpec records a generation with explicit settings and
+// credential versions. recordDesired resolves them from Inputs; retryRevert
+// passes the failed generation's durable values, so its retry applies the
+// same revert spec instead of a fresh Inputs resolution.
+func (s *Service) recordDesiredSpec(ctx context.Context, tx pgx.Tx, q *store.Queries, actor audit.Actor, inst Instance, d DesiredChange, rawSettings, rawVersions []byte) (store.AppDesiredSpec, error) {
 	gen := inst.DesiredGeneration + 1
 	ds, err := q.InsertAppDesiredSpec(ctx, store.InsertAppDesiredSpecParams{
 		InstanceID: inst.ID, Generation: gen, PackageVersion: d.PackageVersion, RunState: d.RunState,

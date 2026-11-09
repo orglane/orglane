@@ -2297,9 +2297,14 @@ paths:
         versions (`upgrade.min_from`); one step is recorded per request and
         the following steps continue automatically after a success.
 
-        A `failed` instance whose revert could not be applied while its
-        running version is known (`package_unavailable` or
-        `unknown_package_version`) is retried from that running version.
+        A `failed` instance whose current desired generation is a revert
+        whose apply failed is recovered from that durable revert spec: the
+        same version, run state, settings and credential versions are
+        recorded as a new generation with reason `revert`, and its
+        successful apply runs Setup and activates the instance. A revert
+        that could not be assembled or resolved (`package_unavailable`,
+        `unknown_package_version`) is instead retried as the next required
+        stop from the running version.
 
         Refused (409, `invalid_state`) when the instance is not `active`,
         `degraded` or such a failed revert, has an unfinished operation, has

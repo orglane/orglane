@@ -217,55 +217,96 @@ func TestSnapshotRenderedIntegrity(t *testing.T) {
 	}
 }
 
-// TestRevertResolvesFromSavedOrRunningProject: a revert spec carries only
-// the running package reference. The agent resolves it from the project it
-// saved after a rollback, or from the running project when the upgrade
-// failed before the switch, so the version need not be embedded.
-func TestRevertResolvesFromSavedOrRunningProject(t *testing.T) {
+// TestRevertResolvesFromCurrentNotStaleSavedProject: a revert spec carries
+// only the running package reference. The agent resolves it from the running
+// project (current.json). A restored project saved by an earlier rollback is
+// older after a credential rotation or a settings change and must never
+// bring its old spec or rendered files back; it may only provide the
+// rendered files when its spec still matches the running one.
+func TestRevertResolvesFromCurrentNotStaleSavedProject(t *testing.T) {
 	a, _ := newTestAgent(t, time.Now)
-	spec := testSpec(1)
-	if err := os.MkdirAll(a.instanceDir("git"), 0o700); err != nil {
+	dir := a.instanceDir("git")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
-	}
-	revert := &agentapi.Spec{
-		InstanceID: spec.InstanceID, Generation: 2, Package: spec.Package,
-		State: agentapi.StateRunning, Ingress: agentapi.IngressLocal, Revert: true,
-	}
-	if got := a.resolveRevert("git", revert, nil); !got.Revert {
-		t.Fatalf("a revert without a running project resolved to %+v", got)
-	}
-	got := a.resolveRevert("git", revert, spec)
-	if got.Revert || got.Generation != 2 || !sameSpecExceptGeneration(got, spec) {
-		t.Fatalf("revert from the running project = %+v", got)
 	}
 
-	// The saved project wins over the running spec, and only for the same
-	// instance and package.
-	pkg, _ := a.registry.Get(spec.Package)
-	inputs, err := pkg.Inputs(spec)
+	// The project saved after an earlier rollback of 1.0.0-1.
+	saved := testSpec(1)
+	pkg, ok := a.registry.Get(saved.Package)
+	if !ok {
+		t.Fatalf("package %s is not embedded", saved.Package)
+	}
+	inputs, err := pkg.Inputs(saved)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered, err := pkg.Render(spec, inputs, a.renderContext("git"))
+	rendered, err := pkg.Render(saved, inputs, a.renderContext("git"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	other := *spec
-	other.Package.Version = agenttest.Version2
-	if err := writeJSON(filepath.Join(a.instanceDir("git"), restoredProjectFile), restoredProject{Spec: &other, Rendered: rendered}); err != nil {
+	if err := writeJSON(filepath.Join(dir, restoredProjectFile), restoredProject{Spec: saved, Rendered: rendered}); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.resolveRevert("git", revert, spec); !sameSpecExceptGeneration(got, spec) {
-		t.Fatalf("a saved project of another version was used: %+v", got)
-	}
-	if err := writeJSON(filepath.Join(a.instanceDir("git"), restoredProjectFile), restoredProject{Spec: spec, Rendered: rendered}); err != nil {
+
+	// Inputs changed while that version still ran: current.json now holds
+	// the rotated credential.
+	current := testSpec(3)
+	current.Settings["message"] = "rotated"
+	current.Secrets = map[string]string{"db_password": "cm90YXRlZA=="} //nolint:gosec // "rotated", a test secret
+	if err := writeSpec(filepath.Join(dir, currentFile), current); err != nil {
 		t.Fatal(err)
 	}
-	got = a.resolveRevert("git", revert, nil)
-	if got.Revert || got.Generation != 2 || !sameSpecExceptGeneration(got, spec) {
-		t.Fatalf("revert from the saved project = %+v", got)
+
+	revert := &agentapi.Spec{
+		InstanceID: current.InstanceID, Generation: 5, Package: current.Package,
+		State: agentapi.StateRunning, Ingress: agentapi.IngressLocal, Revert: true,
+	}
+	got := a.resolveRevert(revert, current)
+	if got.Revert || got.Generation != 5 || !sameSpecExceptGeneration(got, current) {
+		t.Fatalf("revert from the running project = %+v", got)
+	}
+	if got.Secrets["db_password"] != current.Secrets["db_password"] {
+		t.Fatalf("revert secret = %q, want the running %q", got.Secrets["db_password"], current.Secrets["db_password"])
+	}
+	// The stale saved project must not be written over the running
+	// deployment: repairRestored falls back to what runs.
+	if err := a.repairRestored(t.Context(), "git", got); err == nil {
+		t.Fatal("repairing the deployment files failed without Docker")
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, composeFile)); err == nil {
+		if sameRenderedCompose(data, rendered.Compose) {
+			t.Fatal("repairRestored wrote the stale saved project over the running deployment")
+		}
+	}
+
+	// A saved project whose spec still matches the running one does provide
+	// the rendered files (repairing missing files after a restart).
+	inputs, err = pkg.Inputs(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderedCurrent, err := pkg.Render(current, inputs, a.renderContext("git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(dir, restoredProjectFile), restoredProject{Spec: current, Rendered: renderedCurrent}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.repairRestored(t.Context(), "git", got); err == nil {
+		t.Fatal("starting the project failed without Docker")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, composeFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameRenderedCompose(data, renderedCurrent.Compose) {
+		t.Fatal("a saved project matching the running spec was not used for its rendered files")
 	}
 }
+
+// sameRenderedCompose reports whether the rendered compose file is the saved
+// project's. startProject writes the file before it calls Docker.
+func sameRenderedCompose(data, want []byte) bool { return bytes.Equal(data, want) }
 
 func TestRestoredProjectRejectsDifferentInputs(t *testing.T) {
 	a, rr := newTestAgent(t, time.Now)
