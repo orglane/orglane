@@ -78,6 +78,74 @@ func TestFinalizeRetriesOperationPersistence(t *testing.T) {
 	}
 }
 
+// A cleanup failure while recording a commit must not record success: the
+// journal stays in committing so the next reconcile repeats the commit and
+// deletes the moved-aside data then.
+func TestCommitCleanupFailureKeepsJournal(t *testing.T) {
+	now := time.Now()
+	a, _ := newTestAgent(t, func() time.Time { return now })
+	rec := put(t, a, now, "git", mustJSON(t, testSpec(2)))
+	var op agentapi.Operation
+	if err := json.Unmarshal(rec.Body.Bytes(), &op); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ops.update(op.ID, func(o *agentapi.Operation) {
+		o.State, o.Phase = agentapi.OpRunning, agentapi.PhaseCommitting
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir := a.instanceDir("git")
+	from := testSpec(1).Package
+	j := &journal{
+		Operation: op.ID, Kind: agentapi.KindUpgrade, From: &from, To: testSpec(2).Package,
+		FromGeneration: 1, ToGeneration: 2, Spec: testSpec(2), Phase: agentapi.PhaseCommitting,
+	}
+	if err := writeJournal(dir, j); err != nil {
+		t.Fatal(err)
+	}
+	aside := filepath.Join(dir, dataDir, movedAside("www", uuid.Must(uuid.NewV7())))
+	if err := os.MkdirAll(aside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a.removeAll = func(path string) error {
+		if strings.Contains(path, ".failed-") {
+			return errors.New("injected cleanup failure")
+		}
+		return os.RemoveAll(path)
+	}
+	if code := a.recordCommit(a.instance("git"), j); code != agentapi.CodeInternal {
+		t.Fatalf("cleanup failure recorded code %q, want internal", code)
+	}
+	if got, _ := a.ops.get(op.ID); got.Terminal() {
+		t.Fatalf("cleanup failure recorded a result: %+v", got)
+	}
+	if kept, err := readJournal(dir); err != nil || kept == nil || kept.Phase != agentapi.PhaseCommitting {
+		t.Fatalf("journal after the cleanup failure: %+v %v", kept, err)
+	}
+	if _, err := os.Stat(aside); err != nil {
+		t.Fatalf("moved-aside data after the cleanup failure: %v", err)
+	}
+
+	// The next reconcile (a repeated commit) records success and removes it.
+	a.removeAll = os.RemoveAll
+	if code := a.recordCommit(a.instance("git"), j); code != "" {
+		t.Fatalf("retried commit = %q", code)
+	}
+	if got, _ := a.ops.get(op.ID); got.State != agentapi.OpSucceeded {
+		t.Fatalf("retried operation = %+v", got)
+	}
+	if _, err := os.Stat(aside); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("moved-aside data after the retried commit: %v", err)
+	}
+	if kept, err := readJournal(dir); err != nil || kept != nil {
+		t.Fatalf("journal after the retried commit: %+v %v", kept, err)
+	}
+	st, err := loadState(dir)
+	if err != nil || st.current == nil || st.current.Generation != 2 {
+		t.Fatalf("state after the retried commit: %+v %v", st, err)
+	}
+}
+
 func TestRestoreCannotReplaceClaimedUpgrade(t *testing.T) {
 	now := time.Now()
 	a, _ := newTestAgent(t, func() time.Time { return now })

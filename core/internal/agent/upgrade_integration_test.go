@@ -520,7 +520,32 @@ func (s *upgradeSuite) testStaysRolledBack(t *testing.T) {
 	if err := e.stop(); err != nil {
 		t.Fatal(err)
 	}
-	e = launchAgent(t, project, registry, agentOptions{dataDir: e.dataDir})
+	// The upgrade records its result only once the data moved aside by the
+	// earlier rollback is gone. Inspect the directory at that exact point:
+	// a check after the operation turned terminal would race the cleanup.
+	type commitState struct {
+		aside []string
+		err   error
+	}
+	committed := make(chan commitState, 1)
+	dataRoot := filepath.Join(e.dataDir, "instances", key, dataDir)
+	e = launchAgent(t, project, registry, agentOptions{dataDir: e.dataDir, hook: func(point string) {
+		if point != "committed" {
+			return
+		}
+		var st commitState
+		var entries []os.DirEntry
+		entries, st.err = os.ReadDir(dataRoot)
+		for _, en := range entries {
+			if strings.HasPrefix(en.Name(), ".") {
+				st.aside = append(st.aside, en.Name())
+			}
+		}
+		select {
+		case committed <- st:
+		default:
+		}
+	}})
 	time.Sleep(3 * time.Second)
 	stillV1("after an agent restart")
 
@@ -543,6 +568,17 @@ func (s *upgradeSuite) testStaysRolledBack(t *testing.T) {
 	}
 	if v, err := httpPath(port, "/version"); err != nil || v != agenttest.Version2+"\n" {
 		t.Fatalf("after the retry: %q, %v", v, err)
+	}
+	select {
+	case st := <-committed:
+		if st.err != nil {
+			t.Fatalf("inspect the data directory when the upgrade recorded success: %v", st.err)
+		}
+		if len(st.aside) != 0 {
+			t.Fatalf("moved-aside data present when the upgrade recorded success: %v", st.aside)
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("the upgrade commit did not reach its committed point")
 	}
 	// The data moved aside by the rollback goes with the successful upgrade.
 	entries, err := os.ReadDir(filepath.Join(e.agent.instanceDir(key), dataDir))

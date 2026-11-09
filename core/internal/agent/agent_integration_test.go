@@ -179,8 +179,9 @@ type testEnv struct {
 
 // agentOptions configure launchAgent.
 type agentOptions struct {
-	dataDir string // empty: a new temporary directory
-	crashAt string // the test crash hook
+	dataDir string       // empty: a new temporary directory
+	crashAt string       // the test crash hook
+	hook    func(string) // called at named points of a reconcile or commit
 }
 
 // launchAgent runs an agent in-process with peer_uid -1. stop ends it and
@@ -206,7 +207,7 @@ func launchAgent(t *testing.T, project string, registry *packages.Registry, o ag
 	audit := &auditRunner{inner: newDockerCLI("docker")}
 	a, err := New(Options{
 		Config: cfg, Version: "dev", Registry: registry, Logger: testLogger(t),
-		EventDebounce: time.Second, EventMinInterval: 2 * time.Second, runner: audit, crashAt: o.crashAt,
+		EventDebounce: time.Second, EventMinInterval: 2 * time.Second, runner: audit, crashAt: o.crashAt, hook: o.hook,
 	})
 	if err != nil {
 		t.Fatal(err)
