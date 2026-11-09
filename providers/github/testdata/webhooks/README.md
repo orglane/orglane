@@ -16,6 +16,6 @@ no `installation` (`issues.opened.with-organization`,
 does for App deliveries, before signing. Tests that need mentions replace a
 body field before signing.
 
-Payloads captured from the dedicated test organization through the App's
-delivery log (docs/specs/providers.md "GitHub live tests") are added here when
-the `github-live` environment exists.
+Payloads from the dedicated test organization are not committed: the live
+check (`TestGitHubLiveWebhookDeliveries`) reads them from the App's delivery
+log instead (docs/specs/providers.md "Webhooks in live tests").
