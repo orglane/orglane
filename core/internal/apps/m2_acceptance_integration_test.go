@@ -398,6 +398,13 @@ func (s *m2Scenario) mapTeam(slug string) store.Team {
 	if resp.StatusCode != http.StatusOK {
 		s.t.Fatalf("team mapping = %d %s", resp.StatusCode, body)
 	}
+	// The provisioning page must still answer after the policy and mapping
+	// changes; its counts are not asserted here because the owner may have no
+	// access under mapped teams.
+	resp, body = s.owner.do(s.t, http.MethodGet, s.workspace+"/api/v1/apps/instances/"+s.inst.ID.String()+"/provisioning", nil)
+	if resp.StatusCode != http.StatusOK {
+		s.t.Fatalf("provisioning status after mapping = %d %s", resp.StatusCode, body)
+	}
 	team, err := store.New(s.pool).GetTeamBySlug(s.ctx, slug)
 	if err != nil {
 		s.t.Fatal(err)
