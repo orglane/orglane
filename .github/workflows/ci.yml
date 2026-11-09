@@ -88,13 +88,16 @@ jobs:
           # The heavy tier runs real Docker projects and Playwright: it is
           # only worth it when one of the paths it exercises changed. Keep
           # this list in sync with tests/README.md "Test tiers". A new Docker
-          # test belongs under its package's path, so it needs no entry here.
+          # test needs no entry when it lives in its package's path; shared
+          # dependencies of the real core that the e2e tests drive (identity,
+          # jobs, store, server, the API) are listed explicitly.
           heavy=false
           web=false
           while IFS= read -r path; do
             case "$path" in
               core/internal/apps/*|core/internal/agent/*|core/internal/agentapi/*|core/internal/agentclient/*|core/internal/managedtest/*|core/internal/packages/*|providers/*) heavy=true ;;
               core/migrations/*|core/internal/config/*|core/internal/ingress/*|core/internal/database/*) heavy=true ;;
+              core/cmd/*|core/internal/jobs/*|core/internal/store/*|core/internal/identity/*|core/internal/server/*|core/internal/api/*|core/api/*) heavy=true ;;
               deploy/*|Dockerfile|tests/compose/*|tests/install/*|tests/integration/*|demo/*) heavy=true ;;
               Makefile|.github/*|go.mod|go.sum) heavy=true ;;
             esac
