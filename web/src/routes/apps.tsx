@@ -108,6 +108,19 @@ const messages = defineMessages({
     id: "appsSettings.defaultFor",
     defaultMessage: "Default for {capability}",
   }),
+  makeDefaultFor: defineMessage<{ capability: string }>({
+    id: "appsSettings.makeDefaultFor",
+    defaultMessage: "Make default for {capability}",
+  }),
+  defaultSet: defineMessage<{ name: string; capability: string }>({
+    id: "appsSettings.defaultSet",
+    defaultMessage: "{name} is now the default for {capability}.",
+  }),
+  bindingNotFound: {
+    id: "appsSettings.bindingNotFound",
+    defaultMessage:
+      "This app is no longer bound to that capability. Refresh the page and try again.",
+  },
   unavailable: {
     id: "appsSettings.unavailable",
     defaultMessage: "Provider not available in this version",
@@ -625,10 +638,21 @@ function CapabilityMatrix({ providers }: { providers: AppProvider[] }) {
 export function AppsSettingsPage() {
   const api = useApi();
   const intl = useIntl();
+  const queryClient = useQueryClient();
   const manage = useMe().permissions.includes("apps.manage");
   const instances = useQuery({ ...appInstancesQuery(api), enabled: manage });
   const providers = useQuery({ ...appProvidersQuery(api), enabled: manage });
   const bindings = useQuery({ ...appBindingsQuery(api), enabled: manage });
+  const setDefault = useMutation({
+    mutationFn: ({ capability, instanceId }: { capability: string; instanceId: string }) =>
+      call(
+        api.client.PUT("/api/v1/apps/bindings/{capability}", {
+          params: { path: { capability } },
+          body: { instanceId },
+        }),
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: appsKey }),
+  });
   const title = intl.formatMessage(messages.settingsTitle);
   if (!manage) {
     return (
@@ -642,6 +666,14 @@ export function AppsSettingsPage() {
   const providerName = (id: string) => providers.data?.items.find((p) => p.id === id)?.name ?? id;
   const defaults = (instanceId: string) =>
     bindings.data?.items.filter((b) => b.instanceId === instanceId && b.isDefault) ?? [];
+  // An active app that is not the default can become it, even when it is the
+  // only remaining binding: removing the default instance deletes its
+  // bindings without promoting another one.
+  const choices = (instanceId: string) =>
+    bindings.data?.items.filter(
+      (b) => b.instanceId === instanceId && b.instanceState === "active" && !b.isDefault,
+    ) ?? [];
+  const chosen = setDefault.data?.items.find((b) => b.isDefault);
   return (
     <Page
       title={title}
@@ -702,13 +734,30 @@ export function AppsSettingsPage() {
                         >
                           {inst.displayName}
                         </Link>
-                        <div className="mt-1 flex flex-wrap gap-1">
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
                           {defaults(inst.id).map((b) => (
                             <Badge key={b.capability} variant="brand">
                               {intl.formatMessage(messages.defaultFor, {
                                 capability: b.capability,
                               })}
                             </Badge>
+                          ))}
+                          {choices(inst.id).map((b) => (
+                            <Button
+                              key={b.capability}
+                              variant="link"
+                              disabled={setDefault.isPending}
+                              onClick={() =>
+                                setDefault.mutate({
+                                  capability: b.capability,
+                                  instanceId: inst.id,
+                                })
+                              }
+                            >
+                              {intl.formatMessage(messages.makeDefaultFor, {
+                                capability: b.capability,
+                              })}
+                            </Button>
                           ))}
                         </div>
                       </td>
@@ -746,6 +795,19 @@ export function AppsSettingsPage() {
                 </tbody>
               </table>
             </Card>
+            {setDefault.isError && (
+              <Alert className="mt-3">
+                {errorMessage(intl, setDefault.error, { 404: messages.bindingNotFound })}
+              </Alert>
+            )}
+            {setDefault.isSuccess && chosen && (
+              <Alert variant="success" className="mt-3">
+                {intl.formatMessage(messages.defaultSet, {
+                  name: chosen.instanceDisplayName,
+                  capability: chosen.capability,
+                })}
+              </Alert>
+            )}
           </>
         )}
       </section>

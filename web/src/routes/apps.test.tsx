@@ -48,6 +48,23 @@ const instance = {
   createdAt: "2026-11-01T10:00:00Z",
   updatedAt: "2026-11-01T10:00:00Z",
 };
+const secondInstanceId = "0190a1b2-0000-7000-8000-0000000000a2";
+const secondInstance = {
+  ...instance,
+  id: secondInstanceId,
+  key: "mirror",
+  displayName: "Code mirror",
+  baseUrl: "https://mirror.acme.test",
+};
+const binding = (id: string, name: string, isDefault: boolean, instanceState = "active") => ({
+  capability: "code",
+  instanceId: id,
+  instanceKey: name.toLowerCase().replace(" ", "-"),
+  instanceDisplayName: name,
+  provider: "testprovider",
+  instanceState,
+  isDefault,
+});
 const person = (id: string, name: string) => ({
   id,
   username: name.toLowerCase(),
@@ -102,6 +119,7 @@ describe("Settings → Apps", () => {
     const app = renderApp("/settings/apps", { "GET /api/v1/me": { status: 200, body: me } });
     expect(await screen.findByRole("alert")).toHaveTextContent("permission to manage apps");
     expect(app.called("GET", "/api/v1/apps/instances")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /make default/i })).not.toBeInTheDocument();
   });
 
   it("lists instances with state and the honest capability matrix", async () => {
@@ -131,10 +149,131 @@ describe("Settings → Apps", () => {
     const instances = screen.getByRole("table", { name: "Connected apps" });
     expect(within(instances).getByText("Active")).toBeInTheDocument();
     expect(within(instances).getByText("Default for code")).toBeInTheDocument();
+    // One bound instance is the default by definition: nothing to choose.
+    expect(
+      within(instances).queryByRole("button", { name: "Make default for code" }),
+    ).not.toBeInTheDocument();
     const matrix = await screen.findByRole("table", { name: "Capability matrix" });
     expect(within(matrix).getByRole("rowheader", { name: "Single sign-on" })).toBeInTheDocument();
     expect(within(matrix).getByText("Not supported")).toBeInTheDocument();
     expect(within(matrix).getByText("Planned (M5)")).toBeInTheDocument();
+  });
+
+  it("offers to make an active app the default when two apps bind the same capability", async () => {
+    let bound = [
+      binding(instanceId, "Code", true),
+      binding(secondInstanceId, "Code mirror", false),
+    ];
+    const app = renderApp("/settings/apps", {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/instances": { status: 200, body: { items: [instance, secondInstance] } },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      "GET /api/v1/apps/bindings": () => ({ status: 200, body: { items: bound } }),
+      "PUT /api/v1/apps/bindings/code": ({ body }) => {
+        const target = (body as { instanceId: string }).instanceId;
+        bound = bound.map((b) => ({ ...b, isDefault: b.instanceId === target }));
+        return { status: 200, body: { items: bound } };
+      },
+    });
+    const instances = await screen.findByRole("table", { name: "Connected apps" });
+    const row = (name: string) => within(instances).getByRole("link", { name }).closest("tr");
+    expect(within(row("Code") as HTMLElement).getByText("Default for code")).toBeInTheDocument();
+    expect(
+      within(row("Code mirror") as HTMLElement).queryByText("Default for code"),
+    ).not.toBeInTheDocument();
+    await app.user.click(
+      within(row("Code mirror") as HTMLElement).getByRole("button", {
+        name: "Make default for code",
+      }),
+    );
+    await waitFor(() => expect(app.called("PUT", "/api/v1/apps/bindings/code")).toHaveLength(1));
+    expect(app.called("PUT", "/api/v1/apps/bindings/code")[0]?.body).toEqual({
+      instanceId: secondInstanceId,
+    });
+    await waitFor(() =>
+      expect(
+        within(row("Code mirror") as HTMLElement).getByText("Default for code"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      within(row("Code") as HTMLElement).queryByText("Default for code"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Code mirror is now the default for code.")).toBeInTheDocument();
+  });
+
+  it("offers to restore a missing default when the only remaining app is not it", async () => {
+    // Removing the default instance deletes its bindings without promoting
+    // another one, so the lone binding can be left without a default.
+    let bound = [binding(instanceId, "Code", false)];
+    const app = renderApp("/settings/apps", {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/instances": { status: 200, body: { items: [instance] } },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      "GET /api/v1/apps/bindings": () => ({ status: 200, body: { items: bound } }),
+      "PUT /api/v1/apps/bindings/code": ({ body }) => {
+        const target = (body as { instanceId: string }).instanceId;
+        bound = bound.map((b) => ({ ...b, isDefault: b.instanceId === target }));
+        return { status: 200, body: { items: bound } };
+      },
+    });
+    const instances = await screen.findByRole("table", { name: "Connected apps" });
+    expect(within(instances).queryByText("Default for code")).not.toBeInTheDocument();
+    await app.user.click(within(instances).getByRole("button", { name: "Make default for code" }));
+    await waitFor(() => expect(app.called("PUT", "/api/v1/apps/bindings/code")).toHaveLength(1));
+    expect(app.called("PUT", "/api/v1/apps/bindings/code")[0]?.body).toEqual({ instanceId });
+    expect(await within(instances).findByText("Default for code")).toBeInTheDocument();
+    expect(screen.getByText("Code is now the default for code.")).toBeInTheDocument();
+  });
+
+  it("does not offer a default for an app that is not active", async () => {
+    renderApp("/settings/apps", {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/instances": {
+        status: 200,
+        body: { items: [instance, { ...secondInstance, state: "degraded", health: "unhealthy" }] },
+      },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      "GET /api/v1/apps/bindings": {
+        status: 200,
+        body: {
+          items: [
+            binding(instanceId, "Code", true),
+            binding(secondInstanceId, "Code mirror", false, "degraded"),
+          ],
+        },
+      },
+    });
+    const instances = await screen.findByRole("table", { name: "Connected apps" });
+    expect(
+      within(instances).queryByRole("button", { name: "Make default for code" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("reports a failed default change and keeps the marker", async () => {
+    const app = renderApp("/settings/apps", {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/instances": { status: 200, body: { items: [instance, secondInstance] } },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      "GET /api/v1/apps/bindings": {
+        status: 200,
+        body: {
+          items: [
+            binding(instanceId, "Code", true),
+            binding(secondInstanceId, "Code mirror", false),
+          ],
+        },
+      },
+      "PUT /api/v1/apps/bindings/code": {
+        status: 404,
+        body: { type: "about:blank", title: "Not Found", status: 404 },
+        headers: { "content-type": "application/problem+json" },
+      },
+    });
+    const instances = await screen.findByRole("table", { name: "Connected apps" });
+    await app.user.click(within(instances).getByRole("button", { name: "Make default for code" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("no longer bound");
+    const code = within(instances).getByRole("link", { name: "Code" }).closest("tr");
+    expect(within(code as HTMLElement).getByText("Default for code")).toBeInTheDocument();
   });
 
   it("confirms a held removal batch with the hash it showed", async () => {
