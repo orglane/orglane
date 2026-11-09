@@ -78,6 +78,11 @@ func AppRouter(key, route string) string { return "orglane-app-" + key + "-" + r
 // RouteSource returns the app routes at the moment of a poll.
 type RouteSource func(ctx context.Context) ([]AppRoute, error)
 
+// ServedFunc is told the app routes of every configuration the handler
+// served Traefik completely: the routes Build included, in its order
+// (docs/specs/providers.md "Route publication").
+type ServedFunc func(routes []AppRoute)
+
 // noopService is Traefik's built-in service for routers that only redirect.
 const noopService = "noop@internal"
 
@@ -166,6 +171,12 @@ const (
 // route's host, and routes without a valid upstream, are left out: a bad
 // row must never take over another host.
 func Build(cfg *config.Config, apps []AppRoute) Dynamic {
+	d, _ := build(cfg, apps)
+	return d
+}
+
+// build is Build that also returns the app routes it included.
+func build(cfg *config.Config, apps []AppRoute) (Dynamic, []AppRoute) {
 	headers := &Headers{
 		FrameDeny:          true,
 		ContentTypeNosniff: true,
@@ -218,6 +229,7 @@ func Build(cfg *config.Config, apps []AppRoute) Dynamic {
 	route(RouterWorkspace, cfg.WorkspaceHostname(), ServiceCore)
 
 	hosts := map[string]bool{cfg.WorkspaceHostname(): true}
+	var included []AppRoute
 	apps = slices.Clone(apps)
 	slices.SortFunc(apps, func(a, b AppRoute) int {
 		return strings.Compare(a.Key+"\x00"+a.Route, b.Key+"\x00"+b.Route)
@@ -235,6 +247,7 @@ func Build(cfg *config.Config, apps []AppRoute) Dynamic {
 			}
 			hosts[a.Host] = true
 			route(name, a.Host, ServiceCore, MiddlewareMaintenance)
+			included = append(included, a)
 			continue
 		}
 		if !validUpstream(a.Upstream) {
@@ -246,8 +259,9 @@ func Build(cfg *config.Config, apps []AppRoute) Dynamic {
 			PassHostHeader: true,
 		}}
 		route(name, a.Host, name)
+		included = append(included, a)
 	}
-	return d
+	return d, included
 }
 
 var (
@@ -305,11 +319,12 @@ func Maintenance(workspaceHost string, next http.Handler) http.Handler {
 // NewHandler returns the handler of the internal listener: GET ConfigPath
 // returns Build(cfg, routes) as JSON, with the app routes read from source
 // on every request (nil: none). It must never be served on the public
-// listener.
+// listener. After an answer was written completely, served (if not nil)
+// gets the app routes it contained.
 //
 // If source fails, the answer is 503: Traefik then keeps the configuration
 // of its last successful poll instead of dropping the app routes.
-func NewHandler(cfg *config.Config, source RouteSource, logger *slog.Logger) (http.Handler, error) {
+func NewHandler(cfg *config.Config, source RouteSource, served ServedFunc, logger *slog.Logger) (http.Handler, error) {
 	if _, err := json.Marshal(Build(cfg, nil)); err != nil {
 		return nil, fmt.Errorf("encode traefik configuration: %w", err)
 	}
@@ -332,7 +347,8 @@ func NewHandler(cfg *config.Config, source RouteSource, logger *slog.Logger) (ht
 				return
 			}
 		}
-		body, err := json.Marshal(Build(cfg, routes))
+		d, included := build(cfg, routes)
+		body, err := json.Marshal(d)
 		if err != nil {
 			logger.ErrorContext(r.Context(), "traefik configuration: encode", "error", err)
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -340,7 +356,10 @@ func NewHandler(cfg *config.Config, source RouteSource, logger *slog.Logger) (ht
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write(body)
+		if _, err := w.Write(body); err != nil || served == nil {
+			return
+		}
+		served(included)
 	})
 	if len(allowed) == 0 {
 		return mux, nil

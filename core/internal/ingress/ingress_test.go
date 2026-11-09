@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -143,7 +144,7 @@ func TestBuildLocalMode(t *testing.T) {
 
 func TestHandler(t *testing.T) {
 	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
-	h, err := NewHandler(cfg, nil, slog.New(slog.DiscardHandler))
+	h, err := NewHandler(cfg, nil, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +209,7 @@ func TestHandlerAllowedPeers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com", "ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS": tc.allowed})
-			h, err := NewHandler(cfg, nil, slog.New(slog.DiscardHandler))
+			h, err := NewHandler(cfg, nil, nil, slog.New(slog.DiscardHandler))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -325,7 +326,9 @@ func TestHandlerAppRoutes(t *testing.T) {
 	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
 	var routes []AppRoute
 	var fail error
-	h, err := NewHandler(cfg, func(context.Context) ([]AppRoute, error) { return routes, fail }, slog.New(slog.DiscardHandler))
+	var served [][]AppRoute
+	h, err := NewHandler(cfg, func(context.Context) ([]AppRoute, error) { return routes, fail },
+		func(r []AppRoute) { served = append(served, r) }, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,10 +351,27 @@ func TestHandlerAppRoutes(t *testing.T) {
 	if code, d := poll(); code != http.StatusOK || d.HTTP.Routers[AppRouter("git", "web")].Service == "" {
 		t.Fatalf("with an app: %d %v", code, d.HTTP.Routers)
 	}
-	// A failing source is a 503, never a configuration without the apps.
+	// The served hook gets the app routes of each answer, only those Build
+	// included: a route that would take over the workspace host is not
+	// published.
+	routes = append(routes,
+		AppRoute{Key: "evil", Route: "web", Host: cfg.WorkspaceHostname(), Upstream: "http://evil-web:80"},
+		AppRoute{Key: "chat", Route: "web", Host: "chat.acme.com", Maintenance: true})
+	if code, _ := poll(); code != http.StatusOK {
+		t.Fatalf("with apps: %d", code)
+	}
+	want := [][]AppRoute{nil, routes[:1], {routes[2], routes[0]}}
+	if !reflect.DeepEqual(served, want) {
+		t.Fatalf("served =\n%+v\nwant\n%+v", served, want)
+	}
+	// A failing source is a 503, never a configuration without the apps,
+	// and nothing is reported served.
 	fail = errors.New("database down")
 	if code, _ := poll(); code != http.StatusServiceUnavailable {
 		t.Fatalf("failing source = %d, want 503", code)
+	}
+	if len(served) != len(want) {
+		t.Fatalf("a failed poll was reported served: %+v", served[len(want):])
 	}
 }
 

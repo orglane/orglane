@@ -153,6 +153,17 @@ type Config struct {
 	// returned by Install. The budget it returns (the host's resources) is
 	// checked again in the install transaction, under the install lock.
 	InstallPreflight func(ctx context.Context, plan InstallPlan) (InstallBudget, error)
+	// AwaitRoutes is set when this process serves Traefik's configuration
+	// (server.internal_listen): an installed instance then becomes active
+	// only once RoutesServed has published its route
+	// (docs/specs/providers.md "Route publication").
+	AwaitRoutes bool
+	// RouteSettle is how long a served route must stay in Traefik's
+	// configuration before it counts as applied. Defaults to 2s.
+	RouteSettle time.Duration
+	// RouteWait bounds how long a setup attempt waits for its route to be
+	// published. Defaults to 15s.
+	RouteWait time.Duration
 }
 
 // OIDCClients registers and deletes OIDC clients in the caller's
@@ -178,6 +189,10 @@ type Service struct {
 
 	// bootID is the agent boot ID seen last (uuid.UUID), for WatchAgent.
 	bootID atomic.Value
+
+	// served records the routes served to Traefik; nil unless
+	// Config.AwaitRoutes.
+	served *servedRoutes
 }
 
 // NewService returns a Service.
@@ -210,10 +225,17 @@ func NewService(pool *pgxpool.Pool, reg *Registry, keyring *crypto.Keyring, cfg 
 	cfg.AgentWatchInterval = cmp.Or(cfg.AgentWatchInterval, defaultAgentWatchInterval)
 	cfg.AgentQueueTimeout = cmp.Or(cfg.AgentQueueTimeout, defaultAgentQueueTimeout)
 	cfg.UpgradeCheckTimeout = cmp.Or(cfg.UpgradeCheckTimeout, DefaultUpgradeCheckTimeout)
+	cfg.RouteSettle = cmp.Or(cfg.RouteSettle, defaultRouteSettle)
+	cfg.RouteWait = cmp.Or(cfg.RouteWait, defaultRouteWait)
 	if cfg.Resolver == nil {
 		cfg.Resolver = NewDNSResolver()
 	}
+	var served *servedRoutes
+	if cfg.AwaitRoutes {
+		served = newServedRoutes()
+	}
 	return &Service{
+		served:        served,
 		pool:          pool,
 		reg:           reg,
 		creds:         keyring.Sealer(crypto.PurposeAppCredentials),

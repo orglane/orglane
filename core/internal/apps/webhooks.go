@@ -547,6 +547,11 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 		// hook with the value that wins.
 		setupErr = nil
 	}
+	if setupErr == nil {
+		// An installed instance is active only once Traefik serves its
+		// public route (docs/specs/providers.md "Route publication").
+		setupErr = s.awaitRoute(ctx, inst)
+	}
 	if errors.Is(setupErr, errStateChanged) {
 		// No longer installing or upgrading (an agent operation failed it,
 		// it is being removed): neither activated nor failed here.

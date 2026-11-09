@@ -317,11 +317,17 @@ installed:
 		s.t.Fatalf("installed instance = %+v", inst)
 	}
 	s.inst = inst
-	// Active means Setup succeeded through the core's upstream alias; the
-	// public host reaches Forgejo through the core's ingress route, which
-	// Traefik polls. Wait for Forgejo's own health on the public URL before
-	// any test-side admin call, so a route or service that is still coming
-	// up is not mistaken for a failed account lookup.
+	// Active means Setup succeeded through the core's upstream alias and
+	// the instance's route was published to Traefik (providers.md "Route
+	// publication"): the very first request to the public host must reach
+	// Forgejo, never Traefik's 404 for an unknown host.
+	if code, body := managedtest.Request(s.t, s.b.Client(), http.MethodGet, managedtest.ForgejoHost, "/api/healthz", managedtest.Auth{}, nil); code == http.StatusNotFound {
+		s.diagnoseInstall(created.ID)
+		s.t.Fatalf("the public route of the active instance is not served: %d %s", code, body)
+	}
+	// Then wait for Forgejo's own health on the public URL before any
+	// test-side admin call, so a service that is still coming up is not
+	// mistaken for a failed account lookup.
 	s.waitForForgejoHealth()
 	// The activation queued the first provisioning run while the default
 	// all_people policy is still in effect: wait for the owner's result to be
