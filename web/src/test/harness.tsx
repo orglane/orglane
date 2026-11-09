@@ -15,7 +15,8 @@ export interface Call {
 }
 
 export type Reply = { status: number; body?: unknown; headers?: Record<string, string> };
-type Route = (call: Call) => Reply | undefined;
+type Handler = Reply | ((call: Call) => Reply | Promise<Reply>);
+type Route = (call: Call) => Reply | Promise<Reply> | undefined;
 
 export const me = {
   person: {
@@ -69,7 +70,7 @@ export const replies = {
  * A fake Orglane API: `routes` answer by "METHOD /path"; a signed-out,
  * already set up instance by default.
  */
-export function fakeApi(routes: Record<string, Reply | ((call: Call) => Reply)> = {}) {
+export function fakeApi(routes: Record<string, Handler> = {}) {
   const calls: Call[] = [];
   const defaults: Record<string, Reply> = {
     "GET /api/v1/auth/setup": { status: 200, body: { required: false } },
@@ -91,7 +92,7 @@ export function fakeApi(routes: Record<string, Reply | ((call: Call) => Reply)> 
       body: text ? JSON.parse(text) : undefined,
     };
     calls.push(call);
-    const reply = route(call) ?? {
+    const reply = (await route(call)) ?? {
       status: 404,
       body: { type: "about:blank", title: "Not Found", status: 404 },
     };

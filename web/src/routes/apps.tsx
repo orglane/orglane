@@ -55,6 +55,7 @@ import { errorMessage } from "@/lib/errors";
 import { useMe } from "@/lib/session";
 import { teamsQuery } from "@/lib/teams";
 import { cn } from "@/lib/utils";
+import { EnableManagedCommand, InstallableApps, InstanceLifecycle } from "./apps-install";
 
 import { GitHubConnectForm, GitHubPrivateKeyUpload } from "./github-connect";
 
@@ -377,9 +378,6 @@ const messages = defineMessages({
   }),
   phaseOther: { id: "appInstance.phaseOther", defaultMessage: "In progress:" },
 });
-
-/** The one-line command that turns on managed services (docs/specs/agent.md). */
-const enableManagedCommand = "curl -fsSL https://orglane.app/install.sh | sh -s -- enable-managed";
 
 /** How often the instance page refreshes while background work runs. */
 const POLL_MS = 2000;
@@ -723,6 +721,7 @@ export function AppsSettingsPage() {
           </>
         )}
       </section>
+      {providers.data && <InstallableApps providers={providers.data.items} />}
       <section aria-labelledby="apps-matrix">
         <Card>
           <CardHeader>
@@ -1605,7 +1604,7 @@ function Provisioning({
                           <Link
                             to="/people/$personId"
                             params={{ personId: r.person.id }}
-                            className="font-medium text-primary hover:underline"
+                            className="font-medium text-primary [overflow-wrap:anywhere] hover:underline"
                           >
                             {r.person.displayName}
                           </Link>
@@ -1684,9 +1683,7 @@ function WaitingForAgent({ code }: { code: string }) {
           <p className="mt-2">
             <FormattedMessage {...messages.enableManaged} />
           </p>
-          <pre className="mt-1 overflow-x-auto rounded-md bg-muted p-2 font-mono text-xs">
-            <code>{enableManagedCommand}</code>
-          </pre>
+          <EnableManagedCommand />
         </>
       )}
     </Alert>
@@ -2073,6 +2070,9 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
         </Card>
         {instance.management === "managed" && (
           <Operations instanceId={instanceId} working={transitional.has(instance.state)} />
+        )}
+        {instance.management === "managed" && (
+          <InstanceLifecycle instance={instance} onChange={mark} />
         )}
         {instance.state !== "removed" && provisioningEnabled && (
           <>

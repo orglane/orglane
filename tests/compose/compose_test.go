@@ -39,6 +39,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/orglane/orglane/tests/demotest"
 )
 
 const (
@@ -558,6 +560,9 @@ func TestManagedProfile(t *testing.T) {
 		"COMPOSE_PROFILES=managed",
 		"ORGLANE_AGENT_IMAGE="+agentImage,
 		"ORGLANE_AGENT_SECRET="+randomHex(t, 32),
+		// Demo mode: one-click sign-in as the owner to install Forgejo
+		// through the API (install.sh --mode demo --managed).
+		"ORGLANE_DEMO_ENABLED=true",
 	)
 	// compose up --wait returned, so the agent's healthcheck (a signed
 	// request over its socket) passed. The workspace answers on its name.
@@ -657,4 +662,95 @@ func TestManagedProfile(t *testing.T) {
 	if got := b.containerEnv("orglane", "ORGLANE_SERVER_INTERNAL_ALLOWED_PEERS"); got != prefix+".2/32" {
 		t.Errorf("internal allowed peers = %q, want Traefik's address %s.2/32", got, prefix)
 	}
+
+	installForgejo(t, b, b.port("traefik", 80))
+}
+
+// installForgejo installs Forgejo through the API of a managed bundle in
+// demo mode (install.sh --mode demo --managed, docs/specs/providers.md
+// "Spec gaps decided in #61": Demo mode) and reaches it through the bundle's
+// Traefik at git.orglane.localhost, by the route the core gives Traefik.
+func installForgejo(t *testing.T, b *bundle, traefik string) {
+	t.Helper()
+	// Every request goes to Traefik, whatever host it names: the test host
+	// need not resolve *.localhost.
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	client := &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: noRedirects,
+		Transport: &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, traefik)
+		}},
+	}
+	owner := demotest.SignInWith(t, client, "http://orglane.localhost", "")
+	code, _, body := owner.Get(t, "/api/v1/apps/agent")
+	if code != http.StatusOK || !strings.Contains(string(body), `"connected":true`) {
+		t.Fatalf("GET /api/v1/apps/agent = %d %s", code, body)
+	}
+	project := b.project + "-git"
+	t.Cleanup(func() {
+		// The instance's containers and network, before the bundle goes.
+		ctx := context.WithoutCancel(t.Context())
+		out, _ := exec.CommandContext(ctx, "docker", "ps", "-aq", "--filter", "label=com.docker.compose.project="+project).Output() //nolint:gosec // fixed docker commands
+		if ids := strings.Fields(string(out)); len(ids) > 0 {
+			_ = exec.CommandContext(ctx, "docker", append([]string{"rm", "-f"}, ids...)...).Run() //nolint:gosec // fixed docker commands
+		}
+		_ = exec.CommandContext(ctx, "docker", "network", "rm", project+"_default").Run() //nolint:gosec // fixed docker commands
+	})
+	start := time.Now()
+	code, _, body = owner.Do(t, http.MethodPost, "/api/v1/apps/instances", map[string]any{
+		"provider": "forgejo",
+		"settings": map[string]any{"ssh_port": freeLocalPort(t)},
+	})
+	if code != http.StatusAccepted {
+		t.Fatalf("install Forgejo = %d %s", code, body)
+	}
+	var inst struct {
+		ID, Key, State, BaseURL string
+	}
+	if err := json.Unmarshal(body, &inst); err != nil || inst.Key != "git" {
+		t.Fatalf("installed %s (%v)", body, err)
+	}
+	// The agent installs it (pulling the image the first time), Setup
+	// activates it.
+	deadline := time.Now().Add(8 * time.Minute)
+	for {
+		code, _, body = owner.Get(t, "/api/v1/apps/instances/"+inst.ID)
+		var d struct {
+			Instance struct{ State, HealthCode string } `json:"instance"`
+		}
+		_ = json.Unmarshal(body, &d)
+		if code == http.StatusOK && d.Instance.State == "active" {
+			break
+		}
+		if d.Instance.State == "failed" || time.Now().After(deadline) {
+			_, _, ops := owner.Get(t, "/api/v1/apps/instances/"+inst.ID+"/operations")
+			t.Fatalf("Forgejo did not become active: %s\noperations: %s", body, ops)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Logf("install-time: Forgejo active in %s", time.Since(start).Round(time.Second))
+	// Traefik polls the core's routes.
+	waitFor(t, client, "http://git.orglane.localhost/api/healthz", "git.orglane.localhost", time.Minute)
+	waitFor(t, client, "http://git.orglane.localhost/user/login", "git.orglane.localhost", time.Minute)
+	// Idle memory of the Forgejo container after install and setup.
+	time.Sleep(15 * time.Second)
+	id, err := exec.CommandContext(t.Context(), "docker", "ps", "-q", "--filter", "label=com.docker.compose.project="+project, //nolint:gosec // fixed docker commands
+		"--filter", "label=com.docker.compose.service=forgejo").Output()
+	if err == nil && strings.TrimSpace(string(id)) != "" {
+		if out, err := exec.CommandContext(t.Context(), "docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", strings.TrimSpace(string(id))).Output(); err == nil { //nolint:gosec // fixed docker commands
+			t.Logf("idle-memory: Forgejo after install and setup: %s", strings.TrimSpace(string(out)))
+		}
+	}
+}
+
+// freeLocalPort returns a free TCP port on the loopback interface.
+func freeLocalPort(t *testing.T) int {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port
 }
