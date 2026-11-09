@@ -58,7 +58,7 @@ func TestFailedStateWriteIsNotSuccess(t *testing.T) {
 	if err != nil || !st.pending() || st.current != nil {
 		t.Fatalf("state after restart: pending %v, current %+v, %v", st.pending(), st.current, err)
 	}
-	retry, err := b.ops.create("git", agentapi.KindApply, 1)
+	retry, err := b.ops.create("git", agentapi.KindApply, 1, testSpec(1).InstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}

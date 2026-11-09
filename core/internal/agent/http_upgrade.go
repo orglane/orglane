@@ -104,7 +104,7 @@ func (a *Agent) acceptSnapshot(in *instance, dir string) (agentapi.Operation, fu
 	if a.busyLocked(in, j) {
 		return fail(http.StatusConflict, agentapi.CodeAgentBusy, "an operation runs on the instance")
 	}
-	op, err := a.ops.create(in.key, agentapi.KindSnapshot, 0)
+	op, err := a.ops.create(in.key, agentapi.KindSnapshot, 0, st.id)
 	if err != nil {
 		return internal(err)
 	}
@@ -219,14 +219,14 @@ func (a *Agent) acceptRestore(in *instance, dir string, req agentapi.RestoreRequ
 	}
 	restored := *spec
 	restored.Generation = req.Generation
-	if err := a.supersede(in.key, req.Generation); err != nil {
+	if err := a.supersede(in.key, req.Generation, st.id); err != nil {
 		return internal(err)
 	}
 	// The operation, then the journal, then the accepted spec: a crash in
 	// between leaves an interrupted operation and nothing changed, or a
 	// journal that recovery finishes (finalize also records the spec as
 	// accepted).
-	op, err := a.ops.create(in.key, agentapi.KindRestore, req.Generation)
+	op, err := a.ops.create(in.key, agentapi.KindRestore, req.Generation, st.id)
 	if err != nil {
 		return internal(err)
 	}

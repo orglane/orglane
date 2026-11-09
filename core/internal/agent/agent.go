@@ -187,6 +187,9 @@ func New(opts Options) (*Agent, error) {
 	if err := a.ops.load(); err != nil {
 		return nil, fmt.Errorf("agent: load operations: %w", err)
 	}
+	if err := a.assignLegacyOwners(); err != nil {
+		return nil, fmt.Errorf("agent: assign operation owners: %w", err)
+	}
 	if err := a.removeAllPartialSnapshots(); err != nil {
 		return nil, fmt.Errorf("agent: remove partial snapshots: %w", err)
 	}
@@ -468,6 +471,48 @@ func (a *Agent) renderContext(key string) packages.RenderContext {
 	}
 }
 
+// assignLegacyOwners assigns the operations a previous agent version
+// persisted without an instance ID when, and only when, the key's purge
+// record proves the current binding owns them: the binding was created after
+// that record, so an operation that started after it cannot belong to the
+// purged instance. Without a purge record an older agent version may have
+// reused the key without recording the purge, so absence of a record is not
+// evidence: the operation stays unowned and is recovered as interrupted
+// rather than attributed to the current binding.
+func (a *Agent) assignLegacyOwners() error {
+	type binding struct {
+		id     uuid.UUID
+		purged *purgedRecord
+	}
+	states := map[string]binding{}
+	for _, op := range a.ops.unowned() {
+		if !agentapi.KeyPattern.MatchString(op.Instance) {
+			continue
+		}
+		b, ok := states[op.Instance]
+		if !ok {
+			purged, err := readPurged(a.purgedPath(op.Instance))
+			if err != nil {
+				return err
+			}
+			var id uuid.UUID
+			if purged != nil {
+				st, err := loadState(a.instanceDir(op.Instance))
+				if err != nil {
+					return err
+				}
+				id = st.id
+			}
+			b = binding{id: id, purged: purged}
+			states[op.Instance] = b
+		}
+		if b.id != uuid.Nil && b.purged != nil && op.StartedAt.After(b.purged.At) {
+			a.ops.setOwner(op.ID, b.id)
+		}
+	}
+	return nil
+}
+
 // recoverOperations settles the operations a previous process left
 // unfinished. An upgrade or restore with a journal is left to journal
 // recovery (recoverJournal); a durable failed rollback is recorded from it.
@@ -477,7 +522,7 @@ func (a *Agent) renderContext(key string) packages.RenderContext {
 // did a purge whose purge record names that operation; a pending generation
 // runs again; a generation replaced by a newer accepted spec is superseded;
 // a blocked one fails with its blocking code. Anything else fails as
-// interrupted.
+// interrupted, as does an operation that belongs to another instance.
 func (a *Agent) recoverOperations() error {
 	var errs []error
 	for _, op := range a.ops.unfinished() {
@@ -508,7 +553,7 @@ func (a *Agent) recoverOperations() error {
 					errs = append(errs, err)
 					continue
 				}
-				state, code = recoveredOutcome(st, purged, op)
+				state, code = recoveredOutcome(st, purged, a.ops.ownerOf(op.ID), op)
 				if state == agentapi.OpSucceeded && st.id == uuid.Nil && op.Kind == agentapi.KindRemove {
 					// The purge record is written before the rename, so it
 					// alone does not prove the directory stays gone. Sync the
@@ -574,9 +619,21 @@ func (a *Agent) cleanAllMovedAside() {
 }
 
 // recoveredOutcome is the state and error code of an unfinished apply,
-// remove or upgrade operation without a journal after a restart.
-func recoveredOutcome(st *instanceState, purged *purgedRecord, op agentapi.Operation) (string, string) {
+// remove or upgrade operation without a journal after a restart. owner is
+// the instance the operation belongs to, uuid.Nil when its file predates
+// recorded ownership and the key's purge record does not prove otherwise.
+func recoveredOutcome(st *instanceState, purged *purgedRecord, owner uuid.UUID, op agentapi.Operation) (string, string) {
 	gen := op.Generation
+	// Never settle an operation from another instance's directory: a key
+	// may have been reused after a purge at the same generation. An
+	// ownerless operation that startup could not attribute to the current
+	// binding (assignLegacyOwners) is not evidence about it either.
+	if owner == uuid.Nil && st.id != uuid.Nil {
+		return agentapi.OpFailed, agentapi.CodeInterrupted
+	}
+	if owner != uuid.Nil && st.id != uuid.Nil && owner != st.id {
+		return agentapi.OpFailed, agentapi.CodeInterrupted
+	}
 	switch {
 	case st.id == uuid.Nil:
 		// No directory: the key was purged. Only the operation the purge

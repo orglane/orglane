@@ -263,7 +263,7 @@ func TestJournalOperationSurvivesRetention(t *testing.T) {
 				if _, err := a.ops.update(op.ID, func(o *agentapi.Operation) { o.State = result }); err != nil {
 					t.Fatal(err)
 				}
-				unrelated, err := a.ops.create("git", agentapi.KindSnapshot, 0)
+				unrelated, err := a.ops.create("git", agentapi.KindSnapshot, 0, testSpec(1).InstanceID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -394,7 +394,7 @@ func TestRecoverDurableRollbackFailure(t *testing.T) {
 				if rec := put(t, a, now, "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusAccepted {
 					t.Fatal(rec.Body)
 				}
-				op, err := a.ops.create("git", kind, 2)
+				op, err := a.ops.create("git", kind, 2, testSpec(1).InstanceID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -441,7 +441,7 @@ func TestSnapshotRejectedAfterRollbackFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapID := writeTestSnapshot(t, a, agentapi.SnapshotReasonUpgrade, true)
-	op, err := a.ops.create("git", agentapi.KindUpgrade, 2)
+	op, err := a.ops.create("git", agentapi.KindUpgrade, 2, testSpec(1).InstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +483,7 @@ func TestRecoverDecidedFailureBeforeSwitch(t *testing.T) {
 			if rec := put(t, a, now, "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusAccepted {
 				t.Fatal(rec.Body)
 			}
-			op, err := a.ops.create("git", agentapi.KindUpgrade, 2)
+			op, err := a.ops.create("git", agentapi.KindUpgrade, 2, testSpec(1).InstanceID)
 			if err != nil {
 				t.Fatal(err)
 			}

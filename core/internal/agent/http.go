@@ -263,12 +263,14 @@ func (a *Agent) handlePut(w http.ResponseWriter, r *http.Request) {
 // instance's directory entry is synced first: a host crash between
 // publishing a remove and losing a new binding's directory entry would
 // otherwise leave an operation that the previous instance's purge record
-// could settle (recoveredOutcome).
-func (a *Agent) createOperation(key, kind string, generation int64) (agentapi.Operation, error) {
+// could settle (recoveredOutcome). The operation is owned by the immutable
+// instance whose binding the caller just made durable, so a key reused after
+// a purge never returns the previous instance's operations.
+func (a *Agent) createOperation(key, kind string, generation int64, owner uuid.UUID) (agentapi.Operation, error) {
 	if err := a.syncDirectory(a.instancesDir); err != nil {
 		return agentapi.Operation{}, err
 	}
-	return a.ops.create(key, kind, generation)
+	return a.ops.create(key, kind, generation, owner)
 }
 
 // accept decides on a spec and persists it; the caller holds the
@@ -315,7 +317,7 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 				if p.Operation == uuid.Nil {
 					return internal(errors.New("the purge record names no operation"))
 				}
-				if op, err = a.ops.recreate(p.Operation, key, agentapi.KindRemove, p.Generation); err != nil {
+				if op, err = a.ops.recreate(p.Operation, key, agentapi.KindRemove, p.Generation, p.InstanceID); err != nil {
 					return internal(err)
 				}
 				a.at("purge-retry-recorded")
@@ -341,10 +343,16 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 		case spec.Generation == d.Generation && spec.Hash() != d.Hash():
 			return fail(http.StatusConflict, agentapi.CodeGenerationConflict, "this generation was accepted with other content", nil)
 		case spec.Generation == d.Generation:
-			op, ok := a.ops.forGeneration(key, spec.Generation)
+			// Only an operation this binding owns may answer the retry: a
+			// key reused after a purge still has the previous instance's
+			// operations for the same key and generation.
+			op, ok := a.ops.forGeneration(key, spec.Generation, spec.InstanceID)
 			if !ok {
-				// The operation was pruned; record the outcome again.
-				if op, err = a.createOperation(key, opKind(spec, st.current), spec.Generation); err != nil {
+				// The operation was pruned, or the acceptance failed after
+				// desired.json was written (for example the parent sync
+				// before the operation): record this instance's operation
+				// and complete the acceptance.
+				if op, err = a.createOperation(key, opKind(spec, st.current), spec.Generation, spec.InstanceID); err != nil {
 					return internal(err)
 				}
 				if st.current != nil && st.current.Generation >= spec.Generation {
@@ -400,25 +408,28 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 		if err := writeJSON(filepath.Join(dir, instanceFile), bind); err != nil {
 			return internal(err)
 		}
+		a.at("accepted-binding")
 	}
 	if err := writeSpec(filepath.Join(dir, desiredFile), spec); err != nil {
 		return internal(err)
 	}
-	if err := a.supersede(key, spec.Generation); err != nil {
+	a.at("accepted-desired")
+	if err := a.supersede(key, spec.Generation, spec.InstanceID); err != nil {
 		return internal(err)
 	}
-	op, err := a.createOperation(key, opKind(spec, st.current), spec.Generation)
+	op, err := a.createOperation(key, opKind(spec, st.current), spec.Generation, spec.InstanceID)
 	if err != nil {
 		return internal(err)
 	}
+	a.at("accepted-operation")
 	return op, http.StatusAccepted, nil
 }
 
-// supersede fails the queued operations of older generations: only the
-// newest accepted spec is applied.
-func (a *Agent) supersede(key string, gen int64) error {
-	for _, old := range a.ops.unfinished() {
-		if old.Instance == key && old.State == agentapi.OpQueued && old.Generation < gen &&
+// supersede fails the queued operations of older generations owned by the
+// instance accepting the new spec: only its newest accepted spec is applied.
+func (a *Agent) supersede(key string, gen int64, owner uuid.UUID) error {
+	for _, old := range a.ops.unfinishedOwned(key, owner) {
+		if old.State == agentapi.OpQueued && old.Generation < gen &&
 			(old.Kind == agentapi.KindApply || old.Kind == agentapi.KindRemove || old.Kind == agentapi.KindUpgrade) {
 			if _, err := a.ops.update(old.ID, func(o *agentapi.Operation) {
 				o.State, o.ErrorCode = agentapi.OpFailed, agentapi.CodeSuperseded

@@ -93,8 +93,8 @@ func decodeOp(t *testing.T, rec *httptest.ResponseRecorder) agentapi.Operation {
 }
 
 // assertPurged checks that the key is free: no directory, no trash, no
-// status, and no operation of the key other than want.
-func assertPurged(t *testing.T, a *Agent, want uuid.UUID) {
+// status, and no operation of the key other than want, owned by owner.
+func assertPurged(t *testing.T, a *Agent, want, owner uuid.UUID) {
 	t.Helper()
 	if _, err := os.Stat(a.instanceDir("git")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("instance directory after the purge: %v", err)
@@ -105,7 +105,10 @@ func assertPurged(t *testing.T, a *Agent, want uuid.UUID) {
 	if _, found, err := a.status(t.Context(), "git"); found || err != nil {
 		t.Fatalf("status after the purge: found %v, %v", found, err)
 	}
-	if op, ok := a.ops.forGeneration("git", 2); !ok || op.ID != want || op.State != agentapi.OpSucceeded {
+	if got := a.ops.ownerOf(want); got != owner {
+		t.Fatalf("purge operation %s is owned by %s, want %s", want, got, owner)
+	}
+	if op, ok := a.ops.forGeneration("git", 2, owner); !ok || op.ID != want || op.State != agentapi.OpSucceeded {
 		t.Fatalf("purge operation = %+v, want %s succeeded", op, want)
 	}
 	for _, op := range a.ops.unfinished() {
@@ -162,13 +165,13 @@ func TestPurgeRetryDuringCompletion(t *testing.T) {
 			t.Fatalf("retry during the purge = %d %+v, want 200 with %s succeeded", got.rec.Code, o, op.ID)
 		}
 	}
-	assertPurged(t, a, op.ID)
+	assertPurged(t, a, op.ID, purge.InstanceID)
 
 	// The lost answer is retried after the purge, also after a restart.
 	retryPurge(t, a, cfg.now, purge, op.ID)
 	b := cfg.agent(t, nil)
 	retryPurge(t, b, cfg.now, purge, op.ID)
-	assertPurged(t, b, op.ID)
+	assertPurged(t, b, op.ID, purge.InstanceID)
 
 	// The purge record keeps the generation fence for the purged instance.
 	if rec := put(t, b, cfg.now, "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusConflict || problemCode(t, rec).Code != agentapi.CodeStaleGeneration {
@@ -230,7 +233,7 @@ func TestPurgeCrashRecovery(t *testing.T) {
 			} else if got.State != agentapi.OpSucceeded {
 				t.Fatalf("operation after the restart = %+v, want succeeded", got)
 			}
-			assertPurged(t, b, op.ID)
+			assertPurged(t, b, op.ID, purge.InstanceID)
 			retryPurge(t, b, cfg.now, purge, op.ID)
 		})
 	}
@@ -394,7 +397,7 @@ func TestRecoverPurgeSyncsTheRename(t *testing.T) {
 				t.Fatal(err)
 			}
 			spec := testSpec(2)
-			op, err := a.ops.create("git", agentapi.KindRemove, spec.Generation)
+			op, err := a.ops.create("git", agentapi.KindRemove, spec.Generation, spec.InstanceID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -428,7 +431,7 @@ func TestPurgeRetryAfterPruningSyncsTheRename(t *testing.T) {
 	cfg := newPurgeEnv(t)
 	a, purge, op := purgeAgent(t, cfg, nil)
 	a.reconcile(t.Context(), a.instance("git"))
-	assertPurged(t, a, op.ID)
+	assertPurged(t, a, op.ID, purge.InstanceID)
 
 	pruneOperation(t, a, op.ID, cfg.now)
 
@@ -457,7 +460,7 @@ func TestPurgeRetryAfterPruningKeepsIdentity(t *testing.T) {
 	cfg := newPurgeEnv(t)
 	a, purge, op := purgeAgent(t, cfg, nil)
 	a.reconcile(t.Context(), a.instance("git"))
-	assertPurged(t, a, op.ID)
+	assertPurged(t, a, op.ID, purge.InstanceID)
 	pruneOperation(t, a, op.ID, cfg.now)
 
 	rec := put(t, a, cfg.now, "git", mustJSON(t, purge))
@@ -477,7 +480,7 @@ func TestPurgeRetryAfterPruningKeepsIdentity(t *testing.T) {
 	if rec.Code != http.StatusOK || third.ID != op.ID || third.State != agentapi.OpSucceeded {
 		t.Fatalf("retry after a restart = %d %+v, want 200 with %s succeeded", rec.Code, third, op.ID)
 	}
-	assertPurged(t, b, op.ID)
+	assertPurged(t, b, op.ID, purge.InstanceID)
 }
 
 // TestPurgeRetryAfterPruningKeepsFailedResult: a sync failure recorded by a
@@ -488,7 +491,7 @@ func TestPurgeRetryAfterPruningKeepsFailedResult(t *testing.T) {
 	cfg := newPurgeEnv(t)
 	a, purge, op := purgeAgent(t, cfg, nil)
 	a.reconcile(t.Context(), a.instance("git"))
-	assertPurged(t, a, op.ID)
+	assertPurged(t, a, op.ID, purge.InstanceID)
 	pruneOperation(t, a, op.ID, cfg.now)
 
 	a.opts.syncDir = func(string) error { return errors.New("injected directory sync failure") }
@@ -525,7 +528,7 @@ func TestPurgeRetryAfterPruningCrashRecovery(t *testing.T) {
 		}
 	})
 	a.reconcile(t.Context(), a.instance("git"))
-	assertPurged(t, a, op.ID)
+	assertPurged(t, a, op.ID, purge.InstanceID)
 	pruneOperation(t, a, op.ID, cfg.now)
 
 	done := make(chan struct{})
@@ -556,7 +559,7 @@ func TestPurgeRecordDoesNotSettleAnotherInstance(t *testing.T) {
 	cfg := newPurgeEnv(t)
 	a, purge, op := purgeAgent(t, cfg, nil)
 	a.reconcile(t.Context(), a.instance("git"))
-	assertPurged(t, a, op.ID)
+	assertPurged(t, a, op.ID, purge.InstanceID)
 
 	remove := testSpec(purge.Generation)
 	remove.InstanceID = uuid.MustParse("0190f0f0-0000-7000-8000-000000000002")
@@ -599,7 +602,7 @@ func TestNewBindingIsDurableBeforeOperation(t *testing.T) {
 	var synced []string
 	a.opts.syncDir = func(path string) error {
 		if path == a.instancesDir {
-			if _, ok := a.ops.forGeneration("git", 1); ok {
+			if _, ok := a.ops.forGeneration("git", 1, testSpec(1).InstanceID); ok {
 				t.Error("the operation was published before the binding was synced")
 			}
 		}
@@ -625,13 +628,13 @@ func TestNewBindingIsDurableBeforeOperation(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("install with a failed binding sync: %d %s", rec.Code, rec.Body)
 	}
-	if _, ok := a.ops.forGeneration("wiki", 1); ok {
+	if _, ok := a.ops.forGeneration("wiki", 1, testSpec(1).InstanceID); ok {
 		t.Fatal("an operation was published although the binding sync failed")
 	}
 
 	a.opts.syncDir = func(path string) error {
 		if path == a.instancesDir {
-			if _, ok := a.ops.forGeneration("wiki", 1); ok {
+			if _, ok := a.ops.forGeneration("wiki", 1, testSpec(1).InstanceID); ok {
 				t.Error("the operation was published before the binding was synced")
 			}
 		}
@@ -641,7 +644,7 @@ func TestNewBindingIsDurableBeforeOperation(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("retry after the failed sync: %d %s", rec.Code, rec.Body)
 	}
-	if op, ok := a.ops.forGeneration("wiki", 1); !ok || op.State != agentapi.OpQueued {
+	if op, ok := a.ops.forGeneration("wiki", 1, testSpec(1).InstanceID); !ok || op.State != agentapi.OpQueued {
 		t.Fatalf("operation after the retry = %+v (%t), want queued", op, ok)
 	}
 }

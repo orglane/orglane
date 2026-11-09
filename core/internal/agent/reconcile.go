@@ -113,10 +113,10 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 	switch {
 	case st.pending():
 		target = st.desired
-		o, ok := a.ops.forGeneration(in.key, target.Generation)
+		o, ok := a.ops.forGeneration(in.key, target.Generation, st.id)
 		if !ok || o.Terminal() {
 			// A retry after a failure, or an operation pruned meanwhile.
-			if o, err = a.createOperation(in.key, opKind(target, st.current), target.Generation); err != nil {
+			if o, err = a.createOperation(in.key, opKind(target, st.current), target.Generation, st.id); err != nil {
 				a.log.Error("create operation", "instance", in.key, "error", err)
 				a.clearBusy(in, agentapi.CodeInternal)
 				return
@@ -655,7 +655,7 @@ func (a *Agent) status(ctx context.Context, key string) (agentapi.InstanceStatus
 	if st.desired != nil {
 		out.AcceptedGeneration = st.desired.Generation
 	}
-	if op, ok := a.ops.latest(key); ok {
+	if op, ok := a.ops.latest(key, st.id); ok {
 		out.Operation = &op
 	}
 	a.mu.Lock()
