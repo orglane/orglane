@@ -313,10 +313,14 @@ branches to `main` and explicitly authorized manual-dispatch branches, and never
 expose it to untrusted PR code. The workflow maps secret/variable names to the
 same process environment names and serializes runs (`concurrency: github-live`).
 
-Run the shared target:
+Run the shared target, which also runs the M2 acceptance scenario's GitHub
+part through the core's provisioning pipeline:
 
 ```sh
+make test-github-live
+# equivalent to:
 go test -tags integration -count=1 -timeout 10m -v -skip '^TestGitHubLiveJanitor$' ./providers/github
+go test -tags integration -count=1 -timeout 10m -v -run '^TestM2AcceptanceGitHubLive$' ./core/internal/apps
 ```
 
 Locally and on PRs, missing inputs clearly skip the live test. In the protected
@@ -331,6 +335,16 @@ attribute the invitation to the App's bot (`<app-slug>[bot]`). Tests use real
 GitHub with no API mocks; temporary teams follow the naming convention above and
 are deleted by the test. The workflow should run the
 same package target as #65/#66 extend it.
+
+The M2 acceptance scenario adds the core's side of the same live resources:
+`TestM2AcceptanceGitHubLive` (in `core/internal/apps`, build tag `integration`)
+connects the App through the provisioning pipeline, adds the verified bot
+account to a mapped team, verifies the membership with the real API and
+deletes the temporary team. It creates no repository and does not open pull
+requests or comments; those need a repository explicitly selected for the
+bot's fine-grained token (see below). Without the nine settings the test
+skips with a message naming them, and `ORGLANE_REQUIRE_GITHUB_LIVE=1` turns
+that into a failure.
 
 External acceptance remains incomplete until that test passes with supplied
 resources. Before release, also run the guided manifest/create/install browser

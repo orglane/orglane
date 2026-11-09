@@ -145,42 +145,56 @@ type recorded struct {
 // recorded requests to the core as the endpoint would.
 func (s *forgejoSite) deliveries(t *testing.T, after, want int) []recorded {
 	t.Helper()
+	return forgejoDeliveries(t, s.b, after, want)
+}
+
+// forgejoDeliveries waits until Forgejo has attempted want deliveries after
+// id and returns them as Forgejo recorded them.
+func forgejoDeliveries(t *testing.T, b *managedtest.Bundle, after, want int) []recorded {
+	t.Helper()
 	var out []recorded
 	managedtest.Eventually(t, time.Minute, "Forgejo attempts the deliveries", func() bool {
-		// Forgejo marks a task delivered before it sends it, and records the
-		// request afterwards: only tasks with a recorded request count.
-		rows := s.b.Psql(t, "svc_git", "select row_to_json(t) from (select id, event_type, request_content from hook_task where id > "+
-			strconv.Itoa(after)+" and is_delivered and coalesce(request_content, '') <> '' order by id) t")
-		out = nil
-		for _, line := range strings.Split(rows, "\n") {
-			if line == "" {
-				continue
-			}
-			var row struct {
-				ID             int    `json:"id"`
-				EventType      string `json:"event_type"`
-				RequestContent string `json:"request_content"`
-			}
-			if err := json.Unmarshal([]byte(line), &row); err != nil {
-				t.Fatal(err)
-			}
-			var req struct {
-				Headers map[string]string `json:"headers"`
-				Body    string            `json:"body"`
-			}
-			if err := json.Unmarshal([]byte(row.RequestContent), &req); err != nil {
-				t.Fatal(err)
-			}
-			h := http.Header{}
-			for k, v := range req.Headers {
-				h.Set(k, v)
-			}
-			out = append(out, recorded{id: row.ID, event: row.EventType, headers: h, body: []byte(req.Body)})
-		}
+		out = forgejoRecorded(t, b, after)
 		return len(out) >= want
 	})
 	if len(out) != want {
 		t.Fatalf("%d deliveries, want %d", len(out), want)
+	}
+	return out
+}
+
+// forgejoRecorded returns the deliveries Forgejo recorded after id. Forgejo
+// marks a task delivered before it sends it, and records the request
+// afterwards: only tasks with a recorded request count.
+func forgejoRecorded(t *testing.T, b *managedtest.Bundle, after int) []recorded {
+	t.Helper()
+	rows := b.Psql(t, "svc_git", "select row_to_json(t) from (select id, event_type, request_content from hook_task where id > "+
+		strconv.Itoa(after)+" and is_delivered and coalesce(request_content, '') <> '' order by id) t")
+	var out []recorded
+	for _, line := range strings.Split(rows, "\n") {
+		if line == "" {
+			continue
+		}
+		var row struct {
+			ID             int    `json:"id"`
+			EventType      string `json:"event_type"`
+			RequestContent string `json:"request_content"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		var req struct {
+			Headers map[string]string `json:"headers"`
+			Body    string            `json:"body"`
+		}
+		if err := json.Unmarshal([]byte(row.RequestContent), &req); err != nil {
+			t.Fatal(err)
+		}
+		h := http.Header{}
+		for k, v := range req.Headers {
+			h.Set(k, v)
+		}
+		out = append(out, recorded{id: row.ID, event: row.EventType, headers: h, body: []byte(req.Body)})
 	}
 	return out
 }
@@ -226,7 +240,13 @@ func (s *forgejoSite) events(t *testing.T) []storedEvent {
 
 func (s *forgejoSite) lastTask(t *testing.T) int {
 	t.Helper()
-	n, err := strconv.Atoi(s.b.Psql(t, "svc_git", "select coalesce(max(id), 0) from hook_task"))
+	return forgejoLastTask(t, s.b)
+}
+
+// forgejoLastTask returns the ID of the newest Forgejo hook task.
+func forgejoLastTask(t *testing.T, b *managedtest.Bundle) int {
+	t.Helper()
+	n, err := strconv.Atoi(b.Psql(t, "svc_git", "select coalesce(max(id), 0) from hook_task"))
 	if err != nil {
 		t.Fatal(err)
 	}

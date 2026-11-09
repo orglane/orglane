@@ -65,7 +65,7 @@ IMAGE ?= orglane:dev
 AGENT_IMAGE ?= orglane-agent:dev
 
 .PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image image-agent website website-dev generate check-generate check-generate-go check-generate-ts \
-	test test-go test-unit test-root test-integration test-compose test-install measure-memory conformance test-ts test-e2e test-e2e-if-available test-website test-website-if-available \
+	test test-go test-unit test-root test-integration test-compose test-install test-github-live measure-memory conformance test-ts test-e2e test-e2e-if-available test-website test-website-if-available \
 	lint lint-go lint-ts lint-sh fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
 help: ## Show available targets
@@ -253,6 +253,13 @@ test-compose: ## Start the Compose bundle (local mode, domain mode with Pebble) 
 
 test-install: ## Run the installer end to end: local, demo and domain mode with Pebble (needs Docker)
 	go test -count=1 -tags integration -v ./tests/install/
+
+# The protected github-live environment maps these values; without them the
+# tests skip with a message (the workflow sets ORGLANE_REQUIRE_GITHUB_LIVE=1,
+# which turns a missing value into a failure). The janitor runs separately.
+test-github-live: ## Run the real-GitHub tests (needs the github-live environment)
+	go test -tags integration -count=1 -timeout 10m -v -skip '^TestGitHubLiveJanitor$$' ./providers/github
+	go test -tags integration -count=1 -timeout 10m -v -run '^TestM2AcceptanceGitHubLive$$' ./core/internal/apps
 
 measure-memory: ## Report idle RSS of the server against Postgres (needs Docker; warning only)
 	go test -count=1 -tags integration -run '^TestIdleMemory$$' -v ./tests/integration/ | grep -E '^(orglane-memory:|--- FAIL|FAIL)'
