@@ -426,7 +426,11 @@ func TestHandlerCompletesBeforeServed(t *testing.T) {
 	}
 	srv := httptest.NewServer(h)
 	defer srv.Close()
-	resp, err := srv.Client().Get(srv.URL + ConfigPath)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+ConfigPath, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
