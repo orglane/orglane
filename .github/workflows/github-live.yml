@@ -1,0 +1,86 @@
+# Real GitHub tests use a dedicated organization, App and bot (issue #71).
+# Never add PR triggers: the protected environment permits main, with an exact
+# reviewed same-repository branch temporarily allowed for manual acceptance.
+# See docs/github-live.md before changing the environment or dispatching.
+name: GitHub live
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: github-live
+  cancel-in-progress: false
+
+jobs:
+  trusted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Validate the invocation before requesting the environment
+        shell: bash
+        run: |
+          case "$GITHUB_REPOSITORY:$GITHUB_EVENT_NAME:$GITHUB_REF_TYPE:$GITHUB_REF" in
+            orglane/orglane:push:branch:refs/heads/main|orglane/orglane:schedule:branch:refs/heads/main|orglane/orglane:workflow_dispatch:branch:refs/heads/*)
+              ;;
+            *)
+              echo '::error::GitHub live tests require main or a maintainer-authorized manual branch in orglane/orglane.'
+              exit 1
+              ;;
+          esac
+
+  live:
+    needs: trusted
+    environment: github-live
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read # Janitor proves resource age using this repository's run metadata.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Run the real GitHub provider and M2 acceptance tests
+        id: tests
+        timeout-minutes: 20
+        env:
+          ORGLANE_REQUIRE_GITHUB_LIVE: "1"
+          ORGLANE_TEST_GITHUB_ORG: ${{ vars.ORGLANE_TEST_GITHUB_ORG }}
+          ORGLANE_TEST_GITHUB_APP_ID: ${{ vars.ORGLANE_TEST_GITHUB_APP_ID }}
+          ORGLANE_TEST_GITHUB_APP_CLIENT_ID: ${{ vars.ORGLANE_TEST_GITHUB_APP_CLIENT_ID }}
+          ORGLANE_TEST_GITHUB_INSTALLATION_ID: ${{ vars.ORGLANE_TEST_GITHUB_INSTALLATION_ID }}
+          ORGLANE_TEST_GITHUB_USER_LOGIN: ${{ vars.ORGLANE_TEST_GITHUB_USER_LOGIN }}
+          ORGLANE_TEST_GITHUB_USER_ID: ${{ vars.ORGLANE_TEST_GITHUB_USER_ID }}
+          ORGLANE_TEST_GITHUB_APP_PRIVATE_KEY: ${{ secrets.ORGLANE_TEST_GITHUB_APP_PRIVATE_KEY }}
+          ORGLANE_TEST_GITHUB_WEBHOOK_SECRET: ${{ secrets.ORGLANE_TEST_GITHUB_WEBHOOK_SECRET }}
+          ORGLANE_TEST_GITHUB_USER_TOKEN: ${{ secrets.ORGLANE_TEST_GITHUB_USER_TOKEN }}
+        run: bash .github/scripts/github-live.sh tests
+      - name: Remove verified test leftovers older than a day
+        id: janitor
+        if: ${{ always() && steps.tests.outcome != 'skipped' }}
+        timeout-minutes: 7
+        env:
+          ORGLANE_REQUIRE_GITHUB_LIVE: "1"
+          ORGLANE_TEST_GITHUB_ORG: ${{ vars.ORGLANE_TEST_GITHUB_ORG }}
+          ORGLANE_TEST_GITHUB_APP_ID: ${{ vars.ORGLANE_TEST_GITHUB_APP_ID }}
+          ORGLANE_TEST_GITHUB_APP_CLIENT_ID: ${{ vars.ORGLANE_TEST_GITHUB_APP_CLIENT_ID }}
+          ORGLANE_TEST_GITHUB_INSTALLATION_ID: ${{ vars.ORGLANE_TEST_GITHUB_INSTALLATION_ID }}
+          ORGLANE_TEST_GITHUB_USER_LOGIN: ${{ vars.ORGLANE_TEST_GITHUB_USER_LOGIN }}
+          ORGLANE_TEST_GITHUB_USER_ID: ${{ vars.ORGLANE_TEST_GITHUB_USER_ID }}
+          ORGLANE_TEST_GITHUB_APP_PRIVATE_KEY: ${{ secrets.ORGLANE_TEST_GITHUB_APP_PRIVATE_KEY }}
+          ORGLANE_TEST_GITHUB_WEBHOOK_SECRET: ${{ secrets.ORGLANE_TEST_GITHUB_WEBHOOK_SECRET }}
+          ORGLANE_TEST_GITHUB_USER_TOKEN: ${{ secrets.ORGLANE_TEST_GITHUB_USER_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/github-live.sh janitor
