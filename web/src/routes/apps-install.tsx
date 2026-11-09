@@ -644,6 +644,9 @@ export function InstanceLifecycle({
     onSuccess: done,
   });
   const cancel = () => {
+    // The request cannot be aborted: closing the panel now would hide its
+    // progress and, after a failure, the error. Keep it until it settles.
+    if (remove.isPending) return;
     const back = mode === "purge" ? purgeButton : removeButton;
     setMode(null);
     setTyped("");
@@ -749,7 +752,12 @@ export function InstanceLifecycle({
             )}
             <div className="flex flex-wrap gap-2">
               {mode === "remove" && (
-                <Button ref={firstInPanel} variant="outline" onClick={cancel}>
+                <Button
+                  ref={firstInPanel}
+                  variant="outline"
+                  disabled={remove.isPending}
+                  onClick={cancel}
+                >
                   <FormattedMessage {...messages.cancel} />
                 </Button>
               )}
@@ -764,7 +772,7 @@ export function InstanceLifecycle({
                 />
               </Button>
               {mode === "purge" && (
-                <Button variant="outline" onClick={cancel}>
+                <Button variant="outline" disabled={remove.isPending} onClick={cancel}>
                   <FormattedMessage {...messages.cancel} />
                 </Button>
               )}

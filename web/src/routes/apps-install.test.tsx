@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { me, renderApp } from "@/test/harness";
+import { me, renderApp, replies } from "@/test/harness";
 
 const admin = { ...me, permissions: ["apps.manage", "people.manage"] };
 const instanceId = "0190a1b2-0000-7000-8000-0000000000b1";
@@ -304,6 +304,56 @@ describe("Remove, delete permanently, reinstall", () => {
     await user.click(screen.getByRole("button", { name: "Remove" }));
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.getByRole("button", { name: "Remove" })).toHaveFocus());
+  });
+
+  it("keeps a pending purge open, so a failure is not lost with a canceled panel", async () => {
+    const user = userEvent.setup();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let query = "";
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [forgejo] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: detail(instance),
+      [`GET /api/v1/apps/instances/${instanceId}/operations`]: {
+        status: 200,
+        body: { items: [], hasMore: false },
+      },
+      [`DELETE /api/v1/apps/instances/${instanceId}`]: async (call) => {
+        query = call.query.toString();
+        await pending;
+        return replies.conflict;
+      },
+    });
+    await user.click(await screen.findByRole("button", { name: "Delete permanently" }));
+    const purge = screen.getByRole("group", { name: "Delete permanently" });
+    const typed = within(purge).getByLabelText(/type the app's key git/);
+    await user.type(typed, "git");
+    await user.click(within(purge).getByRole("button", { name: "Delete all data" }));
+    await waitFor(() => expect(query).toBe("purge=true&confirm=git"));
+
+    // The request cannot be aborted: Escape and Cancel leave the panel and
+    // its mutation state alone until it settles.
+    typed.focus();
+    await user.keyboard("{Escape}");
+    const cancel = within(purge).getByRole("button", { name: "Cancel" });
+    expect(screen.getByRole("group", { name: "Delete permanently" })).toBeInTheDocument();
+    expect(cancel).toBeDisabled();
+    await user.click(cancel);
+    expect(screen.getByRole("group", { name: "Delete permanently" })).toBeInTheDocument();
+
+    // Once it fails, the panel stays and shows the refusal; Cancel works
+    // again.
+    release();
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await waitFor(() => expect(cancel).toBeEnabled());
+    await user.click(cancel);
+    expect(screen.queryByRole("group", { name: "Delete permanently" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Delete permanently" })).toHaveFocus(),
+    );
   });
 
   it("after a failed purge offers only to delete permanently again", async () => {
