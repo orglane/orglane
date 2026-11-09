@@ -18,6 +18,24 @@ The release pull request also bumps the agent image's default tag in `deploy/com
 
 Before 1.0, minor versions belong to the [roadmap](../ROADMAP.md) milestones: pre-alpha releases are `0.0.x` (the first is `0.0.1`) until the v0.1 Developer Preview, which is `0.1.0`, then `0.2.0` for v0.2. Within a line, release-please bumps only the patch version: `feat`, `fix` and everything else go from `0.0.1` to `0.0.2` (`bump-patch-for-minor-pre-major` in `release-please-config.json`). A breaking change (`feat!:` or a `BREAKING CHANGE:` footer) still bumps the minor version, so before v0.1 check the version in the release pull request and avoid `!` (pre-alpha versions have no upgrade path anyway). To start the next line, or to force any version, add `Release-As: X.Y.Z` to the body of a commit on `main` (the squash-merge commit body, when merging a pull request). Only `feat`, `fix`, `perf` and `revert` commits appear in the changelog.
 
+## Before merging a release pull request
+
+- Refresh the release pull request so its changelog covers the latest `main`:
+  `gh workflow run release.yml` (step 1 above).
+- Run the manual pre-release checks in
+  [providers.md](specs/providers.md#manual-pre-release-checks); currently those
+  are the GitHub OAuth browser leg and the guided manifest/create/install flow.
+- Verify the images published by the previous release with the installer.
+  If that release published an agent image, also run `install.sh enable-managed`
+  and check that the agent resolves and starts
+  (see [deploy/README.md](../deploy/README.md#the-installer)). Validate the first
+  release that publishes the agent image after publication, before the next
+  release.
+- After the first release that publishes `ghcr.io/orglane/orglane-agent`, make
+  that package public immediately (see
+  [One-time repository setup](#one-time-repository-setup)); the installer
+  cannot pull a private agent image.
+
 ## Container images
 
 Two images are published for `linux/amd64` and `linux/arm64`, with the same tags: `ghcr.io/orglane/orglane` (the core) and `ghcr.io/orglane/orglane-agent` (the agent for managed services: the same binary plus the Docker CLI and the Compose plugin, the `agent` target of the `Dockerfile`; see [ADR 0019](adr/0019-agent-transport-and-packages.md)). The installer pins the agent image by the digest of its version tag.

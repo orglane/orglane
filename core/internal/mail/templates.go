@@ -112,15 +112,6 @@ func loadTemplates() error {
 	return nil
 }
 
-// Locales returns the locales emails can be written in.
-func Locales() []string {
-	out := make([]string, 0, len(supported))
-	for _, t := range supported {
-		out = append(out, t.String())
-	}
-	return out
-}
-
 // Negotiate picks the supported locale that best matches an
 // Accept-Language header (or a single tag); English when nothing matches.
 func Negotiate(acceptLanguage string) string {

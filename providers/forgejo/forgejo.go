@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/orglane/orglane/providers/forgejo/managed"
 	"github.com/orglane/orglane/providers/provider"
 )
 
@@ -98,9 +97,6 @@ type Adapter struct{}
 
 // New returns the Forgejo adapter.
 func New() *Adapter { return &Adapter{} }
-
-// Package returns the package version new instances install.
-func Package() string { return managed.Current }
 
 // Manifest implements provider.CapabilityManifest.
 func (*Adapter) Manifest() provider.Manifest {

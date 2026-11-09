@@ -34,17 +34,20 @@ configuration is absent.
    by that test.
 
 4. The App's **webhook URL can be any valid https URL**, even one nobody serves.
-   The live checks read the App's delivery log (`GET /app/hook/deliveries`);
-   GitHub cannot reach a CI runner, and the real-signature check remains the
-   manual check in the [specification](specs/providers.md#github-live-tests).
-   To produce deliveries for the webhook checks, open an issue or add a comment
+   GitHub attempts a delivery for every event and cannot reach a CI runner, so
+   use an intentionally unreachable or controlled URL: a served URL receives
+   the test payloads. The live checks read the App's delivery log
+   (`GET /app/hook/deliveries`) instead. `TestGitHubLiveWebhookDeliveries`
+   verifies the logged `X-Hub-Signature-256` against the logged payload bytes
+   with the App's real secret. To produce deliveries for the webhook checks,
+   open an issue or add a comment
    in a sandbox repository in the test organization; the App's delivery log
    records the event. If the App installation uses selected repositories,
    select that sandbox repository first: an event in an unselected repository
    produces no App delivery. `TestGitHubLiveWebhookDeliveries` skips locally
    when the log has no handled delivery, but fails a required run with
-   `ORGLANE_REQUIRE_GITHUB_LIVE=1`; generate an event before dispatching. If
-   #66 uses `gh webhook forward`, follow that path instead.
+   `ORGLANE_REQUIRE_GITHUB_LIVE=1`; generate an event before dispatching. Path
+   (a) (the delivery log) is in use, so `gh webhook forward` is not needed.
 
 5. Create the bot token. `ORGLANE_TEST_GITHUB_USER_TOKEN` must be a **classic
    personal access token owned by the bot**, not a fine-grained token. The
@@ -61,9 +64,8 @@ configuration is absent.
    documented narrower scope for organization membership read/write is
    `write:org`, and `PATCH /user/memberships/orgs/{org}` is listed under Members
    write for fine-grained tokens and under organization membership for classic
-   scopes. Use the maintainer's configured `admin:org` if the first live run
-   must pass immediately; switch to `write:org` only after a live run confirms
-   it. Do not
+   scopes. Keep the maintainer's configured `admin:org`; switch to `write:org`
+   only after a live run with that narrower scope confirms it. Do not
    add repository scopes for the current harness: it creates no repository,
    pull request or comment. A future test that opens pull requests or comments
    must bring an explicitly selected disposable repository and only the
@@ -156,30 +158,18 @@ janitor keeps preserving them until a future policy can prove the authorization.
 ### Bootstrap
 
 GitHub registers `workflow_dispatch` only for workflows present on the default
-branch. Until this workflow is on `main`, `gh workflow run github-live.yml`
-returns 404, so the first live run cannot be dispatched from this branch. The
-maintainer chooses between:
-
-- **Merge with the workflow (recommended).** Merge the reviewed pull request.
-  The push-to-`main` run is then the first live acceptance. The environment is
-  already exactly `main` and no temporary branch access is granted. The janitor
-  can clean up only resources with its exact `orglane-test:<repository>:<run id>:<attempt>`
-  description after the age check; provider-created provisioning teams and the
-  M2 team use different descriptions and must be checked and deleted manually
-  if a test stops before its own cleanup. A failure is fixed forward. The pull
-  request is not merged by an agent, and its description must not claim a live
-  run before this happens.
-- **Temporary exact-branch rule.** Land the workflow file on `main` first (for
-  example with a small preparatory merge), then temporarily add only the exact
-  acceptance branch to the environment's deployment branch policies, dispatch
-  with `--ref <branch>`, verify `head_sha`, and remove the rule. This gives a
-  pre-merge run but grants secret access to a branch, and the janitor preserves
-  non-main manual resources, so leftovers need manual removal.
-
-Never use a wildcard, tag, fork or `pull_request`/`pull_request_target`
-trigger, and never disable the unprivileged trust barrier to work around the
-first-dispatch limitation. Main acceptance additionally requires a green
-required run on `main` with the maintainer's configuration.
+branch. The workflow was merged to `main` before its first dispatch, and the
+first `main` run passed
+([run 42684360151](https://github.com/orglane/orglane/actions/runs/42684360151)),
+so `gh workflow run github-live.yml` works from `main`. A pre-merge run uses the
+temporary exact-branch rule described above: the workflow is already on `main`,
+so add only the exact acceptance branch to the environment's deployment branch
+policies, dispatch with `--ref <branch>`, verify `head_sha`, and remove the rule.
+The janitor preserves non-main manual resources, so leftovers need manual
+removal. Never use a wildcard, tag, fork or `pull_request`/`pull_request_target`
+trigger, and never disable the unprivileged trust barrier to work around a
+dispatch limitation. Main acceptance additionally requires a green required run
+on `main` with the maintainer's configuration.
 
 ## Workflow steps
 
@@ -249,7 +239,7 @@ The detailed ownership, age and provenance rules are in
   classic `delete_repo` scope. It is not a product App permission and is not
   needed by the connection or acceptance tests.
 
-Issue #71 cannot claim janitor or external acceptance until this contract and a
-real `main` run are verified. The manual OAuth browser check and any required
-raw webhook signature check remain the separate pre-release checks in the
-[specification](specs/providers.md#github-live-tests).
+The janitor contract and a real `main` run have passed
+([run 42684360151](https://github.com/orglane/orglane/actions/runs/42684360151)).
+The manual OAuth browser check remains the separate pre-release check in the
+[specification](specs/providers.md#manual-pre-release-checks).

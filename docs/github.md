@@ -29,7 +29,7 @@ addresses for real use. Hosts and URLs come from Orglane's domain configuration.
 
 An active connection verifies setup and credentials. Employee account linking,
 invitations, team mappings and removal are implemented; webhook ingestion
-semantics are #66. The capability matrix reports each feature's support.
+semantics were added in #66. The capability matrix reports each feature's support.
 
 ## Recovering an interrupted setup
 
@@ -186,9 +186,11 @@ accounts.
 
 Checked against GitHub's official documentation on 2026-11-05. These are the
 minimum **M2 contract** permissions requested by both setup paths. Documentary
-verification is distinct from real-GitHub acceptance: until the dedicated
-`github-live` resources are supplied and tested, this is not a claim of a
-successful live invite/remove or webhook round trip.
+verification is distinct from real-GitHub acceptance: the protected
+`github-live` workflow has passed on `main`
+([run 42684360151](https://github.com/orglane/orglane/actions/runs/42684360151))
+with a real invitation, removal and webhook deliveries, so these permissions
+are exercised against GitHub.com.
 
 | Scope | Permission | Access | Why |
 |---|---|---|---|
@@ -352,12 +354,16 @@ an ordinary organization **Member**, and the maintainer's own account the
 maintainer as an Owner first and demote the bot before the live tests.
 
 The test App's **webhook URL can be any valid https URL**, even one nobody
-serves: the live checks read the App's delivery log, and GitHub cannot reach a
-CI runner. Generate a delivery by opening an issue or adding a comment in a
+serves: GitHub attempts every delivery but cannot reach a CI runner, and the
+live checks read the App's delivery log. Use an intentionally unreachable or
+controlled URL so test payloads are not delivered to a service you do not own.
+Generate a delivery by opening an issue or adding a comment in a
 sandbox repository in the test organization; if the App installation uses
 selected repositories, select that sandbox repository first or the event creates
-no App delivery. The real-signature check remains the manual check in the
-[provider specification](specs/providers.md#github-live-tests).
+no App delivery. `TestGitHubLiveWebhookDeliveries` verifies the real signature
+over the logged payload bytes; the manual pre-release check in the
+[provider specification](specs/providers.md#manual-pre-release-checks) is the
+OAuth browser leg.
 
 `ORGLANE_TEST_GITHUB_USER_TOKEN` must be a **classic personal access token owned
 by the bot**. The provisioning test removes the bot from the organization and
@@ -426,12 +432,16 @@ token deliberately does not grant (see below). Without the nine settings the tes
 skips with a message naming them, and `ORGLANE_REQUIRE_GITHUB_LIVE=1` turns
 that into a failure.
 
-External acceptance remains incomplete until that test passes with supplied
-resources. Before release, also run the guided manifest/create/install browser
-round trip and the documented manual fallback against that test organization.
-The OAuth browser authorization/code-exchange leg for employee linking remains
-a separate manual pre-release check (#95); preparing a redirect is not evidence
-that OAuth completed. Real webhook signatures and event semantics are #66.
+External acceptance passed in the protected `github-live` workflow on `main`
+([run 42684360151](https://github.com/orglane/orglane/actions/runs/42684360151)):
+the App connection, account link, provisioning (invitation, team sync,
+asynchronous removal and restore), 14 real webhook deliveries and the janitor.
+Before release, still run the guided manifest/create/install browser round trip
+and the documented manual fallback against that test organization. The OAuth
+browser authorization/code-exchange leg for employee linking remains a separate
+manual pre-release check (#95); preparing a redirect is not evidence that OAuth
+completed. Real webhook signatures and event semantics are covered by #66's
+live test.
 
 ## Live-test resource ownership and janitor
 
@@ -532,5 +542,6 @@ maintainer authorization described in the live workflow operations contract.
 This conservative boundary does not infer authorization from a test marker or
 broaden environment policy. The completed attempt's last update and resource
 creation (where available) must still be older than 24 hours; unknown provenance
-or age is preserved. No real-GitHub acceptance is possible until a dedicated test
-organization, App, bot and all nine documented settings are supplied.
+or age is preserved. The protected workflow has the dedicated test
+organization, App, bot and all nine documented settings on `main`; a manual or
+local run needs them supplied the same way.
