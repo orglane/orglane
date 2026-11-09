@@ -10,7 +10,7 @@ Orglane is released from `main` with [release-please](https://github.com/googlea
    gh workflow run release.yml   # refresh the release pull request now
    ```
 
-2. A maintainer reviews the pull request (the version and the changelog) and squash-merges it. Both files are `risk/high`, so the merge gate never merges it on its own. CI does not run on it: it is created with `GITHUB_TOKEN`, whose events start no workflows, and it changes only the changelog and the manifest.
+2. A maintainer reviews the pull request (the version and the changelog) and squash-merges it. Both files are `risk/high`, so the merge checklist reports *maintainer required*. CI does not run on it: it is created with `GITHUB_TOKEN`, whose events start no workflows, and it changes only the changelog and the manifest.
 3. The merge changes the manifest, so the Release workflow runs again. release-please tags the merge commit `vX.Y.Z` and publishes the GitHub release with the changelog entry.
 4. In the same run, the **Images** workflow (`.github/workflows/images.yml`) builds and publishes the container images.
 

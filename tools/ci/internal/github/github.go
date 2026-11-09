@@ -242,19 +242,6 @@ func (c *Client) RemoveLabel(ctx context.Context, n int, label string) error {
 	return err
 }
 
-// CreateStatus sets a commit status on sha. Descriptions are truncated to the
-// API's 140-character limit.
-func (c *Client) CreateStatus(ctx context.Context, sha, state, statusContext, description, targetURL string) error {
-	if r := []rune(description); len(r) > 140 {
-		description = string(r[:139]) + "…"
-	}
-	body := map[string]string{"state": state, "context": statusContext, "description": description}
-	if targetURL != "" {
-		body["target_url"] = targetURL
-	}
-	return c.do(ctx, http.MethodPost, c.repoURL("statuses/%s", url.PathEscape(sha)), body, nil)
-}
-
 // OpenPullsForHead lists the open pull requests whose head is
 // "owner:branch". GitHub leaves workflow_run.pull_requests empty for forks.
 func (c *Client) OpenPullsForHead(ctx context.Context, ownerBranch string) ([]int, error) {

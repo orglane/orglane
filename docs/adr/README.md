@@ -22,8 +22,9 @@ Each ADR records one significant decision: the context, the decision and its con
 | [0014](0014-mail.md) | Mail: address as identity, mailboxes via external providers | Accepted |
 | [0015](0015-people-directory-and-import.md) | People directory, profile fields, import pipeline | Accepted |
 | [0016](0016-licensing.md) | Licensing: AGPL core, Apache clients and SDKs, no CLA | Accepted |
-| [0017](0017-development-process.md) | Agent-driven development process, risk tiers, auto-merge | Accepted |
+| [0017](0017-development-process.md) | Agent-driven development process, risk tiers, auto-merge | Accepted; `merge-gate` status superseded by [0020](0020-merge-checklist.md) |
 | [0018](0018-domain-model.md) | Domain model: project domain, customer domain, company domains | Accepted |
 | [0019](0019-agent-transport-and-packages.md) | Agent placement, core–agent transport and trust, managed package format | Accepted |
+| [0020](0020-merge-checklist.md) | Merge checklist instead of a merge-gate commit status | Accepted |
 
 Template: [`0000-template.md`](0000-template.md)

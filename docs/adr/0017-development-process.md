@@ -1,6 +1,6 @@
 # 0017. Agent-driven development process, risk tiers, auto-merge
 
-- **Status:** Accepted
+- **Status:** Accepted; the `merge-gate` commit status is superseded by [0020](0020-merge-checklist.md)
 - **Date:** 2026-11-03
 
 ## Context

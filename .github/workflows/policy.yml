@@ -1,6 +1,6 @@
-# Trusted policy (ADR 0017): computes each pull request's risk tier and merge
-# eligibility and reports them as the `risk/*` label and the `merge-gate`
-# commit status on the pull request's head commit.
+# Trusted policy (ADR 0017, amended by ADR 0020): computes each pull request's
+# risk tier and merge eligibility, applies the `risk/*` label and reports the
+# checklist in the job summary. It does not publish a commit status.
 #
 # Why a separate workflow: CI runs the pull request's own workflows, local
 # actions and tools, so its results cannot decide the pull request's risk or
@@ -11,9 +11,9 @@
 # executed. A change to any of this (.github/**, tools/ci/**) is itself
 # risk/high.
 #
-# The orchestrator does not rely on the status alone (a pull request's own
-# workflow could post a status with the same name): before merging it runs the
-# same command from an up-to-date main checkout, see tools/ci/README.md.
+# A pull request's own workflow cannot be trusted to judge it, so before
+# merging the orchestrator runs the same checklist from an up-to-date main
+# checkout, see tools/ci/README.md.
 
 name: Policy
 
@@ -51,7 +51,7 @@ jobs:
     permissions:
       contents: read # fetch the pull request's commits as data
       pull-requests: write # set the risk/* label
-      statuses: write # set the merge-gate status
+      statuses: read # read other systems' commit statuses for the checklist
       checks: read
       issues: read
     steps:

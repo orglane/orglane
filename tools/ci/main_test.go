@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/orglane/orglane/tools/ci/internal/gate"
 	"github.com/orglane/orglane/tools/ci/internal/risk"
 )
 
@@ -135,18 +134,6 @@ func TestParseWorkflowRunEvent(t *testing.T) {
 				t.Errorf("got %v, %q; want %v, %q", numbers, ownerBranch, tt.numbers, tt.ownerBranch)
 			}
 		})
-	}
-}
-
-func TestStatusDescription(t *testing.T) {
-	res := gate.Evaluate(gate.Input{HeadSHA: "4f2c9d1e8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d", ComputedTier: "high"})
-	got := statusDescription(res)
-	if !strings.HasPrefix(got, "maintainer required (risk/high): ") {
-		t.Errorf("statusDescription = %q", got)
-	}
-	ok := statusDescription(gate.Result{Verdict: gate.Eligible, Tier: "low"})
-	if ok != "eligible (risk/low)" {
-		t.Errorf("statusDescription = %q", ok)
 	}
 }
 

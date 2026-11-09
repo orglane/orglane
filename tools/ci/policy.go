@@ -15,9 +15,10 @@ import (
 	"github.com/orglane/orglane/tools/ci/internal/risk"
 )
 
-// statusContext is the commit status the policy workflow sets on the head
-// commit of each pull request.
-const statusContext = "merge-gate"
+// retiredStatusContext is the commit status the Policy workflow used to set.
+// Commits pushed before ADR 0020 may still carry it; the checklist ignores it
+// because it is no longer published or updated.
+const retiredStatusContext = "merge-gate"
 
 // defaultRequired are the CI jobs every pull request must report.
 const defaultRequired = "changes,lint,test,build,security"
@@ -33,7 +34,7 @@ func runPolicy(ctx context.Context, args []string, stdout *strings.Builder) erro
 	dir := fs.String("dir", ".", "trusted repository checkout to fetch the pull request into")
 	remote := fs.String("remote", "origin", "git remote of the repository")
 	required := fs.String("require", defaultRequired, "comma-separated check names that must be reported")
-	apply := fs.Bool("apply", false, "set the risk/* label and the merge-gate commit status (Policy workflow)")
+	apply := fs.Bool("apply", false, "set the risk/* label (Policy workflow)")
 	summary := fs.String("summary", os.Getenv("GITHUB_STEP_SUMMARY"), "file to append the report to")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -63,8 +64,8 @@ func runPolicy(ctx context.Context, args []string, stdout *strings.Builder) erro
 		}
 		eligible = eligible && res.Verdict == gate.Eligible
 	}
-	// In the workflow the verdict is reported through the commit status; a
-	// failing job would only mark the default branch red.
+	// The workflow does not fail when a pull request is not eligible: that is
+	// a normal state and a failing job would only mark the default branch red.
 	if !*apply && !eligible {
 		return errFailed
 	}
@@ -129,14 +130,6 @@ func evaluatePull(ctx context.Context, gh *github.Client, number int, dir, remot
 		if err := setRiskLabel(ctx, gh, pr, classified.Tier, stdout); err != nil {
 			return res, err
 		}
-		state := "failure"
-		if res.Verdict == gate.Eligible {
-			state = "success"
-		}
-		if err := gh.CreateStatus(ctx, head, state, statusContext, statusDescription(res), runURL()); err != nil {
-			return res, err
-		}
-		fmt.Fprintf(stdout, "set status %s=%s on %s\n", statusContext, state, shortSHA(head))
 	}
 	return res, nil
 }
@@ -160,8 +153,8 @@ func collectGateInput(ctx context.Context, gh *github.Client, pr *github.PullReq
 		return in, err
 	}
 	for _, s := range statuses {
-		if s.Context == statusContext {
-			continue // the gate's own previous verdict
+		if s.Context == retiredStatusContext {
+			continue // published by the policy before ADR 0020
 		}
 		in.Checks = append(in.Checks, gate.Check{Name: s.Context, State: s.State})
 	}
@@ -211,26 +204,6 @@ func setRiskLabel(ctx context.Context, gh *github.Client, pr *github.PullRequest
 	}
 	fmt.Fprintf(stdout, "added %s\n", tier.Label())
 	return nil
-}
-
-// statusDescription summarizes a result in one line: the verdict and the
-// first unmet requirement.
-func statusDescription(res gate.Result) string {
-	desc := fmt.Sprintf("%s (risk/%s)", res.Verdict, res.Tier)
-	for _, r := range res.Requirements {
-		if !r.OK {
-			return desc + ": " + r.Detail
-		}
-	}
-	return desc
-}
-
-func runURL() string {
-	server, repo, id := os.Getenv("GITHUB_SERVER_URL"), os.Getenv("GITHUB_REPOSITORY"), os.Getenv("GITHUB_RUN_ID")
-	if server == "" || repo == "" || id == "" {
-		return ""
-	}
-	return server + "/" + repo + "/actions/runs/" + id
 }
 
 // workflowRunEvent is the part of a workflow_run event payload the policy

@@ -74,7 +74,7 @@ var highPaths = []struct {
 	why     string
 }{
 	{".github/**", "CI and repository configuration"},
-	{"tools/ci/**", "CI tooling (risk labeler, merge gate, license check)"},
+	{"tools/ci/**", "CI tooling (risk labeler, merge checklist, license check)"},
 	{"Makefile", "CI gate definitions (make lint/test/build)"},
 	{".golangci.yml", "lint configuration"},
 	{"biome.json", "lint configuration"},
