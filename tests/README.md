@@ -45,7 +45,9 @@ reports a failed verdict instead of disappearing, and it fails on any failed
 or cancelled job and on any skip that the changes job did not explicitly
 select (the heavy tiers are the only jobs that may be skipped, and only when
 the selector left them out). The aggregate's own logic is tested in
-`tests/ci`. The `full-ci` pull request label forces both tiers immediately:
+`tests/ci`. The `full-ci` pull request label forces every tier immediately,
+including on a documentation-only change where it also overrides the docs-only
+skip:
 `labeled`/`unlabeled` are pull request trigger types, so adding or removing the
 label starts a run, and the changes job reads the event's current label
 snapshot (removing it returns to the path selection on the next run). Every

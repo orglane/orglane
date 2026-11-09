@@ -115,6 +115,14 @@ func runPaths(args []string, stdout io.Writer) error {
 	if _, err := fmt.Fprintf(stdout, "heavy=%t\nweb=%t\n", heavy, web); err != nil {
 		return err
 	}
+	// The label overrides the risk classifier's docs-only gate too: a
+	// full-ci run on a documentation-only pull request must execute every
+	// tier instead of skipping them all.
+	if *fullCI {
+		if _, err := fmt.Fprintln(stdout, "code=true"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

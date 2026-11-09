@@ -76,7 +76,7 @@ func TestRunPaths(t *testing.T) {
 	if err := runPaths([]string{"-dir", dir, "-base", base, "-head", head, "-full-ci"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := out.String(), "heavy=true\nweb=true\n"; got != want {
+	if got, want := out.String(), "heavy=true\nweb=true\ncode=true\n"; got != want {
 		t.Fatalf("runPaths with full-ci = %q, want %q", got, want)
 	}
 }
