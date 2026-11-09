@@ -23,12 +23,13 @@ import (
 	"github.com/orglane/orglane/core/internal/authz"
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/database"
+	"github.com/orglane/orglane/core/internal/dbtest"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/tests/pgtest"
 )
 
-func TestMain(m *testing.M) { pgtest.Main(m) }
+func TestMain(m *testing.M) { dbtest.Main(m) }
 
 // migratedPool returns a pool on a fresh, fully migrated database without
 // seeded roles.

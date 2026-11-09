@@ -65,7 +65,7 @@ IMAGE ?= orglane:dev
 AGENT_IMAGE ?= orglane-agent:dev
 
 .PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image image-agent website website-dev generate check-generate check-generate-go check-generate-ts \
-	test test-go test-unit test-root test-integration test-compose test-install test-github-live measure-memory conformance test-ts test-e2e test-e2e-if-available test-website test-website-if-available \
+	test test-go test-unit test-root test-integration test-integration-fast test-apps test-apps-all test-apps-e2e test-apps-e2e-all test-agent test-agent-e2e test-compose test-install test-github-live measure-memory conformance test-ts test-e2e test-e2e-if-available test-website test-website-if-available \
 	lint lint-go lint-ts lint-sh fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
 help: ## Show available targets
@@ -232,24 +232,61 @@ test-root: ## Run the root-only agent tests as root (needs sudo)
 test-unit: ## Run Go unit tests only
 	go test -race -count=1 ./...
 
-# The Compose bundle tests and the installer tests run on their own
-# afterwards, one package after the other: on Docker Desktop (macOS),
-# PostgreSQL containers initializing bind-mounted data directories while
-# other packages start and remove containers sometimes fail with "wrong
-# ownership". The package list is built in separate, checked steps: a failing
-# `go list` inside the `go test` arguments would not stop it.
+# Tests that only need PostgreSQL (or no service at all) run with -race. The
+# heavy end-to-end tests start real Docker projects (Forgejo, the agent's
+# services, the Compose bundle); they run without -race: it cannot observe
+# anything inside the containers and makes those tests several times slower.
+#
+# APPS_E2E and AGENT_E2E name the Docker tests of their packages, so the fast
+# tiers can exclude them and CI can run them in the heavy tier only. A new
+# Docker test must be added to the matching list; until then it keeps running
+# in the fast tier (slower, but never silently skipped).
+APPS_E2E := '^(TestAgentWiring|TestForgejoInstall|TestForgejoProvisioningAndSignOn|TestForgejoWebhooks|TestM2AcceptanceScenario|TestAgentUpgradeConfirmed|TestAgentUpgradeRollbackRevertsAndRetries|TestAgentUpgradeRollbackWithoutEmbeddedRunningVersion|TestAgentUpgradeRetryRecoversFailedRevert|TestAgentUpgradeRetryRecoversTransientRevertFailure|TestAgentUpgradePlanningWaitsForAgent|TestAgentSyncRecoversConfirmationAfterCrash|TestAgentUpgradePlanningAfterOrglaneRelease|TestStaleHealthCannotDegradeNewerGeneration|TestStaleRecoveryCannotRunSetupForNewerGeneration|TestInstallFailedRecoversWhenTheAgentRunsIt|TestLostAgentOperationReplaysCurrentGeneration|TestAgentRetainingAnOlderGenerationIsResynced|TestAgentWithIdentityButLostSpecsIsResynced)$$'
+AGENT_E2E := '^(TestAgentWithDocker|TestConfigureHooksAfterStopped|TestDatabaseStepWaitsForPostgres|TestForgejoPackage|TestInstanceNamesWithDocker|TestPolicyRefusesVariants|TestUnauthenticatedSocketClient|TestUpgrades)$$'
+
+# The Docker end-to-end tests run one package after the other in `make test`:
+# on Docker Desktop (macOS), PostgreSQL containers initializing bind-mounted
+# data directories while other packages start and remove containers sometimes
+# fail with "wrong ownership". CI runs them as separate, parallel jobs (see
+# .github/workflows/ci.yml). The package list is built in separate, checked
+# steps: a failing `go list` inside the `go test` arguments would not stop it.
 # Agent upgrade tests exercise real Docker and every journal phase; give
 # integration packages 30 minutes instead of Go's default 10-minute timeout.
-test-integration: ## Run Go unit and integration tests (needs Docker)
+test-integration: test-integration-fast test-apps-all test-apps-e2e-all test-agent test-agent-e2e test-compose test-install ## Run Go unit and integration tests (needs Docker)
+
+# The integration tests that do not start managed services: PostgreSQL only,
+# with -race. The apps and agent packages have their own targets so CI can
+# shard them; tests/install and tests/compose build and start real bundles.
+test-integration-fast: ## Run the Postgres-only Go integration tests (needs Docker)
 	pkgs="$$(go list -tags integration ./...)"; \
-	pkgs="$$(printf '%s\n' "$$pkgs" | grep -v -e '/tests/install$$' -e '/tests/compose$$')"; \
+	pkgs="$$(printf '%s\n' "$$pkgs" | grep -v -e '/tests/install$$' -e '/tests/compose$$' -e '/core/internal/apps$$' -e '/core/internal/agent$$')"; \
 	if [ -z "$$pkgs" ]; then echo "error: go list found no packages to test"; exit 1; fi; \
 	go test -race -count=1 -timeout 30m -tags integration $$pkgs
-	$(MAKE) --no-print-directory test-compose
-	$(MAKE) --no-print-directory test-install
+
+# One shard of the apps package's PostgreSQL tests; CI runs SHARD=1..3. Tests
+# are selected with tests/shard.sh, so a new test joins a shard automatically.
+test-apps: ## Run one shard of the apps Postgres integration tests (SHARD, SHARDS)
+	@sh tests/shard.sh ./core/internal/apps $(SHARD) $(SHARDS) -race -count=1 -timeout 20m -tags integration -skip $(APPS_E2E)
+
+test-apps-all:
+	@for shard in 1 2 3; do $(MAKE) --no-print-directory test-apps SHARD=$$shard SHARDS=3 || exit 1; done
+
+# One shard of the apps package's Docker end-to-end tests (Forgejo, the agent
+# and Traefik, including the M2 acceptance scenario); no -race.
+test-apps-e2e: ## Run one shard of the apps Docker end-to-end tests (SHARD, SHARDS)
+	@GO_TEST_ONLY=$(APPS_E2E) sh tests/shard.sh ./core/internal/apps $(SHARD) $(SHARDS) -count=1 -timeout 30m -tags integration
+
+test-apps-e2e-all:
+	@for shard in 1 2 3; do $(MAKE) --no-print-directory test-apps-e2e SHARD=$$shard SHARDS=3 || exit 1; done
+
+test-agent: ## Run the agent tests that do not start Docker projects (needs Docker for a few socket tests)
+	go test -race -count=1 -timeout 15m -tags integration -skip $(AGENT_E2E) ./core/internal/agent/
+
+test-agent-e2e: ## Run the agent's Docker end-to-end tests (no -race)
+	go test -count=1 -timeout 30m -tags integration -run $(AGENT_E2E) ./core/internal/agent/
 
 test-compose: ## Start the Compose bundle (local mode, domain mode with Pebble) and test it (needs Docker)
-	go test -race -count=1 -tags integration -v ./tests/compose/
+	go test -count=1 -tags integration -v ./tests/compose/
 
 test-install: ## Run the installer end to end: local, demo and domain mode with Pebble (needs Docker)
 	go test -count=1 -tags integration -v ./tests/install/

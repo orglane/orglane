@@ -13,11 +13,12 @@ import (
 
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/database"
+	"github.com/orglane/orglane/core/internal/dbtest"
 	"github.com/orglane/orglane/core/internal/jobs"
 	"github.com/orglane/orglane/tests/pgtest"
 )
 
-func TestMain(m *testing.M) { pgtest.Main(m) }
+func TestMain(m *testing.M) { dbtest.Main(m) }
 
 func startClient(t *testing.T, cfg config.Jobs) *jobs.Client {
 	t.Helper()

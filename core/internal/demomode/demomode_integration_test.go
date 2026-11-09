@@ -24,6 +24,7 @@ import (
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/crypto"
 	"github.com/orglane/orglane/core/internal/database"
+	"github.com/orglane/orglane/core/internal/dbtest"
 	"github.com/orglane/orglane/core/internal/demomode"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/identity/web"
@@ -31,7 +32,7 @@ import (
 	"github.com/orglane/orglane/tests/pgtest"
 )
 
-func TestMain(m *testing.M) { pgtest.Main(m) }
+func TestMain(m *testing.M) { dbtest.Main(m) }
 
 var fastHasher = crypto.NewPasswordHasher(crypto.PasswordParams{Memory: 64, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32}, 4)
 

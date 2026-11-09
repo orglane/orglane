@@ -22,13 +22,14 @@ import (
 	"github.com/orglane/orglane/core/internal/config"
 	"github.com/orglane/orglane/core/internal/crypto"
 	"github.com/orglane/orglane/core/internal/database"
+	"github.com/orglane/orglane/core/internal/dbtest"
 	"github.com/orglane/orglane/core/internal/identity"
 	"github.com/orglane/orglane/core/internal/profile"
 	"github.com/orglane/orglane/tests/auditfault"
 	"github.com/orglane/orglane/tests/pgtest"
 )
 
-func TestMain(m *testing.M) { pgtest.Main(m) }
+func TestMain(m *testing.M) { dbtest.Main(m) }
 
 type env struct {
 	t        *testing.T
