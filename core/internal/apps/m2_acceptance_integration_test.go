@@ -323,6 +323,11 @@ installed:
 	// any test-side admin call, so a route or service that is still coming
 	// up is not mistaken for a failed account lookup.
 	s.waitForForgejoHealth()
+	// The activation queued the first provisioning run while the default
+	// all_people policy is still in effect: wait for the owner's result to be
+	// done before changing the policy, so the adapter's admin calls through
+	// the upstream are proven settled before the test-side admin checks.
+	s.waitForProvisioningSettled()
 	env := s.stack.Apps.EnvForTest(inst)
 	lifecycle, _ := inst.Adapter.Lifecycle()
 	inputs, err := lifecycle.Inputs(s.ctx, env, inst.View())
@@ -393,11 +398,6 @@ func (s *m2Scenario) mapTeam(slug string) store.Team {
 	if resp.StatusCode != http.StatusOK {
 		s.t.Fatalf("team mapping = %d %s", resp.StatusCode, body)
 	}
-	// A mapping change queues provisioning. Wait until the public API reports
-	// every result settled and the owner's account granted; the adapter's
-	// successful admin calls through the upstream are the readiness proof
-	// for the following test-side admin checks.
-	s.waitForProvisioningSettled()
 	team, err := store.New(s.pool).GetTeamBySlug(s.ctx, slug)
 	if err != nil {
 		s.t.Fatal(err)
@@ -430,9 +430,9 @@ func (s *m2Scenario) waitForForgejoHealth() {
 }
 
 // waitForProvisioningSettled waits until the instance's provisioning page
-// reports the owner's result done and nothing queued or failed. The page is
-// the public API's view; the owner is the only active person before the
-// invitation is accepted.
+// reports the owner's result done and nothing queued or failed. It runs
+// while the install's default all_people policy is still in effect; the
+// owner is the only active person before the invitation is accepted.
 func (s *m2Scenario) waitForProvisioningSettled() {
 	s.t.Helper()
 	deadline := time.Now().Add(2 * time.Minute)
