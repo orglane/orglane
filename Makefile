@@ -66,7 +66,7 @@ AGENT_IMAGE ?= orglane-agent:dev
 
 .PHONY: help bootstrap check-toolchain deps dev dev-down demo demo-reset build build-go build-ts image image-agent website website-dev generate check-generate check-generate-go check-generate-ts \
 	test test-go test-unit test-root test-integration test-integration-fast test-apps test-apps-all test-apps-e2e test-apps-e2e-all test-agent test-agent-e2e test-compose test-install test-github-live measure-memory conformance test-ts test-e2e test-e2e-if-available test-website test-website-if-available \
-	lint lint-go lint-ts lint-sh fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
+	lint lint-go lint-ts lint-sh lint-ci fmt fmt-go fmt-ts security vulncheck licenses licenses-go licenses-ts clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -338,7 +338,13 @@ test-website-if-available:
 		$(MAKE) --no-print-directory test-website; \
 	fi
 
-lint: lint-pr-assets lint-go lint-ts lint-sh ## Run all linters and type checks
+lint: lint-pr-assets lint-go lint-ts lint-sh lint-ci ## Run all linters and type checks
+
+# Regression tests for the CI logic in tests/ci: which paths may skip the
+# heavy tiers, the shard selection and the required `test` aggregate,
+# including the negative cases (unexpected skips, failures, cancellations).
+lint-ci:
+	go test -count=1 ./tests/ci/
 
 .PHONY: lint-pr-assets
 lint-pr-assets:

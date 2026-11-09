@@ -19,23 +19,33 @@ Go integration tests carry the `integration` build tag. `make test` runs them wh
 
 CI splits the tests into tiers so a pull request gets a verdict quickly. The
 `changes` job in `.github/workflows/ci.yml` decides, from the changed paths,
-which tiers run; keep its path list and this table in sync.
+which tiers run; keep its selector in sync with this table. The selector is an
+allowlist of paths that may *skip* the heavy tiers: only documentation,
+Markdown, the website and license texts skip them; everything else (code,
+tests, helpers, migrations, deploy and image inputs, demo data, workspace
+configuration) runs them. A new dependency of an e2e test therefore never
+silently stops running it; the failure mode is running too much. The selector,
+the shard selection and the aggregate check have regression tests in
+`tests/ci` (`make lint-ci`).
 
 | Tier | Jobs and targets | Runs on pull requests |
 |---|---|---|
 | Fast | `lint`, `build`, `security`, `make test-unit`, `make test-ts`, `make test-root`, `make test-integration-fast` (PostgreSQL integration with `-race`), `make test-apps` (three shards of `core/internal/apps` PostgreSQL tests, `-race`), `make test-agent` (the agent's non-Docker tests, `-race`), `make test-website` | Always |
-| Heavy | `make test-apps-e2e` (three shards: real Forgejo, agent and Traefik, including the M2 acceptance scenario), `make test-agent-e2e` (real Docker projects), `make test-compose`, `make test-install`, `make test-e2e` (web UI) | Only when a path the tier exercises changed, or with the `full-ci` label |
+| Heavy | `make test-apps-e2e` (three shards: real Forgejo, agent and Traefik, including the M2 acceptance scenario), `make test-agent-e2e` (real Docker projects), `make test-compose` and `make test-install` (one job), `make test-e2e` (web UI) | Unless every changed path is docs/website/license, or with the `full-ci` label |
 
 The heavy tier runs without `-race`: the race detector cannot observe
 anything inside the containers and multiplies their runtime. Unit tests and
 PostgreSQL-only integration tests always run with `-race`. Pushes to `main`
 and the nightly schedule run both tiers. The required check named `test` is
-an aggregate of every test job: it fails when one failed or was cancelled,
-and accepts a job that the tier rules intentionally skipped. The `full-ci`
-pull request label forces the heavy tier on the next run; because a `labeled`
-event would also fire for every `risk/*` label the Policy workflow adds, the
-label is read on push/synchronize runs and the `workflow_dispatch` input
-`full-ci` runs everything immediately by hand.
+an aggregate of every test job: it runs with `always()`, so cancelled work
+reports a failed verdict instead of disappearing, and it fails on any failed
+or cancelled job and on any skip that the changes job did not explicitly
+select (the heavy tiers are the only jobs that may be skipped, and only when
+the selector left them out). The aggregate's own logic is tested in
+`tests/ci`. The `full-ci` pull request label forces the heavy tier on the
+next run; because a `labeled` event would also fire for every `risk/*` label
+the Policy workflow adds, the label is read on push/synchronize runs and the
+`workflow_dispatch` input `full-ci` runs everything immediately by hand.
 
 `make test` still runs everything locally, one heavy group after the other
 (the Docker Desktop/Colima ownership caveat in the Makefile). To run one
@@ -51,10 +61,14 @@ make test-compose test-install      # Compose bundle and installer
 make test-e2e                       # web end-to-end tests
 ```
 
-`tests/shard.sh` lists a package's tests and runs every count-th one, so a
-new test joins a shard automatically. `make test-apps` skips the tests named
-in `APPS_E2E`; add a new Docker test to that list (and `AGENT_E2E` for the
-agent) so it runs in the heavy tier.
+`tests/shard.sh` lists a package's tests with the same build tags the run
+uses, applies the caller's `-skip` expression to the discovered names, and
+runs every count-th one through `tests/ci`; a new test joins a shard
+automatically. A shard that would run no test fails, and after a green run
+the script checks that at least one `=== RUN` was executed, so a tag, flag or
+exclusion mismatch cannot leave a green job with no coverage. `make
+test-apps` skips the tests named in `APPS_E2E`; add a new Docker test to that
+list (and `AGENT_E2E` for the agent) so it runs in the heavy tier.
 
 The `core/internal/apps`, identity, profile, peopleimport, jobs and demomode
 integration tests use `dbtest.Main` (`pgtest.RunWithTemplate`): the migrations

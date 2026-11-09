@@ -4,12 +4,14 @@
 # (lint, build, security, unit and TS tests, the Postgres-only Go integration
 # tests and the apps shards) always runs, while the heavy tier (the Docker
 # end-to-end tests of core/internal/apps and core/internal/agent, the Compose
-# bundle and installer tests, and the web end-to-end tests) runs only when a
-# relevant path changed, or with the `full-ci` pull request label. Pushes to
-# main and the nightly schedule run everything. The final `test` job is the
-# required check: it needs every test job and fails when one failed or was
-# cancelled; jobs that were skipped by these rules count as passed only
-# because their condition decided to skip them (see the tier rules below).
+# bundle and installer tests, and the web end-to-end tests) is skipped only
+# when every changed file is documentation, the website or a license text
+# (tests/ci has the selector and its regression cases). The `full-ci` label
+# forces it. Pushes to main and the nightly schedule run everything. The final
+# `test` job is the required check: it runs with `always()` and fails when one
+# of the jobs this event selected failed, was cancelled or was unexpectedly
+# skipped; the only accepted skip is a heavy tier the changes job explicitly
+# left out.
 #
 # Minutes are scarce in the private phase, so:
 #   - superseded pull request runs are cancelled;
@@ -58,22 +60,27 @@ concurrency:
 
 jobs:
   changes:
-    # On push and schedule every tier runs, so there is nothing to classify.
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    # Runs on every event: on pull requests it classifies the change, on push,
+    # schedule and workflow_dispatch it selects every tier (or follows the
+    # full-ci input). Its outputs are the single source of truth for the tier
+    # conditions below and for the aggregate's expected results.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
     outputs:
-      code: ${{ steps.classify.outputs.code }}
-      heavy: ${{ steps.paths.outputs.heavy }}
-      web: ${{ steps.paths.outputs.web }}
+      code: ${{ steps.classify.outputs.code || steps.plan.outputs.code }}
+      heavy: ${{ steps.paths.outputs.heavy || steps.plan.outputs.heavy }}
+      web: ${{ steps.paths.outputs.web || steps.plan.outputs.web }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
         with:
           fetch-depth: 2 # the merge commit and its base parent
           persist-credentials: false
       - id: tool
+        if: github.event_name == 'pull_request'
         uses: ./.github/actions/ci-tool
       - id: classify
         name: Classify the change
@@ -85,31 +92,31 @@ jobs:
         name: Decide the heavy tiers
         if: github.event_name == 'pull_request'
         run: |
-          # The heavy tier runs real Docker projects and Playwright: it is
-          # only worth it when one of the paths it exercises changed. Keep
-          # this list in sync with tests/README.md "Test tiers". A new Docker
-          # test needs no entry when it lives in its package's path; shared
-          # dependencies of the real core that the e2e tests drive (identity,
-          # jobs, store, server, the API) are listed explicitly.
-          heavy=false
-          web=false
-          while IFS= read -r path; do
-            case "$path" in
-              core/internal/apps/*|core/internal/agent/*|core/internal/agentapi/*|core/internal/agentclient/*|core/internal/managedtest/*|core/internal/packages/*|providers/*) heavy=true ;;
-              core/migrations/*|core/internal/config/*|core/internal/ingress/*|core/internal/database/*) heavy=true ;;
-              core/cmd/*|core/internal/jobs/*|core/internal/store/*|core/internal/identity/*|core/internal/server/*|core/internal/api/*|core/api/*) heavy=true ;;
-              deploy/*|Dockerfile|tests/compose/*|tests/install/*|tests/integration/*|demo/*) heavy=true ;;
-              Makefile|.github/*|go.mod|go.sum) heavy=true ;;
-            esac
-            case "$path" in
-              web/*|packages/*|core/api/*|core/internal/api/*|core/internal/identity/web/*) web=true ;;
-              Makefile|.github/*|go.mod|go.sum|pnpm-lock.yaml|package.json|tsconfig.base.json|biome.json) web=true ;;
-            esac
-          done <<EOF
-          $(git diff --name-only HEAD^1 HEAD)
-          EOF
-          echo "heavy=$heavy" >> "$GITHUB_OUTPUT"
-          echo "web=$web" >> "$GITHUB_OUTPUT"
+          # The selector's skip allowlist is deliberately narrow (docs,
+          # Markdown, website, license texts): every other path runs the heavy
+          # tiers, so a new dependency of an e2e test cannot silently stop
+          # running it. tests/ci has the regression cases for the selector.
+          git diff --name-only HEAD^1 HEAD | go run ./tests/ci paths >> "$GITHUB_OUTPUT"
+      - name: Select the tiers outside pull requests
+        id: plan
+        if: github.event_name != 'pull_request'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FULL_CI: ${{ inputs.full-ci }}
+        run: |
+          # Push and the nightly schedule run everything; a manual dispatch
+          # follows its full-ci input (the fast tier when false).
+          echo "code=true" >> "$GITHUB_OUTPUT"
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              echo "heavy=$FULL_CI" >> "$GITHUB_OUTPUT"
+              echo "web=$FULL_CI" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "heavy=true" >> "$GITHUB_OUTPUT"
+              echo "web=true" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
   lint:
     needs: changes
@@ -214,7 +221,7 @@ jobs:
   # Heavy tier: real Forgejo, the real agent and Traefik, without -race.
   apps-e2e:
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && (github.event_name != 'pull_request' && github.event_name != 'workflow_dispatch' || needs.changes.outputs.heavy == 'true' || (github.event_name == 'workflow_dispatch' && inputs.full-ci) || contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && needs.changes.outputs.heavy == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -235,7 +242,7 @@ jobs:
 
   agent-e2e:
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && (github.event_name != 'pull_request' && github.event_name != 'workflow_dispatch' || needs.changes.outputs.heavy == 'true' || (github.event_name == 'workflow_dispatch' && inputs.full-ci) || contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && needs.changes.outputs.heavy == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -254,7 +261,7 @@ jobs:
   # no -race. They share the image layer cache of this runner.
   compose:
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && (github.event_name != 'pull_request' && github.event_name != 'workflow_dispatch' || needs.changes.outputs.heavy == 'true' || (github.event_name == 'workflow_dispatch' && inputs.full-ci) || contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && needs.changes.outputs.heavy == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -275,7 +282,7 @@ jobs:
   # other caches), the system libraries are installed every run.
   web-e2e:
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && (github.event_name != 'pull_request' && github.event_name != 'workflow_dispatch' || needs.changes.outputs.web == 'true' || (github.event_name == 'workflow_dispatch' && inputs.full-ci) || contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && needs.changes.outputs.web == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -373,9 +380,13 @@ jobs:
 
   # The ruleset requires a check named exactly `test`, and this job is it: it
   # needs every test job, so a verdict only appears when they all settled.
-  # `skipped` is the intentional tier skip decided above (or the docs-only
-  # skip); it is the only non-success result that passes. A failed or
-  # cancelled job fails the check.
+  # `always()` makes it run even when a dependency failed or the run was
+  # cancelled, so cancelled required work reports a failed check instead of
+  # disappearing. The script (tests/ci, with its own regression tests) requires
+  # success for every job that this event selected, and accepts `skipped` only
+  # for a heavy tier the changes job explicitly did not select. A docs-only
+  # pull request skips the whole aggregate, as before (the Policy workflow
+  # allows that when `code` is false).
   test:
     needs:
       - changes
@@ -388,18 +399,22 @@ jobs:
       - compose
       - web-e2e
       - website
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
       - name: Check every test job
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: |
-          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          bad=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')
-          if [ -n "$bad" ]; then
-            echo "::error::test jobs failed or were cancelled: $bad"
-            exit 1
-          fi
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+          WEB: ${{ needs.changes.outputs.web }}
+        run: go run ./tests/ci aggregate

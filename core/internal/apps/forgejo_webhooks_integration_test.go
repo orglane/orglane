@@ -492,6 +492,82 @@ func TestForgejoWebhooks(t *testing.T) {
 	if err := forgejo.New().Verify(h.ctx, fixedSecret{Env: h.svc.EnvForTest(s.inst), value: activeNow}, s.inst.View(), settled.headers, settled.body); err != nil {
 		t.Fatalf("Forgejo does not sign with the core's active secret: %v", err)
 	}
+
+	// The admin token's rotation through the core's credential state machine,
+	// against the real Forgejo (the unique assertion of the former
+	// TestForgejoAdminTokenRotation): a lost mint answer leaves version 2
+	// uncertain with its token really created; abandoning it keeps the core's
+	// version 1 active and authenticating while version 2's token is gone.
+	// The adapter unit tests use a handwritten fake and the framework tests
+	// the test provider; only this sequence proves the contract with a real
+	// Forgejo.
+	adminTokens := func(name string) string {
+		return s.b.Psql(t, "svc_git", "select count(*) from access_token where name = '"+name+"'")
+	}
+	adminWorks := func(token []byte) int {
+		code, _ := managedtest.Request(t, s.b.Client(), http.MethodGet, managedtest.ForgejoHost, "/api/v1/user", managedtest.Auth{Token: string(token)}, nil)
+		return code
+	}
+	adminState := func(version int32) string {
+		var st string
+		if err := h.pool.QueryRow(h.ctx, `SELECT state FROM app_credentials WHERE instance_id = $1 AND name = $2 AND version = $3`,
+			s.inst.ID, forgejo.CredentialAdminToken, version).Scan(&st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	rotateAdmin := func(version int32, abandon bool) error {
+		return h.svc.RunRotateCredential(h.ctx, apps.RotateCredentialArgs{InstanceID: s.inst.ID, Name: forgejo.CredentialAdminToken, Version: version, Abandon: abandon})
+	}
+	env := h.svc.EnvForTest(s.inst)
+
+	v1, err := h.svc.RotateCredential(h.ctx, audit.System, s.inst.ID, forgejo.CredentialAdminToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rotateAdmin(v1, false); err != nil {
+		t.Fatalf("rotate to version 1: %v", err)
+	}
+	active, err := env.Credential(h.ctx, forgejo.CredentialAdminToken)
+	if err != nil || adminState(v1) != "active" {
+		t.Fatalf("version 1: %s, %v", adminState(v1), err)
+	}
+	if code := adminWorks(active); code != http.StatusOK {
+		t.Fatalf("the active admin token: %d", code)
+	}
+
+	v2, err := h.svc.RotateCredential(h.ctx, audit.System, s.inst.ID, forgejo.CredentialAdminToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.faults.Drop(http.MethodPost, "/api/v1/users/"+forgejo.AdminUsername+"/tokens")
+	if err := rotateAdmin(v2, false); err == nil {
+		t.Fatal("a lost answer was taken as an outcome")
+	}
+	if adminState(v2) != "uncertain" || adminTokens(forgejo.TokenName(int(v2))) != "1" {
+		t.Fatalf("after the lost answer: %s, %s tokens", adminState(v2), adminTokens(forgejo.TokenName(int(v2))))
+	}
+
+	if err := h.svc.AbandonRotation(h.ctx, audit.System, s.inst.ID, forgejo.CredentialAdminToken); err != nil {
+		t.Fatal(err)
+	}
+	expireLeases(h, s.inst) // the lost mint can no longer be acted on
+	if err := rotateAdmin(v2, true); err != nil {
+		t.Fatalf("abandon: %v", err)
+	}
+	if adminState(v2) != "discarded" || adminState(v1) != "active" {
+		t.Fatalf("after abandon: v1 %s, v2 %s", adminState(v1), adminState(v2))
+	}
+	still, err := env.Credential(h.ctx, forgejo.CredentialAdminToken)
+	if err != nil || string(still) != string(active) {
+		t.Fatalf("the core's active value changed: %v", err)
+	}
+	if code := adminWorks(still); code != http.StatusOK {
+		t.Fatalf("the active token after abandon: %d, want 200 (the core holds a token Forgejo deleted)", code)
+	}
+	if got := adminTokens(forgejo.TokenName(int(v2))) + adminTokens(forgejo.TokenName(int(v1))); got != "01" {
+		t.Fatalf("tokens of versions 2 and 1 after abandon: %s, want none and one", got)
+	}
 }
 
 // fixedSecret is an Env whose only webhook secret is value.
