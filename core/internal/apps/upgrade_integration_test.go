@@ -287,6 +287,38 @@ func TestAgentUpgradeRollbackRevertsAndRetries(t *testing.T) {
 	}
 }
 
+// TestLegacySetupJobCannotActivateAnUpgrade: a setup job queued before
+// upgrades carried no generation; if it resumes while the instance is
+// upgrading, it must not run Setup or activate it. The same legacy job still
+// finishes an install that is the applied generation.
+func TestLegacySetupJobCannotActivateAnUpgrade(t *testing.T) {
+	h := newHarness(t)
+	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+		Provider: "agenttest", BaseURL: "https://agenttest.work.acme.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.exec(`UPDATE app_instances SET state = 'upgrading', package_version = $2, desired_generation = 2, observed_generation = 2 WHERE id = $1`,
+		inst.ID, agenttest.Version)
+	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.reload(inst.ID); got.State != apps.StateUpgrading || h.agentProv.Setups(inst.ID) != 0 {
+		t.Fatalf("a legacy setup job affected an upgrade: %+v, setups %d", got.AppInstance, h.agentProv.Setups(inst.ID))
+	}
+
+	// A legacy job for an install that is still the applied generation
+	// finishes normally.
+	h.exec(`UPDATE app_instances SET state = 'installing', desired_generation = 3, observed_generation = 3 WHERE id = $1`, inst.ID)
+	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.reload(inst.ID); got.State != apps.StateActive || h.agentProv.Setups(inst.ID) != 1 {
+		t.Fatalf("a legacy install setup did not finish: %+v, setups %d", got.AppInstance, h.agentProv.Setups(inst.ID))
+	}
+}
+
 // TestAgentUpgradeFailedRevertStops: when the revert generation itself
 // cannot be applied (the running version is no longer embedded), another
 // revert would fail the same way; the instance fails with that code instead

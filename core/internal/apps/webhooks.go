@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
+	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/providers/provider"
 )
@@ -511,7 +512,14 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 	if (inst.State != StateInstalling && inst.State != StateUpgrading) || inst.Adapter == nil {
 		return nil
 	}
-	if args.Generation > 0 && inst.DesiredGeneration != args.Generation {
+	if args.Generation == 0 {
+		// A setup job queued before upgrades carried a generation never
+		// belongs to an upgrade: it may resume after the instance started
+		// one and must not activate or fail it there.
+		if inst.State != StateInstalling || inst.DesiredGeneration != inst.ObservedGeneration {
+			return nil
+		}
+	} else if inst.DesiredGeneration != args.Generation {
 		// A newer generation superseded this setup; its consequences run
 		// their own setup.
 		return nil

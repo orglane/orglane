@@ -428,7 +428,14 @@ func (s *Service) finishSetup(ctx context.Context, id uuid.UUID, generation int6
 		if err != nil {
 			return err
 		}
-		if generation > 0 && inst.DesiredGeneration != generation {
+		if generation > 0 {
+			if inst.DesiredGeneration != generation {
+				return nil
+			}
+		} else if inst.State != StateInstalling || inst.DesiredGeneration != inst.ObservedGeneration {
+			// A legacy setup job (no generation) may only finish an install
+			// that is still the applied generation; it never activates an
+			// upgrading instance.
 			return nil
 		}
 		if inst.State != StateInstalling && inst.State != StateUpgrading {
