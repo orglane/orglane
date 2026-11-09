@@ -2,9 +2,11 @@
 // (docs/specs/providers.md "Provider specifics → Forgejo"). Orglane runs
 // Forgejo through the agent from the package in managed/; this adapter
 // gives the core the package inputs, sets up a fresh install (the
-// organization) and checks its health through the Forgejo API.
+// organization), checks its health through the Forgejo API, and turns the
+// organization hook's deliveries into normalized events (webhooks.go,
+// hooks.go, events.go).
 //
-// Single sign-on and provisioning (#62) and webhooks (#63) build on it.
+// Single sign-on and provisioning (#62) build on it.
 package forgejo
 
 import (
@@ -38,6 +40,8 @@ const (
 	// CredentialOIDCClientSecret is the secret of the instance's OIDC client
 	// in Orglane, issued when the instance is created. Not rotatable in M2.
 	CredentialOIDCClientSecret = "oidc_client_secret" //nolint:gosec // a credential name, not a credential
+	// CredentialWebhookSecret signs the organization hook's deliveries.
+	CredentialWebhookSecret = "webhook_secret"
 )
 
 // AuthSourceName is the name of Forgejo's sign-in source for Orglane, the
@@ -88,9 +92,6 @@ var reservedNames = []string{
 // reservedSuffixes are Forgejo's reserved name patterns (*.keys, ...).
 var reservedSuffixes = []string{".keys", ".gpg", ".rss", ".atom", ".png"}
 
-// planned is the milestone of what #62 and #63 add in M2.
-const planned = "M2"
-
 // Adapter is the Forgejo adapter. It holds no state; all methods are safe
 // for concurrent use.
 type Adapter struct{}
@@ -109,8 +110,7 @@ func (*Adapter) Manifest() provider.Manifest {
 		Capabilities: []provider.Capability{"code"},
 		Management:   provider.Managed,
 		Package:      "forgejo",
-		// The matrix says what this adapter does today: webhooks come with
-		// #63.
+		// The matrix says what this adapter does today.
 		Features: []provider.FeatureSupport{
 			{Feature: provider.FeatureSSO, Support: provider.Supported},
 			{Feature: provider.FeatureDeepLinks, Support: provider.Supported},
@@ -122,7 +122,7 @@ func (*Adapter) Manifest() provider.Manifest {
 			{Feature: provider.FeatureDeprovisionOrgRemoval, Support: provider.Unsupported},
 			{Feature: provider.FeatureDeprovisionSuspend, Support: provider.Planned, Milestone: "M5"},
 			{Feature: provider.FeatureDeprovisionRevokeTokens, Support: provider.Planned, Milestone: "M5"},
-			{Feature: provider.FeatureEventsWebhooks, Support: provider.Planned, Milestone: planned},
+			{Feature: provider.FeatureEventsWebhooks, Support: provider.Supported},
 			{Feature: provider.FeatureLifecycleInstall, Support: provider.Supported},
 			{Feature: provider.FeatureLifecycleUpgrade, Support: provider.Supported},
 			{Feature: provider.FeatureLifecycleSnapshot, Support: provider.Supported},
@@ -134,6 +134,8 @@ func (*Adapter) Manifest() provider.Manifest {
 			{Name: CredentialAdminPassword, Source: provider.SourceGenerated, Agent: true},
 			{Name: CredentialAdminToken, Source: provider.SourceProvider, Rotatable: true, ReadBack: true, Overlap: time.Hour},
 			{Name: CredentialOIDCClientSecret, Source: provider.SourceIdentity, Agent: true},
+			// No read-back: Forgejo never returns a hook's secret.
+			{Name: CredentialWebhookSecret, Source: provider.SourceGenerated, Rotatable: true, Overlap: 24 * time.Hour},
 		},
 		Settings: []provider.SettingSpec{
 			{Name: SettingSSHPort, Type: provider.SettingInt, Min: 1024, Max: 65535, Default: DefaultSSHPort, Mutable: true},
@@ -220,4 +222,5 @@ var (
 	_ provider.SettingsValidator    = (*Adapter)(nil)
 	_ provider.Lifecycle            = (*Adapter)(nil)
 	_ provider.CredentialRotator    = (*Adapter)(nil)
+	_ provider.EventSource          = (*Adapter)(nil)
 )
