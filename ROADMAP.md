@@ -7,7 +7,7 @@
 | Milestone | Character | Audience | Status |
 |---|---|---|---|
 | **M0 — Foundation** | Private. Ends with the repository going public (pre-alpha) | — | Done |
-| **v0.1 — Developer Preview** (M1–M7) | Quiet release, devlog only | Maintainers and early adopters | In progress: M1 done, M2 in progress |
+| **v0.1 — Developer Preview** (M1–M7) | Quiet release, devlog only | Maintainers and early adopters | In progress: M1 and M2 done, M3 next |
 | **v0.2 — Public Launch** | Loud: Hacker News, Reddit, Product Hunt | Everyone | Research tracks started |
 | **v0.3+** | Growth | — | — |
 
@@ -44,14 +44,14 @@ Each candidate is deployed and compared on idle and loaded memory, OIDC quality,
 | | Milestone | Scope |
 |---|---|---|
 | **M1** ✅ | People | People, teams, Owner/Admin/Member roles, profile field library + custom fields + visibility, CSV/XLSX and GitHub org import, invites, onboarding checklist |
-| **M2** | Code | **Forgejo (managed):** agent, package, upgrade with snapshot and rollback, SSO, provisioning, team mapping, webhooks, silent SSO deep links. **GitHub (external):** GitHub App, account linking, invites, removal, webhooks |
+| **M2** ✅ | Code | **Forgejo (managed):** agent, package, upgrade with snapshot and rollback, SSO, provisioning, team mapping, webhooks, silent SSO deep links. **GitHub (external):** GitHub App, account linking, invites, removal, webhooks |
 | **M3** | Notifications | Event pipeline, Inbox, grouping, priorities, Web Push, Telegram bot (linking, DMs, invite links and removal from groups) |
 | **M4** | Mobile app | Expo app: QR and email sign-in, Home, Inbox, People (offline), Apps, devices, end-to-end encrypted push via the open-source relay |
 | **M5** | Offboarding & audit | Block → revoke sessions and devices; Forgejo suspension, tokens and SSH keys; GitHub org removal; Telegram removal; per-provider report; audit log |
 | **M6** | MCP | Scopes, delegated tokens with consent, read-only MCP server (people, teams, pull requests, notifications) |
 | **M7** | Backups | Local and S3 targets, core + Forgejo, test-restore command, health panel |
 
-**M2 status (in progress).** Merged: the provider framework, the Forgejo managed package and lifecycle, install/remove/purge/reinstall through the API and Settings → Apps (#61, #94), SSO/provisioning/team mappings/webhooks/normalized events/deep links, the GitHub App connect/link/provision/removal and webhooks, the core–agent install and apply/sync jobs, the agent's upgrades with snapshot and rollback, and the core-side upgrade flow (#75): confirmation through the fenced alias, the one-at-a-time planner, rollback reverts and the admin retry. The M2 acceptance scenario (#67) is automated: `core/internal/apps` sets up a company, invites a person, installs Forgejo through the API and the real agent, provisions the person into a mapped team, turns a real Forgejo mention into a normalized event, opens the pull request through the silent-SSO deep link, and demonstrates a Forgejo upgrade rollback; its GitHub part runs with the `github-live` environment and skips explicitly without it. M2 is **not done** yet: the protected `github-live` workflow (#71, PR #79) is still open.
+**Status:** done. All M2 issues are closed (#60–#67, #71, #75, #83): the provider framework, the Forgejo managed package and lifecycle through the API and Settings → Apps, SSO/provisioning/team mappings/webhooks/normalized events/deep links, the GitHub App connect/link/provision/removal and webhooks, the core–agent install and apply/sync jobs, and the agent's upgrades with snapshot and rollback together with the core-side upgrade flow (#75). The M2 acceptance scenario (#67) is automated and green in CI: `core/internal/apps` sets up a company, invites a person, installs Forgejo through the API and the real agent, provisions the person into a mapped team, turns a real Forgejo mention into a normalized event, opens the pull request through the silent-SSO deep link, and demonstrates a Forgejo upgrade rollback. Its real-GitHub part passed in the protected `github-live` workflow on `main` ([run 42684360151](https://github.com/orglane/orglane/actions/runs/42684360151)): connection and installation checks, account link, provisioning (invitation, team sync, removal with asynchronous removal confirmation, and restore), 14 real webhook deliveries checked against their payload fixtures and logged signatures, `TestM2AcceptanceGitHubLive`, and the janitor. Browser OAuth authorization and the App manifest/installation flow remain manual pre-release checks, as the live tests record; without the `github-live` environment the GitHub part skips explicitly.
 
 **v0.1 exit criteria**
 1. Fresh VPS (2 vCPU / 4 GB) → `curl … | sh` → working with own domain in **≤ 10 minutes**; `--demo` on a laptop in **≤ 2 minutes**.
