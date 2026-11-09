@@ -267,6 +267,38 @@ func TestProvisionTeamRemovals(t *testing.T) {
 	}
 }
 
+// A queued team removal stays valid only while its team is still mapped:
+// deleting or re-pointing the mapping stops managing that team. Account
+// removals do not depend on mappings.
+func TestRemovalStillManaged(t *testing.T) {
+	a := New()
+	team := provider.TeamRef{TeamID: uuid.New(), ExternalRef: "1234"}
+	d := provider.DesiredAccess{Teams: []provider.TeamRef{team}, Mapped: []provider.TeamRef{team}}
+	removal := teamAction(provider.ActionRemoveFromTeam, "7", ghTeam{ID: 1234})
+	if !a.RemovalStillManaged(provider.Instance{}, d, removal) {
+		t.Fatal("a removal from a mapped team is stale")
+	}
+	d.Mapped = nil
+	if a.RemovalStillManaged(provider.Instance{}, d, removal) {
+		t.Fatal("a removal from an unmapped team is still valid")
+	}
+	d.Mapped = []provider.TeamRef{{TeamID: team.TeamID, ExternalRef: "9999"}}
+	if a.RemovalStillManaged(provider.Instance{}, d, removal) {
+		t.Fatal("a removal from a re-pointed mapping is still valid")
+	}
+	for _, act := range []provider.Action{
+		accountAction(provider.ActionRemoveFromOrg, "7", true),
+		accountAction(provider.ActionCancelInvitation, "7", true),
+	} {
+		if !a.RemovalStillManaged(provider.Instance{}, d, act) {
+			t.Fatalf("%s is stale without a mapping", act.Kind)
+		}
+	}
+	if a.RemovalStillManaged(provider.Instance{}, d, provider.Action{Kind: provider.ActionRemoveFromTeam, Removal: true}) {
+		t.Fatal("a team removal without a target is valid")
+	}
+}
+
 // A team addition never invites: GitHub would invite someone who is not in
 // the organization, without the invitation's proof.
 func TestProvisionTeamAdditionNeedsInvitation(t *testing.T) {

@@ -127,7 +127,9 @@ accounts.
   ends the team memberships), and a large removal waits for an admin's
   confirmation. Organization owners (`owner_protected`), billing managers
   (`role_protected`) and team maintainers (`maintainer_protected`) are never
-  removed; team removals only target the instance's mapped teams.
+  removed; team removals only target the instance's mapped teams. Deleting a
+  mapping stops managing its team (its members stay) and cancels any pending or
+  held removal from that team.
 
 ## Minimal App permissions
 

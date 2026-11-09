@@ -333,6 +333,153 @@ func TestGitHubRevokedLinkEndsOwnership(t *testing.T) {
 	}
 }
 
+// mapExistingGitHubTeam maps an Orglane team to an existing GitHub team.
+func (h *linkHarness) mapExistingGitHubTeam(team store.Team, providerTeam githubfake.Team) {
+	h.t.Helper()
+	if _, err := h.svc.SetTeamMapping(h.ctx, audit.System, h.inst.ID, team.ID, apps.TeamMappingInput{
+		Mode: provider.MappingExisting, ExternalRef: strconv.FormatInt(providerTeam.ID, 10),
+	}); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// A queued removal from a mapped team is canceled when that team's mapping is
+// deleted before the guard runs: the team is no longer Orglane's, so its
+// members stay. The guard must not apply the stale intent.
+func TestGitHubPendingTeamRemovalCanceledByUnmapping(t *testing.T) {
+	h := newGitHubHarness(t)
+	alice := h.person("alice")
+	platform := h.team("platform", alice)
+	release := h.team("release")
+	crew := h.gh.AddTeam("Release Crew", "made on GitHub")
+	h.mapTeam(h.inst, platform)
+	h.mapExistingGitHubTeam(release, crew)
+	h.linkAs(alice, 1001, "alice-gh")
+	h.drain()
+	h.gh.Accept(1001)
+	h.gh.SetTeamMember(crew.ID, 1001, githubfake.RoleMember)
+	// A drift plan sees the manual membership in the mapped "release" team
+	// and queues its removal.
+	if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: h.inst.ID, PersonID: alice.ID, Drift: true}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	key := "remove_from_team:" + strconv.FormatInt(crew.ID, 10)
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE instance_id = $1 AND person_id = $2 AND action_key = $3 AND state = 'pending'`, h.inst.ID, alice.ID, key); n != 1 {
+		t.Fatalf("%d pending removals, want 1", n)
+	}
+	if err := h.svc.RemoveTeamMapping(h.ctx, audit.System, h.inst.ID, release.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The guard runs before the mapping-triggered replans, the order that
+	// used to apply the stale removal.
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: h.inst.ID}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	if m := h.gh.TeamMembers(crew.ID); m[1001] != "member/active" {
+		t.Fatalf("a stale removal deleted a membership in an unmapped team: %v", m)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE instance_id = $1 AND person_id = $2 AND action_key = $3 AND state = 'dropped'`, h.inst.ID, alice.ID, key); n != 1 {
+		t.Fatalf("%d dropped removals, want 1", n)
+	}
+}
+
+// heldTeamRemovals is a held batch of four removals from one mapped existing
+// GitHub team.
+type heldTeamRemovals struct {
+	h       *linkHarness
+	people  []store.Person
+	ids     []int64
+	crew    githubfake.Team
+	release store.Team
+	held    *apps.HeldBatch
+}
+
+// newHeldTeamRemovals sets up four people with access through one mapped
+// team and a manual membership in another mapped "existing" team, and holds
+// their removal batch.
+func newHeldTeamRemovals(t *testing.T) *heldTeamRemovals {
+	t.Helper()
+	h := newGitHubHarness(t)
+	f := &heldTeamRemovals{h: h, ids: []int64{1001, 1002, 1003, 1004}}
+	for _, name := range []string{"p0", "p1", "p2", "p3"} {
+		f.people = append(f.people, h.person(name))
+	}
+	platform := h.team("platform", f.people...)
+	f.release = h.team("release")
+	f.crew = h.gh.AddTeam("Release Crew", "made on GitHub")
+	h.mapTeam(h.inst, platform)
+	h.mapExistingGitHubTeam(f.release, f.crew)
+	for i, p := range f.people {
+		h.linkAs(p, f.ids[i], p.Username+"-gh")
+	}
+	h.drain()
+	for _, id := range f.ids {
+		h.gh.Accept(id)
+		h.gh.SetTeamMember(f.crew.ID, id, githubfake.RoleMember)
+	}
+	for _, p := range f.people {
+		if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: h.inst.ID, PersonID: p.ID, Drift: true}, 1, 8); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.drain()
+	held, err := h.svc.HeldRemovals(h.ctx, h.inst.ID)
+	if err != nil || held == nil || int(held.Batch.ItemCount) != len(f.people) || len(held.Items) != len(f.people) {
+		t.Fatalf("held = %+v, %v", held, err)
+	}
+	f.held = held
+	return f
+}
+
+// Confirming a held batch after its team's mapping was deleted must drop its
+// stale items: the team is no longer Orglane's, so nobody is removed.
+func TestGitHubHeldTeamRemovalsCanceledByUnmapping(t *testing.T) {
+	f := newHeldTeamRemovals(t)
+	if err := f.h.svc.RemoveTeamMapping(f.h.ctx, audit.System, f.h.inst.ID, f.release.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.h.drain() // finish the mapping-triggered replans
+	if err := f.h.svc.ConfirmRemovals(f.h.ctx, audit.System, f.h.inst.ID, f.held.Batch.ID, f.held.Batch.ItemsHash); err != nil {
+		t.Fatal(err)
+	}
+	f.h.drain()
+	for _, id := range f.ids {
+		if m := f.h.gh.TeamMembers(f.crew.ID); m[id] != "member/active" {
+			t.Fatalf("a confirmed stale removal deleted a membership in an unmapped team: %v", m)
+		}
+	}
+	if n := f.h.count(`SELECT count(*) FROM provisioning_removals WHERE batch_id = $1 AND state = 'held'`, f.held.Batch.ID); n != 0 {
+		t.Fatalf("%d held items after confirmation", n)
+	}
+	var state string
+	if err := f.h.pool.QueryRow(f.h.ctx, `SELECT state FROM provisioning_removal_batches WHERE id = $1`, f.held.Batch.ID).Scan(&state); err != nil || state != "applied" {
+		t.Fatalf("batch = %q, %v", state, err)
+	}
+}
+
+// An unrelated mapping change must not cancel a held removal: Mapped is not
+// part of the person's desired hash, and the removal's target is still
+// mapped, so confirming applies it.
+func TestGitHubHeldTeamRemovalsSurviveUnrelatedMappingChange(t *testing.T) {
+	f := newHeldTeamRemovals(t)
+	f.h.mapTeam(f.h.inst, f.h.team("other"))
+	f.h.drain()
+	held, err := f.h.svc.HeldRemovals(f.h.ctx, f.h.inst.ID)
+	if err != nil || held == nil || held.Batch.ID != f.held.Batch.ID || len(held.Items) != len(f.people) {
+		t.Fatalf("held after an unrelated mapping change = %+v, %v", held, err)
+	}
+	if err := f.h.svc.ConfirmRemovals(f.h.ctx, audit.System, f.h.inst.ID, f.held.Batch.ID, f.held.Batch.ItemsHash); err != nil {
+		t.Fatal(err)
+	}
+	f.h.drain()
+	for _, id := range f.ids {
+		if m := f.h.gh.TeamMembers(f.crew.ID); m[id] != "" {
+			t.Fatalf("an unrelated mapping change dropped the held removal: %v", m)
+		}
+	}
+}
+
 // A GitHub rename is observed by the next plan and refreshes the verified
 // link's informational login; access is unchanged.
 func TestGitHubRenameRefreshesTheVerifiedLink(t *testing.T) {

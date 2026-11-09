@@ -131,9 +131,10 @@ func TestGitHubLiveProvisioning(t *testing.T) {
 		t.Fatal("invalid dedicated bot configuration")
 	}
 	env := &liveEnv{client: &http.Client{Timeout: 30 * time.Second}, key: []byte(os.Getenv("ORGLANE_TEST_GITHUB_APP_PRIVATE_KEY"))}
-	defer clear(env.key)
 	inst := provider.Instance{ID: uuid.New(), Provider: "github", Settings: map[string]any{"organization": org, "app_id": os.Getenv("ORGLANE_TEST_GITHUB_APP_ID"), "app_client_id": os.Getenv("ORGLANE_TEST_GITHUB_APP_CLIENT_ID"), "installation_id": os.Getenv("ORGLANE_TEST_GITHUB_INSTALLATION_ID")}}
 	a := New()
+	var ref provider.TeamRef
+	liveProvisioningCleanups(t, a, env, inst, botToken, org, botID, botLogin, &ref)
 	// The App slug names the bot that GitHub attributes installation-token
 	// invitations to; read it rather than adding another required setting.
 	jwt, err := jwtFor(ctx, env, inst)
@@ -177,13 +178,7 @@ func TestGitHubLiveProvisioning(t *testing.T) {
 	if err != nil || len(refs) != 1 || refs[0].ExternalRef == "" || !strings.HasPrefix(refs[0].Name, "orglane-test-") {
 		t.Fatalf("synced team = %+v, %v", refs, err)
 	}
-	ref := refs[0]
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		liveDeleteTeam(ctx, t, env, token, org, ref.Name)
-		liveEnsureMember(ctx, t, a, env, inst, token, botToken, org, botID, botLogin)
-	})
+	ref = refs[0]
 	// The test deletes the team itself; also give it the janitor's provenance
 	// so a crashed run leaves something the janitor can remove.
 	if err := request(ctx, env, http.MethodPatch, "/orgs/"+url.PathEscape(org)+"/teams/"+url.PathEscape(ref.Name), token, map[string]any{"description": liveResourceDescription()}, nil); err != nil {
@@ -355,6 +350,29 @@ func liveAcceptInvitation(ctx context.Context, t *testing.T, env *liveEnv, token
 	if err := request(ctx, env, http.MethodPatch, "/user/memberships/orgs/"+url.PathEscape(org), token, map[string]any{"state": "active"}, &res); err != nil || res.State != "active" {
 		t.Fatalf("accept invitation = %+v, %v", res, err)
 	}
+}
+
+// liveProvisioningCleanups registers a live provisioning run's cleanups.
+// t.Cleanup runs last-in-first-out, so clearing the App key is registered
+// first: the bot restoration and the team deletion still mint installation
+// tokens after a failed test. team is filled in once the temporary team
+// exists.
+func liveProvisioningCleanups(t *testing.T, a *Adapter, env *liveEnv, inst provider.Instance, botToken, org, botID, botLogin string, team *provider.TeamRef) {
+	t.Helper()
+	t.Cleanup(func() { clear(env.key) })
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		token, err := a.InstallationToken(ctx, env, inst)
+		if err != nil {
+			t.Errorf("cleanup: installation token: %v", err)
+			return
+		}
+		if team.Name != "" {
+			liveDeleteTeam(ctx, t, env, token, org, team.Name)
+		}
+		liveEnsureMember(ctx, t, a, env, inst, token, botToken, org, botID, botLogin)
+	})
 }
 
 // liveEnsureMember restores the bot's organization membership if a failed

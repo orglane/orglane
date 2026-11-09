@@ -947,7 +947,7 @@ func (s *Service) selectRemovals(ctx context.Context, q *store.Queries, inst Ins
 		} else if err != nil {
 			return false, err
 		}
-		if bytes.Equal(d.hash, r.DesiredHash) {
+		if bytes.Equal(d.hash, r.DesiredHash) && removalRowManaged(inst, d, r.Action) {
 			return true, nil
 		}
 		replan[r.PersonID] = true
@@ -1016,6 +1016,40 @@ func (s *Service) selectRemovals(ctx context.Context, q *store.Queries, inst Ins
 		return toApply, batches, nil
 	}
 	return toApply, batches, s.hold(ctx, q, inst, freshPending)
+}
+
+// removalManaged reports whether a queued removal still targets access the
+// adapter manages. Adapters whose managed set follows the desired access
+// implement provider.RemovalChecker (GitHub: only the instance's current
+// mapped teams), so deleting a mapping cancels that removal while unrelated
+// mapping changes leave it alone. For other adapters a planned removal stays
+// valid as long as the person's desired hash does.
+func removalManaged(inst Instance, d desired, a provider.Action) bool {
+	if inst.Adapter == nil {
+		return true
+	}
+	checker, ok := inst.Adapter.RemovalChecker()
+	if !ok {
+		return true
+	}
+	return checker.RemovalStillManaged(inst.View(), d.access, a)
+}
+
+// removalRowManaged is removalManaged for a stored removal. An action that
+// cannot be decoded stays fresh: applyRemoval reports that as the person's
+// failure, so one broken removal never blocks the others.
+func removalRowManaged(inst Instance, d desired, raw []byte) bool {
+	if inst.Adapter == nil {
+		return true
+	}
+	if _, ok := inst.Adapter.RemovalChecker(); !ok {
+		return true
+	}
+	var a provider.Action
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return true
+	}
+	return removalManaged(inst, d, a)
 }
 
 // enqueuePeople queues provision_person for a set of people of an instance,
@@ -1102,7 +1136,11 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 	} else if err != nil {
 		return nil, err
 	}
-	if !bytes.Equal(d.hash, cur.DesiredHash) {
+	var a provider.Action
+	if err := json.Unmarshal(cur.Action, &a); err != nil {
+		return nil, fmt.Errorf("apps: decode removal: %w", err)
+	}
+	if !bytes.Equal(d.hash, cur.DesiredHash) || !removalManaged(inst, d, a) {
 		return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			q := store.New(tx)
 			if _, err := q.SetRemovalStateFrom(ctx, store.SetRemovalStateFromParams{ID: r.ID, FromState: item.state, State: removalDropped}); err != nil {
@@ -1110,10 +1148,6 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 			}
 			return s.enqueuePerson(ctx, tx, q, inst.ID, r.PersonID, false)
 		})
-	}
-	var a provider.Action
-	if err := json.Unmarshal(cur.Action, &a); err != nil {
-		return nil, fmt.Errorf("apps: decode removal: %w", err)
 	}
 	out, applyErr := prov.Apply(ctx, held.env(inst), inst.View(), a)
 	if applyErr != nil {

@@ -427,6 +427,23 @@ func teamAction(kind provider.ActionKind, id string, t ghTeam) provider.Action {
 	}
 }
 
+// RemovalStillManaged implements provider.RemovalChecker. Team removals are
+// planned only from the instance's mapped teams; deleting a mapping stops
+// managing its team, so a queued removal from it is stale and must not run.
+// Account removals (the organization membership, a pending invitation) do
+// not depend on mappings.
+func (*Adapter) RemovalStillManaged(_ provider.Instance, d provider.DesiredAccess, a provider.Action) bool {
+	if a.Kind != provider.ActionRemoveFromTeam {
+		return true
+	}
+	for _, t := range d.Mapped {
+		if t.ExternalRef == a.Params[paramTeam] {
+			return true
+		}
+	}
+	return false
+}
+
 // Apply implements provider.UserProvisioner. Every action is an ensure that
 // reads the account (by ID), its membership and the team now; nothing saved
 // in the plan but the IDs is trusted.
@@ -721,6 +738,7 @@ func (a *Adapter) Members(ctx context.Context, env provider.Env, inst provider.I
 
 var (
 	_ provider.UserProvisioner      = (*Adapter)(nil)
+	_ provider.RemovalChecker       = (*Adapter)(nil)
 	_ provider.TeamMappingValidator = (*Adapter)(nil)
 	_ provider.TeamLister           = (*Adapter)(nil)
 )

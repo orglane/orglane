@@ -281,6 +281,17 @@ type DesiredAccess struct {
 	Managed bool
 }
 
+// RemovalChecker is optional. It reports whether a queued removal still
+// targets access the adapter manages, given the person's current desired
+// access. The core checks it when it tests a removal's freshness and again
+// before applying it. GitHub manages team membership only of the instance's
+// current mappings, so deleting a mapping cancels pending and held removals
+// from that team; a Forgejo team stays Orglane's without a mapping. Pure: no
+// provider calls.
+type RemovalChecker interface {
+	RemovalStillManaged(inst Instance, d DesiredAccess, a Action) bool
+}
+
 // Plan is the result of UserProvisioner.Plan.
 type Plan struct {
 	Actions []Action

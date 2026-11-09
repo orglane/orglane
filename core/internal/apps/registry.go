@@ -48,6 +48,13 @@ func (a *Adapter) Verifier() (provider.AccountVerifier, bool) {
 	return p, ok
 }
 
+// RemovalChecker returns the adapter's RemovalChecker, if it has one: the
+// adapter scopes removals to its current desired access.
+func (a *Adapter) RemovalChecker() (provider.RemovalChecker, bool) {
+	p, ok := a.impl.(provider.RemovalChecker)
+	return p, ok
+}
+
 // EventSource returns the adapter's EventSource, if it has one.
 func (a *Adapter) EventSource() (provider.EventSource, bool) {
 	p, ok := a.impl.(provider.EventSource)

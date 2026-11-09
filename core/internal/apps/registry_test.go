@@ -94,6 +94,24 @@ func TestHashDesiredIgnoresLoginAndTeamOrder(t *testing.T) {
 	}
 }
 
+// Mapped is the instance-wide set of managed teams: an unrelated mapping
+// change must not alter a person's hash (that would drop held removals
+// nobody asked to cancel). A mapping that concerns the person changes Teams,
+// which is hashed.
+func TestHashDesiredIgnoresUnrelatedMappedTeams(t *testing.T) {
+	a := provider.DesiredAccess{Username: "a", Access: true, Teams: []provider.TeamRef{{ExternalRef: "1"}},
+		Mapped: []provider.TeamRef{{ExternalRef: "1"}}}
+	b := a
+	b.Mapped = []provider.TeamRef{{ExternalRef: "1"}, {ExternalRef: "2"}}
+	if string(hashDesired(a)) != string(hashDesired(b)) {
+		t.Fatal("hash depends on unrelated mapped teams")
+	}
+	b.Teams = []provider.TeamRef{{ExternalRef: "2"}}
+	if string(hashDesired(a)) == string(hashDesired(b)) {
+		t.Fatal("hash ignores the person's teams")
+	}
+}
+
 func TestRemovalLimit(t *testing.T) {
 	for managed, want := range map[int64]int64{0: 3, 29: 3, 40: 4, 1000: 100} {
 		if got := removalLimit(managed); got != want {
