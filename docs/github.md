@@ -389,6 +389,9 @@ finish a queued removal or cancellation and, on timeout, report the last HTTP
 status plus the non-secret membership `state`, `role`, `direct_membership` and
 enterprise-team fields. Cleanup waits for an accepted removal to finish before
 restoring the bot, so a removal that lands late cannot undo the restoration.
+The test also repairs the bot at startup if a previous run's late removal left
+it out of the organization, and waits for GitHub's member list to reflect the
+restored membership.
 The workflow runs the same two commands as
 `make test-github-live` (provider live tests without the janitor, then the M2
 acceptance test), followed by the janitor as a separate final step; see the

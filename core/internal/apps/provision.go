@@ -1186,8 +1186,8 @@ func (s *Service) applyRemoval(ctx context.Context, held *heldConn, prov provide
 		return nil, errRemovalFailed
 	}
 	// A removal the provider accepted in an earlier attempt is confirmed by
-	// this one: the membership is gone now, so this attempt reports no change
-	// of its own, but the earlier acceptance was the change to audit.
+	// this one: the target is gone now, so this attempt reports no change of
+	// its own, but the earlier acceptance was the change to audit.
 	acceptedEarlier := cur.ErrorCode != nil && *cur.ErrorCode == provider.CodeRemovalPending
 	return nil, pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		q := store.New(tx)

@@ -250,10 +250,10 @@ func (f *Fake) DeleteUser(id int64) {
 
 // QueueOrgRemovals makes organization membership removals asynchronous for
 // tests: the DELETE still answers 204, but the membership (and its team
-// memberships) remains visible for the next readbacks membership reads.
-// GitHub accepts such a removal before it finishes propagating it; a last-read
-// completion removes the membership after that response. readbacks <= 0
-// restores synchronous removal.
+// memberships) remains visible for the next readbacks membership reads. The
+// read that consumes the last readback writes the 200 response and then ends
+// the membership, so later reads get GitHub's 404. readbacks <= 0 restores
+// synchronous removal.
 func (f *Fake) QueueOrgRemovals(readbacks int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

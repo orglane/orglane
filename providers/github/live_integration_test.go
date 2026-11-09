@@ -156,21 +156,65 @@ func TestGitHubLiveProvisioning(t *testing.T) {
 	}
 
 	// The setup requires the bot to be an ordinary member: the test invites,
-	// removes and restores it.
-	members, err := a.Members(ctx, env, inst)
-	if err != nil {
-		t.Fatal(err)
+	// removes and restores it. A previous failed run can have left it removed
+	// because that run's cleanup still saw the queued membership as active and
+	// the removal finished afterwards; restore it first, so the test repairs
+	// exactly the state its own removal can leave.
+	role, state, err := liveMembership(ctx, env, token, org, botLogin)
+	restore := false
+	switch {
+	case err != nil:
+		var api *APIError
+		if !errors.As(err, &api) || api.Status != http.StatusNotFound {
+			t.Fatalf("read the bot's membership: %v", err)
+		}
+		restore = true
+	case state != "active":
+		restore = true
+	case role != "member":
+		t.Fatalf("bot membership = %q/%q; the live-test bot must be a non-owner member", state, role)
 	}
-	member := false
-	for _, m := range members {
-		if m.ExternalID == botID && strings.EqualFold(m.Login, botLogin) {
-			member = true
+	if restore {
+		t.Logf("restoring the dedicated bot's membership: %q/%q, %v", role, state, err)
+		if _, err := a.Apply(ctx, env, inst, accountAction(provider.ActionInvite, botID, false)); err != nil {
+			t.Fatalf("restore the dedicated bot: invite: %v", err)
+		}
+		if role, state, err = liveMembership(ctx, env, token, org, botLogin); err != nil || state != "active" || role != "member" {
+			liveAcceptInvitation(ctx, t, env, botToken, org)
+			role, err = liveAwaitMembershipActive(ctx, env, token, org, botLogin)
+			if err != nil || role != "member" {
+				t.Fatalf("restore the dedicated bot: role %q, %v", role, err)
+			}
 		}
 	}
-	if !member {
-		t.Fatalf("the dedicated bot @%s (ID %s) is not an organization member; the github-live setup requires one", botLogin, botID)
+	// The member list is a separate read and can lag the membership; wait a
+	// moment after a restoration instead of failing the setup on that lag.
+	for deadline := time.Now().Add(15 * time.Second); ; {
+		members, err := a.Members(ctx, env, inst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		member := false
+		for _, m := range members {
+			if m.ExternalID == botID && strings.EqualFold(m.Login, botLogin) {
+				member = true
+			}
+		}
+		if member {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("the dedicated bot @%s (ID %s) is not an organization member; the github-live setup requires one", botLogin, botID)
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			t.Fatal(ctx.Err())
+		case <-timer.C:
+		}
 	}
-	role, state, err := liveMembership(ctx, env, token, org, botLogin)
+	role, state, err = liveMembership(ctx, env, token, org, botLogin)
 	if err != nil || state != "active" || role != "member" {
 		t.Fatalf("bot membership = %q/%q, %v; the live-test bot must be a non-owner member", state, role, err)
 	}
@@ -424,7 +468,7 @@ func liveAwaitGone(ctx context.Context, what string, read func(context.Context) 
 		case status == http.StatusTooManyRequests || status >= 500:
 			detail = fmt.Sprintf("status %d", status)
 		default:
-			return fmt.Errorf("%s: GitHub answered %d (%s)", what, status, detail)
+			return fmt.Errorf("%s: GitHub answered %d", what, status)
 		}
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf("%s did not disappear within %s; last read: %s", what, liveMutationTimeout, detail)
@@ -557,7 +601,7 @@ func liveProvisioningCleanups(t *testing.T, a *Adapter, env *liveEnv, inst provi
 	t.Helper()
 	t.Cleanup(func() { clear(env.key) })
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 		token, err := a.InstallationToken(ctx, env, inst)
 		if err != nil {
