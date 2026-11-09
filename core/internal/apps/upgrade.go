@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/agentclient"
@@ -78,18 +79,21 @@ func (s *Service) UpgradeStatus(ctx context.Context, inst Instance) (UpgradeStat
 		return UpgradeStatus{}, false, nil
 	}
 	status := UpgradeStatus{CurrentVersion: current, TargetVersion: latest.Manifest.Version}
-	if current == latest.Manifest.Version {
-		status.State = UpgradeUpToDate
-		return status, true, nil
-	}
-	path, err := s.cfg.Packages.UpgradePath(*inst.PackageID, current, latest.Manifest.Version)
+	// The last step's Setup still holds the instance (and its maintenance
+	// routes) after the running version reached the newest one: report the
+	// upgrade in progress until Setup activates it.
 	if inst.State == StateUpgrading {
-		if err == nil {
+		if path, err := s.cfg.Packages.UpgradePath(*inst.PackageID, current, latest.Manifest.Version); err == nil && len(path) > 0 {
 			status.TargetVersion = path[0]
 		}
 		status.State = UpgradeInProgress
 		return status, true, nil
 	}
+	if current == latest.Manifest.Version {
+		status.State = UpgradeUpToDate
+		return status, true, nil
+	}
+	path, err := s.cfg.Packages.UpgradePath(*inst.PackageID, current, latest.Manifest.Version)
 	if err != nil {
 		status.State = UpgradeBlocked
 		var ue *packages.UpgradeError
@@ -144,10 +148,15 @@ func (s *Service) nextUpgradeVersion(inst Instance) (string, bool) {
 	return path[0], true
 }
 
-// planUpgrades records the next automatic upgrade step for every active or
+// planUpgrades records the next automatic upgrade step of one active or
 // degraded instance whose running version is behind the newest embedded
 // package version (docs/specs/agent.md "Upgrade"). It runs from agent_sync,
-// so it runs at core start and every sync interval. Each instance is
+// so it runs at core start and every sync interval.
+//
+// One instance at a time: while any managed instance is upgrading (or has an
+// unfinished upgrade operation), nothing is planned. The database enforces
+// the same invariant with a partial unique index, so two concurrent syncs
+// (or an admin retry) can never start a second upgrade. Each instance is
 // planned at most one step per call; operationFinished records the next
 // step after a successful one.
 //
@@ -161,22 +170,45 @@ func (s *Service) planUpgrades(ctx context.Context, rows []store.AppInstance, pu
 	}
 	var errs []error
 	for _, row := range rows {
-		if row.Management != string(provider.Managed) || (row.State != StateActive && row.State != StateDegraded) || pushing[row.ID] {
+		if row.Management != string(provider.Managed) || pushing[row.ID] {
 			continue
 		}
-		if err := s.planUpgrade(ctx, row.ID); err != nil {
+		planned, err := s.planUpgrade(ctx, row.ID)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("apps: plan upgrade of %s: %w", row.Key, err))
+			continue
+		}
+		switch planned {
+		case planRecorded:
+			return errors.Join(errs...)
+		case planBusy:
+			// Another instance is upgrading: it must settle first.
+			return errors.Join(errs...)
 		}
 	}
 	return errors.Join(errs...)
 }
 
+// planResult is what planUpgrade did.
+type planResult int
+
+const (
+	planSkipped  planResult = iota // no step for this instance now
+	planRecorded                   // one step was recorded
+	planBusy                       // another managed upgrade is in progress
+)
+
 // planUpgrade records one automatic upgrade step under the instance lock.
-func (s *Service) planUpgrade(ctx context.Context, id uuid.UUID) error {
-	return s.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
+func (s *Service) planUpgrade(ctx context.Context, id uuid.UUID) (planResult, error) {
+	result := planSkipped
+	err := s.inTx(ctx, func(tx pgx.Tx, q *store.Queries) error {
 		inst, err := s.loadInstance(ctx, q, id, true)
 		if err != nil {
 			return err
+		}
+		if inst.State == StateUpgrading {
+			result = planBusy
+			return nil
 		}
 		if inst.Adapter == nil || (inst.State != StateActive && inst.State != StateDegraded) {
 			return nil
@@ -210,12 +242,30 @@ func (s *Service) planUpgrade(ctx context.Context, id uuid.UUID) error {
 		case !errors.Is(err, pgx.ErrNoRows):
 			return fmt.Errorf("load latest upgrade: %w", err)
 		}
+		// The row lock only serializes plans of the same instance. Two
+		// concurrent syncs can pick different instances; this check and
+		// the partial unique index (app_instances_upgrading_key) make the
+		// second one stop instead of starting a parallel upgrade.
+		busy, err := q.AppUpgradeInProgress(ctx, id)
+		if err != nil {
+			return fmt.Errorf("check upgrading instances: %w", err)
+		}
+		if busy != nil && *busy {
+			result = planBusy
+			return nil
+		}
 		upgrading, err := s.transition(ctx, tx, q, audit.System, id, StateUpgrading, "")
 		if err != nil {
+			if isUpgradingConflict(err) {
+				result = planBusy
+				return nil
+			}
 			return err
 		}
+		result = planRecorded
 		return s.recordUpgradeStep(ctx, tx, q, audit.System, upgrading, target, ReasonUpgrade, false)
 	})
+	return result, err
 }
 
 // recordUpgradeStep records the next desired generation of an upgrade with
@@ -255,10 +305,11 @@ func (s *Service) RetryUpgrade(ctx context.Context, actor audit.Actor, id uuid.U
 		if _, ok := inst.Adapter.Lifecycle(); !ok {
 			return ErrNotSupported
 		}
-		if inst.State != StateActive && inst.State != StateDegraded {
-			return fmt.Errorf("%w: only an active or degraded instance can retry an upgrade", ErrInvalidState)
+		failedRevert := inst.State == StateFailed && recoverableRevertFailure(inst)
+		if inst.State != StateActive && inst.State != StateDegraded && !failedRevert {
+			return fmt.Errorf("%w: only an active, degraded or failed-revert instance can retry an upgrade", ErrInvalidState)
 		}
-		if inst.DesiredGeneration != inst.ObservedGeneration {
+		if !failedRevert && inst.DesiredGeneration != inst.ObservedGeneration {
 			return fmt.Errorf("%w: the instance has not applied its current change", ErrInvalidState)
 		}
 		unfinished, err := q.ListUnfinishedAppPushOperations(ctx)
@@ -285,6 +336,9 @@ func (s *Service) RetryUpgrade(ctx context.Context, actor audit.Actor, id uuid.U
 		}
 		upgrading, err := s.transition(ctx, tx, q, actor, id, StateUpgrading, "")
 		if err != nil {
+			if isUpgradingConflict(err) {
+				return fmt.Errorf("%w: another managed instance is upgrading", ErrInvalidState)
+			}
 			return err
 		}
 		return s.recordUpgradeStep(ctx, tx, q, actor, upgrading, target, ReasonRetry, true)
@@ -293,6 +347,26 @@ func (s *Service) RetryUpgrade(ctx context.Context, actor audit.Actor, id uuid.U
 		return Instance{}, err
 	}
 	return s.Instance(ctx, id)
+}
+
+// recoverableRevertFailure reports whether a failed instance failed while
+// acknowledging a rollback (the revert generation could not be applied).
+// The running version is known, so an admin can retry the upgrade from it.
+// A failed rollback (rollback_failed) is never recovered this way: only an
+// agent restore can recover it.
+func recoverableRevertFailure(inst Instance) bool {
+	switch derefString(inst.HealthCode) {
+	case CodePackageUnavailable, agentapi.CodeUnknownPackageVersion:
+		return inst.PackageVersion != nil
+	}
+	return false
+}
+
+// isUpgradingConflict reports the partial unique index that allows only one
+// managed instance in the upgrading state (agent.md "Upgrade").
+func isUpgradingConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "app_instances_upgrading_key"
 }
 
 // revertUpgrade acknowledges a rolled-back or failed upgrade with the

@@ -38,7 +38,11 @@ func (s *server) InstallAppInstance(ctx context.Context, req apigen.InstallAppIn
 	if err != nil {
 		return nil, appsError(err)
 	}
-	return apigen.InstallAppInstance202JSONResponse(appInstance(svc, inst)), nil
+	out, err := s.appInstance(ctx, svc, inst)
+	if err != nil {
+		return nil, err
+	}
+	return apigen.InstallAppInstance202JSONResponse(out), nil
 }
 
 func (s *server) RemoveAppInstance(ctx context.Context, req apigen.RemoveAppInstanceRequestObject) (apigen.RemoveAppInstanceResponseObject, error) {
@@ -58,7 +62,11 @@ func (s *server) RemoveAppInstance(ctx context.Context, req apigen.RemoveAppInst
 	if err != nil {
 		return nil, appsError(err)
 	}
-	return apigen.RemoveAppInstance202JSONResponse(appInstance(svc, inst)), nil
+	out, err := s.appInstance(ctx, svc, inst)
+	if err != nil {
+		return nil, err
+	}
+	return apigen.RemoveAppInstance202JSONResponse(out), nil
 }
 
 func (s *server) ReinstallAppInstance(ctx context.Context, req apigen.ReinstallAppInstanceRequestObject) (apigen.ReinstallAppInstanceResponseObject, error) {
@@ -73,7 +81,11 @@ func (s *server) ReinstallAppInstance(ctx context.Context, req apigen.ReinstallA
 	if err != nil {
 		return nil, appsError(err)
 	}
-	return apigen.ReinstallAppInstance202JSONResponse(appInstance(svc, inst)), nil
+	out, err := s.appInstance(ctx, svc, inst)
+	if err != nil {
+		return nil, err
+	}
+	return apigen.ReinstallAppInstance202JSONResponse(out), nil
 }
 
 func (s *server) GetAppAgent(ctx context.Context, _ apigen.GetAppAgentRequestObject) (apigen.GetAppAgentResponseObject, error) {

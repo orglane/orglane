@@ -171,6 +171,16 @@ func (a *agentHost) start() {
 	a.t.Fatal("the agent did not listen")
 }
 
+// restart stops the agent and starts it again on the same data directory
+// with another package registry, as an Orglane release upgrade does (core
+// and agent images are upgraded together).
+func (a *agentHost) restart(registry *packages.Registry) {
+	a.t.Helper()
+	a.stop()
+	a.registry = registry
+	a.start()
+}
+
 func (a *agentHost) client() *agentclient.Client {
 	a.t.Helper()
 	c, err := agentclient.New(a.socket, wiringAgentSecret, "dev")

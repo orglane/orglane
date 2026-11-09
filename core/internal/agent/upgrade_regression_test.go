@@ -217,6 +217,56 @@ func TestSnapshotRenderedIntegrity(t *testing.T) {
 	}
 }
 
+// TestRevertResolvesFromSavedOrRunningProject: a revert spec carries only
+// the running package reference. The agent resolves it from the project it
+// saved after a rollback, or from the running project when the upgrade
+// failed before the switch, so the version need not be embedded.
+func TestRevertResolvesFromSavedOrRunningProject(t *testing.T) {
+	a, _ := newTestAgent(t, time.Now)
+	spec := testSpec(1)
+	if err := os.MkdirAll(a.instanceDir("git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	revert := &agentapi.Spec{
+		InstanceID: spec.InstanceID, Generation: 2, Package: spec.Package,
+		State: agentapi.StateRunning, Ingress: agentapi.IngressLocal, Revert: true,
+	}
+	if got := a.resolveRevert("git", revert, nil); !got.Revert {
+		t.Fatalf("a revert without a running project resolved to %+v", got)
+	}
+	got := a.resolveRevert("git", revert, spec)
+	if got.Revert || got.Generation != 2 || !sameSpecExceptGeneration(got, spec) {
+		t.Fatalf("revert from the running project = %+v", got)
+	}
+
+	// The saved project wins over the running spec, and only for the same
+	// instance and package.
+	pkg, _ := a.registry.Get(spec.Package)
+	inputs, err := pkg.Inputs(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := pkg.Render(spec, inputs, a.renderContext("git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := *spec
+	other.Package.Version = agenttest.Version2
+	if err := writeJSON(filepath.Join(a.instanceDir("git"), restoredProjectFile), restoredProject{Spec: &other, Rendered: rendered}); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.resolveRevert("git", revert, spec); !sameSpecExceptGeneration(got, spec) {
+		t.Fatalf("a saved project of another version was used: %+v", got)
+	}
+	if err := writeJSON(filepath.Join(a.instanceDir("git"), restoredProjectFile), restoredProject{Spec: spec, Rendered: rendered}); err != nil {
+		t.Fatal(err)
+	}
+	got = a.resolveRevert("git", revert, nil)
+	if got.Revert || got.Generation != 2 || !sameSpecExceptGeneration(got, spec) {
+		t.Fatalf("revert from the saved project = %+v", got)
+	}
+}
+
 func TestRestoredProjectRejectsDifferentInputs(t *testing.T) {
 	a, rr := newTestAgent(t, time.Now)
 	spec := testSpec(1)

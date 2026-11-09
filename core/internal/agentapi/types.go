@@ -111,6 +111,12 @@ type Spec struct {
 	Settings map[string]any `json:"settings"`
 	// Secrets maps manifest-declared secret names to their values.
 	Secrets map[string]string `json:"secrets"`
+	// Revert marks the core's acknowledgment of a rollback whose restored
+	// version this release no longer embeds (docs/specs/agent.md "Upgrade").
+	// Package must name the version that runs; the agent applies the exact
+	// project it saved for it (restored-project.json, else the running
+	// project) and records this generation. It carries no inputs.
+	Revert bool `json:"revert,omitempty"`
 }
 
 // Hash returns the canonical hash of the spec: SHA-256 of its JSON encoding
@@ -409,6 +415,9 @@ func (s *Spec) Check() []string {
 		}
 	case StateAbsent:
 	default:
+		fields = append(fields, "state")
+	}
+	if s.Revert && s.State != StateRunning {
 		fields = append(fields, "state")
 	}
 	if s.Ingress != IngressLocal && s.Ingress != IngressDomain {

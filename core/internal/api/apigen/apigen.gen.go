@@ -1501,20 +1501,22 @@ type AppUpgradeStatus struct {
 	// RequiredVersion With `blocked`: the version to upgrade to first.
 	RequiredVersion *string `json:"requiredVersion,omitempty"`
 
-	// State `upgrading` while the instance (or its revert) is being applied;
-	// `failed` and `rolled_back` name the result of the latest upgrade
-	// to `targetVersion` and can be retried by an admin; `blocked` means
-	// this Orglane release embeds no upgrade path yet.
+	// State `upgrading` while the instance (or its revert, or the final Setup
+	// after the last step) is being applied; `failed` and `rolled_back`
+	// name the result of the latest upgrade to `targetVersion` and can
+	// be retried by an admin; `blocked` means this Orglane release
+	// embeds no upgrade path yet.
 	State AppUpgradeStatusState `json:"state"`
 
 	// TargetVersion The next version an upgrade would install (the newest embedded one when up to date).
 	TargetVersion string `json:"targetVersion"`
 }
 
-// AppUpgradeStatusState `upgrading` while the instance (or its revert) is being applied;
-// `failed` and `rolled_back` name the result of the latest upgrade
-// to `targetVersion` and can be retried by an admin; `blocked` means
-// this Orglane release embeds no upgrade path yet.
+// AppUpgradeStatusState `upgrading` while the instance (or its revert, or the final Setup
+// after the last step) is being applied; `failed` and `rolled_back`
+// name the result of the latest upgrade to `targetVersion` and can
+// be retried by an admin; `blocked` means this Orglane release
+// embeds no upgrade path yet.
 type AppUpgradeStatusState string
 
 // ConfirmAppRemovalBatchRequest defines model for ConfirmAppRemovalBatchRequest.

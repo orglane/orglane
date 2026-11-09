@@ -545,7 +545,8 @@ export const codeMessages: Record<string, MessageDescriptor> = defineMessages({
   },
   upgrade_failed: {
     id: "apps.code.upgradeFailed",
-    defaultMessage: "The upgrade did not finish. Retry it, or check the agent's logs.",
+    defaultMessage:
+      "The upgrade failed and the app's previous version is unknown. Check the agent's logs and the operation history.",
   },
   upgrade_path_blocked: {
     id: "apps.code.upgradePathBlocked",

@@ -46,6 +46,27 @@ func (q *Queries) AppCredentialCallInFlight(ctx context.Context, arg AppCredenti
 	return exists, err
 }
 
+const appUpgradeInProgress = `-- name: AppUpgradeInProgress :one
+SELECT EXISTS (
+    SELECT 1 FROM app_instances i
+    WHERE i.management = 'managed' AND i.state = 'upgrading' AND i.id <> $1
+) OR EXISTS (
+    SELECT 1 FROM app_operations o
+    JOIN app_instances i ON i.id = o.instance_id
+    WHERE o.kind = 'upgrade' AND o.finished_at IS NULL
+      AND i.management = 'managed' AND o.instance_id <> $1
+)
+`
+
+// One managed instance at a time (agent.md "Upgrade"): another instance
+// is upgrading or has an unfinished upgrade operation.
+func (q *Queries) AppUpgradeInProgress(ctx context.Context, id uuid.UUID) (*bool, error) {
+	row := q.db.QueryRow(ctx, appUpgradeInProgress, id)
+	var column_1 *bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const clearAppInstanceRetained = `-- name: ClearAppInstanceRetained :execrows
 UPDATE app_instances SET data_retained = false, updated_at = now()
 WHERE id = $1 AND state = 'removed' AND data_retained

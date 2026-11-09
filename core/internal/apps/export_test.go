@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/orglane/orglane/core/internal/agentapi"
 	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/providers/provider"
@@ -45,6 +46,19 @@ func (s *Service) InstallVersionForTest(ctx context.Context, actor audit.Actor, 
 
 // CheckBootForTest runs one WatchAgent tick.
 func (s *Service) CheckBootForTest(ctx context.Context) { s.checkBoot(ctx) }
+
+// SpecForTest assembles the spec of a desired generation, as a push does.
+func (s *Service) SpecForTest(ctx context.Context, id uuid.UUID, generation int64) (*agentapi.Spec, error) {
+	inst, err := s.Instance(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	ds, err := store.New(s.pool).GetAppDesiredSpec(ctx, store.GetAppDesiredSpecParams{InstanceID: id, Generation: generation})
+	if err != nil {
+		return nil, err
+	}
+	return s.buildSpec(ctx, inst, ds)
+}
 
 // CredentialLockIDForTest is the session lock a rotation worker holds, so
 // tests can find (and terminate) the worker's database backend.

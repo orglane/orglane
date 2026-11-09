@@ -302,8 +302,14 @@ func (s *Service) resyncConflict(ctx context.Context, ds store.AppDesiredSpec, o
 		if n == 0 || ds.Generation != inst.DesiredGeneration {
 			return nil
 		}
+		// Keep a revert a revert: its version may no longer be embedded, and
+		// only the revert reason may build the minimal acknowledgment spec.
+		reason := ReasonResync
+		if ds.Reason == ReasonRevert {
+			reason = ReasonRevert
+		}
 		_, err = s.recordDesired(ctx, tx, q, audit.System, inst, DesiredChange{
-			RunState: ds.RunState, Purge: ds.Purge, PackageVersion: ds.PackageVersion, Reason: ReasonResync,
+			RunState: ds.RunState, Purge: ds.Purge, PackageVersion: ds.PackageVersion, Reason: reason,
 		})
 		return err
 	})

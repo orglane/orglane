@@ -76,7 +76,7 @@ var transitions = map[string][]string{
 	StateActive:       {StateDegraded, StateUpgrading, StateDisconnected, StateRemoving},
 	StateDegraded:     {StateActive, StateUpgrading, StateDisconnected, StateRemoving},
 	StateUpgrading:    {StateActive, StateDegraded, StateFailed},
-	StateFailed:       {StateInstalling, StateRemoving},
+	StateFailed:       {StateInstalling, StateUpgrading, StateRemoving},
 	StateDisconnected: {StateActive, StateRemoving, StateRemoved},
 	// A failed removal (remove_failed) can be removed again from failed.
 	StateRemoving: {StateRemoved, StateFailed},

@@ -228,19 +228,24 @@ func (a *Agent) handlePut(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusUnprocessableEntity, agentapi.CodeInvalidInput, "invalid spec", func(p *agentapi.Problem) { p.Fields = fields })
 		return
 	}
-	pkg, ok := a.registry.Get(spec.Package)
-	if !ok {
-		writeProblem(w, r, http.StatusUnprocessableEntity, agentapi.CodeUnknownPackageVersion, "the package version is not embedded in this agent", nil)
-		return
-	}
-	if _, err := pkg.Inputs(spec); err != nil {
-		var ie *packages.InputError
-		if !errors.As(err, &ie) {
-			a.internalError(w, r, err)
+	// A revert acknowledges a rollback to a version this release may no
+	// longer embed; it carries no inputs and is resolved from the project
+	// the agent saved for the running version (accept checks that).
+	if !spec.Revert {
+		pkg, ok := a.registry.Get(spec.Package)
+		if !ok {
+			writeProblem(w, r, http.StatusUnprocessableEntity, agentapi.CodeUnknownPackageVersion, "the package version is not embedded in this agent", nil)
 			return
 		}
-		writeProblem(w, r, http.StatusUnprocessableEntity, agentapi.CodeInvalidInput, "invalid inputs", func(p *agentapi.Problem) { p.Fields = ie.Fields })
-		return
+		if _, err := pkg.Inputs(spec); err != nil {
+			var ie *packages.InputError
+			if !errors.As(err, &ie) {
+				a.internalError(w, r, err)
+				return
+			}
+			writeProblem(w, r, http.StatusUnprocessableEntity, agentapi.CodeInvalidInput, "invalid inputs", func(p *agentapi.Problem) { p.Fields = ie.Fields })
+			return
+		}
 	}
 
 	in := a.instance(key)
@@ -290,6 +295,14 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 	if st.id != uuid.Nil && st.id != spec.InstanceID {
 		return fail(http.StatusConflict, agentapi.CodeInstanceMismatch,
 			"the instance directory belongs to another instance (a removed instance's data is retained under this key)", nil)
+	}
+	if spec.Revert {
+		// The acknowledgment only unblocks the generation that the agent
+		// already rolled back to; it may never introduce another version.
+		if st.current == nil || st.current.Package != spec.Package {
+			return fail(http.StatusUnprocessableEntity, agentapi.CodeUnknownPackageVersion,
+				"a revert must name the package version that runs", nil)
+		}
 	}
 	if st.id == uuid.Nil {
 		// A retry of the purge that freed the key (its answer was lost)

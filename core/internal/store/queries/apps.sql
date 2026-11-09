@@ -95,6 +95,19 @@ WHERE instance_id = @instance_id AND kind = 'upgrade'
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
 
+-- name: AppUpgradeInProgress :one
+-- One managed instance at a time (agent.md "Upgrade"): another instance
+-- is upgrading or has an unfinished upgrade operation.
+SELECT EXISTS (
+    SELECT 1 FROM app_instances i
+    WHERE i.management = 'managed' AND i.state = 'upgrading' AND i.id <> @id
+) OR EXISTS (
+    SELECT 1 FROM app_operations o
+    JOIN app_instances i ON i.id = o.instance_id
+    WHERE o.kind = 'upgrade' AND o.finished_at IS NULL
+      AND i.management = 'managed' AND o.instance_id <> @id
+);
+
 -- name: ListAppInstancesWaitingForAgent :many
 -- Instances with an unfinished operation that waits for the agent, with
 -- the newest reason.

@@ -2297,10 +2297,15 @@ paths:
         versions (`upgrade.min_from`); one step is recorded per request and
         the following steps continue automatically after a success.
 
-        Refused (409, `invalid_state`) when the instance is not `active` or
-        `degraded`, has an unfinished operation, has not applied its current
-        change, is already on the newest version, or has no failed or
-        rolled-back upgrade to that stop. Requires `apps.manage`.
+        A `failed` instance whose revert could not be applied while its
+        running version is known (`package_unavailable` or
+        `unknown_package_version`) is retried from that running version.
+
+        Refused (409, `invalid_state`) when the instance is not `active`,
+        `degraded` or such a failed revert, has an unfinished operation, has
+        not applied its current change, is already on the newest version, has
+        no failed or rolled-back upgrade to that stop, or while another
+        managed instance is upgrading. Requires `apps.manage`.
       tags: [apps]
       x-orglane-permission: apps.manage
       security:
@@ -4918,10 +4923,11 @@ components:
           type: string
           enum: [up_to_date, available, upgrading, failed, rolled_back, blocked]
           description: |
-            `upgrading` while the instance (or its revert) is being applied;
-            `failed` and `rolled_back` name the result of the latest upgrade
-            to `targetVersion` and can be retried by an admin; `blocked` means
-            this Orglane release embeds no upgrade path yet.
+            `upgrading` while the instance (or its revert, or the final Setup
+            after the last step) is being applied; `failed` and `rolled_back`
+            name the result of the latest upgrade to `targetVersion` and can
+            be retried by an admin; `blocked` means this Orglane release
+            embeds no upgrade path yet.
         currentVersion:
           type: string
           description: The package version the instance runs.

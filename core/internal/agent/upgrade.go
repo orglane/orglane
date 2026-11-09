@@ -70,6 +70,9 @@ func isUpgrade(st *instanceState) bool {
 }
 
 // enter records a journal phase durably, then shows it on the operation.
+// State, phase and (in awaiting_confirmation) the confirmation deadline are
+// published in one update: a poll must never observe awaiting_confirmation
+// without confirm_by, or it would fall back to its own shorter timeout.
 func (a *Agent) enter(in *instance, j *journal, phase string) error {
 	j.Phase = phase
 	in.files.Lock()
@@ -78,17 +81,22 @@ func (a *Agent) enter(in *instance, j *journal, phase string) error {
 	if err != nil {
 		return failed(agentapi.CodeInternal, err)
 	}
-	a.opPhase(j.Operation, phase)
+	state := agentapi.OpRunning
 	if phase == agentapi.PhaseAwaitingConfirmation {
-		// The core bounds its confirmation check by the same deadline the
-		// agent enforces, without relying on its own clock alone.
-		if _, err := a.ops.update(j.Operation, func(o *agentapi.Operation) {
-			if !o.Terminal() {
-				o.ConfirmBy = j.ConfirmBy
-			}
-		}); err != nil {
-			a.log.Error("update operation deadline", "operation", j.Operation, "error", err)
+		state = agentapi.OpAwaitingConfirmation
+	}
+	if _, err := a.ops.update(j.Operation, func(o *agentapi.Operation) {
+		if o.Terminal() {
+			return
 		}
+		o.State, o.Phase = state, phase
+		if phase == agentapi.PhaseAwaitingConfirmation {
+			// The core bounds its confirmation check by the same deadline
+			// the agent enforces, without relying on its own clock alone.
+			o.ConfirmBy = j.ConfirmBy
+		}
+	}); err != nil {
+		a.log.Error("update operation", "operation", j.Operation, "phase", phase, "error", err)
 	}
 	return a.checkpoint(phase)
 }

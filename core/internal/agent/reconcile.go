@@ -108,6 +108,11 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 		return
 	}
 
+	// A revert generation only acknowledges the rollback. Its full spec
+	// comes from the project saved for the running version (or from the
+	// running spec), so the version need not be embedded in this release.
+	st.desired = a.resolveRevert(in.key, st.desired, st.current)
+
 	var target *agentapi.Spec
 	var op *agentapi.Operation
 	switch {
@@ -345,9 +350,11 @@ func (a *Agent) clearBusy(in *instance, code string) {
 func (a *Agent) converge(ctx context.Context, in *instance, target, prev *agentapi.Spec, setPhase func(string)) error {
 	pkg, ok := a.registry.Get(target.Package)
 	if !ok {
-		// Only the exact running spec may use the saved project. A new
-		// desired spec still requires its embedded package and policy.
-		if prev != nil && target.Hash() == prev.Hash() {
+		// Only the project saved for the running version, or the running
+		// project itself, may be used; repairRestored rejects changed
+		// inputs. A new desired spec otherwise requires its embedded
+		// package and policy.
+		if prev != nil {
 			return a.repairRestored(ctx, in.key, target)
 		}
 		return failed(agentapi.CodeUnknownPackageVersion, fmt.Errorf("package %s is not embedded", target.Package))

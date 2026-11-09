@@ -215,7 +215,7 @@
   "apps.code.superseded": "Replaced by a newer change before it ran.",
   "apps.code.teamNotManaged": "A team this person is mapped to is not managed by Orglane (its description lost the Managed by Orglane mark), so Orglane does not change it. Restore that mark in the team's description to keep the team, or rename the team in the app so Orglane creates its own, then retry.",
   "apps.code.teamNotSynced": "A team this person is mapped to does not exist in the app yet. Orglane creates it and retries automatically.",
-  "apps.code.upgradeFailed": "The upgrade did not finish. Retry it, or check the agent's logs.",
+  "apps.code.upgradeFailed": "The upgrade failed and the app's previous version is unknown. Check the agent's logs and the operation history.",
   "apps.code.upgradePathBlocked": "This Orglane release has no upgrade path for the app yet.",
   "apps.code.usernameTaken": "Another account in the app already has this person's username, and Orglane never takes over an account it did not create. Rename or remove that account in the app, then retry.",
   "apps.code.webhookDeleted": "The app no longer sends events to Orglane: its webhook was deleted. Set the webhook URL and secret again in the app (for GitHub, in the App's settings); the next event it delivers clears this.",

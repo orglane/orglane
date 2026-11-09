@@ -3,11 +3,14 @@
 package apps_test
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -66,14 +69,66 @@ func runningOn(t *testing.T, h *harness) apps.Instance {
 	return got
 }
 
-// upgradeStatus is the API's upgrade status of an instance.
-func upgradeStatus(t *testing.T, h *harness, id uuid.UUID) (apps.UpgradeStatus, bool) {
+// staticAgent is a reachable agent that reports no instances and never
+// applies anything. Tests of the planner's database guard do not need a
+// running agent.
+type staticAgent struct{ boot uuid.UUID }
+
+func (a *staticAgent) Health(context.Context) (*agentapi.Health, error) {
+	return &agentapi.Health{Protocol: agentapi.ProtocolVersion, Version: "dev", BootID: a.boot}, nil
+}
+
+func (a *staticAgent) Instances(context.Context) ([]agentapi.InstanceStatus, error) {
+	return nil, nil
+}
+
+func (a *staticAgent) Apply(context.Context, string, *agentapi.Spec) (*agentapi.Operation, bool, error) {
+	return nil, false, errors.New("static agent: apply is not used")
+}
+
+func (a *staticAgent) Operation(context.Context, uuid.UUID) (*agentapi.Operation, error) {
+	return nil, errors.New("static agent: operation is not used")
+}
+
+func (a *staticAgent) Confirm(context.Context, uuid.UUID) (*agentapi.Operation, error) {
+	return nil, errors.New("static agent: confirm is not used")
+}
+
+func (a *staticAgent) Abort(context.Context, uuid.UUID) (*agentapi.Operation, error) {
+	return nil, errors.New("static agent: abort is not used")
+}
+
+// plannedInstance creates an active managed instance on a chosen key whose
+// running generation is already applied, without touching Docker.
+func plannedInstance(t *testing.T, h *harness, key string) {
 	t.Helper()
-	inst, err := h.svc.Instance(h.ctx, id)
+	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{
+		Provider: "agenttest", Key: key, BaseURL: "https://" + key + ".work.acme.test",
+		State: apps.StateActive,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, ok, err := h.svc.UpgradeStatus(h.ctx, inst)
+	h.exec(`UPDATE app_instances
+		SET package_version = $2, desired_generation = 1, observed_generation = 1, health = 'healthy'
+		WHERE id = $1`, inst.ID, agenttest.Version)
+}
+
+// upgradeStatus is the API's upgrade status of an instance.
+func upgradeStatus(t *testing.T, h *harness, id uuid.UUID) (apps.UpgradeStatus, bool) {
+	t.Helper()
+	return upgradeStatusFor(h.ctx, t, h.svc, id)
+}
+
+// upgradeStatusFor is upgradeStatus on a service restarted with another
+// package registry.
+func upgradeStatusFor(ctx context.Context, t *testing.T, svc *apps.Service, id uuid.UUID) (apps.UpgradeStatus, bool) {
+	t.Helper()
+	inst, err := svc.Instance(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok, err := svc.UpgradeStatus(ctx, inst)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,6 +207,12 @@ func TestAgentUpgradeConfirmed(t *testing.T) {
 	}
 	if h.jobs(apps.SetupArgs{}.Kind()) == 0 {
 		t.Fatal("the last upgrade step queued no setup")
+	}
+	// The final Setup still holds the instance (and its maintenance route):
+	// the status must not claim up_to_date yet.
+	if status, ok := upgradeStatus(t, h, inst.ID); !ok || status.State != apps.UpgradeInProgress ||
+		status.CurrentVersion != agenttest.Version3 {
+		t.Fatalf("status during the final Setup: %+v, %v", status, ok)
 	}
 	if err := h.svc.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID, Generation: 3}, 1, 8); err != nil {
 		t.Fatal(err)
@@ -357,26 +418,32 @@ func TestSetupWaitsForAppliedGeneration(t *testing.T) {
 	}
 }
 
-// TestAgentUpgradeFailedRevertStops: when the revert generation itself
-// cannot be applied (the running version is no longer embedded), another
-// revert would fail the same way; the instance fails with that code instead
-// of recording new generations forever.
-func TestAgentUpgradeFailedRevertStops(t *testing.T) {
+// TestAgentUpgradeRollbackWithoutEmbeddedRunningVersion: the normal
+// Orglane release layout embeds the new package version and required stops,
+// not the version that still runs. A rollback must still record a revert the
+// agent can apply, keep the instance routed and let an admin retry.
+func TestAgentUpgradeRollbackWithoutEmbeddedRunningVersion(t *testing.T) {
 	host := newAgentHost(t)
 	host.start()
-	release12 := registryWithVersions(t, agenttest.Version, agenttest.Version2)
-	h := newHarness(t, host.agentConfig, func(c *apps.Config) { c.Packages = release12 })
-	h.agentProv.SetPackageSettings(map[string]any{"http_port": freePort(t), "message": "failed revert"})
+	first := registryWithVersions(t, agenttest.Version)
+	h := newHarness(t, host.agentConfig, func(c *apps.Config) { c.Packages = first })
+	h.agentProv.SetPackageSettings(map[string]any{"http_port": freePort(t), "message": "rollback without old version"})
 	inst := runningOn(t, h)
 
-	if err := h.svc.RunAgentSync(h.ctx); err != nil {
+	// A new Orglane release embeds only 2.0.0-1 and 3.0.0-1; neither the
+	// core nor the agent embeds the running 1.0.0-1 any more.
+	release := registryWithVersions(t, agenttest.Version2, agenttest.Version3)
+	host.restart(release)
+	next := h.restartCore(func(c *apps.Config) { c.Packages = release })
+
+	if err := next.RunAgentSync(h.ctx); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.reload(inst.ID); got.DesiredGeneration != 2 || got.State != apps.StateUpgrading {
 		t.Fatalf("planner: %+v", got.AppInstance)
 	}
 	h.agentProv.Fail("health", errors.New("candidate is unhealthy"))
-	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 2})
+	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 2})
 	if op := h.operation(inst.ID, 2); op.State != agentapi.OpRolledBack {
 		t.Fatalf("upgrade: %+v", op)
 	}
@@ -384,22 +451,265 @@ func TestAgentUpgradeFailedRevertStops(t *testing.T) {
 		t.Fatalf("revert generation reason = %q", reason)
 	}
 
-	// A later Orglane release no longer embeds the version that still runs,
-	// so the revert spec cannot be assembled.
-	next := h.restartCore(func(c *apps.Config) {
-		c.Packages = registryWithVersions(t, agenttest.Version2, agenttest.Version3)
-	})
+	// The revert is a minimal acknowledgment: the agent resolves the saved
+	// project of the version that still runs. It must apply without the
+	// package being embedded.
 	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 3})
+	if op := h.operation(inst.ID, 3); op.State != agentapi.OpSucceeded {
+		t.Fatalf("revert: %+v", op)
+	}
+	if err := next.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID, Generation: 3}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
 	got := h.reload(inst.ID)
-	op := h.operation(inst.ID, 3)
-	if op.State != agentapi.OpFailed || derefS(op.ErrorCode) != apps.CodePackageUnavailable {
-		t.Fatalf("failed revert: %+v", op)
+	if got.State != apps.StateActive || derefS(got.PackageVersion) != agenttest.Version || got.ObservedGeneration != 3 {
+		t.Fatalf("after the revert: %+v", got.AppInstance)
 	}
-	if got.State != apps.StateFailed || derefS(got.HealthCode) != apps.CodePackageUnavailable || got.DesiredGeneration != 3 {
-		t.Fatalf("after the failed revert: %+v", got.AppInstance)
+	routes, err := next.IngressRoutes(h.ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if n := h.count(`SELECT count(*) FROM app_desired_specs WHERE instance_id = $1`, inst.ID); n != 3 {
-		t.Fatalf("%d desired generations after the failed revert, want 3", n)
+	var routed bool
+	for _, r := range routes {
+		if r.Key == inst.Key {
+			routed = true
+			if r.Maintenance || r.Upstream == "" {
+				t.Fatalf("the recovered instance is not routed: %+v", r)
+			}
+		}
+	}
+	if !routed {
+		t.Fatalf("the recovered instance has no route: %+v", routes)
+	}
+	if status, ok := upgradeStatusFor(h.ctx, t, next, inst.ID); !ok || status.State != apps.UpgradeRolledBack || status.TargetVersion != agenttest.Version2 {
+		t.Fatalf("status after the revert: %+v, %v", status, ok)
+	}
+
+	// An admin retry still works from the recovered instance.
+	retried, err := next.RetryUpgrade(h.ctx, audit.System, inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.State != apps.StateUpgrading || retried.DesiredGeneration != 4 {
+		t.Fatalf("after the retry: %+v", retried.AppInstance)
+	}
+	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 4})
+	if op := h.operation(inst.ID, 4); op.State != agentapi.OpSucceeded {
+		t.Fatalf("retried upgrade: %+v", op)
+	}
+	if op := h.operation(inst.ID, 5); op.Kind != agentapi.KindUpgrade || derefS(op.ToVersion) != agenttest.Version3 {
+		t.Fatalf("the retry did not continue to the required stop: %+v", op)
+	}
+	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 5})
+	if err := next.RunSetup(h.ctx, apps.SetupArgs{InstanceID: inst.ID, Generation: 5}, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.reload(inst.ID); got.State != apps.StateActive || derefS(got.PackageVersion) != agenttest.Version3 {
+		t.Fatalf("after the retried upgrade: %+v", got.AppInstance)
+	}
+}
+
+// TestAgentUpgradeRetryRecoversFailedRevert: an instance that the old core
+// left failed/package_unavailable after a rollback is recoverable through
+// the admin retry: the running version is known and the latest upgrade is
+// still the rolled-back one.
+func TestAgentUpgradeRetryRecoversFailedRevert(t *testing.T) {
+	host := newAgentHost(t)
+	host.start()
+	first := registryWithVersions(t, agenttest.Version)
+	h := newHarness(t, host.agentConfig, func(c *apps.Config) { c.Packages = first })
+	h.agentProv.SetPackageSettings(map[string]any{"http_port": freePort(t), "message": "failed revert retry"})
+	inst := runningOn(t, h)
+
+	release := registryWithVersions(t, agenttest.Version2, agenttest.Version3)
+	host.restart(release)
+	next := h.restartCore(func(c *apps.Config) { c.Packages = release })
+	if err := next.RunAgentSync(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.agentProv.Fail("health", errors.New("candidate is unhealthy"))
+	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 2})
+	if op := h.operation(inst.ID, 2); op.State != agentapi.OpRolledBack {
+		t.Fatalf("upgrade: %+v", op)
+	}
+
+	// The old behavior: the revert generation could not be assembled and
+	// the instance ended failed/package_unavailable with no routes.
+	h.exec(`UPDATE app_operations SET state = 'failed', error_code = $2, finished_at = now()
+		WHERE instance_id = $1 AND generation = 3`, inst.ID, apps.CodePackageUnavailable)
+	h.exec(`UPDATE app_instances SET state = 'failed', health = 'unhealthy', health_code = $2
+		WHERE id = $1`, inst.ID, apps.CodePackageUnavailable)
+	if got := h.reload(inst.ID); got.State != apps.StateFailed {
+		t.Fatalf("simulated failed revert: %+v", got.AppInstance)
+	}
+
+	retried, err := next.RetryUpgrade(h.ctx, audit.System, inst.ID)
+	if err != nil {
+		t.Fatalf("retry a failed revert: %v", err)
+	}
+	if retried.State != apps.StateUpgrading || retried.DesiredGeneration != 4 ||
+		desiredReason(t, h, inst.ID, 4) != apps.ReasonRetry {
+		t.Fatalf("after the retry: %+v", retried.AppInstance)
+	}
+	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 4})
+	if op := h.operation(inst.ID, 4); op.State != agentapi.OpSucceeded {
+		t.Fatalf("retried upgrade: %+v", op)
+	}
+	if op := h.operation(inst.ID, 5); op.Kind != agentapi.KindUpgrade || derefS(op.ToVersion) != agenttest.Version3 {
+		t.Fatalf("the retry did not continue: %+v", op)
+	}
+}
+
+// TestAgentUpgradePlannerOneInstanceAtATime: the planner records at most one
+// upgrade, even when two syncs race and two instances are eligible.
+func TestAgentUpgradePlannerOneInstanceAtATime(t *testing.T) {
+	h := newHarness(t, func(c *apps.Config) {
+		c.Agent = &staticAgent{boot: uuid.Must(uuid.NewV7())}
+		c.Packages = registryWithVersions(t, agenttest.Version, agenttest.Version2, agenttest.Version3)
+	})
+	plannedInstance(t, h, "one")
+	plannedInstance(t, h, "two")
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- h.svc.RunAgentSync(h.ctx)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := h.count(`SELECT count(*) FROM app_instances WHERE state = 'upgrading'`); n != 1 {
+		t.Fatalf("%d instances upgrading after one sync, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM app_operations WHERE kind = 'upgrade'`); n != 1 {
+		t.Fatalf("%d upgrade operations recorded, want 1", n)
+	}
+
+	// A later sync does not start the second instance while the first is
+	// still upgrading.
+	if err := h.svc.RunAgentSync(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.count(`SELECT count(*) FROM app_instances WHERE state = 'upgrading'`); n != 1 {
+		t.Fatalf("%d instances upgrading after the next sync, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM app_operations WHERE kind = 'upgrade'`); n != 1 {
+		t.Fatalf("%d upgrade operations recorded after the next sync, want 1", n)
+	}
+}
+
+// TestAgentUpgradePlanningWaitsForAgent: a core start while the agent is
+// down must not put instances into upgrading (their routes would go into
+// maintenance although their containers are fine). The next reachable sync
+// plans.
+func TestAgentUpgradePlanningWaitsForAgent(t *testing.T) {
+	host := newAgentHost(t)
+	host.start()
+	first := registryWithVersions(t, agenttest.Version)
+	h := newHarness(t, host.agentConfig, func(c *apps.Config) { c.Packages = first })
+	h.agentProv.SetPackageSettings(map[string]any{"http_port": freePort(t), "message": "agent down"})
+	inst := runningOn(t, h)
+
+	release := registryWithVersions(t, agenttest.Version, agenttest.Version2, agenttest.Version3)
+	host.stop()
+	next := h.restartCore(func(c *apps.Config) { c.Packages = release })
+	if err := next.RunAgentSync(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.reload(inst.ID); got.State != apps.StateActive || got.DesiredGeneration != 1 {
+		t.Fatalf("planned while the agent was down: %+v", got.AppInstance)
+	}
+	routes, err := next.IngressRoutes(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range routes {
+		if r.Key == inst.Key && r.Maintenance {
+			t.Fatalf("the instance's route went into maintenance while the agent was down: %+v", r)
+		}
+	}
+
+	host.start()
+	if err := next.RunAgentSync(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.reload(inst.ID); got.State != apps.StateUpgrading || got.DesiredGeneration != 2 {
+		t.Fatalf("the reachable agent did not trigger the plan: %+v", got.AppInstance)
+	}
+}
+
+// TestAgentSyncRecoversConfirmationAfterCrash: a core crash between mirroring
+// awaiting_confirmation and confirming leaves the River job running (its
+// rescue is an hour by default). The next sync must drive the confirmation
+// itself, so the agent commits instead of rolling back on confirm_timeout.
+func TestAgentSyncRecoversConfirmationAfterCrash(t *testing.T) {
+	host := newAgentHost(t)
+	host.start()
+	h := newHarness(t, host.agentConfig)
+	h.agentProv.SetPackageSettings(map[string]any{"http_port": freePort(t), "message": "crash recovery"})
+	inst := runningOn(t, h)
+
+	if err := h.svc.RunAgentSync(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.reload(inst.ID); got.State != apps.StateUpgrading || got.DesiredGeneration != 2 {
+		t.Fatalf("planner: %+v", got.AppInstance)
+	}
+	// Push the planned generation directly, as the crashed job did, and
+	// wait for the agent's candidate.
+	spec, err := h.svc.SpecForTest(h.ctx, inst.ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aop, _, err := host.client().Apply(h.ctx, inst.Key, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the candidate awaits confirmation", 2*time.Minute, func() bool {
+		op, err := host.client().Operation(h.ctx, aop.ID)
+		return err == nil && op.State == agentapi.OpAwaitingConfirmation
+	})
+
+	// The core mirrored the agent operation, then crashed before deciding;
+	// River still reports the agent_apply job as running.
+	h.exec(`UPDATE app_operations SET agent_operation_id = $2, state = 'awaiting_confirmation',
+		phase = 'awaiting_confirmation' WHERE instance_id = $1 AND generation = 2`, inst.ID, aop.ID)
+	h.exec(`UPDATE river_job SET state = 'running', attempted_at = now() - interval '10 minutes'
+		WHERE kind = 'orglane.apps.agent_apply' AND args->>'instance_id' = $1
+		AND (args->>'generation')::bigint = 2`, inst.ID.String())
+
+	// A confirmation that raced the agent's await registration is treated
+	// as already decided; the next sync retries it. Without the sync
+	// recovery none of these syncs would drive the confirmation at all.
+	for range 3 {
+		if err := h.svc.RunAgentSync(h.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if op, err := host.client().Operation(h.ctx, aop.ID); err == nil && op.State == agentapi.OpSucceeded {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	// The sync confirmed through the fenced alias; the agent commits on its
+	// own from there.
+	waitUntil(t, "the agent commits the candidate", 30*time.Second, func() bool {
+		op, err := host.client().Operation(h.ctx, aop.ID)
+		return err == nil && op.State == agentapi.OpSucceeded
+	})
+	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 2})
+	if op := h.operation(inst.ID, 2); op.State != agentapi.OpSucceeded {
+		t.Fatalf("operation after recovery: %+v", op)
+	}
+	if !hasFencedUpstream(h.agentProv.HealthUpstreams()) {
+		t.Fatalf("the recovered confirmation did not use the fenced alias: %v", h.agentProv.HealthUpstreams())
 	}
 }
 

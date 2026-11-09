@@ -316,7 +316,23 @@ func (e *specError) Unwrap() error { return e.err }
 func (s *Service) buildSpec(ctx context.Context, inst Instance, ds store.AppDesiredSpec) (*agentapi.Spec, error) {
 	pkg, ok := s.pkg(inst.PackageID, ds.PackageVersion)
 	if !ok {
-		return nil, &specError{code: CodePackageUnavailable, err: fmt.Errorf("package version %s is not embedded", ds.PackageVersion)}
+		if ds.Reason != ReasonRevert {
+			return nil, &specError{code: CodePackageUnavailable, err: fmt.Errorf("package version %s is not embedded", ds.PackageVersion)}
+		}
+		// The version that still runs after a rollback need not be
+		// embedded in this release (agent.md "Required upgrade stops").
+		// The revert only acknowledges the blocked generation: the agent
+		// resolves the exact project it saved for that version
+		// (restored-project.json, else the running project). The spec
+		// therefore carries no hosts, settings or secrets.
+		return &agentapi.Spec{
+			InstanceID: inst.ID,
+			Generation: ds.Generation,
+			Package:    agentapi.PackageRef{ID: *inst.PackageID, Version: ds.PackageVersion},
+			State:      ds.RunState,
+			Ingress:    s.cfg.IngressMode,
+			Revert:     true,
+		}, nil
 	}
 	settings, err := decodeSettings(ds.Settings)
 	if err != nil {
