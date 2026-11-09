@@ -283,16 +283,20 @@ type SnapshotList struct {
 
 // Operation is one declarative operation of the agent.
 type Operation struct {
-	ID         uuid.UUID  `json:"id"`
-	Instance   string     `json:"instance"`
-	Kind       string     `json:"kind"`
-	Generation int64      `json:"generation,omitempty"`
-	State      string     `json:"state"`
-	Phase      string     `json:"phase,omitempty"`
-	ErrorCode  string     `json:"error_code,omitempty"`
-	Rule       string     `json:"rule,omitempty"` // the policy rule, with CodePolicyViolation
-	SnapshotID string     `json:"snapshot_id,omitempty"`
-	StartedAt  time.Time  `json:"started_at"`
+	ID         uuid.UUID `json:"id"`
+	Instance   string    `json:"instance"`
+	Kind       string    `json:"kind"`
+	Generation int64     `json:"generation,omitempty"`
+	State      string    `json:"state"`
+	Phase      string    `json:"phase,omitempty"`
+	ErrorCode  string    `json:"error_code,omitempty"`
+	Rule       string    `json:"rule,omitempty"` // the policy rule, with CodePolicyViolation
+	SnapshotID string    `json:"snapshot_id,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
+	// ConfirmBy is the confirmation deadline of an upgrade in
+	// awaiting_confirmation (the agent's clock). The core checks its
+	// candidate before it and never confirms after it.
+	ConfirmBy  *time.Time `json:"confirm_by,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 

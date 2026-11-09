@@ -912,6 +912,36 @@ func (q *Queries) GetHeldRemovalBatch(ctx context.Context, instanceID uuid.UUID)
 	return i, err
 }
 
+const getLatestAppUpgradeOperation = `-- name: GetLatestAppUpgradeOperation :one
+SELECT id, instance_id, generation, kind, state, phase, agent_operation_id, error_code, from_version, to_version, started_by, created_at, finished_at FROM app_operations
+WHERE instance_id = $1 AND kind = 'upgrade'
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+// The newest upgrade operation, for the automatic planner and the upgrade
+// status in Settings → Apps.
+func (q *Queries) GetLatestAppUpgradeOperation(ctx context.Context, instanceID uuid.UUID) (AppOperation, error) {
+	row := q.db.QueryRow(ctx, getLatestAppUpgradeOperation, instanceID)
+	var i AppOperation
+	err := row.Scan(
+		&i.ID,
+		&i.InstanceID,
+		&i.Generation,
+		&i.Kind,
+		&i.State,
+		&i.Phase,
+		&i.AgentOperationID,
+		&i.ErrorCode,
+		&i.FromVersion,
+		&i.ToVersion,
+		&i.StartedBy,
+		&i.CreatedAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const getProvisioningResult = `-- name: GetProvisioningResult :one
 
 SELECT instance_id, person_id, status, access, employee_step, granted_by_orglane, pending_grant, desired_hash, applied_hash, actions, error_code, attempts, last_attempt_at, next_attempt_at, updated_at FROM provisioning_results WHERE instance_id = $1 AND person_id = $2

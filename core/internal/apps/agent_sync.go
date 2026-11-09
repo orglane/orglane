@@ -63,6 +63,13 @@ func (s *Service) RunAgentSync(ctx context.Context) error {
 			return err
 		}
 	}
+	// Automatic package upgrades after an Orglane release that embeds newer
+	// package versions (agent.md "Upgrade"). This runs before the agent
+	// health checks so a restart plans against the database even while the
+	// agent is down; the pushes wait like any other.
+	if err := s.planUpgrades(ctx, rows, pushing); err != nil {
+		s.cfg.Logger.WarnContext(ctx, "agent sync: plan upgrades", "error", err)
+	}
 	if s.cfg.Agent == nil {
 		return s.markStale(ctx)
 	}
@@ -210,7 +217,7 @@ func (s *Service) recoverInstall(ctx context.Context, id uuid.UUID, desired int6
 		if _, err := s.transition(ctx, tx, q, audit.System, id, StateInstalling, ""); err != nil {
 			return err
 		}
-		return s.enqueueSetup(ctx, tx, id)
+		return s.enqueueSetup(ctx, tx, id, desired)
 	})
 }
 

@@ -91,3 +91,47 @@ test("Settings → Apps shows a managed install waiting for the agent and its op
     }
   }
 });
+
+// A managed instance that ran 1.0.0-1, attempted the required stop to
+// 2.0.0-1 and rolled back; a revert generation keeps desired and observed in
+// sync (as apps.Service.operationFinished records it).
+const rolledBack = (port: string) => `WITH i AS (
+    INSERT INTO app_instances (key, provider, management, display_name, state, health, base_url, settings, access_policy, package_id, package_version, desired_generation, observed_generation)
+    VALUES ('managed-test', 'agenttest', 'managed', 'Managed', 'active', 'healthy', 'http://agenttest.localhost:${port}', '{}', 'all_people', 'agenttest', '1.0.0-1', 2, 2)
+    RETURNING id),
+  d1 AS (INSERT INTO app_desired_specs (instance_id, generation, package_version, run_state, settings, credential_versions, reason)
+    SELECT id, 1, '2.0.0-1', 'running', '{}', '{}', 'upgrade' FROM i),
+  d2 AS (INSERT INTO app_desired_specs (instance_id, generation, package_version, run_state, settings, credential_versions, reason)
+    SELECT id, 2, '1.0.0-1', 'running', '{}', '{}', 'revert' FROM i),
+  o AS (INSERT INTO app_operations (instance_id, generation, kind, state, error_code, from_version, to_version, finished_at)
+    SELECT id, 1, 'upgrade', 'rolled_back', 'aborted', '1.0.0-1', '2.0.0-1', now() FROM i)
+  SELECT id FROM i`;
+
+test("Settings → Apps reports a rolled-back upgrade and its retry", async ({ page, instance }) => {
+  test.setTimeout(90_000);
+  const port = new URL(instance.url).port;
+  const instanceId = instance.sql(rolledBack(port)).split("\n")[0] ?? "";
+  await signIn(page, instance.url);
+
+  await page.goto(`${instance.url}/settings/apps/${instanceId}`);
+  await expect(
+    page.getByText("The upgrade to 2.0.0-1 was rolled back. The app is running 1.0.0-1."),
+  ).toBeVisible();
+  const operations = page.getByRole("table", { name: "Operations" });
+  const upgradeRow = operations.getByRole("row").filter({ hasText: "Upgrade" });
+  await expect(upgradeRow.getByText("1.0.0-1 → 2.0.0-1")).toBeVisible();
+  await expect(upgradeRow.getByText("Rolled back")).toBeVisible();
+  await expect(upgradeRow.getByText(/check of the new version failed/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry upgrade" })).toBeVisible();
+
+  // The next poll shows the upgrade in progress instead: the instance is
+  // upgrading and the agent waits for Orglane's health check.
+  instance.sql(`UPDATE app_instances SET state = 'upgrading' WHERE id = '${instanceId}'`);
+  instance.sql(`UPDATE app_operations SET state = 'awaiting_confirmation', error_code = NULL,
+    phase = 'awaiting_confirmation', finished_at = NULL WHERE instance_id = '${instanceId}' AND generation = 1`);
+  await page.reload();
+  await expect(page.getByText("Upgrade to 2.0.0-1 is running.")).toBeVisible({ timeout: 15_000 });
+  await expect(upgradeRow.getByText("Checking the new version")).toBeVisible();
+  await expect(upgradeRow.getByText("Waiting for Orglane's check")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry upgrade" })).toHaveCount(0);
+});

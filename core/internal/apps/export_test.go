@@ -37,6 +37,12 @@ func (s *Service) ResyncForTest(ctx context.Context, id uuid.UUID) (int64, error
 	return gen, err
 }
 
+// InstallVersionForTest installs an instance on a chosen embedded package
+// version, for upgrade tests that start before the newest one.
+func (s *Service) InstallVersionForTest(ctx context.Context, actor audit.Actor, in NewInstance, version string) (Instance, error) {
+	return s.install(ctx, actor, in, version)
+}
+
 // CheckBootForTest runs one WatchAgent tick.
 func (s *Service) CheckBootForTest(ctx context.Context) { s.checkBoot(ctx) }
 

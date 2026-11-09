@@ -15,12 +15,13 @@ export default async function globalSetup(): Promise<void> {
     }
     binary = `${work}orglane`;
     // Test-only build tags: the GitHub import fixture server, the in-repo
-    // test provider (Settings → Apps) and the fake GitHub.com validated
-    // against GitHub's OpenAPI description.
+    // test provider (Settings → Apps), its agenttest managed package (for
+    // the upgrade status) and the fake GitHub.com validated against GitHub's
+    // OpenAPI description.
     run("go", [
       "build",
       "-tags",
-      "githubimporttest,appstest,githubtest",
+      "githubimporttest,appstest,agenttest,githubtest",
       "-o",
       binary,
       "./core/cmd/orglane",

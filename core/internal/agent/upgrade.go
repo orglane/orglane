@@ -79,6 +79,17 @@ func (a *Agent) enter(in *instance, j *journal, phase string) error {
 		return failed(agentapi.CodeInternal, err)
 	}
 	a.opPhase(j.Operation, phase)
+	if phase == agentapi.PhaseAwaitingConfirmation {
+		// The core bounds its confirmation check by the same deadline the
+		// agent enforces, without relying on its own clock alone.
+		if _, err := a.ops.update(j.Operation, func(o *agentapi.Operation) {
+			if !o.Terminal() {
+				o.ConfirmBy = j.ConfirmBy
+			}
+		}); err != nil {
+			a.log.Error("update operation deadline", "operation", j.Operation, "error", err)
+		}
+	}
 	return a.checkpoint(phase)
 }
 

@@ -77,7 +77,8 @@ func TestAppsAPIPermissions(t *testing.T) {
 		{"GET", "/api/v1/apps/instances", nil, authz.AppsManage, 200},
 		{"GET", base, nil, authz.AppsManage, 200},
 		{"PATCH", base, map[string]any{"displayName": "Code"}, authz.AppsManage, 200},
-		{"POST", base + "/setup", nil, authz.AppsManage, 409}, // connected: not supported
+		{"POST", base + "/setup", nil, authz.AppsManage, 409},   // connected: not supported
+		{"POST", base + "/upgrade", nil, authz.AppsManage, 409}, // connected: not supported
 		{"GET", base + "/operations", nil, authz.AppsManage, 200},
 		{"GET", "/api/v1/apps/agent", nil, authz.AppsManage, 200},
 		// Connected providers are not installed, removed or reinstalled

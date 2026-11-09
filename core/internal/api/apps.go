@@ -136,7 +136,7 @@ func appProvider(a *apps.Adapter) apigen.AppProvider {
 	return p
 }
 
-func appInstance(svc *apps.Service, inst apps.Instance) apigen.AppInstance {
+func (s *server) appInstance(ctx context.Context, svc *apps.Service, inst apps.Instance) (apigen.AppInstance, error) {
 	out := apigen.AppInstance{
 		Id:                    inst.ID,
 		Key:                   inst.Key,
@@ -172,7 +172,26 @@ func appInstance(svc *apps.Service, inst apps.Instance) apigen.AppInstance {
 			out.WebhookUrl = &u
 		}
 	}
-	return out
+	status, ok, err := svc.UpgradeStatus(ctx, inst)
+	if err != nil {
+		return apigen.AppInstance{}, err
+	}
+	if ok {
+		out.Upgrade = &apigen.AppUpgradeStatus{
+			State:           apigen.AppUpgradeStatusState(status.State),
+			CurrentVersion:  status.CurrentVersion,
+			TargetVersion:   status.TargetVersion,
+			RequiredVersion: nilIfEmptyString(status.RequiredVersion),
+		}
+	}
+	return out, nil
+}
+
+func nilIfEmptyString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func (s *server) ListAppInstances(ctx context.Context, _ apigen.ListAppInstancesRequestObject) (apigen.ListAppInstancesResponseObject, error) {
@@ -186,7 +205,11 @@ func (s *server) ListAppInstances(ctx context.Context, _ apigen.ListAppInstances
 	}
 	items := make([]apigen.AppInstance, 0, len(rows))
 	for _, inst := range rows {
-		items = append(items, appInstance(svc, inst))
+		item, err := s.appInstance(ctx, svc, inst)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
 	}
 	return apigen.ListAppInstances200JSONResponse{Items: items}, nil
 }
@@ -205,13 +228,16 @@ func (s *server) GetAppInstance(ctx context.Context, req apigen.GetAppInstanceRe
 		return nil, err
 	}
 	out := apigen.GetAppInstance200JSONResponse{
-		Instance:              appInstance(svc, inst),
 		Operations:            []apigen.AppOperation{},
 		Credentials:           []apigen.AppCredentialVersion{},
 		CredentialRotations:   []apigen.AppCredentialRotationStatus{},
 		RotationStuck:         apps.RotationStuck(d.Credentials, time.Now()),
 		UnmanagedAccountCount: int(d.UnmanagedCount),
 		Provisioning:          counts(d.StatusCounts),
+	}
+	out.Instance, err = s.appInstance(ctx, svc, inst)
+	if err != nil {
+		return nil, err
 	}
 	out.Bindings = make([]struct {
 		Capability string `json:"capability"`
@@ -314,7 +340,11 @@ func (s *server) UpdateAppInstance(ctx context.Context, req apigen.UpdateAppInst
 	if err != nil {
 		return nil, appsError(err)
 	}
-	return apigen.UpdateAppInstance200JSONResponse(appInstance(svc, inst)), nil
+	out, err := s.appInstance(ctx, svc, inst)
+	if err != nil {
+		return nil, err
+	}
+	return apigen.UpdateAppInstance200JSONResponse(out), nil
 }
 
 func (s *server) RetryAppInstanceSetup(ctx context.Context, req apigen.RetryAppInstanceSetupRequestObject) (apigen.RetryAppInstanceSetupResponseObject, error) {
@@ -326,7 +356,27 @@ func (s *server) RetryAppInstanceSetup(ctx context.Context, req apigen.RetryAppI
 	if err != nil {
 		return nil, appsError(err)
 	}
-	return apigen.RetryAppInstanceSetup202JSONResponse(appInstance(svc, inst)), nil
+	out, err := s.appInstance(ctx, svc, inst)
+	if err != nil {
+		return nil, err
+	}
+	return apigen.RetryAppInstanceSetup202JSONResponse(out), nil
+}
+
+func (s *server) RetryAppInstanceUpgrade(ctx context.Context, req apigen.RetryAppInstanceUpgradeRequestObject) (apigen.RetryAppInstanceUpgradeResponseObject, error) {
+	svc, actor, err := s.appsManager(ctx)
+	if err != nil {
+		return nil, err
+	}
+	inst, err := svc.RetryUpgrade(ctx, actor, req.InstanceId)
+	if err != nil {
+		return nil, appsError(err)
+	}
+	out, err := s.appInstance(ctx, svc, inst)
+	if err != nil {
+		return nil, err
+	}
+	return apigen.RetryAppInstanceUpgrade202JSONResponse(out), nil
 }
 
 func (s *server) RotateAppCredential(ctx context.Context, req apigen.RotateAppCredentialRequestObject) (apigen.RotateAppCredentialResponseObject, error) {

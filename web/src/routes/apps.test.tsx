@@ -885,6 +885,78 @@ describe("Apps guidance", () => {
   });
 });
 
+describe("Upgrade status", () => {
+  it("shows a rolled-back upgrade and retries it", async () => {
+    const upgradePath = `/api/v1/apps/instances/${instanceId}/upgrade`;
+    const managed = {
+      ...instance,
+      provider: "agenttest",
+      management: "managed",
+      packageId: "agenttest",
+      packageVersion: "1.0.0-1",
+      upgrade: {
+        state: "rolled_back",
+        currentVersion: "1.0.0-1",
+        targetVersion: "2.0.0-1",
+      },
+    };
+    const app = renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": {
+        status: 200,
+        body: {
+          items: [{ ...provider, id: "agenttest", management: "managed", provisioning: false }],
+        },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}`]: {
+        status: 200,
+        body: { ...detailWith([], managed), instance: managed },
+      },
+      [`POST ${upgradePath}`]: { status: 202, body: managed },
+    });
+    expect(
+      await screen.findByText(
+        /The upgrade to 2\.0\.0-1 was rolled back\. The app is running 1\.0\.0-1/,
+      ),
+    ).toBeInTheDocument();
+    await app.user.click(screen.getByRole("button", { name: "Retry upgrade" }));
+    await waitFor(() => expect(app.called("POST", upgradePath)).toHaveLength(1));
+  });
+
+  it("shows a blocked upgrade without a retry action", async () => {
+    const managed = {
+      ...instance,
+      provider: "agenttest",
+      management: "managed",
+      packageId: "agenttest",
+      packageVersion: "0.9.0-1",
+      upgrade: {
+        state: "blocked",
+        currentVersion: "0.9.0-1",
+        targetVersion: "3.0.0-1",
+        requiredVersion: "2.0.0-1",
+      },
+    };
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": {
+        status: 200,
+        body: {
+          items: [{ ...provider, id: "agenttest", management: "managed", provisioning: false }],
+        },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}`]: {
+        status: 200,
+        body: { ...detailWith([], managed), instance: managed },
+      },
+    });
+    expect(
+      await screen.findByText(/Install the release that provides 2\.0\.0-1 first/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry upgrade" })).not.toBeInTheDocument();
+  });
+});
+
 describe("Long instance names", () => {
   it("wraps an unbroken name in the page heading instead of overflowing", async () => {
     const long = "LongOrganization".repeat(6);

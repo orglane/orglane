@@ -87,6 +87,14 @@ WHERE o.instance_id = @instance_id
 ORDER BY o.created_at DESC, o.id DESC
 LIMIT @row_limit OFFSET @row_offset;
 
+-- name: GetLatestAppUpgradeOperation :one
+-- The newest upgrade operation, for the automatic planner and the upgrade
+-- status in Settings → Apps.
+SELECT * FROM app_operations
+WHERE instance_id = @instance_id AND kind = 'upgrade'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
 -- name: ListAppInstancesWaitingForAgent :many
 -- Instances with an unfinished operation that waits for the agent, with
 -- the newest reason.

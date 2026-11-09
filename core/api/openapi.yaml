@@ -2285,6 +2285,46 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/upgrade:
+    post:
+      operationId: retryAppInstanceUpgrade
+      summary: Retry a rolled-back or failed upgrade
+      description: |
+        Retries the newest upgrade of a managed instance when its latest
+        upgrade to the next required stop ended `failed` or `rolled_back`
+        (upgrades otherwise start automatically after an Orglane release).
+        The next required stop is computed from the embedded package
+        versions (`upgrade.min_from`); one step is recorded per request and
+        the following steps continue automatically after a success.
+
+        Refused (409, `invalid_state`) when the instance is not `active` or
+        `degraded`, has an unfinished operation, has not applied its current
+        change, is already on the newest version, or has no failed or
+        rolled-back upgrade to that stop. Requires `apps.manage`.
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "202":
+          description: The upgrade retry was recorded; its operation runs next.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppInstance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /api/v1/apps/instances/{instanceId}/open:
     get:
       operationId: openAppInstance
@@ -4830,6 +4870,8 @@ components:
           type: string
         packageVersion:
           type: string
+        upgrade:
+          $ref: "#/components/schemas/AppUpgradeStatus"
         settings:
           type: object
           description: Non-secret provider settings.
@@ -4863,6 +4905,32 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AppInstance"
+    AppUpgradeStatus:
+      type: object
+      description: |
+        Upgrade status of a managed instance (agent.md "Upgrade"), derived
+        from its running version, the embedded package versions and the
+        latest upgrade operation. Absent for connected instances and
+        instances whose provider or running version is not known yet.
+      required: [state, currentVersion, targetVersion]
+      properties:
+        state:
+          type: string
+          enum: [up_to_date, available, upgrading, failed, rolled_back, blocked]
+          description: |
+            `upgrading` while the instance (or its revert) is being applied;
+            `failed` and `rolled_back` name the result of the latest upgrade
+            to `targetVersion` and can be retried by an admin; `blocked` means
+            this Orglane release embeds no upgrade path yet.
+        currentVersion:
+          type: string
+          description: The package version the instance runs.
+        targetVersion:
+          type: string
+          description: The next version an upgrade would install (the newest embedded one when up to date).
+        requiredVersion:
+          type: string
+          description: "With `blocked`: the version to upgrade to first."
     AppOperation:
       type: object
       required: [id, kind, state, createdAt]

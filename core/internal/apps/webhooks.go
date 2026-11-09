@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
-	"github.com/orglane/orglane/core/internal/audit"
 	"github.com/orglane/orglane/core/internal/store"
 	"github.com/orglane/orglane/providers/provider"
 )
@@ -497,9 +496,11 @@ func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
 }
 
 // RunSetup works one attempt of the setup job: Lifecycle.Setup of a managed
-// instance, then its webhooks (ensureWebhooks). Success activates it;
-// exhausted retries fail it with setup_failed. A provider's RetryAfter
-// snoozes the job without spending an attempt, also on the last attempt.
+// instance, then its webhooks (ensureWebhooks). Setup runs after an install
+// and after the last upgrade step or the revert spec of a rollback; success
+// activates it, exhausted retries fail it with setup_failed. A provider's
+// RetryAfter snoozes the job without spending an attempt, also on the last
+// attempt.
 func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAttempts int) error {
 	inst, err := s.Instance(ctx, args.InstanceID)
 	if errors.Is(err, ErrNotFound) {
@@ -507,9 +508,15 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 	} else if err != nil {
 		return err
 	}
-	if inst.State != StateInstalling || inst.Adapter == nil {
+	if (inst.State != StateInstalling && inst.State != StateUpgrading) || inst.Adapter == nil {
 		return nil
 	}
+	if args.Generation > 0 && inst.DesiredGeneration != args.Generation {
+		// A newer generation superseded this setup; its consequences run
+		// their own setup.
+		return nil
+	}
+	state := inst.State
 	lc, ok := inst.Adapter.Lifecycle()
 	if !ok {
 		return river.JobCancel(ErrNotSupported)
@@ -517,8 +524,9 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 	setupErr := lc.Setup(ctx, s.env(inst), inst.View())
 	if setupErr == nil {
 		// The provider's webhooks are part of a set-up instance (a Setup
-		// after a restore also brings back the hook and its active secret).
-		setupErr = s.ensureWebhooks(ctx, inst, StateInstalling)
+		// after an upgrade or restore also brings back the hook and its
+		// active secret).
+		setupErr = s.ensureWebhooks(ctx, inst, state)
 	}
 	if errors.Is(setupErr, errWebhooksDeferred) {
 		// A rotation of the webhook secret is in progress; its job sets the
@@ -526,13 +534,12 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 		setupErr = nil
 	}
 	if errors.Is(setupErr, errStateChanged) {
-		// No longer installing (an agent operation failed it, it is being
-		// removed): neither activated nor failed with setup_failed here.
+		// No longer installing or upgrading (an agent operation failed it,
+		// it is being removed): neither activated nor failed here.
 		return nil
 	}
 	if setupErr == nil {
-		_, err := s.Transition(ctx, audit.System, inst.ID, StateActive, "")
-		return err
+		return s.finishSetup(ctx, inst.ID, args.Generation, nil)
 	}
 	code, retryable, retryAfter := provider.Classify(setupErr)
 	s.env(inst).Logger().WarnContext(ctx, "setup failed", "code", code, "attempt", attempt)
@@ -542,6 +549,5 @@ func (s *Service) RunSetup(ctx context.Context, args SetupArgs, attempt, maxAtte
 	case retryable && attempt < maxAttempts:
 		return fmt.Errorf("apps: setup failed (%s)", code)
 	}
-	_, err = s.Transition(ctx, audit.System, inst.ID, StateFailed, CodeSetupFailed)
-	return err
+	return s.finishSetup(ctx, inst.ID, args.Generation, setupErr)
 }

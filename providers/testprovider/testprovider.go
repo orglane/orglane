@@ -85,6 +85,8 @@ type Provider struct {
 	nextID   int
 	// packageSettings are what Inputs returns (managed variant).
 	packageSettings map[string]any
+	// healthUpstreams are the upstream URLs of CheckHealth calls, in order.
+	healthUpstreams []string
 	// openOrigin, if set, is the origin OpenURL links to instead of the
 	// base URL's (to test the core's origin check).
 	openOrigin *url.URL
@@ -688,10 +690,21 @@ func (p *Provider) Setup(_ context.Context, _ provider.Env, inst provider.Instan
 }
 
 // CheckHealth implements provider.Lifecycle (managed variant).
-func (p *Provider) CheckHealth(context.Context, provider.Env, provider.Instance) error {
+func (p *Provider) CheckHealth(_ context.Context, _ provider.Env, inst provider.Instance) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if inst.Upstream != nil {
+		p.healthUpstreams = append(p.healthUpstreams, inst.Upstream.String())
+	}
 	return p.fault("health")
+}
+
+// HealthUpstreams returns the upstream URLs of the CheckHealth calls made
+// so far, in order.
+func (p *Provider) HealthUpstreams() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.healthUpstreams)
 }
 
 func sortedKeys(m map[string]bool) []string {

@@ -90,7 +90,7 @@ func (s *Service) push(ctx context.Context, inst Instance, ds store.AppDesiredSp
 		}
 		return s.agentError(ctx, ds, op, err)
 	}
-	return s.mirror(ctx, ds, op, aop)
+	return s.mirror(ctx, inst, ds, op, aop)
 }
 
 func (s *Service) poll(ctx context.Context, inst Instance, ds store.AppDesiredSpec, op store.AppOperation) error {
@@ -120,14 +120,22 @@ func (s *Service) poll(ctx context.Context, inst Instance, ds store.AppDesiredSp
 	if aop.ID != *op.AgentOperationID {
 		return fmt.Errorf("apps: the agent answered operation %s for %s", aop.ID, *op.AgentOperationID)
 	}
-	return s.mirror(ctx, ds, op, aop)
+	return s.mirror(ctx, inst, ds, op, aop)
 }
 
 // mirror records an agent operation: progress with a snooze until the next
-// poll, or its end with its consequences.
-func (s *Service) mirror(ctx context.Context, ds store.AppDesiredSpec, op store.AppOperation, aop *agentapi.Operation) error {
+// poll, or its end with its consequences. An upgrade in awaiting_confirmation
+// is checked through its fenced alias and confirmed or aborted here.
+func (s *Service) mirror(ctx context.Context, inst Instance, ds store.AppDesiredSpec, op store.AppOperation, aop *agentapi.Operation) error {
 	if !slices.Contains(operationStates, aop.State) {
 		return fmt.Errorf("apps: the agent reported an unknown operation state %q", aop.State)
+	}
+	if aop.State == agentapi.OpAwaitingConfirmation {
+		next, err := s.confirmCandidate(ctx, inst, ds, op, aop)
+		if err != nil {
+			return err
+		}
+		aop = next
 	}
 	if aop.Terminal() {
 		return s.finishOp(ctx, ds, op, aop, aop.State, aop.ErrorCode)
@@ -143,11 +151,6 @@ func (s *Service) mirror(ctx context.Context, ds store.AppDesiredSpec, op store.
 		stalled := *aop
 		return s.finishOp(ctx, ds, op, &stalled, agentapi.OpFailed, CodeAgentStalled)
 	}
-	// Part 2 of #75 hooks in here: an upgrade in awaiting_confirmation is
-	// checked with Lifecycle.CheckHealth through the fenced upstream and
-	// confirmed or aborted (agentclient Confirm and Abort); until then it is
-	// polled like any other unfinished operation and rolls back after the
-	// package's confirm_timeout.
 	if _, err := store.New(s.pool).MirrorAppOperation(ctx, store.MirrorAppOperationParams{
 		ID: op.ID, AgentOperationID: &aop.ID, State: aop.State, Phase: nilIfEmpty(aop.Phase),
 	}); err != nil {
@@ -185,18 +188,20 @@ func (s *Service) finishOp(ctx context.Context, ds store.AppDesiredSpec, op stor
 		} else if n == 0 {
 			return nil
 		}
-		return s.operationFinished(ctx, tx, q, inst, ds, state, code)
+		return s.operationFinished(ctx, tx, q, inst, ds, aop, state, code)
 	})
 }
 
 // operationFinished applies what the end of a generation's operation means
-// for its instance. Only the instance's current generation changes its state.
+// for its instance. Only the instance's current generation changes its
+// state.
 //
-// Extension points: part 2 of #75 handles upgrades here (a rolled_back
-// operation records the revert spec and re-runs Setup; a succeeded upgrade is
-// audited as app_instance.upgraded). A removal (an absent generation) ends
-// in removalFinished (install.go).
-func (s *Service) operationFinished(ctx context.Context, tx pgx.Tx, q *store.Queries, inst Instance, ds store.AppDesiredSpec, state, code string) error {
+// Upgrades (#75 part 2): a succeeded step records the next required stop,
+// or runs Setup after the last one; a rolled-back or failed upgrade records
+// the revert spec (the running version) and its apply runs Setup. A failed
+// rollback fails the instance and waits for an admin. A removal (an absent
+// generation) ends in removalFinished (install.go).
+func (s *Service) operationFinished(ctx context.Context, tx pgx.Tx, q *store.Queries, inst Instance, ds store.AppDesiredSpec, aop *agentapi.Operation, state, code string) error {
 	current := ds.Generation == inst.DesiredGeneration
 	switch state {
 	case agentapi.OpSucceeded:
@@ -210,18 +215,60 @@ func (s *Service) operationFinished(ctx context.Context, tx pgx.Tx, q *store.Que
 		if ds.RunState == agentapi.StateAbsent {
 			return s.removalFinished(ctx, tx, q, inst, ds, state)
 		}
-		if current && inst.State == StateInstalling && ds.RunState == agentapi.StateRunning {
+		if !current {
+			return nil
+		}
+		if inst.State == StateInstalling && ds.RunState == agentapi.StateRunning {
 			// Installed: Setup runs and activates the instance (step 4).
-			return s.enqueueSetup(ctx, tx, inst.ID)
+			return s.enqueueSetup(ctx, tx, inst.ID, ds.Generation)
+		}
+		if inst.State == StateUpgrading && ds.RunState == agentapi.StateRunning {
+			if aop != nil && aop.Kind == agentapi.KindUpgrade {
+				if _, err := audit.Record(ctx, q, audit.Entry{
+					Actor:  audit.System,
+					Action: audit.AppInstanceUpgraded,
+					Target: instanceTarget(inst.ID),
+					Metadata: map[string]any{
+						"provider": inst.Provider, "from": derefString(inst.PackageVersion), "to": ds.PackageVersion,
+					},
+				}); err != nil {
+					return err
+				}
+				// The next step starts from the version just applied.
+				inst.PackageVersion = &ds.PackageVersion
+				inst.ObservedGeneration = ds.Generation
+				if next, ok := s.nextUpgradeVersion(inst); ok {
+					return s.recordUpgradeStep(ctx, tx, q, audit.System, inst, next, ReasonUpgrade, false)
+				}
+			}
+			// The last step, or the revert (or a configuration change
+			// recorded during the upgrade): Setup re-asserts provider-side
+			// state, then activates the instance.
+			return s.enqueueSetup(ctx, tx, inst.ID, ds.Generation)
 		}
 	case agentapi.OpFailed:
 		if ds.RunState == agentapi.StateAbsent && code != agentapi.CodeSuperseded {
 			return s.removalFinished(ctx, tx, q, inst, ds, state)
 		}
-		if current && inst.State == StateInstalling && code != agentapi.CodeSuperseded {
+		if !current {
+			return nil
+		}
+		if inst.State == StateInstalling && code != agentapi.CodeSuperseded {
 			_, err := s.transition(ctx, tx, q, audit.System, inst.ID, StateFailed, CodeInstallFailed)
 			return err
 		}
+		if inst.State == StateUpgrading {
+			if code == agentapi.CodeRollbackFailed {
+				_, err := s.transition(ctx, tx, q, audit.System, inst.ID, StateFailed, agentapi.CodeRollbackFailed)
+				return err
+			}
+			return s.revertUpgrade(ctx, tx, q, inst, ds, code)
+		}
+	case agentapi.OpRolledBack:
+		if !current || inst.State != StateUpgrading {
+			return nil
+		}
+		return s.revertUpgrade(ctx, tx, q, inst, ds, code)
 	}
 	return nil
 }

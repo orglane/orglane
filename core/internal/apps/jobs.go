@@ -147,9 +147,13 @@ func (RotateCredentialArgs) Kind() string { return "orglane.apps.rotate_credenti
 // InsertOpts implements river.JobArgsWithInsertOpts.
 func (RotateCredentialArgs) InsertOpts() river.InsertOpts { return uniqueOpts(maxRotateAttempts) }
 
-// SetupArgs run Lifecycle.Setup of a managed instance.
+// SetupArgs run Lifecycle.Setup of a managed instance. Generation is the
+// desired generation the setup belongs to (0 from an install job queued
+// before it existed): after an upgrade it keeps a setup that a newer
+// generation superseded from activating the instance.
 type SetupArgs struct {
 	InstanceID uuid.UUID `json:"instance_id" river:"unique"`
+	Generation int64     `json:"generation,omitempty" river:"unique"`
 }
 
 // Kind implements river.JobArgs.
@@ -446,11 +450,11 @@ func (c continuation) MarshalJSON() ([]byte, error) {
 }
 
 // enqueueSetup queues the setup job of an instance that is (or just became)
-// installing. A setup job that still runs may have read an earlier state,
-// so it never takes the place of this one (enqueueOnce); Setup is
-// idempotent and RunSetup rechecks the state.
-func (s *Service) enqueueSetup(ctx context.Context, tx pgx.Tx, instanceID uuid.UUID) error {
-	return s.enqueueOnce(ctx, tx, SetupArgs{InstanceID: instanceID}, nil, nil)
+// installing or upgrading. A setup job that still runs may have read an
+// earlier state, so it never takes the place of this one (enqueueOnce);
+// Setup is idempotent and RunSetup rechecks the state and generation.
+func (s *Service) enqueueSetup(ctx context.Context, tx pgx.Tx, instanceID uuid.UUID, generation int64) error {
+	return s.enqueueOnce(ctx, tx, SetupArgs{InstanceID: instanceID, Generation: generation}, nil, nil)
 }
 
 // enqueueInstance queues provision_instance for an instance.

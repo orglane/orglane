@@ -45,12 +45,15 @@ import (
 //     that was pushed is mirrored until the agent reports it terminal.
 
 // AgentClient is what the core needs from the agent (agentclient.Client).
-// Part 2 of #75 (upgrades) adds Confirm and Abort.
+// The client also implements Confirm and Abort for the upgrade
+// confirmation loop (part 2 of #75).
 type AgentClient interface {
 	Health(ctx context.Context) (*agentapi.Health, error)
 	Instances(ctx context.Context) ([]agentapi.InstanceStatus, error)
 	Apply(ctx context.Context, key string, spec *agentapi.Spec) (*agentapi.Operation, bool, error)
 	Operation(ctx context.Context, id uuid.UUID) (*agentapi.Operation, error)
+	Confirm(ctx context.Context, id uuid.UUID) (*agentapi.Operation, error)
+	Abort(ctx context.Context, id uuid.UUID) (*agentapi.Operation, error)
 }
 
 var _ AgentClient = (*agentclient.Client)(nil)
@@ -81,6 +84,9 @@ const (
 	// CodeAgentStalled: the agent kept an operation queued for longer than
 	// Config.AgentQueueTimeout.
 	CodeAgentStalled = "agent_stalled"
+	// CodeUpgradeFailed marks an upgrading instance that cannot be put back
+	// on its running version (an upgrade that rolled back without one).
+	CodeUpgradeFailed = "upgrade_failed"
 	// Health codes the sync owns (and may clear again).
 	CodeAgentUnhealthy       = "agent_unhealthy"
 	CodeAgentInstanceMissing = "agent_instance_missing"
@@ -152,6 +158,12 @@ func (s *Service) RecordDesired(ctx context.Context, tx pgx.Tx, actor audit.Acto
 // install_failed. It is provider-agnostic: the install API (#61) brings the
 // host, DNS, agent health and resource checks as Config.InstallPreflight.
 func (s *Service) Install(ctx context.Context, actor audit.Actor, in NewInstance) (Instance, error) {
+	return s.install(ctx, actor, in, "")
+}
+
+// install creates and installs an instance with version as its first
+// desired package version (empty: the newest embedded one).
+func (s *Service) install(ctx context.Context, actor audit.Actor, in NewInstance, version string) (Instance, error) {
 	adapter, ok := s.reg.Adapter(in.Provider)
 	if !ok {
 		return Instance{}, fmt.Errorf("%w: %s", ErrProviderUnavailable, in.Provider)
@@ -159,7 +171,7 @@ func (s *Service) Install(ctx context.Context, actor audit.Actor, in NewInstance
 	if _, ok := adapter.Lifecycle(); !ok {
 		return Instance{}, fmt.Errorf("%w: %s is not a managed provider", ErrNotSupported, in.Provider)
 	}
-	pkg, ok := s.latestPackage(adapter.Manifest.Package)
+	pkg, ok := s.installPackage(adapter.Manifest.Package, version)
 	if !ok {
 		return Instance{}, fmt.Errorf("%w: the package %s is not embedded in this build", ErrNotSupported, adapter.Manifest.Package)
 	}
@@ -415,6 +427,15 @@ func (s *Service) latestPackage(id string) (*packages.Package, bool) {
 		}
 	}
 	return newest, newest != nil
+}
+
+// installPackage returns the embedded package version an install starts
+// with: version when set, else the newest one.
+func (s *Service) installPackage(id, version string) (*packages.Package, bool) {
+	if version == "" {
+		return s.latestPackage(id)
+	}
+	return s.pkg(&id, version)
 }
 
 func actorPerson(a audit.Actor) *uuid.UUID {
