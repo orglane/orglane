@@ -307,13 +307,16 @@ func (a *Agent) accept(key string, spec *agentapi.Spec) (agentapi.Operation, int
 				return fail(http.StatusConflict, agentapi.CodeGenerationConflict, "this generation was accepted with other content", nil)
 			}
 			op, ok := a.ops.get(p.Operation)
-			if !ok {
-				// The operation was pruned; record it again under the ID
-				// the purge record already names, so repeated retries, a
-				// crash before the result and a restart keep one identity
-				// and one terminal result. The purge record is written
-				// before the rename, so sync the directory the rename freed
-				// before reporting success.
+			if !ok || !op.Terminal() {
+				// The operation was pruned, or an earlier retry recorded it
+				// but could not write its terminal result (a transient write
+				// failure or a crash): record it again under the ID the
+				// purge record already names and settle it from the record,
+				// so repeated retries and a restart keep one identity and
+				// one terminal result. A retained terminal result, including
+				// a failed one, is never overwritten. The purge record is
+				// written before the rename, so sync the directory the
+				// rename freed before reporting success.
 				if p.Operation == uuid.Nil {
 					return internal(errors.New("the purge record names no operation"))
 				}

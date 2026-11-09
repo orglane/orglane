@@ -517,6 +517,69 @@ func TestPurgeRetryAfterPruningKeepsFailedResult(t *testing.T) {
 	retryPurge(t, b, cfg.now, purge, op.ID)
 }
 
+// TestPurgeRetrySettlesAfterTransientResultFailure: a retry after pruning
+// records the purge's operation as running; if writing its terminal result
+// then fails, the PUT answers 500 and the operation stays nonterminal. Once
+// storage is healthy, a retry settles that recorded replay from the purge
+// record (after the same directory sync) instead of returning running
+// forever, and a restart keeps the settled result.
+func TestPurgeRetrySettlesAfterTransientResultFailure(t *testing.T) {
+	cfg := newPurgeEnv(t)
+	a, purge, op := purgeAgent(t, cfg, nil)
+	a.reconcile(t.Context(), a.instance("git"))
+	assertPurged(t, a, op.ID, purge.InstanceID)
+	pruneOperation(t, a, op.ID, cfg.now)
+
+	// The running replacement is durable, but replacing its file with the
+	// terminal result fails: the operation file is a directory.
+	path := a.ops.path(op.ID)
+	a.opts.hook = func(point string) {
+		if point != "purge-retry-recorded" {
+			return
+		}
+		if err := os.Rename(path, path+".saved"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := put(t, a, cfg.now, "git", mustJSON(t, purge))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("retry with an unwritable result: %d %s", rec.Code, rec.Body)
+	}
+	if got, ok := a.ops.get(op.ID); !ok || got.Terminal() || got.State != agentapi.OpRunning {
+		t.Fatalf("operation after the failed result write = %+v (%t), want running", got, ok)
+	}
+
+	// Storage is healthy again. Reconciliation cannot settle the replay (the
+	// directory is gone), so every identical retry must settle it and return
+	// the purge's terminal result.
+	a.opts.hook = nil
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".saved", path); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		a.reconcile(t.Context(), a.instance("git"))
+		rec = put(t, a, cfg.now, "git", mustJSON(t, purge))
+		got := decodeOp(t, rec)
+		if rec.Code != http.StatusOK || got.ID != op.ID || got.State != agentapi.OpSucceeded || got.ErrorCode != "" {
+			t.Fatalf("healthy retry %d = %d %+v, want 200 with %s succeeded", i, rec.Code, got, op.ID)
+		}
+	}
+
+	// The settled result is durable and a later retry keeps it.
+	b := cfg.agent(t, nil)
+	if got, ok := b.ops.get(op.ID); !ok || got.State != agentapi.OpSucceeded {
+		t.Fatalf("operation after the restart = %+v (%t), want succeeded", got, ok)
+	}
+	assertPurged(t, b, op.ID, purge.InstanceID)
+	retryPurge(t, b, cfg.now, purge, op.ID)
+}
+
 // TestPurgeRetryAfterPruningCrashRecovery: the operation recorded again for
 // a pruned purge is durable under the purge record's ID before its result.
 // A crash there recovers that operation, not a new one.
