@@ -79,13 +79,16 @@ func AppRouter(key, route string) string { return "orglane-app-" + key + "-" + r
 // RouteSource returns the app routes at the moment of a poll.
 type RouteSource func(ctx context.Context) ([]AppRoute, error)
 
-// servedTimeout bounds a ServedFunc call.
+// servedTimeout bounds the served callback of a Publisher.
 const servedTimeout = 5 * time.Second
 
-// ServedFunc is told the app routes of every configuration the handler
-// served Traefik completely: the routes Build included, in its order
-// (docs/specs/providers.md "Route publication").
-type ServedFunc func(ctx context.Context, routes []AppRoute)
+// Publisher observes the configurations the handler serves Traefik
+// (docs/specs/providers.md "Route publication"). It is called with the app
+// routes Build included before the answer is written: an error answers
+// 503, so Traefik keeps its last configuration. Otherwise the answer is
+// written, and served (if not nil) is called once it has been flushed
+// completely.
+type Publisher func(ctx context.Context, routes []AppRoute) (served func(context.Context), err error)
 
 // noopService is Traefik's built-in service for routers that only redirect.
 const noopService = "noop@internal"
@@ -323,13 +326,13 @@ func Maintenance(workspaceHost string, next http.Handler) http.Handler {
 // NewHandler returns the handler of the internal listener: GET ConfigPath
 // returns Build(cfg, routes) as JSON, with the app routes read from source
 // on every request (nil: none). It must never be served on the public
-// listener. After an answer was written and flushed, served (if not nil)
-// gets the app routes it contained, with a context bounded by
-// servedTimeout.
+// listener. publish (if not nil) observes each answer (Publisher); its
+// served callback gets a context bounded by servedTimeout.
 //
-// If source fails, the answer is 503: Traefik then keeps the configuration
-// of its last successful poll instead of dropping the app routes.
-func NewHandler(cfg *config.Config, source RouteSource, served ServedFunc, logger *slog.Logger) (http.Handler, error) {
+// If source or publish fails, the answer is 503: Traefik then keeps the
+// configuration of its last successful poll instead of dropping the app
+// routes.
+func NewHandler(cfg *config.Config, source RouteSource, publish Publisher, logger *slog.Logger) (http.Handler, error) {
 	if _, err := json.Marshal(Build(cfg, nil)); err != nil {
 		return nil, fmt.Errorf("encode traefik configuration: %w", err)
 	}
@@ -359,6 +362,14 @@ func NewHandler(cfg *config.Config, source RouteSource, served ServedFunc, logge
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
+		var served func(context.Context)
+		if publish != nil {
+			if served, err = publish(r.Context(), included); err != nil {
+				logger.ErrorContext(r.Context(), "traefik configuration: record the routes to serve", "error", err)
+				http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		// With a length, the flush below completes the answer before served
@@ -374,7 +385,7 @@ func NewHandler(cfg *config.Config, source RouteSource, served ServedFunc, logge
 		}
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), servedTimeout)
 		defer cancel()
-		served(ctx, included)
+		served(ctx)
 	})
 	if len(allowed) == 0 {
 		return mux, nil

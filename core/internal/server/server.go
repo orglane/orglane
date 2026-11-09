@@ -122,7 +122,7 @@ func RunWithStack(ctx context.Context, cfg *config.Config, version string, logge
 	handler = ingress.Maintenance(cfg.WorkspaceHostname(), handler)
 	listeners := []listener{{name: "public", addr: cfg.Server.Listen, handler: handler}}
 	if cfg.Server.InternalListen != "" {
-		internal, err := ingress.NewHandler(cfg, stack.Apps.IngressRoutes, stack.Apps.RoutesServed, logger)
+		internal, err := ingress.NewHandler(cfg, stack.Apps.IngressRoutes, stack.Apps.PublishRoutes, logger)
 		if err != nil {
 			return errors.Join(err, jobClient.Stop(context.WithoutCancel(ctx)))
 		}

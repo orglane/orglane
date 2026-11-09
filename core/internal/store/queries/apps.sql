@@ -804,21 +804,34 @@ WHERE instance_id = @instance_id AND person_id = @person_id AND state IN ('pendi
 UPDATE provisioning_results SET error_code = @error_code, actions = @actions, updated_at = now()
 WHERE instance_id = @instance_id AND person_id = @person_id AND status = 'queued';
 
+-- name: BeginRouteServe :one
+-- Starts serving a configuration (with DropUnservedRoutes, in the same
+-- transaction): advances the serve sequence under its row lock, so a
+-- recording of an earlier serve still in flight finishes first or not at
+-- all.
+UPDATE ingress_serve_state SET seq = seq + 1 RETURNING seq;
+
+-- name: DropUnservedRoutes :exec
+-- Deletes every served route that the configuration about to be served
+-- does not contain identically.
+DELETE FROM ingress_served_routes
+WHERE (instance_key, host, upstream, maintenance) NOT IN (
+    SELECT unnest(@keys::text[]), unnest(@hosts::text[]), unnest(@upstreams::text[]),
+        unnest(@maintenance::boolean[])
+);
+
 -- name: RecordServedRoutes :exec
--- Replaces the served routes with those of a configuration just served:
--- keys no longer served are dropped, new or changed routes start their
--- served_since, unchanged ones keep it (and are not written).
-WITH dropped AS (
-    DELETE FROM ingress_served_routes
-    WHERE instance_key <> ALL(@keys::text[])
-)
-INSERT INTO ingress_served_routes AS r (instance_key, host, upstream, maintenance, served_since)
-SELECT unnest(@keys::text[]), unnest(@hosts::text[]), unnest(@upstreams::text[]),
-    unnest(@maintenance::boolean[]), clock_timestamp()
-ON CONFLICT (instance_key) DO UPDATE
-SET host = excluded.host, upstream = excluded.upstream, maintenance = excluded.maintenance,
-    served_since = excluded.served_since
-WHERE (r.host, r.upstream, r.maintenance) IS DISTINCT FROM (excluded.host, excluded.upstream, excluded.maintenance);
+-- Records the routes of a configuration that was served, if no later serve
+-- has begun since (seq): routes already recorded keep served_since.
+INSERT INTO ingress_served_routes (instance_key, host, upstream, maintenance, served_since)
+SELECT s.key, s.host, s.upstream, s.maintenance, clock_timestamp()
+FROM (
+    SELECT unnest(@keys::text[]) AS key, unnest(@hosts::text[]) AS host,
+        unnest(@upstreams::text[]) AS upstream, unnest(@maintenance::boolean[]) AS maintenance
+) s
+WHERE EXISTS (SELECT 1 FROM ingress_serve_state WHERE seq = @seq FOR SHARE)
+    AND NOT EXISTS (SELECT 1 FROM ingress_served_routes r WHERE r.instance_key = s.key)
+ON CONFLICT (instance_key) DO NOTHING;
 
 -- name: GetServedRoute :one
 -- The served route of an instance key, and whether it has been served

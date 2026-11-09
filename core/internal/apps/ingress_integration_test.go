@@ -115,7 +115,7 @@ func TestActivationWaitsForPublishedRoute(t *testing.T) {
 	// The process Traefik polls, and another core process on the same
 	// database that runs the setup jobs.
 	poller, worker := h.svc, h.restartCore()
-	handler, err := ingress.NewHandler(cfg, poller.IngressRoutes, poller.RoutesServed, slog.New(slog.DiscardHandler))
+	handler, err := ingress.NewHandler(cfg, poller.IngressRoutes, poller.PublishRoutes, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,12 +185,33 @@ func TestActivationWaitsForPublishedRoute(t *testing.T) {
 	}
 	activated(inst, 2)
 
-	// Removed: a poll drops the route. A reinstall's route must be served
-	// again before it is active.
+	// Removed: a poll drops the route, and recording what it served fails
+	// after the answer went out. The omission is recorded before the answer
+	// is written, so the reinstall (same host and upstream) on the other
+	// process cannot activate on the old evidence: its route must be
+	// served again first.
+	lossy, err := ingress.NewHandler(cfg, poller.IngressRoutes,
+		func(ctx context.Context, routes []ingress.AppRoute) (func(context.Context), error) {
+			_, err := poller.PublishRoutes(ctx, routes)
+			return nil, err // the recording after the flush is lost
+		}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
 	h.exec(`UPDATE app_instances SET state = 'removed', desired_generation = 2, observed_generation = 2 WHERE id = $1`, inst.ID)
-	poll()
+	rec := httptest.NewRecorder()
+	lossy.ServeHTTP(rec, httptest.NewRequestWithContext(h.ctx, http.MethodGet, ingress.ConfigPath, http.NoBody))
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "git.acme.test") {
+		t.Fatalf("the removal poll = %d %s", rec.Code, rec.Body)
+	}
 	h.exec(`UPDATE app_instances SET state = 'installing', desired_generation = 3, observed_generation = 3 WHERE id = $1`, inst.ID)
-	activated(h.reload(inst.ID), 1)
+	if err := setup(h.reload(inst.ID), 1); err == nil {
+		t.Fatal("the reinstall activated on the evidence of a route Traefik no longer has")
+	}
+	if got := h.reload(inst.ID); got.State != apps.StateInstalling {
+		t.Fatalf("the reinstall without a poll: %s", got.State)
+	}
+	activated(h.reload(inst.ID), 2)
 
 	// A route Build leaves out (here: the workspace host) is never
 	// published, however often Traefik polls; the last attempt fails the
@@ -269,12 +290,16 @@ func TestRouteWaitFitsTheSetupDeadline(t *testing.T) {
 	}
 }
 
-// TestRoutesServedRecord: each served configuration replaces the record in
-// the database. An unchanged route keeps the time it was first served, a
-// changed one starts again, and a route left out is dropped (also when no
-// route is served at all).
+// TestRoutesServedRecord: the record of what was served to Traefik. A
+// route counts once a serve that contains it was flushed (served); an
+// unchanged route keeps the time it was first served, a changed one starts
+// again, and a route left out is dropped before the answer is written.
+// Recording fails closed: a serve whose drop fails is refused (503), and a
+// late recording of an earlier serve never brings back a route a newer
+// serve dropped.
 func TestRoutesServedRecord(t *testing.T) {
 	h := newHarnessWith(t, apps.Config{AwaitRoutes: true})
+	other := h.restartCore() // another core process on the same database
 	git := ingress.AppRoute{Key: "git", Route: "web", Host: "git.acme.test", Upstream: "http://git-web:3000"}
 	chat := ingress.AppRoute{Key: "chat", Route: "web", Host: "chat.acme.test", Maintenance: true}
 	since := func(key string) (time.Time, bool) {
@@ -288,13 +313,27 @@ func TestRoutesServedRecord(t *testing.T) {
 		}
 		return at, true
 	}
+	begin := func(svc *apps.Service, routes ...ingress.AppRoute) func(context.Context) {
+		t.Helper()
+		served, err := svc.PublishRoutes(h.ctx, routes)
+		if err != nil || served == nil {
+			t.Fatalf("publish: %v", err)
+		}
+		return served
+	}
+	serve := func(svc *apps.Service, routes ...ingress.AppRoute) { begin(svc, routes...)(h.ctx) }
 
-	h.svc.RoutesServed(h.ctx, []ingress.AppRoute{git})
+	// Not recorded before the answer was flushed.
+	served := begin(h.svc, git)
+	if _, ok := since("git"); ok {
+		t.Fatal("a route is recorded before its answer was served")
+	}
+	served(h.ctx)
 	first, ok := since("git")
 	if !ok {
 		t.Fatal("a served route is not recorded")
 	}
-	h.svc.RoutesServed(h.ctx, []ingress.AppRoute{git, chat})
+	serve(other, git, chat)
 	if at, _ := since("git"); !at.Equal(first) {
 		t.Fatalf("an unchanged route restarted: %v, want %v", at, first)
 	}
@@ -303,21 +342,57 @@ func TestRoutesServedRecord(t *testing.T) {
 	}
 	moved := git
 	moved.Upstream = "http://git-web:4000"
-	h.svc.RoutesServed(h.ctx, []ingress.AppRoute{moved, chat})
+	serve(h.svc, moved, chat)
 	if at, _ := since("git"); !at.After(first) {
 		t.Fatalf("a changed route kept its time %v", at)
 	}
-	h.svc.RoutesServed(h.ctx, []ingress.AppRoute{chat})
+
+	// Dropped before the answer is written: a lost recording after the
+	// flush cannot leave it behind.
+	_ = begin(h.svc, chat)
 	if _, ok := since("git"); ok {
 		t.Fatal("a route left out is still recorded")
 	}
-	h.svc.RoutesServed(h.ctx, nil)
+
+	// A late recording of an earlier serve (another process, still in
+	// flight when a newer configuration without the route began) records
+	// nothing.
+	late := begin(other, git, chat)
+	serve(h.svc, chat)
+	late(h.ctx)
+	if _, ok := since("git"); ok {
+		t.Fatal("a late recording brought back a route a newer serve dropped")
+	}
+
+	// A serve whose drop cannot be recorded is refused: the record keeps
+	// describing the configuration Traefik still has.
+	tx, err := h.pool.Begin(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(h.ctx, `LOCK TABLE ingress_served_routes IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(h.ctx, 300*time.Millisecond)
+	_, err = h.svc.PublishRoutes(ctx, nil)
+	cancel()
+	_ = tx.Rollback(h.ctx)
+	if err == nil {
+		t.Fatal("a serve whose drop failed was accepted")
+	}
+	if _, ok := since("chat"); !ok {
+		t.Fatal("a refused serve changed the record")
+	}
+
+	serve(h.svc)
 	if _, ok := since("chat"); ok {
 		t.Fatal("a configuration without app routes kept a route")
 	}
 
 	// A deployment without Traefik records nothing.
-	h.restartCore(func(c *apps.Config) { c.AwaitRoutes = false }).RoutesServed(h.ctx, []ingress.AppRoute{git})
+	if served, err := h.restartCore(func(c *apps.Config) { c.AwaitRoutes = false }).PublishRoutes(h.ctx, []ingress.AppRoute{git}); err != nil || served != nil {
+		t.Fatalf("without AwaitRoutes: %v", err)
+	}
 	if _, ok := since("git"); ok {
 		t.Fatal("recorded without AwaitRoutes")
 	}

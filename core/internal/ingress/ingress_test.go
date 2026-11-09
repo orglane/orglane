@@ -325,10 +325,16 @@ func TestBuildAppRoutesRejectsBadRoutes(t *testing.T) {
 func TestHandlerAppRoutes(t *testing.T) {
 	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
 	var routes []AppRoute
-	var fail error
-	var served [][]AppRoute
+	var fail, publishFail error
+	var publishing, served [][]AppRoute
 	h, err := NewHandler(cfg, func(context.Context) ([]AppRoute, error) { return routes, fail },
-		func(_ context.Context, r []AppRoute) { served = append(served, r) }, slog.New(slog.DiscardHandler))
+		func(_ context.Context, r []AppRoute) (func(context.Context), error) {
+			publishing = append(publishing, r)
+			if publishFail != nil {
+				return nil, publishFail
+			}
+			return func(context.Context) { served = append(served, r) }, nil
+		}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,9 +357,9 @@ func TestHandlerAppRoutes(t *testing.T) {
 	if code, d := poll(); code != http.StatusOK || d.HTTP.Routers[AppRouter("git", "web")].Service == "" {
 		t.Fatalf("with an app: %d %v", code, d.HTTP.Routers)
 	}
-	// The served hook gets the app routes of each answer, only those Build
-	// included: a route that would take over the workspace host is not
-	// published.
+	// The publisher gets the app routes of each answer before it is
+	// written and again once it was flushed, only those Build included: a
+	// route that would take over the workspace host is not published.
 	routes = append(routes,
 		AppRoute{Key: "evil", Route: "web", Host: cfg.WorkspaceHostname(), Upstream: "http://evil-web:80"},
 		AppRoute{Key: "chat", Route: "web", Host: "chat.acme.com", Maintenance: true})
@@ -361,9 +367,17 @@ func TestHandlerAppRoutes(t *testing.T) {
 		t.Fatalf("with apps: %d", code)
 	}
 	want := [][]AppRoute{nil, routes[:1], {routes[2], routes[0]}}
-	if !reflect.DeepEqual(served, want) {
-		t.Fatalf("served =\n%+v\nwant\n%+v", served, want)
+	if !reflect.DeepEqual(served, want) || !reflect.DeepEqual(publishing, want) {
+		t.Fatalf("served =\n%+v\npublishing =\n%+v\nwant\n%+v", served, publishing, want)
 	}
+	// A publisher that cannot record what is about to be served makes the
+	// answer a 503: Traefik keeps its last configuration.
+	publishFail = errors.New("database down")
+	if code, _ := poll(); code != http.StatusServiceUnavailable {
+		t.Fatalf("failing publisher = %d, want 503", code)
+	}
+	publishFail = nil
+	publishing = publishing[:len(want)]
 	// A failing source is a 503, never a configuration without the apps,
 	// and nothing is reported served.
 	fail = errors.New("database down")
@@ -413,13 +427,15 @@ func TestHandlerCompletesBeforeServed(t *testing.T) {
 	cfg := load(t, map[string]string{"ORGLANE_DOMAIN_BASE": "acme.com"})
 	read := make(chan struct{})
 	hookDone := make(chan bool, 1)
-	h, err := NewHandler(cfg, nil, func(ctx context.Context, _ []AppRoute) {
-		select {
-		case <-read:
-			hookDone <- true
-		case <-ctx.Done():
-			hookDone <- false
-		}
+	h, err := NewHandler(cfg, nil, func(context.Context, []AppRoute) (func(context.Context), error) {
+		return func(ctx context.Context) {
+			select {
+			case <-read:
+				hookDone <- true
+			case <-ctx.Done():
+				hookDone <- false
+			}
+		}, nil
 	}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
