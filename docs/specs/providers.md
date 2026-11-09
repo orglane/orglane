@@ -1207,7 +1207,7 @@ Behavior:
 **Manual pre-release checks** (maintainer decision: the OAuth browser leg stays manual; everything else runs in CI):
 
 1. "Link your GitHub" end to end in a browser: the real authorization-code exchange with PKCE against GitHub, as the bot user, then the link appears verified and the invitation follows. CI covers the start URL (PKCE challenge, state storage), the callback's state handling, and the identity read (`GET /user` with `ORGLANE_TEST_GITHUB_USER_TOKEN`), but not the code exchange.
-2. Only if neither automated path in "Real signature over raw bytes" works: a real App delivery to a reachable Orglane instance verifies.
+2. **Real signature, manual until automated:** until `TestGitHubLiveWebhookDeliveries` (path (a)) **passes on `main`**, a real App delivery to a reachable Orglane instance verifies. If path (a) fails in the live environment, establish path (b) `gh webhook forward` first; this check is dropped only once one automated path passes on `main`.
 
 ## Non-goals (M2)
 
