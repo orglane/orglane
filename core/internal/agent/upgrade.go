@@ -847,7 +847,7 @@ func (a *Agent) recoverJournal(ctx context.Context, in *instance, st *instanceSt
 		// Without its operation, finalize could never record the result
 		// and the journal would stay for good.
 		a.log.Warn("the journal's operation is unknown; recreating it", "instance", in.key, "operation", j.Operation)
-		if err := a.ops.adopt(j.Operation, in.key, j.Kind, j.Phase, j.ToGeneration); err != nil {
+		if err := a.ops.adopt(j.Operation, in.key, j.Kind, j.Phase, j.ToGeneration, st.id); err != nil {
 			a.log.Error("recreate the journal's operation", "instance", in.key, "operation", j.Operation, "error", err)
 			return agentapi.CodeInternal
 		}

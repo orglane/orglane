@@ -369,7 +369,7 @@ func awaitingAgent(t *testing.T, now time.Time) (*Agent, agentapi.Operation) {
 	if rec := put(t, a, now, "git", mustJSON(t, testSpec(1))); rec.Code != http.StatusAccepted {
 		t.Fatal(rec.Body)
 	}
-	op, err := a.ops.create("git", agentapi.KindUpgrade, 2)
+	op, err := a.ops.create("git", agentapi.KindUpgrade, 2, testSpec(1).InstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestConfirmAndAbort(t *testing.T) {
 	if code, p, _ := post(t, a, now, agentapi.OperationConfirmPath(uuid.Must(uuid.NewV7())), nil); code != http.StatusNotFound || p.Code != agentapi.CodeNotFound {
 		t.Fatalf("unknown operation: %d %+v", code, p)
 	}
-	apply, _ := a.ops.forGeneration("git", 1)
+	apply, _ := a.ops.forGeneration("git", 1, testSpec(1).InstanceID)
 	if code, p, _ := post(t, a, now, agentapi.OperationConfirmPath(apply.ID), nil); code != http.StatusConflict || p.Code != agentapi.CodeNotAwaitingConfirmation {
 		t.Fatalf("confirm an apply: %d %+v", code, p)
 	}

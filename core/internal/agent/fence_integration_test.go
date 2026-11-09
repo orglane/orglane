@@ -246,7 +246,7 @@ func (s *upgradeSuite) testLegacyRouteCollision(t *testing.T, key string, legacy
 	var op agentapi.Operation
 	eventually(t, 2*time.Minute, "the upgrade is refused or awaits confirmation", func() bool {
 		var ok bool
-		op, ok = e.agent.ops.forGeneration(key, 2)
+		op, ok = e.agent.ops.forGeneration(key, 2, id)
 		return ok && (op.Terminal() || op.State == agentapi.OpAwaitingConfirmation)
 	})
 	if op.State == agentapi.OpAwaitingConfirmation {

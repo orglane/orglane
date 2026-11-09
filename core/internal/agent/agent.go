@@ -13,7 +13,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -57,6 +56,12 @@ type Options struct {
 	// (checkpoint); tests set it, agenttest builds read
 	// ORGLANE_AGENT_TEST_CRASH_AT.
 	crashAt string
+	// hook, if set, is called at named points of a reconcile, so tests can
+	// interleave requests or stop the process there (a crash).
+	hook func(point string)
+	// syncDir replaces directory syncing in tests, to inject writeback
+	// failures.
+	syncDir func(string) error
 }
 
 // Agent is a running agent.
@@ -167,7 +172,7 @@ func New(opts Options) (*Agent, error) {
 		instances:    map[string]*instance{},
 	}
 	a.stateDir = filepath.Join(a.instancesDir, ".agent")
-	for _, dir := range []string{a.instancesDir, a.stateDir, filepath.Join(a.stateDir, "operations")} {
+	for _, dir := range []string{a.instancesDir, a.stateDir, filepath.Join(a.stateDir, "operations"), a.purgedDir(), a.trashDir()} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("agent: %w", err)
 		}
@@ -182,6 +187,9 @@ func New(opts Options) (*Agent, error) {
 	if err := a.ops.load(); err != nil {
 		return nil, fmt.Errorf("agent: load operations: %w", err)
 	}
+	if err := a.assignLegacyOwners(); err != nil {
+		return nil, fmt.Errorf("agent: assign operation owners: %w", err)
+	}
 	if err := a.removeAllPartialSnapshots(); err != nil {
 		return nil, fmt.Errorf("agent: remove partial snapshots: %w", err)
 	}
@@ -191,6 +199,7 @@ func New(opts Options) (*Agent, error) {
 	if a.crashAt != "" {
 		a.log.Warn("test crash hook armed", "at", a.crashAt)
 	}
+	a.emptyTrash()
 	return a, nil
 }
 
@@ -258,6 +267,37 @@ func ignoreClosed(err error) error {
 
 // instanceDir returns the directory of a validated key.
 func (a *Agent) instanceDir(key string) string { return filepath.Join(a.instancesDir, key) }
+
+// purgedDir holds the purge records (purgedRecord) of the keys.
+func (a *Agent) purgedDir() string { return filepath.Join(a.stateDir, "purged") }
+
+func (a *Agent) purgedPath(key string) string { return filepath.Join(a.purgedDir(), key+".json") }
+
+// trashDir holds purged instance directories until they are deleted: a
+// purge moves the directory there in one rename.
+func (a *Agent) trashDir() string { return filepath.Join(a.stateDir, "trash") }
+
+// emptyTrash deletes what purges moved to the trash and could not delete
+// (or a crash left).
+func (a *Agent) emptyTrash() {
+	entries, err := os.ReadDir(a.trashDir())
+	if err != nil {
+		a.log.Warn("read trash", "error", err)
+		return
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(a.trashDir(), e.Name())); err != nil {
+			a.log.Warn("delete a purged instance directory", "path", e.Name(), "error", err)
+		}
+	}
+}
+
+// at calls the test hook.
+func (a *Agent) at(point string) {
+	if a.opts.hook != nil {
+		a.opts.hook(point)
+	}
+}
 
 // instance returns the runtime state of a key, creating it.
 func (a *Agent) instance(key string) *instance {
@@ -431,14 +471,62 @@ func (a *Agent) renderContext(key string) packages.RenderContext {
 	}
 }
 
-// recoverOperations handles operations a previous process left unfinished:
-// an upgrade or restore with a journal is left to journal recovery
-// (recoverJournal); an apply, remove or upgrade of a generation that is
-// still pending runs again; any other is failed as interrupted.
+// assignLegacyOwners assigns the operations a previous agent version
+// persisted without an instance ID when, and only when, the key's purge
+// record proves the current binding owns them: the binding was created after
+// that record, so an operation that started after it cannot belong to the
+// purged instance. Without a purge record an older agent version may have
+// reused the key without recording the purge, so absence of a record is not
+// evidence: the operation stays unowned and is recovered as interrupted
+// rather than attributed to the current binding.
+func (a *Agent) assignLegacyOwners() error {
+	type binding struct {
+		id     uuid.UUID
+		purged *purgedRecord
+	}
+	states := map[string]binding{}
+	for _, op := range a.ops.unowned() {
+		if !agentapi.KeyPattern.MatchString(op.Instance) {
+			continue
+		}
+		b, ok := states[op.Instance]
+		if !ok {
+			purged, err := readPurged(a.purgedPath(op.Instance))
+			if err != nil {
+				return err
+			}
+			var id uuid.UUID
+			if purged != nil {
+				st, err := loadState(a.instanceDir(op.Instance))
+				if err != nil {
+					return err
+				}
+				id = st.id
+			}
+			b = binding{id: id, purged: purged}
+			states[op.Instance] = b
+		}
+		if b.id != uuid.Nil && b.purged != nil && op.StartedAt.After(b.purged.At) {
+			a.ops.setOwner(op.ID, b.id)
+		}
+	}
+	return nil
+}
+
+// recoverOperations settles the operations a previous process left
+// unfinished. An upgrade or restore with a journal is left to journal
+// recovery (recoverJournal); a durable failed rollback is recorded from it.
+// An apply, remove or upgrade without a journal is settled from what is
+// durable on disk: it succeeded if its generation is current.json (the
+// process stopped between the state write and the operation update), as
+// did a purge whose purge record names that operation; a pending generation
+// runs again; a generation replaced by a newer accepted spec is superseded;
+// a blocked one fails with its blocking code. Anything else fails as
+// interrupted, as does an operation that belongs to another instance.
 func (a *Agent) recoverOperations() error {
 	var errs []error
 	for _, op := range a.ops.unfinished() {
-		requeue := false
+		state, code := agentapi.OpFailed, agentapi.CodeInterrupted
 		if agentapi.KeyPattern.MatchString(op.Instance) {
 			dir := a.instanceDir(op.Instance)
 			j, err := readJournal(dir)
@@ -454,20 +542,32 @@ func (a *Agent) recoverOperations() error {
 				}
 				continue
 			}
-			st, err := loadState(dir)
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				errs = append(errs, err)
-				continue
+			if j == nil && (op.Kind == agentapi.KindApply || op.Kind == agentapi.KindRemove || op.Kind == agentapi.KindUpgrade) {
+				st, err := loadState(dir)
+				if err != nil {
+					errs = append(errs, err)
+					continue
+				}
+				purged, err := readPurged(a.purgedPath(op.Instance))
+				if err != nil {
+					errs = append(errs, err)
+					continue
+				}
+				state, code = recoveredOutcome(st, purged, a.ops.ownerOf(op.ID), op)
+				if state == agentapi.OpSucceeded && st.id == uuid.Nil && op.Kind == agentapi.KindRemove {
+					// The purge record is written before the rename, so it
+					// alone does not prove the directory stays gone. Sync the
+					// rename before reporting success; a failure is recorded
+					// like one from the purge itself.
+					if err := a.syncDirectory(a.instancesDir); err != nil {
+						a.log.Error("sync a recovered purge", "instance", op.Instance, "error", err)
+						state, code = agentapi.OpFailed, agentapi.CodeInternal
+					}
+				}
 			}
-			requeue = st != nil && j == nil && st.pending() && st.desired.Generation == op.Generation &&
-				(op.Kind == agentapi.KindApply || op.Kind == agentapi.KindRemove || op.Kind == agentapi.KindUpgrade)
 		}
 		_, err := a.ops.update(op.ID, func(o *agentapi.Operation) {
-			if requeue {
-				o.State, o.Phase = agentapi.OpQueued, ""
-				return
-			}
-			o.State, o.ErrorCode = agentapi.OpFailed, agentapi.CodeInterrupted
+			o.State, o.Phase, o.ErrorCode = state, "", code
 		})
 		errs = append(errs, err)
 	}
@@ -516,4 +616,44 @@ func (a *Agent) cleanAllMovedAside() {
 			a.log.Warn("remove moved-aside data", "instance", k, "error", err)
 		}
 	}
+}
+
+// recoveredOutcome is the state and error code of an unfinished apply,
+// remove or upgrade operation without a journal after a restart. owner is
+// the instance the operation belongs to, uuid.Nil when its file predates
+// recorded ownership and the key's purge record does not prove otherwise.
+func recoveredOutcome(st *instanceState, purged *purgedRecord, owner uuid.UUID, op agentapi.Operation) (string, string) {
+	gen := op.Generation
+	// Never settle an operation from another instance's directory: a key
+	// may have been reused after a purge at the same generation. An
+	// ownerless operation that startup could not attribute to the current
+	// binding (assignLegacyOwners) is not evidence about it either.
+	if owner == uuid.Nil && st.id != uuid.Nil {
+		return agentapi.OpFailed, agentapi.CodeInterrupted
+	}
+	if owner != uuid.Nil && st.id != uuid.Nil && owner != st.id {
+		return agentapi.OpFailed, agentapi.CodeInterrupted
+	}
+	switch {
+	case st.id == uuid.Nil:
+		// No directory: the key was purged. Only the operation the purge
+		// record names may be settled from it, so a remove of a new
+		// instance that reused the key at the same generation is not
+		// reported as succeeded from the previous instance's purge.
+		if purged != nil && purged.Operation == op.ID && purged.Generation == gen && op.Kind == agentapi.KindRemove {
+			return agentapi.OpSucceeded, ""
+		}
+	case st.current != nil && st.current.Generation == gen:
+		return agentapi.OpSucceeded, ""
+	case st.desired != nil && st.desired.Generation > gen:
+		return agentapi.OpFailed, agentapi.CodeSuperseded
+	case st.desired != nil && st.desired.Generation == gen:
+		if code, ok := st.blocked.code(gen); ok {
+			return agentapi.OpFailed, code
+		}
+		if st.pending() {
+			return agentapi.OpQueued, ""
+		}
+	}
+	return agentapi.OpFailed, agentapi.CodeInterrupted
 }

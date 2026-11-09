@@ -560,7 +560,7 @@ func TestRecoverOperations(t *testing.T) {
 	if _, err := a.ops.update(pending.ID, func(o *agentapi.Operation) { o.State, o.Phase = agentapi.OpRunning, agentapi.PhaseStarting }); err != nil {
 		t.Fatal(err)
 	}
-	orphan, err := a.ops.create("other", agentapi.KindApply, 7)
+	orphan, err := a.ops.create("other", agentapi.KindApply, 7, uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}

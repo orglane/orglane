@@ -113,10 +113,10 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 	switch {
 	case st.pending():
 		target = st.desired
-		o, ok := a.ops.forGeneration(in.key, target.Generation)
+		o, ok := a.ops.forGeneration(in.key, target.Generation, st.id)
 		if !ok || o.Terminal() {
 			// A retry after a failure, or an operation pruned meanwhile.
-			if o, err = a.ops.create(in.key, opKind(target, st.current), target.Generation); err != nil {
+			if o, err = a.createOperation(in.key, opKind(target, st.current), target.Generation, st.id); err != nil {
 				a.log.Error("create operation", "instance", in.key, "error", err)
 				a.clearBusy(in, agentapi.CodeInternal)
 				return
@@ -164,16 +164,17 @@ func (a *Agent) reconcile(ctx context.Context, in *instance) {
 
 // finish records the result of a reconcile durably and only then publishes
 // it on the operation: an operation never reports success while
-// current.json (or blocked.json) still holds the old state. It returns the
-// error code of the reconcile, "" on success.
+// current.json (or blocked.json) still holds the old state. Both happen
+// under the instance's file lock, so a request never sees a recorded result
+// without its operation outcome; for a purge that is the deletion of the
+// directory. It returns the error code of the reconcile, "" on success.
 func (a *Agent) finish(in *instance, st *instanceState, target *agentapi.Spec, op *agentapi.Operation, err error) string {
 	code, rule := "", ""
 	if err != nil {
 		code, rule = errorCode(err)
 	}
 	in.files.Lock()
-	recordErr := a.record(in.key, st, target, op != nil, err == nil, code)
-	in.files.Unlock()
+	trash, recordErr := a.record(in.key, st, target, op, err == nil, code)
 	if recordErr != nil {
 		a.log.Error("record reconcile result", "instance", in.key, "generation", target.Generation, "error", recordErr)
 		if err == nil {
@@ -182,6 +183,7 @@ func (a *Agent) finish(in *instance, st *instanceState, target *agentapi.Spec, o
 			code, rule = agentapi.CodeInternal, ""
 		}
 	}
+	a.at("recorded")
 	if op != nil {
 		if _, uerr := a.ops.update(op.ID, func(o *agentapi.Operation) {
 			o.Phase = ""
@@ -194,32 +196,55 @@ func (a *Agent) finish(in *instance, st *instanceState, target *agentapi.Spec, o
 			a.log.Error("update operation", "operation", op.ID, "error", uerr)
 		}
 	}
+	in.files.Unlock()
+	if trash != "" {
+		if err := os.RemoveAll(trash); err != nil {
+			a.log.Warn("delete the purged instance directory", "instance", in.key, "error", err)
+		}
+	}
 	return code
 }
 
 // record persists the result of a reconcile: current.json on success,
-// failure counts and blocked generations otherwise. The caller holds the
-// file lock.
-func (a *Agent) record(key string, st *instanceState, target *agentapi.Spec, isOp, ok bool, code string) error {
+// failure counts and blocked generations otherwise; a successful purge
+// moves the directory to the trash, whose path it returns. The caller holds
+// the file lock.
+func (a *Agent) record(key string, st *instanceState, target *agentapi.Spec, op *agentapi.Operation, ok bool, code string) (string, error) {
+	if op == nil {
+		return "", nil // drift repair of current; on failure the next trigger tries again
+	}
 	dir := a.instanceDir(key)
-	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
-		return nil // purged
+	// The directory changes its binding only through a purge, which this
+	// function records; never write another instance's state.
+	if id, err := readBinding(dir); err != nil {
+		return "", err
+	} else if id != target.InstanceID {
+		return "", fmt.Errorf("the instance directory is no longer bound to instance %s", target.InstanceID)
+	}
+	if ok && target.State == agentapi.StateAbsent && target.Purge {
+		desired, err := readSpec(filepath.Join(dir, desiredFile))
+		if err != nil {
+			return "", err
+		}
+		if desired == nil || desired.Generation <= target.Generation {
+			return a.purgeDir(key, target, op)
+		}
+		// A newer spec arrived during the purge: keep its binding and the
+		// spec, and record the purge as current so the newer spec applies
+		// next.
+		if err := removeExcept(dir, instanceFile, desiredFile); err != nil {
+			return "", err
+		}
 	}
 	if ok {
-		if !isOp {
-			return nil
-		}
 		// blocked.json first: current.json advances only when every other
 		// file is durable, so a failed write leaves the generation pending.
 		blocked := st.blocked
 		blocked.Failures = nil
 		if err := writeJSON(filepath.Join(dir, blockedFile), blocked); err != nil {
-			return err
+			return "", err
 		}
-		return writeSpec(filepath.Join(dir, currentFile), target)
-	}
-	if !isOp {
-		return nil // drift repair of current failed; the next trigger tries again
+		return "", writeSpec(filepath.Join(dir, currentFile), target)
 	}
 	blocked := st.blocked
 	if blocked.Failures == nil || blocked.Failures.Generation != target.Generation {
@@ -231,7 +256,36 @@ func (a *Agent) record(key string, st *instanceState, target *agentapi.Spec, isO
 		blocked.Failures = nil
 		a.log.Error("generation blocked after repeated failures", "instance", key, "generation", target.Generation, "code", code)
 	}
-	return writeJSON(filepath.Join(dir, blockedFile), blocked)
+	return "", writeJSON(filepath.Join(dir, blockedFile), blocked)
+}
+
+// purgeDir completes a purge: it writes the purge record, then moves the
+// instance directory to the trash in one rename, which frees the key. A
+// crash before the rename leaves the generation pending (the purge runs
+// again); after it, the purge record settles the operation. The caller
+// holds the file lock and deletes the returned trash path.
+func (a *Agent) purgeDir(key string, target *agentapi.Spec, op *agentapi.Operation) (string, error) {
+	rec := purgedRecord{
+		InstanceID: target.InstanceID, Generation: target.Generation, SpecHash: target.Hash(),
+		Operation: op.ID, At: a.now().UTC(),
+	}
+	if err := writeJSON(a.purgedPath(key), rec); err != nil {
+		return "", err
+	}
+	a.at("purge-recorded")
+	trash := filepath.Join(a.trashDir(), key+"-"+op.ID.String())
+	if err := os.Rename(a.instanceDir(key), trash); err != nil {
+		return "", err
+	}
+	// The rename is not known to be durable without the sync: the
+	// operation fails (a crash could bring the directory back after a
+	// success), and the trash is deleted all the same. Another purge
+	// generation completes it.
+	if err := a.syncDirectory(a.instancesDir); err != nil {
+		return trash, err
+	}
+	a.at("purged")
+	return trash, nil
 }
 
 func (a *Agent) setBusyKind(in *instance, kind string) {
@@ -527,7 +581,7 @@ func (a *Agent) dropDatabase(ctx context.Context, key string) error {
 func sqlString(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
 // remove stops and removes the project's containers; with purge it drops the
-// database and deletes the instance directory, which frees the key.
+// database. finish then deletes the instance directory, which frees the key.
 func (a *Agent) remove(ctx context.Context, in *instance, target, prev *agentapi.Spec, c compose, setPhase func(string)) error {
 	setPhase(agentapi.PhaseRemoving)
 	if _, err := os.Stat(filepath.Join(c.dir, composeFile)); err == nil {
@@ -554,19 +608,8 @@ func (a *Agent) remove(ctx context.Context, in *instance, target, prev *agentapi
 			return failed(agentapi.CodeDatabaseFailed, err)
 		}
 	}
-	in.files.Lock()
-	defer in.files.Unlock()
-	st, err := loadState(c.dir)
-	if err != nil {
-		return failed(agentapi.CodeComposeFailed, err)
-	}
-	if st.desired != nil && st.desired.Generation > target.Generation {
-		// A newer spec arrived meanwhile: keep its binding and the spec.
-		return removeExcept(c.dir, instanceFile, desiredFile)
-	}
-	if err := os.RemoveAll(c.dir); err != nil {
-		return failed(agentapi.CodeComposeFailed, err)
-	}
+	// finish deletes the directory, under the file lock that also
+	// records the operation's result.
 	return nil
 }
 
@@ -612,7 +655,7 @@ func (a *Agent) status(ctx context.Context, key string) (agentapi.InstanceStatus
 	if st.desired != nil {
 		out.AcceptedGeneration = st.desired.Generation
 	}
-	if op, ok := a.ops.latest(key); ok {
+	if op, ok := a.ops.latest(key, st.id); ok {
 		out.Operation = &op
 	}
 	a.mu.Lock()
