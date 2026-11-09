@@ -923,6 +923,46 @@ describe("Upgrade status", () => {
     await waitFor(() => expect(app.called("POST", upgradePath)).toHaveLength(1));
   });
 
+  it("retries a failed revert from the failed state", async () => {
+    const upgradePath = `/api/v1/apps/instances/${instanceId}/upgrade`;
+    const managed = {
+      ...instance,
+      provider: "agenttest",
+      management: "managed",
+      packageId: "agenttest",
+      packageVersion: "1.0.0-1",
+      state: "failed",
+      health: "unhealthy",
+      healthCode: "compose_failed",
+      upgrade: {
+        state: "rolled_back",
+        currentVersion: "1.0.0-1",
+        targetVersion: "2.0.0-1",
+      },
+    };
+    const app = renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": {
+        status: 200,
+        body: {
+          items: [{ ...provider, id: "agenttest", management: "managed", provisioning: false }],
+        },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}`]: {
+        status: 200,
+        body: { ...detailWith([], managed), instance: managed },
+      },
+      [`POST ${upgradePath}`]: { status: 202, body: managed },
+    });
+    expect(
+      await screen.findByText(
+        /The upgrade to 2\.0\.0-1 was rolled back\. The app is running 1\.0\.0-1/,
+      ),
+    ).toBeInTheDocument();
+    await app.user.click(screen.getByRole("button", { name: "Retry upgrade" }));
+    await waitFor(() => expect(app.called("POST", upgradePath)).toHaveLength(1));
+  });
+
   it("shows a blocked upgrade without a retry action", async () => {
     const managed = {
       ...instance,

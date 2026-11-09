@@ -2058,7 +2058,9 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
                 </p>
                 {(instance.upgrade.state === "failed" ||
                   instance.upgrade.state === "rolled_back") &&
-                  (instance.state === "active" || instance.state === "degraded") && (
+                  (instance.state === "active" ||
+                    instance.state === "degraded" ||
+                    instance.state === "failed") && (
                     <Button
                       variant="link"
                       disabled={upgrade.isPending}

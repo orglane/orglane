@@ -113,9 +113,10 @@ type Spec struct {
 	Secrets map[string]string `json:"secrets"`
 	// Revert marks the core's acknowledgment of a rollback whose restored
 	// version this release no longer embeds (docs/specs/agent.md "Upgrade").
-	// Package must name the version that runs; the agent applies the exact
-	// project it saved for it (restored-project.json, else the running
-	// project) and records this generation. It carries no inputs.
+	// Package must name the version that runs; the agent resolves the spec
+	// from the running project (current.json) and records this generation.
+	// restored-project.json only supplies rendered files when its spec
+	// matches the running one. It carries no inputs.
 	Revert bool `json:"revert,omitempty"`
 }
 

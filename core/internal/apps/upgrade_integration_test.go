@@ -645,6 +645,13 @@ func TestAgentUpgradeRetryRecoversTransientRevertFailure(t *testing.T) {
 	if got.State != apps.StateFailed || derefS(got.HealthCode) != agentapi.CodeComposeFailed {
 		t.Fatalf("failed revert: %+v", got.AppInstance)
 	}
+	// The failure is visible in Settings → Apps: the latest upgrade was
+	// rolled back, and RetryUpgrade can recover it.
+	if status, ok := upgradeStatusFor(h.ctx, t, next, inst.ID); !ok ||
+		status.State != apps.UpgradeRolledBack ||
+		status.CurrentVersion != agenttest.Version || status.TargetVersion != agenttest.Version2 {
+		t.Fatalf("status of the failed revert: %+v, %v", status, ok)
+	}
 	routes, err := next.IngressRoutes(h.ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -966,6 +973,25 @@ func TestAgentSyncRecoversOnlyUpgradingPushes(t *testing.T) {
 	}
 	if n := agent.operationCalls(); n != 1 {
 		t.Fatalf("the sync polled %d unfinished pushes, want only the upgrading one", n)
+	}
+}
+
+// TestUpgradeStatusOmitsUnrecoverableFailures: a failed rollback has no
+// upgrade status, so Settings → Apps never offers a retry that
+// RetryUpgrade would refuse. Only a failed revert is retryable.
+func TestUpgradeStatusOmitsUnrecoverableFailures(t *testing.T) {
+	h := newHarness(t, func(c *apps.Config) {
+		c.Packages = registryWithVersions(t, agenttest.Version, agenttest.Version2)
+	})
+	inst := plannedInstance(t, h, "failed-rollback")
+	h.exec(`UPDATE app_instances SET state = 'failed', health = 'unhealthy', health_code = $2,
+		desired_generation = 2 WHERE id = $1`, inst.ID, agentapi.CodeRollbackFailed)
+	h.exec(`INSERT INTO app_desired_specs (instance_id, generation, package_version, run_state, settings, credential_versions, reason)
+		VALUES ($1, 2, $2, 'running', '{}', '{}', 'revert')`, inst.ID, agenttest.Version)
+	h.exec(`INSERT INTO app_operations (instance_id, generation, kind, state, error_code, finished_at)
+		VALUES ($1, 2, 'apply', 'failed', $2, now())`, inst.ID, agentapi.CodeRollbackFailed)
+	if status, ok := upgradeStatus(t, h, inst.ID); ok {
+		t.Fatalf("a failed rollback has an upgrade status: %+v", status)
 	}
 }
 

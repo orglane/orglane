@@ -50,7 +50,9 @@ const DefaultUpgradeCheckTimeout = 30 * time.Second
 // UpgradeStatus is the upgrade state of a managed instance, derived from
 // its running version, the embedded packages and the latest upgrade
 // operation. The zero value (State "") means no status: connected
-// instances, an unavailable provider, or no running version yet.
+// instances, an unavailable provider, no running version yet, or a failure
+// that the upgrade retry cannot recover (a failed rollback, a failed setup
+// or install).
 type UpgradeStatus struct {
 	State           string
 	CurrentVersion  string
@@ -66,6 +68,15 @@ func (s *Service) UpgradeStatus(ctx context.Context, inst Instance) (UpgradeStat
 	}
 	switch inst.State {
 	case StateActive, StateDegraded, StateUpgrading:
+	case StateFailed:
+		// A failed revert is retryable through RetryUpgrade: report the
+		// upgrade result it acknowledges so Settings → Apps can show the
+		// retry action. A failed rollback, setup or install has no status.
+		if _, _, ok, err := failedRevertState(ctx, store.New(s.pool), inst); err != nil {
+			return UpgradeStatus{}, false, err
+		} else if !ok {
+			return UpgradeStatus{}, false, nil
+		}
 	default:
 		return UpgradeStatus{}, false, nil
 	}
@@ -87,6 +98,27 @@ func (s *Service) UpgradeStatus(ctx context.Context, inst Instance) (UpgradeStat
 			status.TargetVersion = path[0]
 		}
 		status.State = UpgradeInProgress
+		return status, true, nil
+	}
+	if inst.State == StateFailed {
+		// A failed revert never reports up_to_date: the running version may
+		// already be the newest one, but the instance still needs the retry.
+		// The latest upgrade operation names the step the revert
+		// acknowledged; a rolled-back step is what the UI explains.
+		op, err := store.New(s.pool).GetLatestAppUpgradeOperation(ctx, inst.ID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return UpgradeStatus{}, false, fmt.Errorf("apps: load latest upgrade: %w", err)
+		}
+		if err == nil && op.ToVersion != nil {
+			status.TargetVersion = *op.ToVersion
+			if op.State == agentapi.OpRolledBack {
+				status.State = UpgradeRolledBack
+			} else {
+				status.State = UpgradeFailed
+			}
+		} else {
+			status.State = UpgradeFailed
+		}
 		return status, true, nil
 	}
 	if current == latest.Manifest.Version {

@@ -1247,8 +1247,10 @@ type AppInstance struct {
 
 	// Upgrade Upgrade status of a managed instance (agent.md "Upgrade"), derived
 	// from its running version, the embedded package versions and the
-	// latest upgrade operation. Absent for connected instances and
-	// instances whose provider or running version is not known yet.
+	// latest upgrade operation. Absent for connected instances,
+	// instances whose provider or running version is not known yet, and
+	// failures the upgrade retry cannot recover (a failed rollback,
+	// setup or install).
 	Upgrade *AppUpgradeStatus `json:"upgrade,omitempty"`
 
 	// WaitingForAgent Set while a change of this managed instance waits for the agent,
@@ -1492,8 +1494,10 @@ type AppTeamMappingMode string
 
 // AppUpgradeStatus Upgrade status of a managed instance (agent.md "Upgrade"), derived
 // from its running version, the embedded package versions and the
-// latest upgrade operation. Absent for connected instances and
-// instances whose provider or running version is not known yet.
+// latest upgrade operation. Absent for connected instances,
+// instances whose provider or running version is not known yet, and
+// failures the upgrade retry cannot recover (a failed rollback,
+// setup or install).
 type AppUpgradeStatus struct {
 	// CurrentVersion The package version the instance runs.
 	CurrentVersion string `json:"currentVersion"`
@@ -1504,7 +1508,9 @@ type AppUpgradeStatus struct {
 	// State `upgrading` while the instance (or its revert, or the final Setup
 	// after the last step) is being applied; `failed` and `rolled_back`
 	// name the result of the latest upgrade to `targetVersion` and can
-	// be retried by an admin; `blocked` means this Orglane release
+	// be retried by an admin. A `failed` instance whose revert apply
+	// failed reports its latest upgrade result here too, so Settings →
+	// Apps can retry the recovery; `blocked` means this Orglane release
 	// embeds no upgrade path yet.
 	State AppUpgradeStatusState `json:"state"`
 
@@ -1515,7 +1521,9 @@ type AppUpgradeStatus struct {
 // AppUpgradeStatusState `upgrading` while the instance (or its revert, or the final Setup
 // after the last step) is being applied; `failed` and `rolled_back`
 // name the result of the latest upgrade to `targetVersion` and can
-// be retried by an admin; `blocked` means this Orglane release
+// be retried by an admin. A `failed` instance whose revert apply
+// failed reports its latest upgrade result here too, so Settings →
+// Apps can retry the recovery; `blocked` means this Orglane release
 // embeds no upgrade path yet.
 type AppUpgradeStatusState string
 

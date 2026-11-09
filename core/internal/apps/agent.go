@@ -330,9 +330,10 @@ func (s *Service) buildSpec(ctx context.Context, inst Instance, ds store.AppDesi
 		// The version that still runs after a rollback need not be
 		// embedded in this release (agent.md "Required upgrade stops").
 		// The revert only acknowledges the blocked generation: the agent
-		// resolves the exact project it saved for that version
-		// (restored-project.json, else the running project). The spec
-		// therefore carries no hosts, settings or secrets.
+		// resolves the spec from the running project (current.json) and
+		// reuses restored-project.json only for its rendered files when
+		// its spec still matches. The spec therefore carries no hosts,
+		// settings or secrets.
 		return &agentapi.Spec{
 			InstanceID: inst.ID,
 			Generation: ds.Generation,
