@@ -273,7 +273,7 @@ func TestRevertResolvesFromCurrentNotStaleSavedProject(t *testing.T) {
 	if err := a.repairRestored(t.Context(), "git", got); err == nil {
 		t.Fatal("repairing the deployment files failed without Docker")
 	}
-	if data, err := os.ReadFile(filepath.Join(dir, composeFile)); err == nil {
+	if data, err := os.ReadFile(filepath.Join(dir, composeFile)); err == nil { //nolint:gosec // test-owned path
 		if sameRenderedCompose(data, rendered.Compose) {
 			t.Fatal("repairRestored wrote the stale saved project over the running deployment")
 		}
@@ -295,7 +295,7 @@ func TestRevertResolvesFromCurrentNotStaleSavedProject(t *testing.T) {
 	if err := a.repairRestored(t.Context(), "git", got); err == nil {
 		t.Fatal("starting the project failed without Docker")
 	}
-	data, err := os.ReadFile(filepath.Join(dir, composeFile))
+	data, err := os.ReadFile(filepath.Join(dir, composeFile)) //nolint:gosec // test-owned path
 	if err != nil {
 		t.Fatal(err)
 	}

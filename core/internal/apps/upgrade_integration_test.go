@@ -625,8 +625,8 @@ func TestAgentUpgradeRetryRecoversTransientRevertFailure(t *testing.T) {
 		t.Fatalf("stop the restored web container: %v\n%s", err, out)
 	}
 	blocker := "orglane-revert-blocker-" + strings.ToLower(uuid.Must(uuid.NewV7()).String()[:8])
-	if out, err := exec.CommandContext(h.ctx, "docker", "run", "-d", "--name", blocker,
-		"-p", strconv.Itoa(port)+":8080", bundleBusyboxImage, "sleep", "3600").CombinedOutput(); err != nil { //nolint:gosec // test commands
+	if out, err := exec.CommandContext(h.ctx, "docker", "run", "-d", "--name", blocker, //nolint:gosec // test commands
+		"-p", strconv.Itoa(port)+":8080", bundleBusyboxImage, "sleep", "3600").CombinedOutput(); err != nil {
 		t.Fatalf("occupy port %d: %v\n%s", port, err, out)
 	}
 	t.Cleanup(func() {
