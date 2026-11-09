@@ -674,6 +674,7 @@ func TestManifestCapabilities(t *testing.T) {
 	for _, f := range []provider.Feature{
 		provider.FeatureAccountsLink, provider.FeatureAccountsInvite, provider.FeatureTeamsSync,
 		provider.FeatureDeprovisionTeamRemoval, provider.FeatureDeprovisionOrgRemoval,
+		provider.FeatureEventsWebhooks,
 	} {
 		if support[f] != provider.Supported {
 			t.Errorf("%s = %q, want supported", f, support[f])
@@ -682,7 +683,7 @@ func TestManifestCapabilities(t *testing.T) {
 	for _, f := range []provider.Feature{
 		provider.FeatureSSO, provider.FeatureDeepLinks, provider.FeatureAccountsCreate,
 		provider.FeatureDeprovisionSuspend, provider.FeatureDeprovisionRevokeTokens,
-		provider.FeatureEventsWebhooks, provider.FeatureLifecycleInstall,
+		provider.FeatureLifecycleInstall,
 		provider.FeatureLifecycleUpgrade, provider.FeatureLifecycleSnapshot, provider.FeatureLifecycleBackup,
 	} {
 		if support[f] != provider.Unsupported {
