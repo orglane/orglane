@@ -856,7 +856,10 @@ func (s *Service) RunApplyRemovals(ctx context.Context, args ApplyRemovalsArgs, 
 	var snooze time.Duration
 	// A person's removals apply in plan order and stop at their first
 	// failure; other people go on independently, so one person's broken
-	// removal never blocks everyone after it.
+	// removal never blocks everyone after it. A removal the provider accepted
+	// but has not confirmed is not a failure: the run continues and the job
+	// snoozes for the next confirmation, so a queued removal never blocks the
+	// instance.
 	stopped := map[uuid.UUID]bool{}
 apply:
 	for _, item := range toApply {
@@ -877,11 +880,21 @@ apply:
 		case errors.Is(retryErr, errInstanceInactive):
 			break apply // the rest waits until the instance is provisionable again (activation queues this job)
 		case retryErr != nil:
-			stopped[item.removal.PersonID] = true
+			code, _, after := provider.Classify(retryErr)
 			if retry == nil {
 				retry = retryErr
 			}
-			if _, _, after := provider.Classify(retryErr); after > 0 {
+			if code == provider.CodeRemovalPending {
+				// Accepted, not confirmed: keep it pending, check again after
+				// the provider's delay, and let this person's later removals
+				// and everyone else's run meanwhile.
+				if after > 0 && snooze == 0 {
+					snooze = after
+				}
+				continue
+			}
+			stopped[item.removal.PersonID] = true
+			if after > 0 {
 				snooze = after
 				break apply
 			}

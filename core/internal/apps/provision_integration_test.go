@@ -129,6 +129,56 @@ func TestRemovalPendingWaitsForTheProvider(t *testing.T) {
 	}
 }
 
+// TestRemovalPendingDoesNotBlockOtherPeople: one person's accepted-but-
+// unconfirmed removal snoozes the job for its next check without stopping
+// another person's removal in the same run.
+func TestRemovalPendingDoesNotBlockOtherPeople(t *testing.T) {
+	h := newHarness(t)
+	alice, bob := h.person("alice"), h.person("bob")
+	inst := h.instance(nil)
+	h.drain()
+	for _, p := range []store.Person{alice, bob} {
+		if _, err := h.ids.SetPersonStatus(h.ctx, audit.System, p.ID, identity.StatusSuspended); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.svc.RunProvisionPerson(h.ctx, apps.ProvisionPersonArgs{InstanceID: inst.ID, PersonID: p.ID}, 1, 8); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.tp.Fail("apply:remove_from_org", &provider.Error{Code: provider.CodeRemovalPending, Retryable: true, RetryAfter: 5 * time.Second})
+	err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 1, 8)
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) || snooze.Duration != 5*time.Second {
+		t.Fatalf("pending removal = %v, want a 5s snooze", err)
+	}
+	// The faulted removal is pending; the other person's removal still ran.
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE state = 'pending'`); n != 1 {
+		t.Fatalf("pending removals = %d, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE state = 'applied'`); n != 1 {
+		t.Fatalf("applied removals = %d, want 1", n)
+	}
+	var faulted uuid.UUID
+	if err := h.pool.QueryRow(h.ctx, `SELECT person_id FROM provisioning_removals WHERE state = 'pending'`).Scan(&faulted); err != nil {
+		t.Fatal(err)
+	}
+	login := alice.Username
+	if faulted == bob.ID {
+		login = bob.Username
+	}
+	// GitHub finishes the accepted removal; the next run confirms both.
+	h.tp.RemoveMember(inst.ID, login)
+	if err := h.svc.RunApplyRemovals(h.ctx, apps.ApplyRemovalsArgs{InstanceID: inst.ID}, 2, 8); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.count(`SELECT count(*) FROM provisioning_removals WHERE state = 'applied'`); n != 2 {
+		t.Fatalf("applied removals = %d, want 2", n)
+	}
+	if n := h.count(`SELECT count(*) FROM audit_entries WHERE action = $1 AND metadata->>'key' = 'remove_from_org'`, string(audit.ProvisioningActionApplied)); n != 2 {
+		t.Fatalf("audit entries = %d, want 2", n)
+	}
+}
+
 // TestProvisionMappedTeams: mapped_teams instances give access through
 // mapped teams only; membership changes queue provisioning in the same
 // transaction; a small removal applies without confirmation.
