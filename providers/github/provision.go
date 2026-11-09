@@ -19,8 +19,11 @@ import (
 // own account once (the employee step, link.go), and everything here acts
 // on that account's immutable numeric user ID. Every action resolves the
 // account's current login from the ID when it runs (GET /user/{id}) and
-// checks that the organization membership it reads belongs to that ID, so a
-// rename, or a login reused by someone else, can never redirect an action.
+// checks that the organization membership it reads belongs to that ID.
+// GitHub's membership mutations take a login, so immediately before one the
+// action resolves the login from the ID again: a rename that released the
+// login to another account is the retryable login_changed, and nothing is
+// added or removed for the new holder.
 //
 // Access: an organization invitation by user ID (POST /orgs/{org}/invitations
 // with invitee_id), then team memberships. Removal: canceling the
@@ -210,6 +213,23 @@ func (o *org) user(ctx context.Context, id string) (*ghUser, error) {
 		return nil, protocolError("invalid_response")
 	}
 	return &u, nil
+}
+
+// current reads the account with the ID now, immediately before a mutation
+// addressed by login: GitHub's organization and team membership endpoints
+// take a login, and a rename can release a login to another account while an
+// action runs. The fresh login must still be the one the action's reads used,
+// else the action is retryable (login_changed) and nothing is changed. A nil
+// user means the account is gone.
+func (o *org) current(ctx context.Context, u ghUser) (*ghUser, error) {
+	v, err := o.user(ctx, strconv.FormatInt(u.ID, 10))
+	if err != nil || v == nil {
+		return v, err
+	}
+	if !strings.EqualFold(v.Login, u.Login) {
+		return nil, &provider.Error{Code: CodeLoginChanged, Retryable: true, Err: errors.New("github: the account's login moved while the action ran")}
+	}
+	return v, nil
 }
 
 // membership is an organization membership (state active, or pending for
@@ -494,6 +514,15 @@ func (o *org) invite(ctx context.Context, u ghUser) (provider.ActionOutcome, err
 				return out, false, err
 			}
 			if inv != nil && o.ours(inv) {
+				// The invitation list is matched by login: prove that the
+				// login still belongs to the bound ID before claiming it.
+				fresh, err := o.current(ctx, u)
+				if err != nil {
+					return out, false, err
+				}
+				if fresh == nil {
+					return out, false, &provider.Error{Code: CodeAccountNotFound, Err: errors.New("github: the linked account does not exist")}
+				}
 				return provider.ActionOutcome{Link: out.Link, Proof: &provider.Proof{Kind: provider.ProofMarker, Evidence: "invitation:" + strconv.FormatInt(inv.ID, 10)}}, true, nil
 			}
 		}
@@ -531,6 +560,13 @@ func (o *org) cancelInvitation(ctx context.Context, u ghUser) (provider.ActionOu
 	if err != nil || inv == nil {
 		return out, err
 	}
+	// The invitation was found by login; never cancel one that a reused
+	// login points at now.
+	if fresh, err := o.current(ctx, u); err != nil {
+		return provider.ActionOutcome{}, err
+	} else if fresh == nil {
+		return out, nil
+	}
 	if err := o.do(ctx, http.MethodDelete, o.path("invitations", strconv.FormatInt(inv.ID, 10)), nil, nil); notFound(err) {
 		return out, nil // accepted or canceled meanwhile
 	} else if err != nil {
@@ -555,7 +591,17 @@ func (o *org) removeFromOrg(ctx context.Context, u ghUser) (provider.ActionOutco
 	default:
 		return provider.ActionOutcome{}, &provider.Error{Code: CodeRoleProtected, Err: fmt.Errorf("github: role %q is never removed", mem.Role)}
 	}
-	if err := o.do(ctx, http.MethodDelete, o.path("memberships", u.Login), nil, nil); notFound(err) {
+	// The membership DELETE takes a login: re-resolve the bound ID now, so a
+	// login released and reused while the membership was read cannot remove
+	// the new holder.
+	fresh, err := o.current(ctx, u)
+	if err != nil {
+		return provider.ActionOutcome{}, err
+	}
+	if fresh == nil {
+		return out, nil // gone meanwhile
+	}
+	if err := o.do(ctx, http.MethodDelete, o.path("memberships", fresh.Login), nil, nil); notFound(err) {
 		return out, nil // gone meanwhile
 	} else if err != nil {
 		return provider.ActionOutcome{}, classify(err)
@@ -591,10 +637,23 @@ func (o *org) teamMember(ctx context.Context, u ghUser, teamID string, add bool)
 	if err != nil {
 		return provider.ActionOutcome{}, err
 	}
+	// Team membership mutations take a login: re-resolve the bound ID now,
+	// after the reads above, so a login released and reused meanwhile cannot
+	// add or remove the new holder.
+	fresh, err := o.current(ctx, u)
+	if err != nil {
+		return provider.ActionOutcome{}, err
+	}
+	if fresh == nil {
+		if add {
+			return provider.ActionOutcome{}, &provider.Error{Code: CodeAccountNotFound, Err: errors.New("github: the linked account does not exist")}
+		}
+		return out, nil // gone meanwhile, and the membership with it
+	}
 	if (tm != nil) == add {
 		return out, nil
 	}
-	path := o.path("teams", t.Slug, "memberships", u.Login)
+	path := o.path("teams", t.Slug, "memberships", fresh.Login)
 	if add {
 		err = o.do(ctx, http.MethodPut, path, map[string]string{"role": "member"}, nil)
 	} else {

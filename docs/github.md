@@ -112,8 +112,11 @@ accounts.
   is reported as unmanaged and never removed. Revoking or replacing the linked
   account ends Orglane's ownership of the old account (reported, never removed).
 - Every action re-reads the account by its numeric ID and uses its current
-  login only for that call, so a rename cannot redirect an action. A rename
-  refreshes the link's login.
+  login only for that call. Immediately before a team membership change, an
+  organization removal or an invitation cancellation it resolves the login
+  from the ID again: if a rename released the login and another account took
+  it, the action stops as retryable (`login_changed`) and changes nothing for
+  the new holder. A rename refreshes the link's login.
 - **Team mappings** support both modes. `create` gives the Orglane team a
   GitHub team named after its slug and marked in the description with the
   instance ID; Orglane never takes over a team of that name that lacks its mark.

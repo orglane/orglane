@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -499,6 +500,169 @@ func TestProvisionDelayedRemovalsUseTheBoundAccount(t *testing.T) {
 	if m := f.Members(); m[40] != "" || m[41] != githubfake.RoleMember {
 		t.Fatalf("members after removal = %v", m)
 	}
+}
+
+// interleave runs fn once while the adapter is sending the request that
+// matches method and path (before GitHub answers it), or just after GitHub
+// answered it. It simulates an external account rename racing an action.
+type interleave struct {
+	base   http.RoundTripper
+	method string
+	path   string
+	after  bool
+	once   sync.Once
+	fn     func()
+}
+
+func (i *interleave) RoundTrip(r *http.Request) (*http.Response, error) {
+	match := r.Method == i.method && r.URL.Path == i.path
+	if match && !i.after {
+		i.once.Do(i.fn)
+	}
+	res, err := i.base.RoundTrip(r)
+	if match && i.after {
+		i.once.Do(i.fn)
+	}
+	return res, err
+}
+
+// A login can be released by a rename and taken by another account while an
+// action is running. GitHub's membership mutations are addressed by login,
+// so every action re-resolves the bound numeric ID immediately before them:
+// a reused login is the retryable login_changed and nothing is removed or
+// added. This reproduces the reviewer's during-apply rename.
+func TestProvisionRechecksTheBoundAccountBeforeActing(t *testing.T) {
+	rename := func(f *githubfake.Fake) func() {
+		return func() {
+			f.RenameUser(40, "dev-renamed")
+			f.RenameUser(41, "dev") // the old login, reused
+		}
+	}
+	t.Run("team removal", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		team := syncTeam(t, a, env, inst, "platform")
+		teamID := mustInt(team.ExternalRef)
+		for _, u := range []githubfake.User{{ID: 40, Login: "dev"}, {ID: 41, Login: "someone-else"}} {
+			f.AddUser(u)
+			f.AddMember(u.ID, githubfake.RoleMember)
+			f.SetTeamMember(teamID, u.ID, githubfake.TeamMember)
+		}
+		d := desired(40, "dev", true, true)
+		d.Teams, d.Mapped = nil, []provider.TeamRef{team}
+		plan, err := a.Plan(t.Context(), env, inst, d)
+		if err != nil || !slices.Equal(kinds(plan), []string{"remove_from_team:" + team.ExternalRef + "!"}) {
+			t.Fatalf("plan = %v, %v", kinds(plan), err)
+		}
+		// The rename happens while the team listing is in flight.
+		base := env.client.Transport
+		env.client.Transport = &interleave{base: base, method: http.MethodGet, path: "/orgs/" + f.Org().Login + "/teams", fn: rename(f)}
+		_, err = a.Apply(t.Context(), env, inst, plan.Actions[0])
+		if c, retryable, _ := provider.Classify(err); err == nil || c != CodeLoginChanged || !retryable {
+			t.Fatalf("removal = %v, want retryable %s", err, CodeLoginChanged)
+		}
+		if m := f.TeamMembers(teamID); m[40] != "member/active" || m[41] != "member/active" {
+			t.Fatalf("team members after the race = %v", m)
+		}
+		// The retry acts on the bound ID (now dev-renamed) and removes 40 only.
+		env.client.Transport = base
+		out, err := a.Apply(t.Context(), env, inst, plan.Actions[0])
+		if err != nil || !out.Changed {
+			t.Fatalf("removal retry = %+v, %v", out, err)
+		}
+		if m := f.TeamMembers(teamID); m[40] != "" || m[41] != "member/active" {
+			t.Fatalf("team members after the retry = %v", m)
+		}
+	})
+	t.Run("organization removal", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		f.AddUser(githubfake.User{ID: 40, Login: "dev"})
+		f.AddUser(githubfake.User{ID: 41, Login: "someone-else"})
+		f.AddMember(40, githubfake.RoleMember)
+		f.AddMember(41, githubfake.RoleMember)
+		plan, err := a.Plan(t.Context(), env, inst, desired(40, "dev", false, true))
+		if err != nil || !slices.Equal(kinds(plan), []string{"remove_from_org!"}) {
+			t.Fatalf("plan = %v, %v", kinds(plan), err)
+		}
+		// The rename happens after the membership read returned account 40.
+		base := env.client.Transport
+		env.client.Transport = &interleave{base: base, method: http.MethodGet, path: "/orgs/" + f.Org().Login + "/memberships/dev", after: true, fn: rename(f)}
+		_, err = a.Apply(t.Context(), env, inst, plan.Actions[0])
+		if c, retryable, _ := provider.Classify(err); err == nil || c != CodeLoginChanged || !retryable {
+			t.Fatalf("removal = %v, want retryable %s", err, CodeLoginChanged)
+		}
+		if m := f.Members(); m[40] != githubfake.RoleMember || m[41] != githubfake.RoleMember {
+			t.Fatalf("members after the race = %v", m)
+		}
+		env.client.Transport = base
+		out, err := a.Apply(t.Context(), env, inst, plan.Actions[0])
+		if err != nil || !out.Changed {
+			t.Fatalf("removal retry = %+v, %v", out, err)
+		}
+		if m := f.Members(); m[40] != "" || m[41] != githubfake.RoleMember {
+			t.Fatalf("members after the retry = %v", m)
+		}
+	})
+	t.Run("invitation cancellation", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		f.AddUser(githubfake.User{ID: 40, Login: "dev"})
+		f.AddUser(githubfake.User{ID: 41, Login: "someone-else"})
+		invitee := f.InviteAs(40, f.BotLogin())
+		other := f.InviteAs(41, f.BotLogin())
+		plan, err := a.Plan(t.Context(), env, inst, desired(40, "dev", false, true))
+		if err != nil || !slices.Equal(kinds(plan), []string{"cancel_invitation!"}) {
+			t.Fatalf("plan = %v, %v", kinds(plan), err)
+		}
+		// The rename happens before the invitation listing: matching by the
+		// old login would find account 41's invitation.
+		base := env.client.Transport
+		env.client.Transport = &interleave{base: base, method: http.MethodGet, path: "/orgs/" + f.Org().Login + "/invitations", fn: rename(f)}
+		_, err = a.Apply(t.Context(), env, inst, plan.Actions[0])
+		if c, retryable, _ := provider.Classify(err); err == nil || c != CodeLoginChanged || !retryable {
+			t.Fatalf("cancellation = %v, want retryable %s", err, CodeLoginChanged)
+		}
+		if inv := f.Invitations(); len(inv) != 2 || inv[0].ID != invitee.ID || inv[1].ID != other.ID {
+			t.Fatalf("invitations after the race = %+v", inv)
+		}
+		env.client.Transport = base
+		out, err := a.Apply(t.Context(), env, inst, plan.Actions[0])
+		if err != nil || !out.Changed {
+			t.Fatalf("cancellation retry = %+v, %v", out, err)
+		}
+		if inv := f.Invitations(); len(inv) != 1 || inv[0].ID != other.ID {
+			t.Fatalf("invitations after the retry = %+v", inv)
+		}
+	})
+	t.Run("team addition", func(t *testing.T) {
+		f, env, inst := fakeFixture(t)
+		a := New()
+		team := syncTeam(t, a, env, inst, "platform")
+		teamID := mustInt(team.ExternalRef)
+		for _, u := range []githubfake.User{{ID: 40, Login: "dev"}, {ID: 41, Login: "someone-else"}} {
+			f.AddUser(u)
+			f.AddMember(u.ID, githubfake.RoleMember)
+		}
+		// The rename happens after the team membership read, before the PUT.
+		base := env.client.Transport
+		env.client.Transport = &interleave{base: base, method: http.MethodGet, path: "/orgs/" + f.Org().Login + "/teams/platform/memberships/dev", after: true, fn: rename(f)}
+		_, err := a.Apply(t.Context(), env, inst, teamAction(provider.ActionAddToTeam, "40", ghTeam{ID: teamID, Slug: "platform"}))
+		if c, retryable, _ := provider.Classify(err); err == nil || c != CodeLoginChanged || !retryable {
+			t.Fatalf("addition = %v, want retryable %s", err, CodeLoginChanged)
+		}
+		if m := f.TeamMembers(teamID); len(m) != 0 {
+			t.Fatalf("team members after the race = %v", m)
+		}
+		env.client.Transport = base
+		out, err := a.Apply(t.Context(), env, inst, teamAction(provider.ActionAddToTeam, "40", ghTeam{ID: teamID, Slug: "platform"}))
+		if err != nil || !out.Changed {
+			t.Fatalf("addition retry = %+v, %v", out, err)
+		}
+		if m := f.TeamMembers(teamID); m[40] != "member/active" || m[41] != "" {
+			t.Fatalf("team members after the retry = %v", m)
+		}
+	})
 }
 
 // The capability matrix reflects what this adapter implements.
