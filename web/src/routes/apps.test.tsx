@@ -27,6 +27,7 @@ const provider = {
   defaultKey: "test",
   defaultPolicy: "all_people",
   provisioning: true,
+  existingTeams: false,
   webhooks: true,
   lifecycle: false,
 };
@@ -532,6 +533,142 @@ describe("Instance page guidance", () => {
       await screen.findByRole("link", { name: "Priya" }, { timeout: 8000 }),
     ).toBeInTheDocument();
   }, 15_000);
+});
+
+describe("Team mappings", () => {
+  it("maps a team to an existing provider team, never offering Orglane's own", async () => {
+    const teamId = "0190a1b2-0000-7000-8000-0000000000d1";
+    const putPath = `/api/v1/apps/instances/${instanceId}/team-mappings/${teamId}`;
+    const app = renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": {
+        status: 200,
+        body: { items: [{ ...provider, existingTeams: true }] },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}`]: { status: 200, body: detailWith([]) },
+      [`GET /api/v1/apps/instances/${instanceId}/team-mappings`]: {
+        status: 200,
+        body: { items: [] },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}/provider-teams`]: {
+        status: 200,
+        body: {
+          items: [
+            { externalRef: "42", name: "Release Crew", slug: "release-crew", managed: false },
+            { externalRef: "43", name: "platform", slug: "platform", managed: true },
+          ],
+        },
+      },
+      "GET /api/v1/teams": {
+        status: 200,
+        body: {
+          items: [
+            {
+              id: teamId,
+              slug: "release",
+              name: "Release",
+              memberCount: 1,
+              createdAt: "2026-11-01T10:00:00Z",
+              updatedAt: "2026-11-01T10:00:00Z",
+            },
+          ],
+        },
+      },
+      [`PUT ${putPath}`]: { status: 200, body: {} },
+      [`GET /api/v1/apps/instances/${instanceId}/provisioning`]: {
+        status: 200,
+        body: {
+          items: [],
+          counts: { queued: 0, done: 0, pendingEmployeeAction: 0, failed: 0 },
+          unmanagedAccounts: [],
+        },
+      },
+    });
+    await app.user.selectOptions(await screen.findByLabelText("Team to map"), "Release");
+    // Mode create is the default; the provider's teams load only when asked.
+    expect(app.called("GET", `/api/v1/apps/instances/${instanceId}/provider-teams`)).toHaveLength(
+      0,
+    );
+    await app.user.click(screen.getByLabelText("Use an existing team"));
+    const existing = await screen.findByLabelText("Existing team");
+    expect(within(existing).queryByRole("option", { name: "platform" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Map team" })).toBeDisabled();
+    await app.user.selectOptions(existing, "Release Crew");
+    await app.user.click(screen.getByRole("button", { name: "Map team" }));
+    await waitFor(() => expect(app.called("PUT", putPath)).toHaveLength(1));
+    expect(app.called("PUT", putPath)[0]?.body).toEqual({
+      mode: "existing",
+      externalRef: "42",
+      externalName: "release-crew",
+    });
+  });
+
+  it("offers only mode create when the provider cannot map existing teams", async () => {
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": {
+        status: 200,
+        body: { items: [{ ...provider, existingTeams: false }] },
+      },
+      [`GET /api/v1/apps/instances/${instanceId}`]: { status: 200, body: detailWith([]) },
+      [`GET /api/v1/apps/instances/${instanceId}/team-mappings`]: {
+        status: 200,
+        body: { items: [] },
+      },
+      "GET /api/v1/teams": {
+        status: 200,
+        body: {
+          items: [
+            {
+              id: "0190a1b2-0000-7000-8000-0000000000d1",
+              slug: "release",
+              name: "Release",
+              memberCount: 1,
+              createdAt: "2026-11-01T10:00:00Z",
+              updatedAt: "2026-11-01T10:00:00Z",
+            },
+          ],
+        },
+      },
+    });
+    expect(await screen.findByLabelText("Team to map")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Use an existing team")).not.toBeInTheDocument();
+  });
+
+  it("explains a result waiting for the person's employee step", async () => {
+    renderApp(`/settings/apps/${instanceId}`, {
+      "GET /api/v1/me": { status: 200, body: admin },
+      "GET /api/v1/apps/providers": { status: 200, body: { items: [provider] } },
+      [`GET /api/v1/apps/instances/${instanceId}`]: { status: 200, body: detailWith([]) },
+      [`GET /api/v1/apps/instances/${instanceId}/team-mappings`]: {
+        status: 200,
+        body: { items: [] },
+      },
+      "GET /api/v1/teams": { status: 200, body: { items: [] } },
+      [`GET /api/v1/apps/instances/${instanceId}/provisioning`]: {
+        status: 200,
+        body: {
+          items: [
+            {
+              person: person("0190a1b2-0000-7000-8000-0000000000b1", "Priya"),
+              status: "pending_employee_action",
+              employeeStep: "github.link-account",
+              access: true,
+              grantedByOrglane: false,
+              actions: [],
+              attempts: 0,
+              updatedAt: "2026-11-01T10:00:00Z",
+            },
+          ],
+          counts: { queued: 0, done: 0, pendingEmployeeAction: 1, failed: 0 },
+          unmanagedAccounts: [],
+        },
+      },
+    });
+    expect(
+      await screen.findByText(/Waiting for this person to link their GitHub account/),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("Apps guidance", () => {

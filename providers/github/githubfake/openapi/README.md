@@ -11,6 +11,13 @@ cannot drift from the real API.
   `78edb1e2af8b511d88a0be137b69622a13a2b137`. It keeps the operations listed
   in `extract.go` and every component they reference, unchanged. Licensed
   under the MIT License, see `LICENSE.md` (copied from that repository).
+  It also keeps the team-ID alternates `/organizations/{org_id}/team/{team_id}`
+  and `/organizations/{org_id}/team/{team_id}/memberships/{username}`: GitHub
+  documents them in the descriptions of the corresponding slug operations
+  ("You can also specify a team by `org_id` and `team_id` using the route ...")
+  but its OpenAPI description does not list them as paths. `extract.go`
+  derives them from those slug operations, so their requests, responses and
+  schemas stay GitHub's.
 - `oauth.json`: the user authorization (web application) flow on
   `github.com`, which the REST description does not cover. Hand-written by
   Orglane from GitHub's documentation (links inside the file).

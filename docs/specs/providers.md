@@ -200,6 +200,7 @@ type DesiredAccess struct {
     WorkEmail   string
     Access      bool          // false: the person must not have access
     Teams       []TeamRef     // provider-side teams the person must be in (exactly these, among mapped teams)
+    Mapped      []TeamRef     // the provider teams of all the instance's mappings (#65): the teams whose membership Orglane manages
     Link        *AccountLink  // verified link in this provider realm, if any
     Managed     bool          // removal allowed: Orglane granted the access or the instance manages existing members
 }
@@ -221,8 +222,42 @@ type Action struct {
 }
 
 type ActionOutcome struct {
-    Changed bool           // false: already satisfied
-    Link    *ExternalAccount // set when the action created an account (Forgejo) -> verified link
+    Changed bool             // false: already satisfied
+    Link    *ExternalAccount // the account the action saw (a grant's account, or a rename refresh)
+    // Proof is set only when the adapter can prove that Orglane's call made
+    // the grant: ProofResponse (this call's confirmed answer) or ProofMarker
+    // (a provider-side marker an ensure checks). Ownership is recorded only
+    // with proof.
+    Proof *Proof
+}
+
+type Proof struct {
+    Kind     string // "response" | "marker"
+    Evidence string // provider-specific, never a secret
+}
+
+// TeamLister lists provider-side teams for mappings of mode "existing"
+// (GitHub). It is optional.
+type TeamLister interface {
+    ProviderTeams(ctx context.Context, env Env, inst Instance) ([]Team, error)
+}
+
+// RemovalChecker is optional. It reports whether a queued removal still
+// targets access the adapter manages, given the person's current desired
+// access. The core checks it when it tests a removal's freshness and again
+// before applying it. GitHub manages team membership only of the instance's
+// current mappings, so deleting a mapping cancels pending and held removals
+// from that team; a Forgejo team stays Orglane's without a mapping. Pure: no
+// provider calls.
+type RemovalChecker interface {
+    RemovalStillManaged(inst Instance, d DesiredAccess, a Action) bool
+}
+
+type Team struct {
+    ExternalRef string // provider team ID, the mapping's external reference
+    Name        string
+    Slug        string
+    Managed     bool // created by Orglane for a "create" mapping; not offered for "existing"
 }
 ```
 
@@ -386,7 +421,7 @@ M2 matrix:
 | Feature | Forgejo (managed) | GitHub (connected) |
 |---|---|---|
 | `sso` | supported (OIDC from Orglane) | unsupported (personal accounts) |
-| `deep_links` | supported, silent SSO | partial: direct link, no SSO |
+| `deep_links` | supported, silent SSO | unsupported (no deep linker yet) |
 | `accounts.create` | supported | unsupported |
 | `accounts.invite` | unsupported (not needed) | supported, needs a linked account |
 | `accounts.link` | supported (created by Orglane) | supported (employee step, OAuth) |
@@ -395,7 +430,7 @@ M2 matrix:
 | `deprovision.org_removal` | unsupported (single org, account stays) | supported |
 | `deprovision.suspend` | planned, M5 | unsupported |
 | `deprovision.revoke_tokens` | planned, M5 (access tokens and SSH keys; users manage their own SSH keys in Forgejo meanwhile) | unsupported |
-| `events.webhooks` | supported | supported |
+| `events.webhooks` | supported | unsupported until #66 |
 | `lifecycle.install` / `upgrade` / `snapshot` | supported | unsupported |
 | `lifecycle.backup` | planned, M7 | unsupported |
 
@@ -925,11 +960,11 @@ Removing access by mistake is worse than keeping it a little longer. Every entry
 - Adapters plan removal actions only when `DesiredAccess.Managed` is true. Pre-existing members that Orglane does not manage are reported as unmanaged, never removed. GitHub organization owners are never removed (`owner_protected`).
 - `provision_person` upserts each planned removal into `provisioning_removals` as `pending` with the `desired_hash` that planned it, and enqueues `orglane.apps.apply_removals {instance_id}` scheduled 60 s later (unique per instance, so a burst of directory changes collapses into one run). A pending removal whose person gets access back is set `dropped` by the next `provision_person` run for that person.
 - `apply_removals` takes a transaction advisory lock on the instance, then:
-  1. **Freshness:** recomputes `DesiredAccess` for each pending removal; if its hash differs from `desired_hash` (the person's desired state changed since planning), the removal is `dropped` and that person is re-planned.
+  1. **Freshness:** recomputes `DesiredAccess` for each pending removal; if its hash differs from `desired_hash` (the person's desired state changed since planning) or the adapter's optional `RemovalChecker` says the removal's target is no longer managed (GitHub: its team is no longer in `DesiredAccess.Mapped` after the mapping was deleted), the removal is `dropped` and that person is re-planned. An unrelated mapping change leaves a person's hash and the removal valid.
   2. **Threshold:** `n` = fresh pending removals + removals `applied` in the last 24 hours; `limit` = max(3, 10 % of the instance's managed accounts). If `n <= limit`, it applies them in order (`applied` or `failed`, audit per change). Each removal's new state commits in one transaction with its audit entry and its person's next `provision_person` job (an applied or dropped removal re-plans the person), so another person's failure, a crash or a retry never loses it; the job's retry error is returned only after that. A `RetryAfter` ends the run's provider calls and snoozes the job. Counting the last 24 hours means splitting a mass removal into small bursts does not bypass the guard.
   3. **Hold:** otherwise every fresh pending removal becomes `held` in one batch (`provisioning_removal_batches`, `items_hash` over the items). If a held batch already exists, it is `superseded` and its items join the new batch, so there is at most one held batch per instance. Nothing is removed; Settings → Apps shows the batch with each person and action.
 - **Confirmation** (`POST .../provisioning/removal-batches/{batchId}/confirm` with the `items_hash` the admin saw): refused with `batch_changed` if the batch is no longer `held` or the hash differs. Otherwise the batch becomes `confirmed` and `apply_removals` applies its items, re-checking freshness per item first: an item whose desired state changed since the preview is `dropped`, never applied. Removals planned after the batch are not part of it and go through the guard again.
-- Tests (#58 with `testprovider`, #65 live): deleting a mapping that covers most of the org holds one batch and removes nobody; concurrent person jobs during the hold add to a new batch instead of applying; a person regaining access between preview and confirmation is not removed; a confirmation with a stale `items_hash` is refused; small removals apply without confirmation; 24-hour accumulation triggers the hold.
+- Tests (#58 with `testprovider`, #65 live): deleting a mapping that covers most of the org holds one batch and removes nobody; concurrent person jobs during the hold add to a new batch instead of applying; a person regaining access between preview and confirmation is not removed; a confirmation with a stale `items_hash` is refused; small removals apply without confirmation; 24-hour accumulation triggers the hold; deleting a GitHub team mapping cancels pending and held removals from that team while an unrelated mapping change leaves them valid.
 
 ### Employee steps
 
@@ -1113,6 +1148,7 @@ All under `/api/v1`, contract-first in `core/api/openapi.yaml`. Errors are RFC 9
 | GET | `/apps/bindings` | `apps.manage` | Capability bindings | #58 |
 | PUT | `/apps/bindings/{capability}` | `apps.manage` | Set the default instance of a capability | #58 |
 | GET | `/apps/instances/{instanceId}/team-mappings` | `apps.manage` | Mappings with provider team names | #58 |
+| GET | `/apps/instances/{instanceId}/provider-teams` | `apps.manage` | The provider's teams for `existing` mappings (`provider.TeamLister`; 404 without one) | #65 |
 | PUT | `/apps/instances/{instanceId}/team-mappings/{teamId}` | `apps.manage` | Create or change a mapping | #58 |
 | DELETE | `/apps/instances/{instanceId}/team-mappings/{teamId}` | `apps.manage` | Remove a mapping | #58 |
 | GET | `/apps/instances/{instanceId}/provisioning` | `apps.manage` | Results for all people (paged), unmanaged accounts, held removals | #58 |
@@ -1171,13 +1207,13 @@ New target kinds: `app_instance`, `account_link`. System jobs use `audit.System`
 - Connect: the GitHub App **manifest flow** for the organization. The core creates the instance (`connecting`) first, so the manifest can carry `https://<workspace>/api/v1/webhooks/<instanceId>` as the webhook URL, the SPA callback routes as redirect, setup and callback URLs, and the minimal permissions. The manifest code (valid one hour) is exchanged for app ID, slug, client ID and secret, webhook secret and private key, which are stored as credentials. Then the admin installs the App on the organization; the core verifies the installation with `GET /app/installations/{id}` (App JWT) and that its account is the expected organization, and stores organization ID, login and installation ID in `settings`. Manual setup (admin creates the App and pastes the values) is a documented fallback.
 - Minimal permissions (candidate set; #64 verifies each against GitHub's documentation and documents the result in `docs/github.md`): organization **Members: read and write** (invitations, memberships, teams); repository **Metadata: read** (mandatory), **Pull requests: read**, **Issues: read** (comments for mentions). Webhook events: `pull_request`, `pull_request_review`, `issue_comment`, `pull_request_review_comment`, `issues` (added in #66 for mentions in issue bodies; Issues read covers it), `member`, `membership`, `organization`.
 - Tokens: App JWT (RS256, `iat` 60 s in the past, `exp` ≤ 10 min) signed with go-jose (already a dependency); installation tokens minted on demand, cached in memory until 5 minutes before expiry, never persisted.
-- Invitations by user ID (`POST /orgs/{org}/invitations` with `invitee_id`), so a login change cannot redirect an invitation. Removal with `DELETE /orgs/{org}/memberships/{username}` after resolving the current login from the ID (also cancels pending invitations). Team membership with the team membership endpoints. Organization owners are never removed.
+- Invitations by user ID (`POST /orgs/{org}/invitations` with `invitee_id`), so a login change cannot redirect an invitation. Removal with `DELETE /orgs/{org}/memberships/{username}` after resolving the current login from the ID; a pending invitation is canceled with `DELETE /orgs/{org}/invitations/{invitation_id}` (#65, "Spec gaps decided in #65"). Team membership with the documented team-ID alternate routes (`GET`/`PUT`/`DELETE /organizations/{org_id}/team/{team_id}/memberships/{username}`), addressed by the connection's immutable organization ID and the mapping's numeric team ID, never by the team slug; a mapped team ID that no longer exists is the retryable `team_not_synced` (a mapping error), never a lookup by slug. Organization owners are never removed.
 - Users without a verified link: `pending_employee_action` with step `github.link-account`.
 - Webhook deliveries are matched to the instance by the signed payload's `installation.id` and `organization.id` (see "Webhooks" → "Processing"), never by headers.
 
 ## Testing strategy
 
-**Rule (AGENTS.md):** integration tests use real services; no mocks of provider APIs. The in-repo `testprovider` exercises the framework (jobs, results, retries, guard) without pretending to be a real provider. The one exception is GitHub.com, which cannot run in a container: its integration tests use `providers/github/githubfake`, which checks every request and response against GitHub's published OpenAPI description instead of hand-written expectations, and the live tests below exercise the real service.
+**Rule (AGENTS.md):** integration tests use real services; no mocks of provider APIs. The in-repo `testprovider` exercises the framework (jobs, results, retries, guard) without pretending to be a real provider. The one exception is GitHub.com, which cannot run in a container: its integration tests use `providers/github/githubfake`, which checks every request and response against GitHub's published OpenAPI description instead of hand-written expectations (the team-ID alternates GitHub documents only in the description's prose are derived from the documented slug operations), and the live tests below exercise the real service.
 
 | Area | Tests | Where |
 |---|---|---|
@@ -1185,7 +1221,7 @@ New target kinds: `app_instance`, `account_link`. System jobs use `audit.System`
 | Store | Integration tests (`pgtest`) for every table: constraints, unique links, append-only events, credential sealing and AD binding, migration up/down | #58 |
 | API | Allowed and denied tests for every operation; audit entries per mutation | #58 onward |
 | Forgejo | testcontainers with the **same image reference** as the package manifest (read from the embedded manifest in the test): accounts, teams, webhooks with real signatures, deep link through a real OIDC round trip in domain mode and in local mode (`http://git.orglane.localhost`); agent install path in `tests/integration` | #61–#63 |
-| GitHub | Unit and integration tests with the real adapter against `providers/github/githubfake`, a fake GitHub.com that validates every request and response against GitHub's official OpenAPI description (a pinned, vendored subset of github/rest-api-description, MIT) and a hand-written description of the OAuth web flow; live tests against a real test organization and test GitHub App (below) | #64–#66 |
+| GitHub | Unit and integration tests with the real adapter against `providers/github/githubfake`, a fake GitHub.com that validates every request and response against GitHub's official OpenAPI description (a pinned, vendored subset of github/rest-api-description, MIT; the team-ID alternates that description only mentions in prose are derived from its slug operations) and a hand-written description of the OAuth web flow; live tests against a real test organization and test GitHub App (below) | #64–#66 |
 | Web | Playwright: Settings → Apps, install flow, connect up to the GitHub redirect, the link step through the fake GitHub (acceptance build tag `githubtest`) | #58, #61, #64, #65 |
 
 ### GitHub live tests
@@ -1377,3 +1413,22 @@ Provisioning and teams (the second part of #62):
 | Fixtures | Recorded GitHub.com payloads from octokit/webhooks' payload examples (MIT, commit and license in `providers/github/testdata/webhooks`), signed in tests with a test-only fixture secret; examples recorded from repository webhooks get `installation.id` added before signing. Captured test-organization payloads are added when the `github-live` environment exists | `providers/github/testdata/webhooks/README.md` |
 | The byte-exact real-signature path | Path (a) is implemented: `TestGitHubLiveWebhookDeliveries` reads recent deliveries from the App's delivery log (read only, no resources created) and fails loudly for any delivery whose logged payload bytes do not verify with `ORGLANE_TEST_GITHUB_WEBHOOK_SECRET` against the logged `X-Hub-Signature-256`; the same payloads, re-signed with the fixture secret, must pass `Verify`, `Effects` and `Normalize` for the test installation (payload semantics). It has not run yet (no `github-live` environment): until it passes on `main`, manual pre-release check 2 stays on the checklist, and if (a) fails there, (b) `gh webhook forward` is next | `providers/github/webhooks_live_integration_test.go` |
 | Organization renames | Not handled in M2: the instance keeps the login it connected with (`settings.organization`); deliveries still match by ID. A follow-up refreshes the login from `organization` `renamed` | — |
+
+## Spec gaps decided in #65
+
+GitHub invitations, team mappings and removal (the second part of #65; account linking is the first).
+
+| Gap | Decision | Where |
+|---|---|---|
+| Which GitHub account an action is for | The verified link's immutable user ID, always. Every plan and every action reads the account now (`GET /user/{account_id}`) and uses its current login only for that call; the organization membership it reads (`GET /orgs/{org}/memberships/{username}`) must name the same ID, else the retryable `login_changed`. Invitations are ID-addressed already (creation by `invitee_id`, cancellation by invitation ID). The remaining user-addressed mutations (organization removal, team membership add/remove) take a username, so immediately before each one the action re-reads the account by ID: if the login moved since its reads (a rename released it and another account took it), the action returns the retryable `login_changed` and changes nothing for the new holder. GitHub has no user-ID-addressed organization membership mutation, so a rename between this last re-read and the mutation can still affect the new holder: if GitHub accepts it, the action may report it as changed and the core records that outcome without a retry. A retry happens only when the action detects the moved login and returns the retryable `login_changed`; that retry starts from the bound ID again. Team membership is different: reads and changes address the team by the organization ID and the mapping's immutable team ID (`GET`/`PUT`/`DELETE /organizations/{org_id}/team/{team_id}/memberships/{username}`), so a renamed team whose old slug another team takes is never reached; only the username in that route follows the login re-read. Nothing in an action but the IDs is trusted. A plan whose account is gone fails with the permanent `account_not_found` while access is desired; removals for a deleted account are satisfied | `providers/github/provision.go` |
+| Plans and their order | Without a verified link: the employee step (`github.link-account`) when access is desired, nothing otherwise. With access: `update_account` (only refreshes the link's login after a rename; GitHub is not changed), `invite` when there is neither a membership nor an invitation, the team additions, then the removals. Without access, for managed accounts only: `cancel_invitation` for a pending invitation, else `remove_from_org` (it ends the team memberships too) | `providers/github/provision.go` |
+| Proof of Orglane's grant | `invite` returns `ProofResponse` with GitHub's confirmed answer, and `ProofMarker` (`invitation:<id>`) for a pending invitation whose inviter is the App's bot account (`<app_slug>[bot]`, type `Bot`), which only calls with the App's installation token make. The invitation list is matched by login, so the marker is returned only after re-reading the account by ID and finding that the login still belongs to it (else the retryable `login_changed`). A refused invitation (422) is read back before the refusal counts. An active membership, or an invitation by a person, proves nothing. The bot as inviter is GitHub's documented attribution of installation actions; the live test checks it against the test organization | `providers/github/provision.go` |
+| Ownership and link changes | For providers whose accounts people prove themselves (`AccountVerifier`), ownership belongs to the linked account, not to the person: a grant is recorded as Orglane's only if, when its bookkeeping commits under the realm's link lock, the person's verified link still names the granted account (otherwise that account is reported as unmanaged). Revoking or replacing an `oauth` link clears `granted_by_orglane` and any pending grant of the person in every instance of the realm, so the old account becomes unmanaged (reported, never removed) and a newly linked account is not removable because the earlier one was Orglane's. Results no longer re-assert an ownership flag they read at the start of a run (the upsert keeps the stored one). Grants of verifier providers never create a `provisioned` link | `core/internal/apps/provision.go`, `core/internal/apps/links.go` |
+| Which teams Orglane manages | `create` mappings: a team Orglane creates (closed, no repositories; the organization's owners grant those on GitHub), named after the Orglane team slug, its description starting with `Managed by Orglane (<instance id>)`. A mapping keeps its team by ID while it exists; otherwise a team with that name is used only if it carries this instance's mark (an earlier creation whose answer was lost), and an unmarked one is never taken over (logged `team_name_taken`, the mapping stays unsynced). `existing` mappings: a team the admin picked by numeric ID (`provider.TeamMappingValidator` refuses anything else; `provider.TeamLister` lists the organization's own teams, not enterprise teams, for the picker). Team removals happen only from the instance's mapped teams (`DesiredAccess.Mapped`), only for managed accounts. Additions always use role `member`: nobody becomes a maintainer or an owner. Membership reads and changes use the documented team-ID routes with the organization's and the mapping's numeric IDs, never the slug; a mapped team ID that no longer exists is the retryable `team_not_synced` (a mapping error), not a lookup by slug. Deleting a mapping stops managing that team (its members stay), and the adapter's `RemovalChecker` cancels pending and held removals from it | `providers/github/provision.go`, `providers/provider` |
+| Team additions and invitations | GitHub invites anyone added to a team who is not in the organization (without the invitation's proof), so `add_to_team` runs only for people with a membership or a pending invitation (else the retryable `not_invited`; the next plan invites first). Additions during a pending invitation become pending team memberships that GitHub activates on acceptance | `providers/github/provision.go` |
+| Protected people | Organization owners (`owner_protected`) and billing managers (`role_protected`) are never removed from the organization; team maintainers are never removed from their team (`maintainer_protected`). The removals are still planned, so the result shows why, and refused when applied after re-reading the role | `providers/github/provision.go` |
+| Team references and races | `provision_instance` stores the teams `SyncTeams` reports before it lists members, also when the sync or the listing fails afterwards, so a created team is not lost to a later error. The reference is recorded only if the mapping still has the mode and reference the sync read | `core/internal/apps/provision.go`, `core/internal/store/queries/apps.sql` |
+| Unmanaged accounts | `Members` lists the organization's members (`GET /orgs/{org}/members`, paged); pending invitations are not members | `providers/github/provision.go` |
+| The organization's login | Calls use the `organization` setting recorded at connection; an organization rename on GitHub is not followed in M2 | `providers/github` |
+| Error codes | Retryable: `github_unavailable` (no answer, 5xx; also for the connection's calls now), `github_unauthorized` (401), `rate_limited` (with `Retry-After`), `not_invited`, `team_not_synced`, `login_changed`. Permanent: `account_not_found`, `owner_protected`, `role_protected`, `maintainer_protected`, `seat_limit`, `invite_refused`, `github_forbidden` (403, e.g. teams synced from an identity provider), `github_rejected`. All have English texts in Settings → Apps and the person apps card | `providers/github`, `web/src/lib/apps.ts` |
+| Capability matrix | `accounts.invite`, `accounts.link`, `teams.sync`, `deprovision.team_removal`, `deprovision.org_removal` and (from #66) `events.webhooks` are supported; `deep_links` stays unsupported (no `DeepLinker` yet) | `providers/github/github.go` |

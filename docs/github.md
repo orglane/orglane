@@ -27,9 +27,9 @@ Use a reachable HTTPS workspace for real setup. Local HTTP works for preparing
 and inspecting the manifest, but GitHub must accept the callback and webhook
 addresses for real use. Hosts and URLs come from Orglane's domain configuration.
 
-An active connection in #64 verifies setup and credentials. Employee account
-linking, invitations and removal are #65; webhook ingestion semantics are #66.
-The capability matrix reports those features as unsupported until implemented.
+An active connection verifies setup and credentials. Employee account linking,
+invitations, team mappings and removal are implemented; webhook ingestion
+semantics are #66. The capability matrix reports each feature's support.
 
 ## Recovering an interrupted setup
 
@@ -60,7 +60,7 @@ settings, following [GitHub's registration instructions](https://docs.github.com
 - Homepage URL: your workspace origin.
 - Setup URL: your workspace origin followed by `/settings/apps/github/callback`.
 - User authorization callback URL: your workspace origin followed by
-  `/me/accounts/github/callback` (reserved for #65 account linking).
+  `/me/accounts/github/callback` (account linking).
 - Keep **Request user authorization (OAuth) during installation** off, so GitHub
   uses the Setup URL after installation.
 - Active webhook URL: the exact webhook URL in the connecting instance overview.
@@ -73,7 +73,7 @@ settings, following [GitHub's registration instructions](https://docs.github.com
 - Enter App ID, Client ID, private key PEM, Client secret and webhook secret in
   Orglane's manual form. Orglane verifies the key against `GET /app`, checks App
   ID and Client ID, seals the credentials, then offers the installation redirect.
-  Client-secret use is checked by the manual OAuth acceptance in #65.
+  Client-secret use is checked by the manual OAuth acceptance.
 
 The same public `POST /api/v1/apps/github/connect` API accepts `manual` alongside
 `organization`, `key` and `instanceId`; no private admin endpoint is used.
@@ -98,6 +98,54 @@ policy, people in a mapped team).
 - Accounts from the GitHub people import (M1) are shown as expected
   accounts. They prove nothing: if the linked account differs, both are shown;
   if another person linked the expected account, it is marked as a conflict.
+
+## Inviting people, teams and removal
+
+A person with access to a GitHub instance is invited to the organization by
+their linked account's immutable numeric user ID
+(`POST /orgs/{org}/invitations` with `invitee_id`). Orglane never creates GitHub
+accounts.
+
+- The invitation is Orglane's only when GitHub confirms it, or when a pending
+  invitation was made by the App's bot (`<app-slug>[bot]`). A membership that
+  already existed, or an invitation a person made, proves nothing: that person
+  is reported as unmanaged and never removed. Revoking or replacing the linked
+  account ends Orglane's ownership of the old account (reported, never removed).
+- Every action re-reads the account by its numeric ID and uses its current
+  login only for that call. Immediately before a team membership change, an
+  organization removal or an invitation cancellation it resolves the login
+  from the ID again: if a rename released the login before that check and
+  another account took it, the action stops as retryable (`login_changed`)
+  and changes nothing for the new holder. GitHub has no user-ID-addressed
+  organization membership mutation, so a rename between that last re-read
+  and the call can still reach the new holder; if GitHub accepts it, the
+  action may be reported as applied and not retried. Only a detected
+  mismatch returns the retryable `login_changed`, and its retry starts from
+  the bound ID. A rename refreshes the link's login.
+- Team membership reads and changes address the team by the connection's
+  immutable organization ID and the mapping's numeric team ID
+  (`/organizations/{org_id}/team/{team_id}/memberships/{username}`), never
+  by its slug. Renaming the mapped team and letting another team take its
+  old slug therefore cannot add or remove anyone on the other team. A mapped
+  team ID that no longer exists is a mapping error (`team_not_synced`,
+  retryable): the team is never looked up by slug, so an admin fixes the
+  mapping or the next sync creates a `create` team.
+- **Team mappings** support both modes. `create` gives the Orglane team a
+  GitHub team named after its slug and marked in the description with the
+  instance ID; Orglane never takes over a team of that name that lacks its mark.
+  `existing` uses the GitHub team the admin picks by numeric ID. Additions are
+  always role `member`: no one becomes an organization owner or team
+  maintainer. People already in the team who are not Orglane's stay.
+- A person who is not in the organization is invited before a team addition;
+  GitHub would otherwise invite them through the team without Orglane's proof.
+- People lose GitHub access through the removal guard like every provider:
+  a pending invitation is canceled, an active membership is removed (which also
+  ends the team memberships), and a large removal waits for an admin's
+  confirmation. Organization owners (`owner_protected`), billing managers
+  (`role_protected`) and team maintainers (`maintainer_protected`) are never
+  removed; team removals only target the instance's mapped teams. Deleting a
+  mapping stops managing its team (its members stay) and cancels any pending or
+  held removal from that team.
 
 ## Minimal App permissions
 
@@ -244,7 +292,8 @@ The full shared environment checklist is in
 [providers.md](specs/providers.md#github-live-tests); #71 owns the workflow.
 
 The shared harness requires all nine settings below. #64 uses the App and
-installation values for connection checks; the janitor also verifies the bot
+installation values for connection checks, #65's provisioning test uses the bot
+for invitation, team and removal checks, and the janitor also verifies the bot
 identity. The webhook secret remains reserved for #66.
 
 | Environment kind | Name | Value |
@@ -272,16 +321,22 @@ go test -tags integration -count=1 -timeout 10m -v -skip '^TestGitHubLiveJanitor
 
 Locally and on PRs, missing inputs clearly skip the live test. In the protected
 workflow, `ORGLANE_REQUIRE_GITHUB_LIVE=1` makes any missing required value fail.
-The test verifies real App identity, the expected organization and installation,
-permission levels, token issuance and an authenticated repository listing. It
-uses real GitHub with no API mocks and creates no resources needing cleanup.
-The workflow should run the same package target as #65/#66 extend it.
+The connection test verifies real App identity, the expected organization and
+installation, permission levels, token issuance and an authenticated repository
+listing. The provisioning test invites the dedicated non-owner bot by user ID,
+creates one temporarily named team, adds the bot to it, removes it again, removes
+the bot from the organization, cancels an invitation and restores the bot's
+membership; it also re-runs the invitation ensure and requires GitHub to
+attribute the invitation to the App's bot (`<app-slug>[bot]`). Tests use real
+GitHub with no API mocks; temporary teams follow the naming convention above and
+are deleted by the test. The workflow should run the
+same package target as #65/#66 extend it.
 
 External acceptance remains incomplete until that test passes with supplied
 resources. Before release, also run the guided manifest/create/install browser
 round trip and the documented manual fallback against that test organization.
 The OAuth browser authorization/code-exchange leg for employee linking remains
-a separate manual pre-release check (#65); preparing a redirect is not evidence
+a separate manual pre-release check (#95); preparing a redirect is not evidence
 that OAuth completed. Real webhook signatures and event semantics are #66.
 
 ## Live-test resource ownership and janitor

@@ -157,6 +157,7 @@ func TestContractPermissions(t *testing.T) {
 		"GET /api/v1/apps/bindings":                                                               authz.AppsManage,
 		"PUT /api/v1/apps/bindings/{capability}":                                                  authz.AppsManage,
 		"GET /api/v1/apps/instances/{instanceId}/team-mappings":                                   authz.AppsManage,
+		"GET /api/v1/apps/instances/{instanceId}/provider-teams":                                  authz.AppsManage,
 		"PUT /api/v1/apps/instances/{instanceId}/team-mappings/{teamId}":                          authz.AppsManage,
 		"DELETE /api/v1/apps/instances/{instanceId}/team-mappings/{teamId}":                       authz.AppsManage,
 		"GET /api/v1/apps/instances/{instanceId}/provisioning":                                    authz.AppsManage,

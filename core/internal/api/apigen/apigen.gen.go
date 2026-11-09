@@ -1317,6 +1317,10 @@ type AppProvider struct {
 	DefaultPolicy AppAccessPolicy   `json:"defaultPolicy"`
 	EmployeeSteps []AppEmployeeStep `json:"employeeSteps"`
 
+	// ExistingTeams The adapter can map an existing provider team (mode `existing`,
+	// listed by `listAppProviderTeams`).
+	ExistingTeams bool `json:"existingTeams"`
+
 	// Features The capability matrix, every feature in matrix order.
 	Features []AppFeatureSupport `json:"features"`
 
@@ -1351,6 +1355,22 @@ type AppProvider struct {
 // AppProviderList defines model for AppProviderList.
 type AppProviderList struct {
 	Items []AppProvider `json:"items"`
+}
+
+// AppProviderTeam defines model for AppProviderTeam.
+type AppProviderTeam struct {
+	// ExternalRef The provider team ID, the `externalRef` of an `existing` mapping.
+	ExternalRef string `json:"externalRef"`
+
+	// Managed Orglane created the team for a `create` mapping of this instance.
+	Managed bool   `json:"managed"`
+	Name    string `json:"name"`
+	Slug    string `json:"slug"`
+}
+
+// AppProviderTeamList defines model for AppProviderTeamList.
+type AppProviderTeamList struct {
+	Items []AppProviderTeam `json:"items"`
 }
 
 // AppProvisioning defines model for AppProvisioning.
@@ -2939,6 +2959,9 @@ type ServerInterface interface {
 	// ListAppInstanceOperations Operation history of a managed instance
 	// (GET /api/v1/apps/instances/{instanceId}/operations)
 	ListAppInstanceOperations(w http.ResponseWriter, r *http.Request, instanceId InstanceId, params ListAppInstanceOperationsParams)
+	// ListAppProviderTeams Provider teams
+	// (GET /api/v1/apps/instances/{instanceId}/provider-teams)
+	ListAppProviderTeams(w http.ResponseWriter, r *http.Request, instanceId InstanceId)
 	// GetAppProvisioning Provisioning status
 	// (GET /api/v1/apps/instances/{instanceId}/provisioning)
 	GetAppProvisioning(w http.ResponseWriter, r *http.Request, instanceId InstanceId, params GetAppProvisioningParams)
@@ -3652,6 +3675,32 @@ func (siw *ServerInterfaceWrapper) ListAppInstanceOperations(w http.ResponseWrit
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListAppInstanceOperations(w, r, instanceId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListAppProviderTeams operation middleware
+func (siw *ServerInterfaceWrapper) ListAppProviderTeams(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "instanceId" -------------
+	var instanceId InstanceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "instanceId", r.PathValue("instanceId"), &instanceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "instanceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAppProviderTeams(w, r, instanceId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5705,6 +5754,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/bindings", wrapper.ListAppBindings)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/v1/apps/bindings/{capability}", wrapper.SetDefaultAppBinding)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/team-mappings", wrapper.ListAppTeamMappings)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/provider-teams", wrapper.ListAppProviderTeams)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/team-mappings/{teamId}", wrapper.RemoveAppTeamMapping)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/team-mappings/{teamId}", wrapper.SetAppTeamMapping)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/apps/instances/{instanceId}/provisioning", wrapper.GetAppProvisioning)
@@ -7425,6 +7475,143 @@ func (response ListAppInstanceOperations500ApplicationProblemPlusJSONResponse) V
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppProviderTeamsRequestObject struct {
+	InstanceId InstanceId `json:"instanceId"`
+}
+
+type ListAppProviderTeamsResponseObject interface {
+	VisitListAppProviderTeamsResponse(w http.ResponseWriter) error
+}
+
+type ListAppProviderTeams200JSONResponse AppProviderTeamList
+
+func (response ListAppProviderTeams200JSONResponse) VisitListAppProviderTeamsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppProviderTeams401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppProviderTeams401ApplicationProblemPlusJSONResponse) VisitListAppProviderTeamsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppProviderTeams403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppProviderTeams403ApplicationProblemPlusJSONResponse) VisitListAppProviderTeamsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppProviderTeams404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppProviderTeams404ApplicationProblemPlusJSONResponse) VisitListAppProviderTeamsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppProviderTeams409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppProviderTeams409ApplicationProblemPlusJSONResponse) VisitListAppProviderTeamsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppProviderTeams429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppProviderTeams429ApplicationProblemPlusJSONResponse) VisitListAppProviderTeamsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppProviderTeams500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppProviderTeams500ApplicationProblemPlusJSONResponse) VisitListAppProviderTeamsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAppProviderTeams502ApplicationProblemPlusJSONResponse struct {
+	BadGatewayApplicationProblemPlusJSONResponse
+}
+
+func (response ListAppProviderTeams502ApplicationProblemPlusJSONResponse) VisitListAppProviderTeamsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(502)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -14442,6 +14629,9 @@ type StrictServerInterface interface {
 	// ListAppInstanceOperations Operation history of a managed instance
 	// (GET /api/v1/apps/instances/{instanceId}/operations)
 	ListAppInstanceOperations(ctx context.Context, request ListAppInstanceOperationsRequestObject) (ListAppInstanceOperationsResponseObject, error)
+	// ListAppProviderTeams Provider teams
+	// (GET /api/v1/apps/instances/{instanceId}/provider-teams)
+	ListAppProviderTeams(ctx context.Context, request ListAppProviderTeamsRequestObject) (ListAppProviderTeamsResponseObject, error)
 	// GetAppProvisioning Provisioning status
 	// (GET /api/v1/apps/instances/{instanceId}/provisioning)
 	GetAppProvisioning(ctx context.Context, request GetAppProvisioningRequestObject) (GetAppProvisioningResponseObject, error)
@@ -15203,6 +15393,32 @@ func (sh *strictHandler) ListAppInstanceOperations(w http.ResponseWriter, r *htt
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListAppInstanceOperationsResponseObject); ok {
 		if err := validResponse.VisitListAppInstanceOperationsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListAppProviderTeams operation middleware
+func (sh *strictHandler) ListAppProviderTeams(w http.ResponseWriter, r *http.Request, instanceId InstanceId) {
+	var request ListAppProviderTeamsRequestObject
+
+	request.InstanceId = instanceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListAppProviderTeams(ctx, request.(ListAppProviderTeamsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListAppProviderTeams")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListAppProviderTeamsResponseObject); ok {
+		if err := validResponse.VisitListAppProviderTeamsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

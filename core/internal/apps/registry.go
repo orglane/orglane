@@ -48,6 +48,13 @@ func (a *Adapter) Verifier() (provider.AccountVerifier, bool) {
 	return p, ok
 }
 
+// RemovalChecker returns the adapter's RemovalChecker, if it has one: the
+// adapter scopes removals to its current desired access.
+func (a *Adapter) RemovalChecker() (provider.RemovalChecker, bool) {
+	p, ok := a.impl.(provider.RemovalChecker)
+	return p, ok
+}
+
 // EventSource returns the adapter's EventSource, if it has one.
 func (a *Adapter) EventSource() (provider.EventSource, bool) {
 	p, ok := a.impl.(provider.EventSource)
@@ -72,6 +79,13 @@ func (a *Adapter) validateTeamMapping(inst provider.Instance, mode, ref string) 
 		return invalid("mode", "%v", err)
 	}
 	return nil
+}
+
+// TeamLister returns the adapter's TeamLister, if it has one: its team
+// mappings can pick existing provider teams.
+func (a *Adapter) TeamLister() (provider.TeamLister, bool) {
+	p, ok := a.impl.(provider.TeamLister)
+	return p, ok
 }
 
 // RelyingParty returns the adapter's OIDCRelyingParty, if it has one.

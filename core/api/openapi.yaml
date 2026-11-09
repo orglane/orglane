@@ -2644,6 +2644,45 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/apps/instances/{instanceId}/provider-teams:
+    get:
+      operationId: listAppProviderTeams
+      summary: Provider teams
+      description: |
+        The provider's teams an admin can pick for a mapping of mode
+        `existing` (GitHub), read from the provider now. `managed` marks the
+        teams Orglane created for this instance's `create` mappings. 404 for
+        providers without existing-team mappings; 409 unless the instance is
+        `active` or `degraded`; 429 with `Retry-After` for the provider's
+        rate limit; 502 when the provider cannot be read (`code` says why).
+      tags: [apps]
+      x-orglane-permission: apps.manage
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: The provider's teams, by name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppProviderTeamList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
   /api/v1/apps/instances/{instanceId}/team-mappings/{teamId}:
     put:
       operationId: setAppTeamMapping
@@ -4585,6 +4624,7 @@ components:
           defaultKey,
           defaultPolicy,
           provisioning,
+          existingTeams,
           webhooks,
           lifecycle,
         ]
@@ -4629,6 +4669,11 @@ components:
         provisioning:
           type: boolean
           description: The adapter provisions people.
+        existingTeams:
+          type: boolean
+          description: |
+            The adapter can map an existing provider team (mode `existing`,
+            listed by `listAppProviderTeams`).
         webhooks:
           type: boolean
           description: The adapter receives webhooks.
@@ -5088,6 +5133,28 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AppTeamMapping"
+    AppProviderTeam:
+      type: object
+      required: [externalRef, name, slug, managed]
+      properties:
+        externalRef:
+          type: string
+          description: The provider team ID, the `externalRef` of an `existing` mapping.
+        name:
+          type: string
+        slug:
+          type: string
+        managed:
+          type: boolean
+          description: Orglane created the team for a `create` mapping of this instance.
+    AppProviderTeamList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppProviderTeam"
     SetAppTeamMappingRequest:
       type: object
       required: [mode]

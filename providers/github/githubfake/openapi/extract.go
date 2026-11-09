@@ -22,10 +22,96 @@ var operations = map[string][]string{
 	"/app-manifests/{code}/conversions":    {"post"},
 	"/app/hook/config":                     {"patch"},
 	"/app/installations/{installation_id}": {"get"},
-	"/app/installations/{installation_id}/access_tokens": {"post"},
-	"/applications/{client_id}/grant":                    {"delete"},
-	"/orgs/{org}":                                        {"get"},
-	"/user":                                              {"get"},
+	"/app/installations/{installation_id}/access_tokens":   {"post"},
+	"/applications/{client_id}/grant":                      {"delete"},
+	"/orgs/{org}":                                          {"get"},
+	"/orgs/{org}/invitations":                              {"get", "post"},
+	"/orgs/{org}/invitations/{invitation_id}":              {"delete"},
+	"/orgs/{org}/members":                                  {"get"},
+	"/orgs/{org}/memberships/{username}":                   {"get", "delete"},
+	"/orgs/{org}/teams":                                    {"get", "post"},
+	"/orgs/{org}/teams/{team_slug}/memberships/{username}": {"get", "put", "delete"},
+	"/user":              {"get"},
+	"/user/{account_id}": {"get"},
+}
+
+// idParameter is one of the numeric path parameters of the team-ID routes
+// GitHub documents as alternates of the slug routes.
+func idParameter(name, description string) map[string]any {
+	return map[string]any{
+		"name": name, "in": "path", "required": true, "description": description,
+		"schema": map[string]any{"type": "integer", "format": "int64"},
+	}
+}
+
+// legacyTeamIDParameters replaces the slug route's org and team_slug path
+// parameters with the numeric org_id and team_id of the documented alternate
+// route. Other parameters (username, body and responses) are unchanged.
+func legacyTeamIDParameters(parameters any) any {
+	list, _ := parameters.([]any)
+	out := make([]any, 0, len(list))
+	for _, p := range list {
+		ref := ""
+		if m, ok := p.(map[string]any); ok {
+			ref, _ = m["$ref"].(string)
+		}
+		switch {
+		case strings.HasSuffix(ref, "/org"):
+			out = append(out, idParameter("org_id", "The unique identifier of the organization."))
+		case strings.HasSuffix(ref, "/team-slug"):
+			out = append(out, idParameter("team_id", "The unique identifier of the team."))
+		default:
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// legacyTeamIDPaths derives the team-ID routes that GitHub's REST reference
+// documents in the descriptions of the slug operations ("You can also
+// specify a team by `org_id` and `team_id` using the route ...") but that its
+// OpenAPI description does not list as paths. Each operation keeps the
+// documented slug operation's request body and responses, so requests and
+// responses are still checked against GitHub's own schemas.
+func legacyTeamIDPaths(srcPaths map[string]any) map[string]any {
+	routes := []struct {
+		from, to string
+		methods  []string
+	}{
+		{"/orgs/{org}/teams/{team_slug}", "/organizations/{org_id}/team/{team_id}", []string{"get"}},
+		{"/orgs/{org}/teams/{team_slug}/memberships/{username}", "/organizations/{org_id}/team/{team_id}/memberships/{username}", []string{"get", "put", "delete"}},
+	}
+	paths := map[string]any{}
+	for _, route := range routes {
+		src, ok := srcPaths[route.from].(map[string]any)
+		if !ok {
+			panic("missing path " + route.from)
+		}
+		item := map[string]any{}
+		for _, method := range route.methods {
+			op, ok := src[method].(map[string]any)
+			if !ok {
+				panic("missing operation " + method + " " + route.from)
+			}
+			raw, err := json.Marshal(op)
+			if err != nil {
+				panic(err)
+			}
+			var copied map[string]any
+			if err := json.Unmarshal(raw, &copied); err != nil {
+				panic(err)
+			}
+			if parameters, ok := copied["parameters"]; ok {
+				copied["parameters"] = legacyTeamIDParameters(parameters)
+			}
+			if id, ok := copied["operationId"].(string); ok {
+				copied["operationId"] = id + "-by-id"
+			}
+			item[method] = copied
+		}
+		paths[route.to] = item
+	}
+	return paths
 }
 
 func main() {
@@ -60,6 +146,9 @@ func main() {
 			out[m] = op
 		}
 		paths[path] = out
+	}
+	for path, item := range legacyTeamIDPaths(srcPaths) {
+		paths[path] = item
 	}
 	components := doc["components"].(map[string]any)
 	keep := map[string]map[string]any{}

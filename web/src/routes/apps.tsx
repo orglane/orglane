@@ -24,10 +24,12 @@ import {
   appInstancesQuery,
   appOperationsQuery,
   appProvidersQuery,
+  appProviderTeamsQuery,
   appProvisioningQuery,
   appsKey,
   appTeamMappingsQuery,
   explainCode,
+  explainStep,
   featureMessages,
   guidanceMessages,
   healthMessages,
@@ -271,6 +273,27 @@ const messages = defineMessages({
   }),
   unmapShort: { id: "appInstance.unmapShort", defaultMessage: "Remove" },
   waitingSync: { id: "appInstance.waitingSync", defaultMessage: "Waiting for sync" },
+  mappingMode: { id: "appInstance.mappingMode", defaultMessage: "Team in the app" },
+  modeCreate: {
+    id: "appInstance.modeCreate",
+    defaultMessage: "Create a team named after the Orglane team",
+  },
+  modeExisting: { id: "appInstance.modeExisting", defaultMessage: "Use an existing team" },
+  existingTeam: { id: "appInstance.existingTeam", defaultMessage: "Existing team" },
+  chooseExistingTeam: {
+    id: "appInstance.chooseExistingTeam",
+    defaultMessage: "Choose a team in the app",
+  },
+  noExistingTeams: {
+    id: "appInstance.noExistingTeams",
+    defaultMessage: "The app has no team that is not mapped yet.",
+  },
+  existingHint: {
+    id: "appInstance.existingHint",
+    defaultMessage:
+      "Orglane adds and removes this team's members to match the Orglane team. People already in the team who are not Orglane's stay.",
+  },
+  existingBadge: { id: "appInstance.existingBadge", defaultMessage: "Existing team" },
   archived: { id: "appInstance.archived", defaultMessage: "Archived" },
   provisioning: { id: "appInstance.provisioning", defaultMessage: "People" },
   provisioningDescription: {
@@ -1126,10 +1149,13 @@ function ForceResolution({
 
 function TeamMappings({
   instanceId,
+  existingTeams,
   busy,
   onChange,
 }: {
   instanceId: string;
+  /** The provider can map existing teams (mode "existing"). */
+  existingTeams: boolean;
   busy: boolean;
   onChange: () => void;
 }) {
@@ -1137,7 +1163,10 @@ function TeamMappings({
   const intl = useIntl();
   const queryClient = useQueryClient();
   const selectId = useId();
+  const modeId = useId();
   const [teamId, setTeamId] = useState("");
+  const [mode, setMode] = useState<Schema<"AppTeamMappingMode">>("create");
+  const [externalRef, setExternalRef] = useState("");
   const mappings = useQuery({
     ...appTeamMappingsQuery(api, instanceId),
     // Until the provider team exists, the mapping is "waiting for sync".
@@ -1145,20 +1174,30 @@ function TeamMappings({
       busy || q.state.data?.items.some((m) => !m.externalRef && !m.teamArchived) ? POLL_MS : false,
   });
   const teams = useQuery(teamsQuery(api));
+  const providerTeams = useQuery({
+    ...appProviderTeamsQuery(api, instanceId),
+    enabled: existingTeams && mode === "existing",
+  });
   const invalidate = () => {
     onChange();
     return queryClient.invalidateQueries({ queryKey: appsKey });
   };
   const add = useMutation({
-    mutationFn: () =>
-      call(
+    mutationFn: () => {
+      const picked = providerTeams.data?.items.find((t) => t.externalRef === externalRef);
+      return call(
         api.client.PUT("/api/v1/apps/instances/{instanceId}/team-mappings/{teamId}", {
           params: { path: { instanceId, teamId } },
-          body: { mode: "create" },
+          body:
+            mode === "existing"
+              ? { mode, externalRef, ...(picked ? { externalName: picked.slug } : {}) }
+              : { mode },
         }),
-      ),
+      );
+    },
     onSuccess: async () => {
       setTeamId("");
+      setExternalRef("");
       await invalidate();
     },
   });
@@ -1173,6 +1212,13 @@ function TeamMappings({
   });
   const available =
     teams.data?.items.filter((t) => !mappings.data?.items.some((m) => m.teamId === t.id)) ?? [];
+  // Teams Orglane created, and teams mapped already, are not offered.
+  const pickable =
+    providerTeams.data?.items.filter(
+      (t) => !t.managed && !mappings.data?.items.some((m) => m.externalRef === t.externalRef),
+    ) ?? [];
+  const ready =
+    teamId !== "" && (mode === "create" || pickable.some((t) => t.externalRef === externalRef));
   return (
     <Card>
       <CardHeader>
@@ -1204,6 +1250,11 @@ function TeamMappings({
                   <span className="ml-2 text-muted-foreground">
                     {m.externalName ?? <FormattedMessage {...messages.waitingSync} />}
                   </span>
+                  {m.mode === "existing" && (
+                    <Badge className="ml-2">
+                      <FormattedMessage {...messages.existingBadge} />
+                    </Badge>
+                  )}
                   {m.teamArchived && (
                     <Badge className="ml-2">
                       <FormattedMessage {...messages.archived} />
@@ -1228,7 +1279,7 @@ function TeamMappings({
             className="flex flex-wrap items-end gap-3 border-t pt-4"
             onSubmit={(e) => {
               e.preventDefault();
-              if (teamId) add.mutate();
+              if (ready) add.mutate();
             }}
           >
             <div className="flex min-w-0 flex-1 flex-col gap-2">
@@ -1251,7 +1302,71 @@ function TeamMappings({
                 ))}
               </select>
             </div>
-            <Button type="submit" loading={add.isPending} disabled={!teamId}>
+            {existingTeams && (
+              <fieldset className="flex w-full flex-col gap-2">
+                <legend className="mb-2 font-medium text-sm">
+                  <FormattedMessage {...messages.mappingMode} />
+                </legend>
+                {(["create", "existing"] as const).map((m) => (
+                  <div key={m} className="flex items-center gap-2">
+                    <input
+                      id={`${modeId}-${m}`}
+                      type="radio"
+                      name={`${modeId}-mode`}
+                      className="size-4"
+                      checked={mode === m}
+                      onChange={() => setMode(m)}
+                      disabled={add.isPending}
+                    />
+                    <Label htmlFor={`${modeId}-${m}`} className="font-normal">
+                      <FormattedMessage
+                        {...(m === "create" ? messages.modeCreate : messages.modeExisting)}
+                      />
+                    </Label>
+                  </div>
+                ))}
+              </fieldset>
+            )}
+            {existingTeams && mode === "existing" && (
+              <div className="flex w-full min-w-0 flex-col gap-2">
+                <Label htmlFor={`${modeId}-team`}>
+                  <FormattedMessage {...messages.existingTeam} />
+                </Label>
+                {providerTeams.isPending ? (
+                  <Loading />
+                ) : providerTeams.isError ? (
+                  <LoadError
+                    error={providerTeams.error}
+                    retry={() => void providerTeams.refetch()}
+                  />
+                ) : pickable.length === 0 ? (
+                  <p className="text-muted-foreground text-sm">
+                    <FormattedMessage {...messages.noExistingTeams} />
+                  </p>
+                ) : (
+                  <select
+                    id={`${modeId}-team`}
+                    required
+                    value={externalRef}
+                    onChange={(e) => setExternalRef(e.target.value)}
+                    aria-describedby={`${modeId}-hint`}
+                    className="h-10 min-w-0 rounded-md border bg-surface px-3 text-sm sm:h-9"
+                    disabled={add.isPending}
+                  >
+                    <option value="">{intl.formatMessage(messages.chooseExistingTeam)}</option>
+                    {pickable.map((t) => (
+                      <option key={t.externalRef} value={t.externalRef}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <p id={`${modeId}-hint`} className="text-muted-foreground text-sm">
+                  <FormattedMessage {...messages.existingHint} />
+                </p>
+              </div>
+            )}
+            <Button type="submit" loading={add.isPending} disabled={!ready}>
               <Plus aria-hidden="true" />
               <FormattedMessage {...messages.mapTeam} />
             </Button>
@@ -1502,6 +1617,11 @@ function Provisioning({
                         </td>
                         <td className="py-2 pr-4">
                           <StatusBadge status={r.status} />
+                          {r.status === "pending_employee_action" && r.employeeStep && (
+                            <p className="mt-1 max-w-xs text-xs">
+                              {explainStep(intl, r.employeeStep) ?? r.employeeStep}
+                            </p>
+                          )}
                           {r.status === "failed" && (
                             <p className="mt-1 max-w-xs text-xs">
                               {explainCode(intl, r.errorCode) ??
@@ -1957,7 +2077,12 @@ export function AppInstancePage({ instanceId }: { instanceId: string }) {
         {instance.state !== "removed" && provisioningEnabled && (
           <>
             <AccessSettings instance={instance} onChange={mark} />
-            <TeamMappings instanceId={instanceId} busy={busy} onChange={mark} />
+            <TeamMappings
+              instanceId={instanceId}
+              existingTeams={provider?.existingTeams ?? false}
+              busy={busy}
+              onChange={mark}
+            />
             <Provisioning instanceId={instanceId} busy={busy} onChange={mark} />
           </>
         )}

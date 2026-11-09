@@ -267,12 +267,29 @@ type DesiredAccess struct {
 	Username    string // people.username
 	DisplayName string
 	WorkEmail   string
-	Access      bool         // false: the person must not have access
-	Teams       []TeamRef    // provider-side teams the person must be in (exactly these, among mapped teams)
-	Link        *AccountLink // verified link in this provider realm, if any
+	Access      bool      // false: the person must not have access
+	Teams       []TeamRef // provider-side teams the person must be in (exactly these, among mapped teams)
+	// Mapped are the provider-side teams of all the instance's mappings
+	// (archived Orglane teams included), whether or not the person is in
+	// them: the teams Orglane manages membership of. Adapters that cannot
+	// mark the teams they manage (GitHub teams picked with mode "existing")
+	// plan team removals only from these.
+	Mapped []TeamRef
+	Link   *AccountLink // verified link in this provider realm, if any
 	// Managed: removal allowed (Orglane granted the access or the instance
 	// manages existing members).
 	Managed bool
+}
+
+// RemovalChecker is optional. It reports whether a queued removal still
+// targets access the adapter manages, given the person's current desired
+// access. The core checks it when it tests a removal's freshness and again
+// before applying it. GitHub manages team membership only of the instance's
+// current mappings, so deleting a mapping cancels pending and held removals
+// from that team; a Forgejo team stays Orglane's without a mapping. Pure: no
+// provider calls.
+type RemovalChecker interface {
+	RemovalStillManaged(inst Instance, d DesiredAccess, a Action) bool
 }
 
 // Plan is the result of UserProvisioner.Plan.
@@ -540,6 +557,22 @@ func OIDCClientID(key string) string { return "app-" + key }
 // core calls it before storing a mapping. Pure: no provider calls.
 type TeamMappingValidator interface {
 	ValidateTeamMapping(inst Instance, mode, externalRef string) error
+}
+
+// TeamLister lists the provider-side teams an admin can pick for a mapping
+// of mode "existing" (GitHub). Read-only.
+type TeamLister interface {
+	ProviderTeams(ctx context.Context, env Env, inst Instance) ([]Team, error)
+}
+
+// Team is a provider-side team as TeamLister lists it.
+type Team struct {
+	ExternalRef string // provider team ID, the mapping's external reference
+	Name        string // display name
+	Slug        string // provider slug, informational
+	// Managed: Orglane created the team for a "create" mapping (marked
+	// so), so it is not offered for "existing" mappings.
+	Managed bool
 }
 
 // SettingsValidator checks instance settings beyond what SettingSpec can

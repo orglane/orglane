@@ -793,6 +793,36 @@ func (s *Service) TeamMappings(ctx context.Context, instanceID uuid.UUID) ([]Tea
 	return rows, nil
 }
 
+// ProviderTeams lists the provider's teams an admin can pick for an
+// "existing" mapping, read from the provider now. ErrNotSupported for
+// adapters without a TeamLister; ErrInvalidState unless the instance is
+// active or degraded. Provider failures are returned as they are
+// (*provider.Error).
+func (s *Service) ProviderTeams(ctx context.Context, instanceID uuid.UUID) ([]provider.Team, error) {
+	inst, err := s.loadInstance(ctx, store.New(s.pool), instanceID, false)
+	if err != nil {
+		return nil, err
+	}
+	if inst.Adapter == nil {
+		return nil, ErrProviderUnavailable
+	}
+	lister, ok := inst.Adapter.TeamLister()
+	if !ok {
+		return nil, ErrNotSupported
+	}
+	if !inst.Provisionable() {
+		return nil, ErrInvalidState
+	}
+	teams, err := lister.ProviderTeams(ctx, s.env(inst), inst.View())
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(teams, func(a, b provider.Team) int {
+		return cmp.Or(strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)), strings.Compare(a.ExternalRef, b.ExternalRef))
+	})
+	return teams, nil
+}
+
 // TeamMappingInput creates or changes a team mapping.
 type TeamMappingInput struct {
 	Mode string // provider.MappingCreate | provider.MappingExisting
