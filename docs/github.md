@@ -188,6 +188,13 @@ under the App's webhook secret (during a rotation, under any version GitHub may
 still use), compared in constant time. A failed check answers `401` and stores
 nothing. Deliveries are deduplicated by the signed bytes and by
 `X-GitHub-Delivery`; GitHub's redeliveries of the same bytes are duplicates.
+Delivery rows expire after 30 days, but each signed body's *effects* (the
+connection state changes below and the provisioning resync) are remembered for
+the instance's lifetime in `webhook_effect_marks`. Replaying an old delivery
+after that therefore stores a new delivery but never suspends, disconnects,
+restores or resyncs again (`ignored` with `effect_replayed` when it has no
+events); a captured suspension cannot degrade a healthy connection later, and
+an old delivery cannot prove a deleted webhook works again.
 
 Only signed body fields decide whether a delivery is for the instance: its
 `installation.id` must be the connected installation and `organization.id`,

@@ -230,6 +230,108 @@ func TestGitHubWebhooks(t *testing.T) {
 	}
 }
 
+// TestGitHubEffectReplayAfterCleanup reproduces the review finding on
+// 2156e68: delivery retention deletes the dedupe rows after 30 days, and a
+// replay of the exact signed bytes then reapplied the connection effect
+// although GitHub had not suspended the installation again. The durable
+// effect marks outlive the delivery rows, so an old suspension cannot
+// degrade the active instance and an old delivery cannot restore one whose
+// webhook was deleted afterwards.
+func TestGitHubEffectReplayAfterCleanup(t *testing.T) {
+	h := newHarnessWith(t, apps.Config{}, githubprovider.New())
+	inst, err := h.svc.CreateInstance(h.ctx, audit.System, apps.NewInstance{Provider: "github", Key: "github", State: apps.StateActive, BaseURL: "https://github.com/Octocoders",
+		Settings: map[string]any{"organization": "Octocoders", "organization_id": "38302899", "installation_id": "1", "app_id": "456"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.svc.StoreCredential(h.ctx, audit.System, inst.ID, "webhook_secret", fixtureSecret); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	n := 0
+	send := func(event string, body []byte) string {
+		t.Helper()
+		n++
+		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", n)
+		r, err := h.svc.ReceiveWebhook(h.ctx, inst.ID, githubDelivery(fixtureSecret, body, id, event), body)
+		if err != nil || r.Duplicate {
+			t.Fatalf("%s: receipt %+v, %v", event, r, err)
+		}
+		h.drain()
+		return id
+	}
+	outcome := func(id string) string {
+		t.Helper()
+		var status, code string
+		if err := h.pool.QueryRow(h.ctx, `SELECT status, coalesce(error_code, '') FROM webhook_deliveries WHERE delivery_id = $1`, id).Scan(&status, &code); err != nil {
+			t.Fatal(err)
+		}
+		return status + "/" + code
+	}
+	state := func() string {
+		t.Helper()
+		var st, code string
+		if err := h.pool.QueryRow(h.ctx, `SELECT state, coalesce(health_code, '') FROM app_instances WHERE id = $1`, inst.ID).Scan(&st, &code); err != nil {
+			t.Fatal(err)
+		}
+		return st + "/" + code
+	}
+
+	ours := map[string]any{"installation.id": 1, "installation.account.id": 38302899}
+	pr := githubFixture(t, "pull_request.opened.with-organization", map[string]any{"pull_request.body": "Please look, @hubot."})
+	suspend := githubFixture(t, "installation.suspend", ours)
+	unsuspend := githubFixture(t, "installation.unsuspend", ours)
+	if id := send("pull_request", pr); outcome(id) != "processed/" || state() != "active/" {
+		t.Fatalf("pull request: %s %s", outcome(id), state())
+	}
+	if id := send("installation", suspend); outcome(id) != "processed/" || state() != "degraded/installation_suspended" {
+		t.Fatalf("suspended: %s %s", outcome(id), state())
+	}
+	if id := send("installation", unsuspend); outcome(id) != "processed/" || state() != "active/" {
+		t.Fatalf("unsuspended: %s %s", outcome(id), state())
+	}
+	audits := h.auditCount(audit.AppInstanceStateChanged)
+
+	// Retention removes the delivery rows (the replay key), not the effect
+	// marks (the durable effect key).
+	h.exec(`UPDATE webhook_deliveries SET received_at = now() - interval '31 days', processed_at = now() - interval '31 days'`)
+	if _, err := h.svc.Cleanup(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if h.count(`SELECT count(*) FROM webhook_deliveries`) != 0 {
+		t.Fatal("retention kept deliveries")
+	}
+
+	// The reviewer's reproduction: the exact original suspension bytes and
+	// signature, under a fresh delivery ID after cleanup. The delivery is
+	// accepted (its dedupe row is gone) but its effect was already
+	// considered, so the healthy connection stays active and nothing is
+	// audited.
+	if id := send("installation", suspend); outcome(id) != "ignored/effect_replayed" || state() != "active/" {
+		t.Fatalf("replayed suspension: %s %s", outcome(id), state())
+	}
+	if got := h.auditCount(audit.AppInstanceStateChanged) - audits; got != 0 {
+		t.Fatalf("replayed suspension changed the state %d times", got)
+	}
+	if got := h.count(`SELECT count(*) FROM webhook_effect_marks WHERE instance_id = $1`, inst.ID); got != 3 {
+		t.Fatalf("%d effect marks survived retention, want 3", got)
+	}
+
+	// A stale delivery cannot restore a degradation that happened after it
+	// was processed: the old pull request proved the hook worked then, not
+	// after the App's webhook was deleted.
+	if id := send("meta", githubFixture(t, "meta.deleted", nil)); outcome(id) != "processed/" || state() != "degraded/webhook_deleted" {
+		t.Fatalf("hook deleted: %s %s", outcome(id), state())
+	}
+	audits = h.auditCount(audit.AppInstanceStateChanged)
+	if id := send("pull_request", pr); outcome(id) != "processed/" || state() != "degraded/webhook_deleted" {
+		t.Fatalf("replayed delivery restored the deleted hook: %s %s", outcome(id), state())
+	}
+	if got := h.auditCount(audit.AppInstanceStateChanged) - audits; got != 0 {
+		t.Fatalf("replayed delivery changed the state %d times", got)
+	}
+}
+
 // effectsProvider is the test provider with fixed delivery effects, for the
 // core's handling of provider.DeliveryEffects independent of GitHub.
 type effectsProvider struct {

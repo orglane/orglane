@@ -166,6 +166,10 @@ const (
 	deliveryFailed    = "failed"
 )
 
+// codeEffectReplayed marks a delivery whose signed body's effects were
+// already considered for this instance, before its delivery row expired.
+const codeEffectReplayed = "effect_replayed"
+
 var (
 	eventTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){2}$`)
 	// maxEventsPerDelivery bounds what one delivery may create.
@@ -230,14 +234,31 @@ func (s *Service) RunProcessDelivery(ctx context.Context, args ProcessDeliveryAr
 			h.Set(k, v)
 		}
 		d := provider.Delivery{ID: row.DeliveryID, EventName: row.EventName, Headers: h, Body: body, ReceivedAt: row.ReceivedAt}
-		effected := false
+		effected, replayed := false, false
 		if fx, ok := src.(provider.DeliveryEffects); ok {
 			effect, err := fx.Effects(inst.View(), d)
 			if err != nil {
 				status, code := normalizeFailure(err)
 				return finish(status, code, 0)
 			}
-			if effected, err = s.applyEffect(ctx, tx, q, inst, effect); err != nil {
+			// The signed body, not the delivery row, is the durable effect
+			// key: delivery rows expire after 30 days, but a replay must
+			// never reapply a connection effect (docs/specs/providers.md
+			// "Replay and retention").
+			kind, code := effectMark(effect)
+			inserted, err := q.InsertWebhookEffectMark(ctx, store.InsertWebhookEffectMarkParams{
+				InstanceID:   row.InstanceID,
+				BodySha256:   row.BodySha256,
+				Effect:       kind,
+				Code:         code,
+				ConsideredAt: s.cfg.Now().UTC(),
+			})
+			if err != nil {
+				return fmt.Errorf("apps: mark delivery effect: %w", err)
+			}
+			if inserted == 0 {
+				replayed = true
+			} else if effected, err = s.applyEffect(ctx, tx, q, inst, effect); err != nil {
 				return err
 			}
 		}
@@ -248,6 +269,8 @@ func (s *Service) RunProcessDelivery(ctx context.Context, args ProcessDeliveryAr
 			return finish(status, code, 0)
 		case events == nil && effected:
 			return finish(deliveryProcessed, "", 0)
+		case events == nil && replayed:
+			return finish(deliveryIgnored, codeEffectReplayed, 0)
 		case events == nil:
 			return finish(deliveryIgnored, "not_normalized", 0)
 		}
@@ -295,6 +318,25 @@ func normalizeFailure(err error) (status, code string) {
 }
 
 var effectCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// effectMark names an effect for its durable mark. Every delivery whose
+// effects were evaluated gets a mark, including one that changes nothing:
+// the mark says "considered once", so a replay cannot turn a no-op, an
+// already satisfied state or a skipped transition into a later state change.
+// An effect whose state or code is invalid is skipped by applyEffect and is
+// recorded as no effect (or as only its resync).
+func effectMark(e provider.Effect) (kind, code string) {
+	switch e.State {
+	case provider.EffectDegraded, provider.EffectDisconnected, provider.EffectRestored:
+		if effectCodePattern.MatchString(e.Code) {
+			return e.State, e.Code
+		}
+	}
+	if e.Resync {
+		return "resync", ""
+	}
+	return "none", ""
+}
 
 // applyEffect applies what a delivery changes besides its events, in the
 // transaction that stores them (docs/specs/providers.md "Webhooks" ->
@@ -415,8 +457,10 @@ type CleanupResult struct {
 // Cleanup is the daily retention job: retired and discarded credential
 // versions, provider call records a day after their lease, expired OAuth
 // state, delivery bodies 7 days after processing
-// (30 for failed ones) and deliveries after 30 days. Events are never
-// touched. It also reports rotations uncertain for a day.
+// (30 for failed ones) and deliveries after 30 days. Events and the
+// durable effect marks are never touched: they outlive delivery retention
+// so a replay cannot reapply an effect. It also reports rotations
+// uncertain for a day.
 func (s *Service) Cleanup(ctx context.Context) (CleanupResult, error) {
 	q := store.New(s.pool)
 	var r CleanupResult

@@ -538,3 +538,11 @@ type WebhookDelivery struct {
 	EventCount  int32
 	ProcessedAt *time.Time
 }
+
+type WebhookEffectMark struct {
+	InstanceID   uuid.UUID
+	BodySha256   []byte
+	Effect       string
+	Code         string
+	ConsideredAt time.Time
+}
