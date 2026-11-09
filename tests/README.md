@@ -33,7 +33,7 @@ selection and the aggregate check have regression tests in `tests/ci`
 
 | Tier | Jobs and targets | Runs on pull requests |
 |---|---|---|
-| Fast | `lint`, `build`, `security`, `make test-unit`, `make test-ts`, `make test-root`, `make test-integration-fast` (PostgreSQL integration with `-race`), `make test-apps` (three shards of `core/internal/apps` PostgreSQL tests, `-race`), `make test-agent` (the agent's non-Docker tests, `-race`), `make test-website` | Always |
+| Fast | `lint`, `build`, `security`, `make test-unit`, `make test-ts`, `make test-root`, `make test-integration-fast` (PostgreSQL integration with `-race`), `make test-apps` (three shards of `core/internal/apps` PostgreSQL tests, `-race`), `make test-agent` (the agent's non-Docker tests, `-race`), `make test-website` | Every pull request with code changes (docs-only PRs keep the existing skip) |
 | Heavy | `make test-apps-e2e` (three shards: real Forgejo, agent and Traefik, including the M2 acceptance scenario), `make test-agent-e2e` (real Docker projects), `make test-compose` and `make test-install` (one job), `make test-e2e` (web UI) | Unless every changed path is docs/website/license, or with the `full-ci` label |
 
 The heavy tier runs without `-race`: the race detector cannot observe
