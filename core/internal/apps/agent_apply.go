@@ -262,6 +262,16 @@ func (s *Service) operationFinished(ctx context.Context, tx pgx.Tx, q *store.Que
 				_, err := s.transition(ctx, tx, q, audit.System, inst.ID, StateFailed, agentapi.CodeRollbackFailed)
 				return err
 			}
+			if ds.Reason == ReasonRevert {
+				// The revert itself failed: recording another revert would
+				// fail the same way, so stop and report it.
+				failed := code
+				if failed == "" {
+					failed = CodeUpgradeFailed
+				}
+				_, err := s.transition(ctx, tx, q, audit.System, inst.ID, StateFailed, failed)
+				return err
+			}
 			return s.revertUpgrade(ctx, tx, q, inst, ds, code)
 		}
 	case agentapi.OpRolledBack:

@@ -47,11 +47,11 @@ func registryWithVersions(t *testing.T, versions ...string) *packages.Registry {
 	return r
 }
 
-// runningOn installs agenttest version, applies it and runs Setup, leaving
-// an active instance.
-func runningOn(t *testing.T, h *harness, version string) apps.Instance {
+// runningOn installs agenttest 1.0.0-1, applies it and runs Setup, leaving
+// an active instance at the start of the upgrade path.
+func runningOn(t *testing.T, h *harness) apps.Instance {
 	t.Helper()
-	inst, err := h.svc.InstallVersionForTest(h.ctx, audit.System, apps.NewInstance{Provider: "agenttest"}, version)
+	inst, err := h.svc.InstallVersionForTest(h.ctx, audit.System, apps.NewInstance{Provider: "agenttest"}, agenttest.Version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +60,8 @@ func runningOn(t *testing.T, h *harness, version string) apps.Instance {
 		t.Fatal(err)
 	}
 	got := h.reload(inst.ID)
-	if got.State != apps.StateActive || derefS(got.PackageVersion) != version {
-		t.Fatalf("install %s: %+v", version, got.AppInstance)
+	if got.State != apps.StateActive || derefS(got.PackageVersion) != agenttest.Version {
+		t.Fatalf("install %s: %+v", agenttest.Version, got.AppInstance)
 	}
 	return got
 }
@@ -108,7 +108,7 @@ func TestAgentUpgradeConfirmed(t *testing.T) {
 	host.start()
 	h := newHarness(t, host.agentConfig)
 	h.agentProv.SetPackageSettings(map[string]any{"http_port": freePort(t), "message": "upgrade"})
-	inst := runningOn(t, h, agenttest.Version)
+	inst := runningOn(t, h)
 
 	// A new Orglane release would embed 2.0.0-1 and 3.0.0-1; here the core
 	// already does. The sync plans the first required stop.
@@ -182,7 +182,7 @@ func TestAgentUpgradeRollbackRevertsAndRetries(t *testing.T) {
 	host.start()
 	h := newHarness(t, host.agentConfig)
 	h.agentProv.SetPackageSettings(map[string]any{"http_port": freePort(t), "message": "rollback"})
-	inst := runningOn(t, h, agenttest.Version)
+	inst := runningOn(t, h)
 
 	if err := h.svc.RunAgentSync(h.ctx); err != nil {
 		t.Fatal(err)
@@ -287,6 +287,52 @@ func TestAgentUpgradeRollbackRevertsAndRetries(t *testing.T) {
 	}
 }
 
+// TestAgentUpgradeFailedRevertStops: when the revert generation itself
+// cannot be applied (the running version is no longer embedded), another
+// revert would fail the same way; the instance fails with that code instead
+// of recording new generations forever.
+func TestAgentUpgradeFailedRevertStops(t *testing.T) {
+	host := newAgentHost(t)
+	host.start()
+	release12 := registryWithVersions(t, agenttest.Version, agenttest.Version2)
+	h := newHarness(t, host.agentConfig, func(c *apps.Config) { c.Packages = release12 })
+	h.agentProv.SetPackageSettings(map[string]any{"http_port": freePort(t), "message": "failed revert"})
+	inst := runningOn(t, h)
+
+	if err := h.svc.RunAgentSync(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.reload(inst.ID); got.DesiredGeneration != 2 || got.State != apps.StateUpgrading {
+		t.Fatalf("planner: %+v", got.AppInstance)
+	}
+	h.agentProv.Fail("health", errors.New("candidate is unhealthy"))
+	applyUntilDone(t, h.svc, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 2})
+	if op := h.operation(inst.ID, 2); op.State != agentapi.OpRolledBack {
+		t.Fatalf("upgrade: %+v", op)
+	}
+	if reason := desiredReason(t, h, inst.ID, 3); reason != apps.ReasonRevert {
+		t.Fatalf("revert generation reason = %q", reason)
+	}
+
+	// A later Orglane release no longer embeds the version that still runs,
+	// so the revert spec cannot be assembled.
+	next := h.restartCore(func(c *apps.Config) {
+		c.Packages = registryWithVersions(t, agenttest.Version2, agenttest.Version3)
+	})
+	applyUntilDone(t, next, apps.AgentApplyArgs{InstanceID: inst.ID, Generation: 3})
+	got := h.reload(inst.ID)
+	op := h.operation(inst.ID, 3)
+	if op.State != agentapi.OpFailed || derefS(op.ErrorCode) != apps.CodePackageUnavailable {
+		t.Fatalf("failed revert: %+v", op)
+	}
+	if got.State != apps.StateFailed || derefS(got.HealthCode) != apps.CodePackageUnavailable || got.DesiredGeneration != 3 {
+		t.Fatalf("after the failed revert: %+v", got.AppInstance)
+	}
+	if n := h.count(`SELECT count(*) FROM app_desired_specs WHERE instance_id = $1`, inst.ID); n != 3 {
+		t.Fatalf("%d desired generations after the failed revert, want 3", n)
+	}
+}
+
 // TestAgentUpgradePlanningAfterOrglaneRelease simulates an Orglane upgrade:
 // the instance was installed by a release that only embedded 1.0.0-1, then
 // a new core with 2.0.0-1 and 3.0.0-1 starts and plans the required stop
@@ -297,7 +343,7 @@ func TestAgentUpgradePlanningAfterOrglaneRelease(t *testing.T) {
 	first := registryWithVersions(t, agenttest.Version)
 	h := newHarness(t, host.agentConfig, func(c *apps.Config) { c.Packages = first })
 	h.agentProv.SetPackageSettings(map[string]any{"http_port": freePort(t), "message": "release"})
-	inst := runningOn(t, h, agenttest.Version)
+	inst := runningOn(t, h)
 
 	// The same database and agent, a new core release embedding the newer
 	// package versions.
