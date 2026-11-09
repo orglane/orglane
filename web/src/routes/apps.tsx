@@ -666,21 +666,12 @@ export function AppsSettingsPage() {
   const providerName = (id: string) => providers.data?.items.find((p) => p.id === id)?.name ?? id;
   const defaults = (instanceId: string) =>
     bindings.data?.items.filter((b) => b.instanceId === instanceId && b.isDefault) ?? [];
-  // How many instances are bound to each capability: choosing a default only
-  // makes sense when there is more than one.
-  const boundCount = new Map<string, number>();
-  for (const b of bindings.data?.items ?? []) {
-    boundCount.set(b.capability, (boundCount.get(b.capability) ?? 0) + 1);
-  }
-  // The instance can become the default of a bound capability when another
-  // instance is also bound, and only while the instance itself is active.
+  // An active app that is not the default can become it, even when it is the
+  // only remaining binding: removing the default instance deletes its
+  // bindings without promoting another one.
   const choices = (instanceId: string) =>
     bindings.data?.items.filter(
-      (b) =>
-        b.instanceId === instanceId &&
-        b.instanceState === "active" &&
-        !b.isDefault &&
-        (boundCount.get(b.capability) ?? 0) > 1,
+      (b) => b.instanceId === instanceId && b.instanceState === "active" && !b.isDefault,
     ) ?? [];
   const chosen = setDefault.data?.items.find((b) => b.isDefault);
   return (
