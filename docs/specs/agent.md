@@ -558,6 +558,7 @@ Docker may restart containers on a reboot before the agent runs. In every phase 
 | Installer | `make test-install`: default install has no agent; `--managed`, `enable-managed` (local mode switches to `orglane.localhost`), `uninstall` removes instance projects | #59 |
 | Local mode | Forgejo installed in local mode reaches the issuer at `http://orglane.localhost` through the Traefik alias; Playwright signs in to `http://git.orglane.localhost` through Orglane | #61, #62 |
 | Forgejo package | Package unit tests; integration install through the agent; idle memory measured and reported | #61 |
+| M2 acceptance | `core/internal/apps` `TestM2AcceptanceScenario` installs Forgejo through the install API and the real agent, then pushes a test-only candidate version (built at test time from the real package, never embedded) whose health check fails: the agent snapshots, fences, verifies, rolls back and restores the repository data; the running version and generation stay current | #67 |
 
 ## Implementation notes (#59)
 

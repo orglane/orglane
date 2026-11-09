@@ -7,7 +7,7 @@
 | Milestone | Character | Audience | Status |
 |---|---|---|---|
 | **M0 — Foundation** | Private. Ends with the repository going public (pre-alpha) | — | Done |
-| **v0.1 — Developer Preview** (M1–M7) | Quiet release, devlog only | Maintainers and early adopters | In progress: M1 done, M2 next |
+| **v0.1 — Developer Preview** (M1–M7) | Quiet release, devlog only | Maintainers and early adopters | In progress: M1 done, M2 in progress |
 | **v0.2 — Public Launch** | Loud: Hacker News, Reddit, Product Hunt | Everyone | Research tracks started |
 | **v0.3+** | Growth | — | — |
 
@@ -50,6 +50,8 @@ Each candidate is deployed and compared on idle and loaded memory, OIDC quality,
 | **M5** | Offboarding & audit | Block → revoke sessions and devices; Forgejo suspension, tokens and SSH keys; GitHub org removal; Telegram removal; per-provider report; audit log |
 | **M6** | MCP | Scopes, delegated tokens with consent, read-only MCP server (people, teams, pull requests, notifications) |
 | **M7** | Backups | Local and S3 targets, core + Forgejo, test-restore command, health panel |
+
+**M2 status (in progress).** Merged: the provider framework, the Forgejo managed package and lifecycle, install/remove/purge/reinstall through the API, SSO/provisioning/team mappings/webhooks/normalized events/deep links, the GitHub App connect/link/provision/removal and webhooks, the core–agent install and apply/sync jobs, and the agent's upgrades with snapshot and rollback. The M2 acceptance scenario (#67) is automated: `core/internal/apps` sets up a company, invites a person, installs Forgejo through the API and the real agent, provisions the person into a mapped team, turns a real Forgejo mention into a normalized event, opens the pull request through the silent-SSO deep link, and demonstrates a Forgejo upgrade rollback; its GitHub part runs with the `github-live` environment and skips explicitly without it. M2 is **not done** yet: Settings → Apps install UI (#61, PR #94), core-side upgrade confirmation and planning (#75, PR #104), and the protected `github-live` workflow (#71, PR #79) are still open.
 
 **v0.1 exit criteria**
 1. Fresh VPS (2 vCPU / 4 GB) → `curl … | sh` → working with own domain in **≤ 10 minutes**; `--demo` on a laptop in **≤ 2 minutes**.

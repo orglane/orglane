@@ -1222,11 +1222,12 @@ New target kinds: `app_instance`, `account_link`. System jobs use `audit.System`
 | API | Allowed and denied tests for every operation; audit entries per mutation | #58 onward |
 | Forgejo | testcontainers with the **same image reference** as the package manifest (read from the embedded manifest in the test): accounts, teams, webhooks with real signatures, deep link through a real OIDC round trip in domain mode and in local mode (`http://git.orglane.localhost`); agent install path in `tests/integration` | #61–#63 |
 | GitHub | Unit and integration tests with the real adapter against `providers/github/githubfake`, a fake GitHub.com that validates every request and response against GitHub's official OpenAPI description (a pinned, vendored subset of github/rest-api-description, MIT; the team-ID alternates that description only mentions in prose are derived from its slug operations) and a hand-written description of the OAuth web flow; live tests against a real test organization and test GitHub App (below) | #64–#66 |
+| M2 acceptance | `core/internal/apps` `TestM2AcceptanceScenario`: a real core, Traefik, the real agent and Forgejo; first-run setup creates the owner, the owner invites a person into a team, the install API installs Forgejo, the person accepts and is provisioned into a mapped team, a mention in a real Forgejo pull request becomes a normalized event, the deep link opens the pull request through silent SSO, and a test-only Forgejo candidate that fails its health check rolls back with its repository data intact. `TestM2AcceptanceGitHubLive` runs the GitHub part through the core's provisioning pipeline against the real test organization and skips explicitly (fails with `ORGLANE_REQUIRE_GITHUB_LIVE=1` when configured) without the `github-live` settings | #67 |
 | Web | Playwright: Settings → Apps, install flow, connect up to the GitHub redirect, the link step through the fake GitHub (acceptance build tag `githubtest`) | #58, #61, #64, #65 |
 
 ### GitHub live tests
 
-Build tag `integration`, package `providers/github`, plus a scenario in `tests/integration` (#67). The maintainer creates the test resources and provides them through a GitHub Actions **environment** `github-live`, restricted to `main` and manual dispatch (never exposed to pull requests from forks, ADR 0017). Nothing about them is committed; the names below are placeholders.
+Build tag `integration`, package `providers/github`, plus the M2 acceptance scenario in `core/internal/apps` (#67): `TestM2AcceptanceScenario` covers the Forgejo part in ordinary CI, and `TestM2AcceptanceGitHubLive` exercises the GitHub part through the core's provisioning pipeline against the same environment (`make test-github-live`); without its values it skips with a message. The maintainer creates the test resources and provides them through a GitHub Actions **environment** `github-live`, restricted to `main` and manual dispatch (never exposed to pull requests from forks, ADR 0017). Nothing about them is committed; the names below are placeholders.
 
 **Maintainer checklist** (placeholders: organization `orglane-test`, App `Orglane CI`, a dedicated bot user):
 
@@ -1248,6 +1249,8 @@ Behavior:
 - Locally and on pull requests, missing values skip the tests with `t.Skip("GitHub live tests need ORGLANE_TEST_GITHUB_* (see docs/specs/providers.md#github-live-tests)")`.
 - A workflow `github-live.yml` runs them on pushes to `main`, nightly and by `gh workflow run github-live.yml --ref <branch>` (how a maintainer checks a GitHub PR before merging, like `conformance.yml`). It sets `ORGLANE_REQUIRE_GITHUB_LIVE=1`, which turns a missing value into a failure.
 - Runs are serialized (`concurrency: github-live`). Every test names its teams and repositories `orglane-test-<run id>-...` and deletes them; a janitor step removes leftovers older than a day.
+
+**M2 acceptance scenario (#67).** `TestM2AcceptanceScenario` runs in ordinary CI (part of `make test-integration`): the real core, Traefik, agent and Forgejo, first-run setup, an invitation, Forgejo installed through the install API, provisioning into a mapped team, a real Forgejo webhook mention, the silent-SSO deep link and an upgrade whose test-only candidate fails its health check and rolls back. Its GitHub part, `TestM2AcceptanceGitHubLive`, connects the real App through the core's provisioning pipeline and proves the bot's team membership; its verified link is test setup, because the OAuth browser leg stays a manual check. The GitHub scenario does not create pull requests or comments: that needs a repository explicitly selected for the bot's fine-grained token (see [janitor requirements](../github.md#live-test-resource-ownership-and-janitor)). The mention event is therefore demonstrated against Forgejo in the acceptance scenario, and GitHub's real webhook payload semantics stay with `TestGitHubLiveWebhookDeliveries` and its fixtures.
 
 **Webhooks in live tests.** Webhooks cannot reach CI runners, and the App's delivery log (`GET /app/hook/deliveries/{id}`) returns the payload as a parsed JSON object, not the raw request bytes, so a re-serialized payload is not guaranteed to match GitHub's signature. Two separate checks therefore cover webhooks:
 
@@ -1286,7 +1289,7 @@ Behavior:
 | #64 GitHub App | Adapter contracts (Connector), Credentials, Provider specifics → GitHub (connect, permissions, tokens), GitHub live tests |
 | #65 GitHub linking and access | Account links, Desired access, Provisioning (removal guard, employee steps), Provider specifics → GitHub |
 | #66 GitHub webhooks | Webhooks (installation matching, replay), Normalized events (dedupe keys, data), GitHub live tests (payload semantics, raw-signature path, re-signed fixtures) |
-| #67 Acceptance | All; agent.md Upgrade (rollback demonstration) |
+| #67 Acceptance | All; M2 acceptance scenario (`TestM2AcceptanceScenario`, `TestM2AcceptanceGitHubLive`); agent.md Upgrade (rollback demonstration) |
 
 ## Decided questions
 

@@ -44,6 +44,9 @@ import (
 // Traefik, as a browser that resolves *.localhost to loopback.
 type browser struct {
 	*http.Client
+	// csrf is the session's CSRF token; withCSRF sets it and requests then
+	// carry it with a same-origin Origin header, as the web UI does.
+	csrf string
 }
 
 func newBrowser(t *testing.T, b *managedtest.Bundle) browser {
@@ -55,7 +58,13 @@ func newBrowser(t *testing.T, b *managedtest.Bundle) browser {
 	c := b.Client()
 	c.Jar = jar
 	c.CheckRedirect = nil // follow redirects, at most 10
-	return browser{c}
+	return browser{Client: c}
+}
+
+// withCSRF returns the same browser with the session's CSRF token.
+func (br browser) withCSRF(token string) browser {
+	br.csrf = token
+	return br
 }
 
 // page is what a request ended with, after redirects.
@@ -78,6 +87,14 @@ func (br browser) do(t *testing.T, method, rawURL string, body any) (page, []byt
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions {
+		// Cookie-authenticated changes need the session's CSRF token and a
+		// same-origin Origin, as a browser sends them.
+		req.Header.Set("Origin", req.URL.Scheme+"://"+req.URL.Host)
+		if br.csrf != "" {
+			req.Header.Set("X-CSRF-Token", br.csrf)
+		}
+	}
 	resp, err := br.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, rawURL, err)
@@ -94,6 +111,20 @@ func (br browser) do(t *testing.T, method, rawURL string, body any) (page, []byt
 // the bundle the core is on the edge network). It returns the config.
 func startCore(t *testing.T, b *managedtest.Bundle, dbURL string, public, internal int) *config.Config {
 	t.Helper()
+	return startCoreWith(t, b, dbURL, public, internal, true, nil)
+}
+
+// startCoreWith is startCore with demo mode selectable and extra environment
+// variables (for example the agent socket of a managed-services scenario).
+func startCoreWith(t *testing.T, b *managedtest.Bundle, dbURL string, public, internal int, demo bool, extra map[string]string) *config.Config {
+	t.Helper()
+	return startCoreWithLogger(t, b, dbURL, public, internal, demo, extra, slog.New(slog.DiscardHandler))
+}
+
+// startCoreWithLogger is startCoreWith with a logger, so a scenario can show
+// the server's job and setup errors when it fails.
+func startCoreWithLogger(t *testing.T, b *managedtest.Bundle, dbURL string, public, internal int, demo bool, extra map[string]string, logger *slog.Logger) *config.Config {
+	t.Helper()
 	host := managedtest.CoreListenHost()
 	vars := map[string]string{
 		"ORGLANE_DATABASE_URL":           dbURL,
@@ -106,7 +137,12 @@ func startCore(t *testing.T, b *managedtest.Bundle, dbURL string, public, intern
 		"ORGLANE_SERVER_INTERNAL_LISTEN": net.JoinHostPort(host, strconv.Itoa(internal)),
 		"ORGLANE_INGRESS_UPSTREAM_URL":   managedtest.CoreURL(public),
 		"ORGLANE_IDENTITY_MASTER_SECRET": masterSecret,
-		"ORGLANE_DEMO_ENABLED":           "true",
+	}
+	if demo {
+		vars["ORGLANE_DEMO_ENABLED"] = "true"
+	}
+	for k, v := range extra {
+		vars[k] = v
 	}
 	cfg, err := config.Load("", func(k string) (string, bool) { v, ok := vars[k]; return v, ok })
 	if err != nil {
@@ -115,7 +151,7 @@ func startCore(t *testing.T, b *managedtest.Bundle, dbURL string, public, intern
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- server.RunWithStack(ctx, cfg, "dev", slog.New(slog.DiscardHandler), web.StackOptions{AppsHTTPClient: b.Client()})
+		done <- server.RunWithStack(ctx, cfg, "dev", logger, web.StackOptions{AppsHTTPClient: b.Client()})
 	}()
 	t.Cleanup(func() {
 		cancel()

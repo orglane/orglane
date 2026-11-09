@@ -35,6 +35,20 @@ const agentSecret = "integration-agent-secret-0123456789abcdef" //nolint:gosec /
 // startAgent runs the real agent in-process against the bundle.
 func startAgent(t *testing.T, b *managedtest.Bundle, registry *packages.Registry) *agentclient.Client {
 	t.Helper()
+	client, _ := startAgentAt(t, b, registry)
+	return client
+}
+
+// startAgentAt is startAgent and also returns the socket the core uses.
+func startAgentAt(t *testing.T, b *managedtest.Bundle, registry *packages.Registry) (*agentclient.Client, string) {
+	t.Helper()
+	return startAgentAtLogger(t, b, registry, slog.New(slog.DiscardHandler))
+}
+
+// startAgentAtLogger is startAgentAt with a logger, so a scenario can show
+// the agent's install errors when it fails.
+func startAgentAtLogger(t *testing.T, b *managedtest.Bundle, registry *packages.Registry, logger *slog.Logger) (*agentclient.Client, string) {
+	t.Helper()
 	sockDir, err := os.MkdirTemp("", "apps-agent-")
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +62,7 @@ func startAgent(t *testing.T, b *managedtest.Bundle, registry *packages.Registry
 	cfg.ComposeProject = b.Project
 	cfg.EdgeNetwork, cfg.ServicesNetwork = b.Project+"_edge", b.Project+"_services"
 	cfg.ReconcileInterval = time.Hour
-	a, err := agent.New(agent.Options{Config: cfg, Version: "dev", Registry: registry, Logger: slog.New(slog.DiscardHandler)})
+	a, err := agent.New(agent.Options{Config: cfg, Version: "dev", Registry: registry, Logger: logger})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +87,7 @@ func startAgent(t *testing.T, b *managedtest.Bundle, registry *packages.Registry
 		t.Fatal(err)
 	}
 	t.Cleanup(client.Close)
-	return client
+	return client, cfg.Listen
 }
 
 // TestForgejoAdminTokenRotation rotates the admin token of a real Forgejo
