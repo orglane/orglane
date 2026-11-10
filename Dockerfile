@@ -18,7 +18,7 @@
 # and .nvmrc.
 
 # Web UI (web/): built once, architecture independent.
-FROM --platform=$BUILDPLATFORM node:26.13.0-alpine3.24@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS web
+FROM --platform=$BUILDPLATFORM node:26.13.0-alpine3.24@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216 AS web
 WORKDIR /src
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 PNPM_HOME=/pnpm CI=true
 # Node.js 25+ no longer bundles corepack. Same pin as .github/actions/setup;
