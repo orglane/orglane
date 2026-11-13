@@ -1,0 +1,7 @@
+# Cached standalone image and limits for the serialized 2026-11-04 follow-up.
+services:
+  app:
+    image: opencloudeu/opencloud-rolling:9.0.0@sha256:bd57f039d0dd3df510fb25f178beefdf0b1f049097285feead607824460e6506
+    cpus: 1
+    mem_limit: 768m
+    stop_grace_period: 10s

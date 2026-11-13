@@ -1,0 +1,45 @@
+# Vikunja for the tasks research (docs/research/tasks.md). Local only.
+# Based on https://vikunja.io/docs/full-docker-example/ (PostgreSQL variant).
+name: rs-vikunja
+services:
+  vikunja:
+    image: vikunja/vikunja:2.7.1
+    environment:
+      VIKUNJA_SERVICE_PUBLICURL: http://localhost:18101/
+      VIKUNJA_SERVICE_SECRET: research-only-not-a-secret-0123456789
+      VIKUNJA_SERVICE_ENABLEREGISTRATION: "true"
+      VIKUNJA_DATABASE_TYPE: postgres
+      VIKUNJA_DATABASE_HOST: db
+      VIKUNJA_DATABASE_USER: vikunja
+      VIKUNJA_DATABASE_PASSWORD: research
+      VIKUNJA_DATABASE_DATABASE: vikunja
+    ports:
+      - 127.0.0.1:18101:3456
+    volumes:
+      - files:/app/vikunja/files
+    depends_on:
+      files-owner:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+  # The image runs as uid 1000; a fresh named volume is owned by root.
+  files-owner:
+    image: alpine:3.22
+    command: chown 1000 /files
+    volumes:
+      - files:/files
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: vikunja
+      POSTGRES_PASSWORD: research
+      POSTGRES_DB: vikunja
+    volumes:
+      - db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vikunja"]
+      interval: 2s
+      retries: 30
+volumes:
+  files:
+  db:
