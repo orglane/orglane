@@ -197,7 +197,7 @@ services:
     # release tag to its registry digest and writes
     # ORGLANE_AGENT_IMAGE=ghcr.io/orglane/orglane-agent:<tag>@sha256:<digest>
     # into .env. The tag must be the core's version.
-    image: ${ORGLANE_AGENT_IMAGE:-ghcr.io/orglane/orglane-agent:0.0.1} # x-release-please-version
+    image: ${ORGLANE_AGENT_IMAGE:-ghcr.io/orglane/orglane-agent:0.0.2} # x-release-please-version
     profiles: [managed]
     restart: unless-stopped
     command: ["agent"]
