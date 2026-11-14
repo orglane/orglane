@@ -9,8 +9,7 @@
 # Not part of pull request CI: a run takes a few minutes and pulls the
 # suite's images. Start it by hand with
 #   gh workflow run conformance.yml --ref <branch>
-# It also runs weekly on main (see the schedule below for the cost). Scheduled
-# runs use the default branch's copy of this file.
+# Runs are started manually; there is no background schedule.
 #
 # Security: no secrets and a read-only token. Everything under test runs in
 # Docker with throwaway credentials and certificates. Third-party actions are
@@ -20,11 +19,6 @@ name: Conformance
 
 on:
   workflow_dispatch:
-  schedule:
-    # Weekly on main. Measured: a run takes about 3 minutes (2 minutes 50 for
-    # `make conformance`: build, image pulls, 38 test modules), so about
-    # 16 billed minutes a month, under 1% of the free plan's 2,000.
-    - cron: "41 5 * * 1"
 
 permissions: {}
 

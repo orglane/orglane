@@ -10,7 +10,7 @@
 #
 # Minutes are scarce in the private phase, so this workflow does not run on
 # every push to main: only when the manifest changes (a release was merged),
-# once a day to refresh the release pull request, and on demand
+# and on demand to refresh the release pull request
 # (gh workflow run release.yml) before a maintainer reviews the release.
 #
 # The tag and the pull request are created with GITHUB_TOKEN, and events
@@ -18,7 +18,7 @@
 # here (workflow_call) and not by the tag push, and why CI does not run on the
 # release pull request (it changes only CHANGELOG.md and the manifest).
 #
-# Security: no pull request code runs here (push to main, schedule,
+# Security: no pull request code runs here (push to main,
 # workflow_dispatch). Every job declares its own minimal permissions.
 # Third-party actions are pinned by commit SHA.
 
@@ -29,8 +29,6 @@ on:
     branches: [main]
     paths:
       - .release-please-manifest.json
-  schedule:
-    - cron: "41 5 * * *"
   workflow_dispatch:
 
 permissions: {}

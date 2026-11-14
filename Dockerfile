@@ -32,7 +32,7 @@ RUN --mount=type=cache,target=/pnpm/store \
     pnpm install --frozen-lockfile && \
     pnpm --filter "@orglane/web..." run build
 
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS build
 WORKDIR /src
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
 COPY go.mod go.sum ./
@@ -54,7 +54,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # archives, so the SHA-256 values were taken from the downloaded files; the
 # Compose values match the .sha256 files of its GitHub release. To bump:
 # change the versions and every checksum together.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS docker-tools
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS docker-tools
 ARG TARGETARCH
 RUN set -eu; \
     docker_version=29.9.3; \

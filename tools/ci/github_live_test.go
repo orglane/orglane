@@ -55,10 +55,13 @@ func githubLiveWorkflow(t *testing.T) (map[string]githubLiveJob, map[string]yaml
 // environment-protected job. Shell behavior below also exercises the barrier.
 func TestGitHubLiveWorkflowSecretBoundary(t *testing.T) {
 	jobs, triggers := githubLiveWorkflow(t)
-	if len(triggers) != 3 {
+	if _, ok := triggers["schedule"]; ok {
+		t.Fatal("scheduled background runs must remain disabled")
+	}
+	if len(triggers) != 2 {
 		t.Fatalf("unexpected workflow triggers: %v", triggers)
 	}
-	for _, name := range []string{"push", "schedule", "workflow_dispatch"} {
+	for _, name := range []string{"push", "workflow_dispatch"} {
 		if _, ok := triggers[name]; !ok {
 			t.Fatalf("missing trigger %s", name)
 		}
@@ -67,15 +70,6 @@ func TestGitHubLiveWorkflowSecretBoundary(t *testing.T) {
 	pushTrigger := triggers["push"]
 	if err := pushTrigger.Decode(&push); err != nil || !reflect.DeepEqual(push.Branches, []string{"main"}) {
 		t.Fatalf("push must select only main: %+v (%v)", push, err)
-	}
-	var schedule []struct{ Cron string }
-	scheduleTrigger := triggers["schedule"]
-	if err := scheduleTrigger.Decode(&schedule); err != nil || len(schedule) != 1 {
-		t.Fatalf("missing nightly schedule: %+v (%v)", schedule, err)
-	}
-	fields := strings.Fields(schedule[0].Cron)
-	if len(fields) != 5 || strings.Join(fields[2:], " ") != "* * *" {
-		t.Fatalf("schedule must run every night: %q", schedule[0].Cron)
 	}
 	guard, live := jobs["trusted"], jobs["live"]
 	if len(jobs) != 2 || guard.Environment != "" || len(guard.Permissions) != 0 || live.Needs != "trusted" || live.Environment != "github-live" {

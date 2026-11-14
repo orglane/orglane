@@ -32,7 +32,7 @@ Last result (suite release-v5.3.4): 36 modules, 1722 conditions passed, 0 failur
 
 ## CI
 
-The `Conformance` workflow (`.github/workflows/conformance.yml`) runs `make conformance` on `ubuntu-latest` and uploads `.conformance/results` (the suite's JSON and HTML export per plan) as the `conformance-results-*` artifact. It is not part of pull request CI. Start it for any branch with `gh workflow run conformance.yml --ref <branch>`; it also runs weekly on main. The job fails on the same conditions as a local run.
+The `Conformance` workflow (`.github/workflows/conformance.yml`) runs `make conformance` on `ubuntu-latest` and uploads `.conformance/results` (the suite's JSON and HTML export per plan) as the `conformance-results-*` artifact. It is not part of pull request CI. Start it for any branch with `gh workflow run conformance.yml --ref <branch>`; there is no background schedule. The job fails on the same conditions as a local run.
 
 ## Concurrent runs
 

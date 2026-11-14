@@ -534,7 +534,8 @@ Cleanup also requires exact originating workflow path
 `.github/workflows/github-live.yml` (bare or with the explicit `@main` ref),
 repository and head repository
 `orglane/orglane`, and a trusted event on `main` (`push`, `schedule`, or
-`workflow_dispatch`). Missing/foreign metadata, PR events, and the current run
+`workflow_dispatch`), including historical scheduled runs; the workflow no longer
+schedules new runs. Missing/foreign metadata, PR events, and the current run
 (including other attempts) never authorize cleanup. The current protected live
 environment permits MAIN only. Non-main manual runs are preserved: their branch
 name and `workflow_dispatch` event cannot prove the separate, frozen-SHA
