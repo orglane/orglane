@@ -16,7 +16,7 @@ In place from M2: the provider framework ([docs/specs/providers.md](docs/specs/p
 
 | Tool | Version | Pinned in |
 |---|---|---|
-| Go | 1.27.3 | `go.mod` (`go` + `toolchain`; `GOTOOLCHAIN=auto` downloads it) |
+| Go | 1.27.4 | `go.mod` (`go` + `toolchain`; `GOTOOLCHAIN=auto` downloads it) |
 | Node.js | 26.13.0 (LTS) | `.nvmrc`, `package.json` `engines` |
 | pnpm | 12.16.1 | `package.json` `packageManager` (via corepack) |
 | golangci-lint | v2.15.0 | `Makefile` (`GOLANGCI_LINT_VERSION`), installed into `.bin/` |
