@@ -108,9 +108,9 @@ configuration is absent.
 
 ## Triggers and pre-merge acceptance
 
-Every push to `main` (including docs-only pushes) and the nightly run at 03:23
-UTC requires the full configuration. The workflow maps the nine names above
-unchanged and sets `ORGLANE_REQUIRE_GITHUB_LIVE=1`; it never converts missing
+Every push to `main` (including docs-only pushes) and each manual dispatch
+requires the full configuration. There is no background schedule. The workflow
+maps the nine names above unchanged and sets `ORGLANE_REQUIRE_GITHUB_LIVE=1`; it never converts missing
 configuration into a successful skip. All runs share concurrency group
 `github-live`, with cancellation disabled so superseding a run does not
 interrupt resource cleanup. The live job's `GITHUB_TOKEN` has only
@@ -222,7 +222,8 @@ The detailed ownership, age and provenance rules are in
   `workflow_dispatch` event on `main`, excluding the current run. Require the
   run start and last update (and a repository's creation time) to be strictly
   older than 24 hours, and preserve anything whose age or ownership cannot be
-  verified.
+  verified. Historical scheduled runs remain eligible for provenance checks;
+  the workflow no longer schedules new runs.
 - Non-main manual runs are preserved: a branch name and `workflow_dispatch`
   event cannot prove the separate frozen-SHA maintainer authorization. This is
   deliberately conservative and does not infer authorization from a test marker.

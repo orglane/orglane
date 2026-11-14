@@ -57,8 +57,8 @@ concurrency:
 
 jobs:
   changes:
-    # Runs on every event: on pull requests it classifies the change, on push,
-    # schedule and workflow_dispatch it selects every tier (or follows the
+    # Runs on every event: on pull requests it classifies the change; on push
+    # and workflow_dispatch it selects every tier (or follows the
     # full-ci input). Its outputs are the single source of truth for the tier
     # conditions below and for the aggregate's expected results.
     if: ${{ !cancelled() }}
@@ -107,7 +107,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           FULL_CI: ${{ inputs.full-ci }}
         run: |
-          # Push and the nightly schedule run everything; a manual dispatch
+          # Push runs everything; a manual dispatch
           # follows its full-ci input (the fast tier when false).
           echo "code=true" >> "$GITHUB_OUTPUT"
           case "$EVENT_NAME" in
