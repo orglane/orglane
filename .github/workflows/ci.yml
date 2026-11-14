@@ -1,4 +1,4 @@
-# CI for pull requests, main and the nightly full run (ADR 0017).
+# CI for pull requests, main and manual full runs (ADR 0017).
 #
 # Pull requests get a merge verdict in about 8-10 minutes: the fast tier
 # (lint, build, security, unit and TS tests, the Postgres-only Go integration
@@ -7,7 +7,7 @@
 # bundle and installer tests, and the web end-to-end tests) is skipped only
 # when every changed file is documentation, the website or a license text
 # (tests/ci has the selector and its regression cases). The `full-ci` label
-# forces it. Pushes to main and the nightly schedule run everything. The final
+# forces it. Pushes to main and manual full runs run everything. The final
 # `test` job is the required check: it runs with `always()` and fails when one
 # of the jobs this event selected failed, was cancelled or was unexpectedly
 # skipped; the only accepted skip is a heavy tier the changes job explicitly
@@ -42,10 +42,6 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-  schedule:
-    # Nightly full run on main (every tier, including the Docker e2e tests).
-    # The weekly vulnerability and license scan is part of it.
-    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       full-ci:
